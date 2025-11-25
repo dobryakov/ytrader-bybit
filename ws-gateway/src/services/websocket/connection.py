@@ -4,6 +4,7 @@ import asyncio
 import json
 from datetime import datetime
 from typing import Optional
+from collections import deque
 
 import websockets
 from websockets.client import WebSocketClientProtocol
@@ -14,6 +15,14 @@ from ...models.websocket_state import ConnectionStatus, WebSocketState
 from .auth import generate_auth_message, validate_auth_response
 
 logger = get_logger(__name__)
+
+# Global storage for recent messages (for testing/viewing)
+_recent_messages: deque = deque(maxlen=100)
+
+
+def get_recent_messages():
+    """Get recent WebSocket messages (for testing)."""
+    return list(_recent_messages)
 
 
 class WebSocketConnection:
@@ -154,11 +163,31 @@ class WebSocketConnection:
             async for message in self._websocket:
                 try:
                     data = json.loads(message)
-                    logger.debug(
-                        "websocket_message_received",
-                        message_type=data.get("topic", "unknown"),
-                        data=data,
-                    )
+                    # Log subscription confirmations and data messages at INFO level for visibility
+                    topic = data.get("topic", data.get("op", "unknown"))
+                    if data.get("op") == "subscribe" or topic != "unknown":
+                        logger.info(
+                            "websocket_message_received",
+                            message_type=topic,
+                            op=data.get("op"),
+                            data=data,
+                        )
+                    else:
+                        logger.debug(
+                            "websocket_message_received",
+                            message_type=topic,
+                            data=data,
+                        )
+                    
+                    # Store message for viewing via API (testing)
+                    _recent_messages.append({
+                        "timestamp": data.get("ts", datetime.now().isoformat()),
+                        "topic": data.get("topic", ""),
+                        "op": data.get("op", ""),
+                        "type": data.get("type", ""),
+                        "data": data
+                    })
+                    
                     # Message processing will be handled by event processor (Phase 4)
                 except json.JSONDecodeError as e:
                     logger.warning("websocket_invalid_json", error=str(e), raw_message=message[:100])

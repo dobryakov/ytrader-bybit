@@ -115,3 +115,16 @@ app = FastAPI(
 # Register routers
 app.include_router(health_router)
 
+# Temporary test routers for subscriptions and data viewing
+try:
+    from .api.test_subscribe import router as test_subscribe_router
+    app.include_router(test_subscribe_router)
+except ImportError:
+    pass
+
+try:
+    from .api.view_data import router as view_data_router
+    app.include_router(view_data_router)
+except ImportError:
+    pass
+
