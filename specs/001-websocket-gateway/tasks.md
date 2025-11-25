@@ -26,13 +26,13 @@ description: "Task list for WebSocket Gateway feature implementation"
 
 **Purpose**: Project initialization and basic structure
 
-- [ ] T001 Create project structure per implementation plan in ws-gateway/
-- [ ] T002 Initialize Python project with dependencies in ws-gateway/requirements.txt
-- [ ] T003 [P] Create Dockerfile for ws-gateway service in ws-gateway/Dockerfile
-- [ ] T004 [P] Create docker-compose.yml entry for ws-gateway service
-- [ ] T005 [P] Configure linting and formatting tools (black, mypy) in ws-gateway/
-- [ ] T006 [P] Create README.md in ws-gateway/README.md
-- [ ] T007 [P] Add environment variables to env.example for ws-gateway configuration
+- [X] T001 Create project structure per implementation plan in ws-gateway/
+- [X] T002 Initialize Python project with dependencies in ws-gateway/requirements.txt
+- [X] T003 [P] Create Dockerfile for ws-gateway service in ws-gateway/Dockerfile
+- [X] T004 [P] Create docker-compose.yml entry for ws-gateway service
+- [X] T005 [P] Configure linting and formatting tools (black, mypy) in ws-gateway/
+- [X] T006 [P] Create README.md in ws-gateway/README.md
+- [X] T007 [P] Add environment variables to env.example for ws-gateway configuration
 
 ---
 
@@ -42,16 +42,16 @@ description: "Task list for WebSocket Gateway feature implementation"
 
 **⚠️ CRITICAL**: No user story work can begin until this phase is complete
 
-- [ ] T008 Setup database schema and migrations framework in ws-gateway/migrations/
-- [ ] T009 [P] Create database migration for subscriptions table in ws-gateway/migrations/001_create_subscriptions_table.sql
-- [ ] T010 [P] Create database migration for account_balances table in ws-gateway/migrations/002_create_account_balances_table.sql
-- [ ] T011 [P] Implement configuration management using pydantic-settings in ws-gateway/src/config/settings.py
-- [ ] T012 [P] Setup structured logging infrastructure with structlog in ws-gateway/src/config/logging.py
-- [ ] T013 [P] Create base database connection pool using asyncpg in ws-gateway/src/services/database/connection.py
-- [ ] T014 [P] Create base RabbitMQ connection using aio-pika in ws-gateway/src/services/queue/connection.py
-- [ ] T015 [P] Setup error handling and exception classes in ws-gateway/src/exceptions.py
-- [ ] T016 [P] Create base FastAPI application structure in ws-gateway/src/main.py
-- [ ] T017 [P] Implement health check endpoint GET /health in ws-gateway/src/api/health.py
+- [X] T008 Setup database schema and migrations framework in ws-gateway/migrations/
+- [X] T009 [P] Create database migration for subscriptions table in ws-gateway/migrations/001_create_subscriptions_table.sql
+- [X] T010 [P] Create database migration for account_balances table in ws-gateway/migrations/002_create_account_balances_table.sql
+- [X] T011 [P] Implement configuration management using pydantic-settings in ws-gateway/src/config/settings.py
+- [X] T012 [P] Setup structured logging infrastructure with structlog in ws-gateway/src/config/logging.py
+- [X] T013 [P] Create base database connection pool using asyncpg in ws-gateway/src/services/database/connection.py
+- [X] T014 [P] Create base RabbitMQ connection using aio-pika in ws-gateway/src/services/queue/connection.py
+- [X] T015 [P] Setup error handling and exception classes in ws-gateway/src/exceptions.py
+- [X] T016 [P] Create base FastAPI application structure in ws-gateway/src/main.py
+- [X] T017 [P] Implement health check endpoint GET /health in ws-gateway/src/api/health.py
 
 **Checkpoint**: Foundation ready - user story implementation can now begin in parallel
 

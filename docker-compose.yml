@@ -1,0 +1,80 @@
+services:
+  ws-gateway:
+    build:
+      context: ./ws-gateway
+      dockerfile: Dockerfile
+    container_name: ws-gateway
+    ports:
+      - "${WS_GATEWAY_PORT:-4400}:4400"
+    environment:
+      - BYBIT_API_KEY=${BYBIT_API_KEY}
+      - BYBIT_API_SECRET=${BYBIT_API_SECRET}
+      - BYBIT_ENVIRONMENT=${BYBIT_ENVIRONMENT:-testnet}
+      - POSTGRES_HOST=${POSTGRES_HOST:-postgres}
+      - POSTGRES_PORT=${POSTGRES_PORT:-5432}
+      - POSTGRES_DB=${POSTGRES_DB:-ytrader}
+      - POSTGRES_USER=${POSTGRES_USER:-ytrader}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - RABBITMQ_HOST=${RABBITMQ_HOST:-rabbitmq}
+      - RABBITMQ_PORT=${RABBITMQ_PORT:-5672}
+      - RABBITMQ_USER=${RABBITMQ_USER:-guest}
+      - RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD:-guest}
+      - WS_GATEWAY_PORT=${WS_GATEWAY_PORT:-4400}
+      - WS_GATEWAY_API_KEY=${WS_GATEWAY_API_KEY}
+      - WS_GATEWAY_LOG_LEVEL=${WS_GATEWAY_LOG_LEVEL:-INFO}
+      - WS_GATEWAY_SERVICE_NAME=${WS_GATEWAY_SERVICE_NAME:-ws-gateway}
+    depends_on:
+      - postgres
+      - rabbitmq
+    networks:
+      - ytrader-network
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-ytrader}
+      - POSTGRES_USER=${POSTGRES_USER:-ytrader}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - ytrader-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ytrader}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: rabbitmq
+    environment:
+      - RABBITMQ_DEFAULT_USER=${RABBITMQ_USER:-guest}
+      - RABBITMQ_DEFAULT_PASS=${RABBITMQ_PASSWORD:-guest}
+    ports:
+      - "${RABBITMQ_PORT:-5672}:5672"
+      - "15672:15672"  # Management UI
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - ytrader-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+networks:
+  ytrader-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  rabbitmq_data:
+
