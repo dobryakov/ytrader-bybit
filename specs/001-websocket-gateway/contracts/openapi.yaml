@@ -10,7 +10,7 @@ info:
     name: YTrader Team
 
 servers:
-  - url: http://localhost:8081
+  - url: http://localhost:4400
     description: Local development server
   - url: https://ws-gateway.example.com
     description: Production server

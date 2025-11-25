@@ -110,7 +110,7 @@ After completing Phase 1 design (data model, contracts, quickstart), all constit
 - **Inter-Service Communication**: ✅ RabbitMQ queues organized by event class, REST API contracts defined
 - **Testing Discipline**: ✅ Test structure defined (unit, integration, e2e) with container-based execution
 - **Observability & Diagnostics**: ✅ Structured logging with trace IDs included in data model and API contracts
-- **Infrastructure Standards**: ✅ Docker Compose V2, non-standard ports (8081), container-based execution
+- **Infrastructure Standards**: ✅ Docker Compose V2, non-standard ports (4400), container-based execution
 - **Documentation & Configuration**: ✅ Quickstart.md created, .env configuration documented, API contracts provided
 
 **Final Gate Status**: ✅ **PASS** - Design phase complete, all principles maintained.

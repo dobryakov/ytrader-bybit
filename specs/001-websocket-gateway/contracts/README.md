@@ -48,7 +48,7 @@ Supported channel types:
 ### Subscribe to Trades
 
 ```bash
-curl -X POST http://localhost:8081/api/v1/subscriptions \
+curl -X POST http://localhost:4400/api/v1/subscriptions \
   -H "X-API-Key: your-api-key" \
   -H "Content-Type: application/json" \
   -d '{
@@ -61,7 +61,7 @@ curl -X POST http://localhost:8081/api/v1/subscriptions \
 ### Subscribe to Balance Updates
 
 ```bash
-curl -X POST http://localhost:8081/api/v1/subscriptions \
+curl -X POST http://localhost:4400/api/v1/subscriptions \
   -H "X-API-Key: your-api-key" \
   -H "Content-Type: application/json" \
   -d '{
@@ -73,21 +73,21 @@ curl -X POST http://localhost:8081/api/v1/subscriptions \
 ### List Active Subscriptions
 
 ```bash
-curl -X GET "http://localhost:8081/api/v1/subscriptions?is_active=true" \
+curl -X GET "http://localhost:4400/api/v1/subscriptions?is_active=true" \
   -H "X-API-Key: your-api-key"
 ```
 
 ### Cancel a Subscription
 
 ```bash
-curl -X DELETE http://localhost:8081/api/v1/subscriptions/{subscription_id} \
+curl -X DELETE http://localhost:4400/api/v1/subscriptions/{subscription_id} \
   -H "X-API-Key: your-api-key"
 ```
 
 ### Health Check
 
 ```bash
-curl http://localhost:8081/health
+curl http://localhost:4400/health
 ```
 
 ## Response Codes

@@ -53,7 +53,7 @@ RABBITMQ_USER=guest
 RABBITMQ_PASSWORD=guest
 
 # WebSocket Gateway Configuration
-WS_GATEWAY_PORT=8081
+WS_GATEWAY_PORT=4400
 WS_GATEWAY_API_KEY=your-gateway-api-key  # For REST API authentication
 WS_GATEWAY_LOG_LEVEL=INFO
 
@@ -93,7 +93,7 @@ docker compose up -d ws-gateway
 ### 6. Verify Service Health
 
 ```bash
-curl http://localhost:8081/health
+curl http://localhost:4400/health
 ```
 
 Expected response:
@@ -115,7 +115,7 @@ Expected response:
 Subscribe to BTCUSDT trades:
 
 ```bash
-curl -X POST http://localhost:8081/api/v1/subscriptions \
+curl -X POST http://localhost:4400/api/v1/subscriptions \
   -H "X-API-Key: your-gateway-api-key" \
   -H "Content-Type: application/json" \
   -d '{
@@ -144,7 +144,7 @@ Response:
 ### Subscribe to Balance Updates
 
 ```bash
-curl -X POST http://localhost:8081/api/v1/subscriptions \
+curl -X POST http://localhost:4400/api/v1/subscriptions \
   -H "X-API-Key: your-gateway-api-key" \
   -H "Content-Type: application/json" \
   -d '{
@@ -156,7 +156,7 @@ curl -X POST http://localhost:8081/api/v1/subscriptions \
 ### List Subscriptions
 
 ```bash
-curl -X GET "http://localhost:8081/api/v1/subscriptions?is_active=true" \
+curl -X GET "http://localhost:4400/api/v1/subscriptions?is_active=true" \
   -H "X-API-Key: your-gateway-api-key"
 ```
 
@@ -187,7 +187,7 @@ channel.start_consuming()
 ### Cancel a Subscription
 
 ```bash
-curl -X DELETE http://localhost:8081/api/v1/subscriptions/{subscription_id} \
+curl -X DELETE http://localhost:4400/api/v1/subscriptions/{subscription_id} \
   -H "X-API-Key: your-gateway-api-key"
 ```
 
@@ -279,7 +279,7 @@ docker compose exec rabbitmq rabbitmqadmin list exchanges
 
 1. Verify subscription is active:
    ```bash
-   curl -X GET "http://localhost:8081/api/v1/subscriptions?is_active=true" \
+   curl -X GET "http://localhost:4400/api/v1/subscriptions?is_active=true" \
      -H "X-API-Key: your-gateway-api-key"
    ```
 
@@ -314,7 +314,7 @@ docker compose exec rabbitmq rabbitmqadmin list exchanges
 
 1. Check service health:
    ```bash
-   curl http://localhost:8081/health
+   curl http://localhost:4400/health
    ```
 
 2. Monitor logs for errors:
@@ -362,6 +362,6 @@ docker compose exec rabbitmq rabbitmqadmin list exchanges
 
 For issues or questions:
 1. Check service logs: `docker compose logs ws-gateway`
-2. Review health endpoint: `curl http://localhost:8081/health`
+2. Review health endpoint: `curl http://localhost:4400/health`
 3. Consult the specification and documentation in this directory
 
