@@ -1,0 +1,420 @@
+openapi: 3.1.0
+info:
+  title: WebSocket Gateway API
+  description: |
+    REST API for managing WebSocket subscriptions to Bybit exchange data channels.
+    This API allows other microservices to dynamically subscribe to or unsubscribe from
+    data channels (trades, tickers, order books, order statuses, balances, etc.).
+  version: 1.0.0
+  contact:
+    name: YTrader Team
+
+servers:
+  - url: http://localhost:8081
+    description: Local development server
+  - url: https://ws-gateway.example.com
+    description: Production server
+
+tags:
+  - name: subscriptions
+    description: Subscription management operations
+  - name: health
+    description: Health check and status endpoints
+
+paths:
+  /health:
+    get:
+      tags:
+        - health
+      summary: Health check
+      description: Returns the health status of the WebSocket Gateway service
+      operationId: getHealth
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '503':
+          description: Service is unhealthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+  /api/v1/subscriptions:
+    post:
+      tags:
+        - subscriptions
+      summary: Create a new subscription
+      description: |
+        Subscribe to a Bybit WebSocket data channel. If the channel is already subscribed
+        (by another service), the subscription is shared and the requesting service is
+        tracked. The subscription is persisted and will be automatically resubscribed
+        after reconnection.
+      operationId: createSubscription
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSubscriptionRequest'
+            examples:
+              subscribe_trades:
+                summary: Subscribe to trades
+                value:
+                  channel_type: trades
+                  symbol: BTCUSDT
+                  requesting_service: order-manager
+              subscribe_balance:
+                summary: Subscribe to balance updates
+                value:
+                  channel_type: balance
+                  requesting_service: order-manager
+      responses:
+        '201':
+          description: Subscription created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriptionResponse'
+        '400':
+          description: Invalid request (invalid channel type, symbol, or topic format)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalid_channel:
+                  value:
+                    error: "Invalid channel type 'invalid_channel'. Must be one of: trades, ticker, orderbook, order, balance, kline, liquidation"
+                    code: INVALID_CHANNEL_TYPE
+                missing_symbol:
+                  value:
+                    error: "Symbol is required for channel type 'trades'"
+                    code: MISSING_SYMBOL
+        '401':
+          description: Authentication failed (invalid or missing API key)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Subscription already exists for this service
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    get:
+      tags:
+        - subscriptions
+      summary: List subscriptions
+      description: |
+        Retrieve all subscriptions, optionally filtered by requesting service or active status.
+        Useful for monitoring and debugging.
+      operationId: listSubscriptions
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: requesting_service
+          in: query
+          description: Filter by requesting service name
+          required: false
+          schema:
+            type: string
+            example: order-manager
+        - name: is_active
+          in: query
+          description: Filter by active status
+          required: false
+          schema:
+            type: boolean
+            example: true
+        - name: channel_type
+          in: query
+          description: Filter by channel type
+          required: false
+          schema:
+            type: string
+            enum: [trades, ticker, orderbook, order, balance, kline, liquidation]
+      responses:
+        '200':
+          description: List of subscriptions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  subscriptions:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SubscriptionResponse'
+                  total:
+                    type: integer
+                    description: Total number of subscriptions matching filters
+        '401':
+          description: Authentication failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/subscriptions/{subscription_id}:
+    get:
+      tags:
+        - subscriptions
+      summary: Get subscription by ID
+      description: Retrieve details of a specific subscription
+      operationId: getSubscription
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: subscription_id
+          in: path
+          required: true
+          description: Subscription UUID
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Subscription details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriptionResponse'
+        '404':
+          description: Subscription not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Authentication failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    delete:
+      tags:
+        - subscriptions
+      summary: Cancel a subscription
+      description: |
+        Cancel a subscription. If multiple services requested the same channel,
+        only this service's subscription is cancelled. The WebSocket subscription
+        to Bybit is maintained if other services still need it.
+      operationId: cancelSubscription
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: subscription_id
+          in: path
+          required: true
+          description: Subscription UUID
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Subscription cancelled successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Subscription cancelled successfully
+                  subscription_id:
+                    type: string
+                    format: uuid
+        '404':
+          description: Subscription not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Authentication failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/subscriptions/by-service/{service_name}:
+    delete:
+      tags:
+        - subscriptions
+      summary: Cancel all subscriptions for a service
+      description: |
+        Cancel all active subscriptions for a specific service. Useful when a service
+        is shutting down or needs to reset its subscriptions.
+      operationId: cancelServiceSubscriptions
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: service_name
+          in: path
+          required: true
+          description: Name of the requesting service
+          schema:
+            type: string
+            example: order-manager
+      responses:
+        '200':
+          description: Subscriptions cancelled successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Cancelled 5 subscriptions for service 'order-manager'
+                  cancelled_count:
+                    type: integer
+                    example: 5
+        '401':
+          description: Authentication failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: API key for authentication. Can also be provided as query parameter `api_key`.
+
+  schemas:
+    HealthResponse:
+      type: object
+      required:
+        - status
+        - websocket_connected
+      properties:
+        status:
+          type: string
+          enum: [healthy, unhealthy]
+          description: Overall service health status
+        websocket_connected:
+          type: boolean
+          description: Whether WebSocket connection to Bybit is active
+        active_subscriptions:
+          type: integer
+          description: Number of active subscriptions
+        last_heartbeat_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Timestamp of last successful heartbeat
+        version:
+          type: string
+          description: Service version
+          example: "1.0.0"
+
+    CreateSubscriptionRequest:
+      type: object
+      required:
+        - channel_type
+        - requesting_service
+      properties:
+        channel_type:
+          type: string
+          enum: [trades, ticker, orderbook, order, balance, kline, liquidation]
+          description: Type of data channel to subscribe to
+          example: trades
+        symbol:
+          type: string
+          description: |
+            Trading pair symbol (e.g., 'BTCUSDT'). Required for symbol-specific channels
+            (trades, ticker, orderbook, order, kline). Must be NULL for non-symbol-specific
+            channels (balance, liquidation).
+          example: BTCUSDT
+        requesting_service:
+          type: string
+          description: Identifier of the microservice requesting this subscription
+          example: order-manager
+        topic:
+          type: string
+          description: |
+            Optional: Full topic string as required by Bybit API. If not provided,
+            will be constructed from channel_type and symbol.
+          example: trade.BTCUSDT
+
+    SubscriptionResponse:
+      type: object
+      required:
+        - id
+        - channel_type
+        - topic
+        - requesting_service
+        - is_active
+        - created_at
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique subscription identifier
+        channel_type:
+          type: string
+          enum: [trades, ticker, orderbook, order, balance, kline, liquidation]
+          description: Type of data channel
+        symbol:
+          type: string
+          nullable: true
+          description: Trading pair symbol (if applicable)
+        topic:
+          type: string
+          description: Full topic string for Bybit WebSocket API
+        requesting_service:
+          type: string
+          description: Service that requested this subscription
+        is_active:
+          type: boolean
+          description: Whether subscription is currently active
+        created_at:
+          type: string
+          format: date-time
+          description: When subscription was created
+        updated_at:
+          type: string
+          format: date-time
+          description: Last update timestamp
+        last_event_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Timestamp of last event received for this subscription
+
+    ErrorResponse:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: string
+          description: Human-readable error message
+        code:
+          type: string
+          description: Machine-readable error code
+          example: INVALID_CHANNEL_TYPE
+        details:
+          type: object
+          description: Additional error details
+          additionalProperties: true
+
