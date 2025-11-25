@@ -58,7 +58,7 @@ WS_GATEWAY_API_KEY=your-gateway-api-key  # For REST API authentication
 WS_GATEWAY_LOG_LEVEL=INFO
 
 # Service Configuration
-SERVICE_NAME=ws-gateway
+WS_GATEWAY_SERVICE_NAME=ws-gateway
 ```
 
 ### 3. Start Dependencies

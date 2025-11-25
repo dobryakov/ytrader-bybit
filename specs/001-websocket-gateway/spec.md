@@ -168,6 +168,7 @@ The system logs all significant activities including WebSocket connection events
 ### Measurable Outcomes
 
 - **SC-001**: System maintains WebSocket connection uptime of at least 99.5% over a 30-day period, with automatic reconnection completing within 30 seconds of any disconnection
+  - **Measurement**: Uptime = (Total time - Sum of disconnection durations) / Total time, where disconnection duration is time from connection loss detection to successful reconnection. Tracked via connection state logs with timestamps. Monitoring task required (see tasks.md Phase 9).
 - **SC-002**: System successfully receives and processes at least 99% of events from subscribed channels without data loss under normal operating conditions
 - **SC-003**: System delivers events to subscribers with latency under 100 milliseconds from the time events are received from the exchange (excluding network transit time to subscribers)
 - **SC-004**: System supports at least 10 concurrent subscriber services consuming from different event queues without performance degradation

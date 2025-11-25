@@ -7,7 +7,7 @@ description: "Task list for WebSocket Gateway feature implementation"
 **Input**: Design documents from `/specs/001-websocket-gateway/`
 **Prerequisites**: plan.md (required), spec.md (required for user stories), research.md, data-model.md, contracts/
 
-**Tests**: Tests are OPTIONAL - only include them if explicitly requested in the feature specification or if user requests TDD approach.
+**Tests**: Per constitution principle IV (Testing Discipline), automated tests MUST be executed after completing each task. Unit tests run in service containers; API and e2e tests run in separate test containers connected to main docker-compose.yml. Test tasks are integrated into each phase where applicable.
 
 **Organization**: Tasks are grouped by user story to enable independent implementation and testing of each story.
 
@@ -138,6 +138,7 @@ description: "Task list for WebSocket Gateway feature implementation"
 - [ ] T049 [US4] Integrate queue publishing with event processing pipeline in ws-gateway/src/services/websocket/event_processor.py
 - [ ] T050 [US4] Implement queue naming convention (ws-gateway.{event_class}) in ws-gateway/src/services/queue/setup.py
 - [ ] T051 [US4] Configure queue retention limits (24 hours or 100K messages) in ws-gateway/src/services/queue/setup.py
+- [ ] T051a [US4] Implement queue retention monitoring and cleanup logic in ws-gateway/src/services/queue/retention.py (monitor queue age/size, discard messages exceeding limits per FR-019)
 - [ ] T052 [US4] Add logging for queue publishing operations in ws-gateway/src/services/queue/publisher.py
 - [ ] T053 [US4] Handle queue connection failures gracefully (log and continue) in ws-gateway/src/services/queue/publisher.py
 
@@ -184,6 +185,25 @@ description: "Task list for WebSocket Gateway feature implementation"
 
 ---
 
+## Phase 8.5: Edge Case Handling
+
+**Purpose**: Explicit handling of edge cases identified in spec.md
+
+**Edge Case Coverage Mapping**:
+
+- [ ] EC1 [Edge Cases] Handle extended exchange API unavailability: Implement circuit breaker pattern and exponential backoff in ws-gateway/src/services/websocket/reconnection.py (covers spec.md edge case: "exchange API temporarily unavailable")
+- [ ] EC2 [Edge Cases] Handle malformed messages: Add message validation and error handling in ws-gateway/src/services/websocket/event_parser.py (covers spec.md edge case: "malformed message formats")
+- [ ] EC3 [Edge Cases] Handle queue capacity limits: Implement queue monitoring and alerting in ws-gateway/src/services/queue/retention.py (covers spec.md edge case: "queue storage reaches capacity")
+- [ ] EC4 [Edge Cases] Handle authentication failures: Add credential validation and error recovery in ws-gateway/src/services/websocket/auth.py (covers spec.md edge case: "authentication failures or expired credentials")
+- [ ] EC5 [Edge Cases] Handle conflicting subscription configurations: Implement conflict resolution logic in ws-gateway/src/services/subscription/subscription_service.py (covers spec.md edge case: "multiple services request conflicting subscriptions")
+- [ ] EC6 [Edge Cases] Handle slow/unavailable PostgreSQL: Already covered by T059 (database write failures), verify graceful degradation
+- [ ] EC7 [Edge Cases] Handle slow subscriber consumption: Add queue backlog monitoring and alerting in ws-gateway/src/services/queue/monitoring.py (covers spec.md edge case: "subscriber consumes slower than events arrive")
+- [ ] EC8 [Edge Cases] Handle exchange endpoint timeouts: Add timeout handling in ws-gateway/src/services/websocket/connection.py (covers spec.md edge case: "timeouts or unresponsive endpoints")
+
+**Note**: Some edge cases are implicitly covered by existing tasks (e.g., EC6 by T059). This phase makes coverage explicit and adds monitoring where needed.
+
+---
+
 ## Phase 9: Polish & Cross-Cutting Concerns
 
 **Purpose**: Improvements that affect multiple user stories
@@ -195,7 +215,13 @@ description: "Task list for WebSocket Gateway feature implementation"
 - [ ] T071 [P] Add comprehensive error handling and user-friendly error messages
 - [ ] T072 [P] Security hardening (API key validation, input sanitization)
 - [ ] T073 [P] Run quickstart.md validation and update if needed
-- [ ] T074 [P] Add monitoring and metrics collection (if applicable)
+- [ ] T074 [P] Implement monitoring and metrics collection for success criteria validation:
+  - T074a: Add WebSocket connection uptime tracking (SC-001) in ws-gateway/src/services/websocket/monitoring.py
+  - T074b: Add event processing success rate tracking (SC-002) in ws-gateway/src/services/websocket/event_processor.py
+  - T074c: Add event delivery latency tracking (SC-003) in ws-gateway/src/services/queue/publisher.py
+  - T074d: Add balance persistence latency tracking (SC-005) in ws-gateway/src/services/database/balance_service.py
+  - T074e: Add REST API response time tracking (SC-006) in ws-gateway/src/api/middleware/metrics.py
+  - T074f: Add resubscription timing tracking (SC-007) in ws-gateway/src/services/websocket/reconnection.py
 - [ ] T075 [P] Documentation updates in ws-gateway/README.md
 
 ---
@@ -320,16 +346,17 @@ With multiple developers:
 
 ## Task Summary
 
-- **Total Tasks**: 75
+- **Total Tasks**: 88 (75 original + 13 new: T051a, EC1-EC8, T074a-T074f)
 - **Setup Phase**: 7 tasks
 - **Foundational Phase**: 10 tasks
 - **User Story 1 (P1)**: 8 tasks
 - **User Story 2 (P1)**: 10 tasks
 - **User Story 3 (P2)**: 10 tasks
-- **User Story 4 (P2)**: 8 tasks
+- **User Story 4 (P2)**: 9 tasks (added T051a for queue retention enforcement)
 - **User Story 5 (P3)**: 7 tasks
 - **User Story 6 (P3)**: 6 tasks
-- **Polish Phase**: 9 tasks
+- **Edge Case Handling (Phase 8.5)**: 8 tasks (EC1-EC8, EC6 is verification note)
+- **Polish Phase**: 13 tasks (T074 expanded to T074a-T074f for monitoring)
 
 **Suggested MVP Scope**: User Stories 1 & 2 (WebSocket Connection + Subscriptions & Events) - 18 implementation tasks plus setup and foundational phases.
 
