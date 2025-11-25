@@ -8,6 +8,9 @@ from .config.logging import setup_logging, get_logger
 from .api.health import router as health_router
 from .services.database.connection import DatabaseConnection
 from .services.queue.connection import QueueConnection
+from .services.websocket.connection import get_connection
+from .services.websocket.reconnection import ReconnectionManager
+from .services.websocket.heartbeat import HeartbeatManager
 
 # Setup logging first
 setup_logging()
@@ -20,6 +23,11 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("application_starting", service=settings.ws_gateway_service_name)
 
+    # Initialize WebSocket connection components
+    websocket_connection = None
+    reconnection_manager = None
+    heartbeat_manager = None
+
     try:
         # Initialize database connection pool
         await DatabaseConnection.create_pool()
@@ -28,6 +36,34 @@ async def lifespan(app: FastAPI):
         # Initialize RabbitMQ connection
         await QueueConnection.create_connection()
         logger.info("rabbitmq_connection_initialized")
+
+        # Initialize WebSocket connection
+        websocket_connection = get_connection()
+        reconnection_manager = ReconnectionManager(websocket_connection)
+        heartbeat_manager = HeartbeatManager(websocket_connection)
+
+        # Register disconnection callback with connection
+        websocket_connection.set_disconnection_callback(
+            reconnection_manager.handle_disconnection
+        )
+
+        # Start reconnection manager
+        await reconnection_manager.start()
+
+        # Attempt initial connection
+        try:
+            await websocket_connection.connect()
+            # Start heartbeat after successful connection
+            await heartbeat_manager.start()
+            logger.info("websocket_connection_initialized")
+        except Exception as e:
+            logger.warning(
+                "websocket_initial_connection_failed",
+                error=str(e),
+                error_type=type(e).__name__,
+            )
+            # Reconnection manager will handle retries
+            await reconnection_manager.handle_disconnection()
 
         logger.info("application_started", port=settings.ws_gateway_port)
     except Exception as e:
@@ -40,6 +76,21 @@ async def lifespan(app: FastAPI):
     logger.info("application_shutting_down")
 
     try:
+        # Stop heartbeat manager
+        if heartbeat_manager:
+            await heartbeat_manager.stop()
+            logger.info("heartbeat_manager_stopped")
+
+        # Stop reconnection manager
+        if reconnection_manager:
+            await reconnection_manager.stop()
+            logger.info("reconnection_manager_stopped")
+
+        # Close WebSocket connection
+        if websocket_connection:
+            await websocket_connection.disconnect()
+            logger.info("websocket_connection_closed")
+
         # Close RabbitMQ connection
         await QueueConnection.close_connection()
         logger.info("rabbitmq_connection_closed")

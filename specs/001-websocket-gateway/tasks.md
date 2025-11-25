@@ -65,14 +65,14 @@ description: "Task list for WebSocket Gateway feature implementation"
 
 ### Implementation for User Story 1
 
-- [ ] T018 [P] [US1] Create WebSocket connection state model in ws-gateway/src/models/websocket_state.py
-- [ ] T019 [US1] Implement Bybit WebSocket authentication logic in ws-gateway/src/services/websocket/auth.py
-- [ ] T020 [US1] Implement WebSocket connection manager with websockets library in ws-gateway/src/services/websocket/connection.py
-- [ ] T021 [US1] Implement automatic reconnection logic with 30-second timeout in ws-gateway/src/services/websocket/reconnection.py
-- [ ] T022 [US1] Implement heartbeat mechanism for connection maintenance in ws-gateway/src/services/websocket/heartbeat.py
-- [ ] T023 [US1] Integrate WebSocket connection into main application lifecycle in ws-gateway/src/main.py
-- [ ] T024 [US1] Add logging for WebSocket connection events in ws-gateway/src/services/websocket/connection.py
-- [ ] T025 [US1] Update health check endpoint to include WebSocket connection status in ws-gateway/src/api/health.py
+- [X] T018 [P] [US1] Create WebSocket connection state model in ws-gateway/src/models/websocket_state.py
+- [X] T019 [US1] Implement Bybit WebSocket authentication logic in ws-gateway/src/services/websocket/auth.py
+- [X] T020 [US1] Implement WebSocket connection manager with websockets library in ws-gateway/src/services/websocket/connection.py
+- [X] T021 [US1] Implement automatic reconnection logic with 30-second timeout in ws-gateway/src/services/websocket/reconnection.py
+- [X] T022 [US1] Implement heartbeat mechanism for connection maintenance in ws-gateway/src/services/websocket/heartbeat.py
+- [X] T023 [US1] Integrate WebSocket connection into main application lifecycle in ws-gateway/src/main.py
+- [X] T024 [US1] Add logging for WebSocket connection events in ws-gateway/src/services/websocket/connection.py
+- [X] T025 [US1] Update health check endpoint to include WebSocket connection status in ws-gateway/src/api/health.py
 
 **Checkpoint**: At this point, User Story 1 should be fully functional and testable independently. The service should successfully connect to Bybit testnet, authenticate, and maintain the connection with automatic reconnection.
 

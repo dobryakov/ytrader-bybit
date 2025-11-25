@@ -74,10 +74,11 @@ class Settings(BaseSettings):
     @property
     def bybit_ws_url(self) -> str:
         """Get Bybit WebSocket URL based on environment."""
+        # Use private endpoint for authenticated connections (supports both public and private subscriptions)
         if self.bybit_environment == "mainnet":
-            return "wss://stream.bybit.com/v5/public/spot"
+            return "wss://stream.bybit.com/v5/private"
         else:
-            return "wss://stream-testnet.bybit.com/v5/public/spot"
+            return "wss://stream-testnet.bybit.com/v5/private"
 
 
 # Global settings instance

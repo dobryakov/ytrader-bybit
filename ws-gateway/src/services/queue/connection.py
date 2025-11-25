@@ -74,3 +74,10 @@ class QueueConnection:
             cls._connection = None
             logger.info("rabbitmq_connection_closed")
 
+    @classmethod
+    def is_connected(cls) -> bool:
+        """Check if RabbitMQ connection is available and not closed."""
+        if cls._connection is None:
+            return False
+        return not cls._connection.is_closed
+

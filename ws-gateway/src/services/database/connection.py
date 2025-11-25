@@ -87,3 +87,11 @@ class DatabaseConnection:
             logger.error("database_fetchrow_failed", query=query, error=str(e))
             raise DatabaseError(f"Database fetchrow failed: {e}") from e
 
+    @classmethod
+    def is_connected(cls) -> bool:
+        """Check if database connection pool is available and not closed."""
+        if cls._pool is None:
+            return False
+        # Check if pool is closed (asyncpg pools don't have is_closed, so we check if it's None)
+        return cls._pool is not None
+
