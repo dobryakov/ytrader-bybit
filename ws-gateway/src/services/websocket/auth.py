@@ -5,7 +5,7 @@ import hmac
 import time
 from typing import Dict
 
-from ..config.settings import settings
+from ...config.settings import settings
 
 
 def generate_auth_signature(api_key: str, api_secret: str, expires: int) -> str:

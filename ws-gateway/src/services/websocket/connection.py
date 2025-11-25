@@ -38,11 +38,19 @@ class WebSocketConnection:
     @property
     def is_connected(self) -> bool:
         """Check if WebSocket is currently connected."""
-        return (
-            self._websocket is not None
-            and self._state.status == ConnectionStatus.CONNECTED
-            and not self._websocket.closed
-        )
+        # Primary check: status must be CONNECTED and websocket must exist
+        if self._websocket is None or self._state.status != ConnectionStatus.CONNECTED:
+            return False
+        # Secondary check: verify websocket is not closed (if attribute exists)
+        # Some websockets library versions may not have 'closed' attribute
+        try:
+            closed = getattr(self._websocket, 'closed', None)
+            if closed is not None:
+                return not closed
+        except (AttributeError, TypeError):
+            pass
+        # If we can't check closed status, trust the CONNECTED status
+        return True
 
     async def connect(self) -> None:
         """
@@ -217,8 +225,16 @@ class WebSocketConnection:
                 pass
             self._receive_task = None
 
-        if self._websocket and not self._websocket.closed:
-            await self._websocket.close()
+        if self._websocket:
+            try:
+                if not getattr(self._websocket, 'closed', False):
+                    await self._websocket.close()
+            except AttributeError:
+                # If closed attribute doesn't exist, try to close anyway
+                try:
+                    await self._websocket.close()
+                except Exception:
+                    pass
             logger.info("websocket_disconnected")
 
         self._websocket = None

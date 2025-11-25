@@ -68,7 +68,7 @@ class HeartbeatManager:
                     # Use WebSocket ping frame (websockets library handles this)
                     # Access the websocket through a method if available, or use private attribute
                     websocket = getattr(self._connection, '_websocket', None)
-                    if websocket and not websocket.closed:
+                    if websocket and not getattr(websocket, 'closed', False):
                         pong_waiter = await websocket.ping()
                         await asyncio.wait_for(pong_waiter, timeout=HEARTBEAT_TIMEOUT)
 
