@@ -22,7 +22,7 @@ All functionality MUST be organized as independent microservices running in Dock
 All microservices MUST use a shared PostgreSQL database for data exchange and persistence. Specialized databases (e.g., vector databases for ML, time-series databases) MAY be used for specific tasks when justified. Database schema changes MUST be managed through reversible migrations whenever possible; irreversible migrations require explicit approval.
 
 ### III. Inter-Service Communication
-Event-driven communication via Redis queues is the PREFERRED method for inter-service messaging, with events organized by entity and class for scalability. HTTP REST API MAY be used for data queries or development convenience. All inter-service communication MUST be logged with full request/response bodies or major attributes, including trace IDs for request flow tracking.
+Event-driven communication queues is the PREFERRED method for inter-service messaging, with events organized by entity and class for scalability. HTTP REST API MAY be used for data queries or development convenience. All inter-service communication MUST be logged with full request/response bodies or major attributes, including trace IDs for request flow tracking.
 
 ### IV. Testing Discipline (NON-NEGOTIABLE)
 Tests MUST run inside Docker containers, never on the host. Unit tests run in service containers; API and e2e tests run in separate test containers connected to the main `docker-compose.yml`. Test containers MUST be rebuilt when dependencies change. After completing each task, relevant automated tests MUST be executed. If using Playwright, browsers MUST be installed in the test container using proper base images.

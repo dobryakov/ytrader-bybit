@@ -5,6 +5,16 @@
 **Status**: Draft  
 **Input**: User description: "Спецификация микросервиса агрегации и маршрутизации WebSocket данных Bybit (WebSocket Gateway)"
 
+## Clarifications
+
+### Session 2025-11-25
+
+- Q: What queue technology should be used for event delivery? → A: RabbitMQ (message broker with durable queues and fan-out)
+- Q: What database technology should be used for critical data persistence? → A: PostgreSQL (ACID-compliant relational database)
+- Q: What authentication method should be used for the REST API? → A: API Key Authentication (API key in header or query parameter)
+- Q: What are the queue retention/backlog limits? → A: 24 hours retention or 100K messages (whichever comes first)
+- Q: Where should subscription state be persisted? → A: PostgreSQL (same database used for balance data)
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Establish Reliable WebSocket Connection to Bybit Exchange (Priority: P1)
@@ -26,7 +36,7 @@ The system establishes and maintains a single, authenticated WebSocket connectio
 
 ### User Story 2 - Subscribe to Exchange Data Channels and Receive Events (Priority: P1)
 
-The system subscribes to multiple data channels from Bybit (trades, tickers, order books, order statuses, balances, and others) and receives structured event data. Subscription information is stored to enable automatic resubscription after reconnection.
+The system subscribes to multiple data channels from Bybit (trades, tickers, order books, order statuses, balances, and others) and receives structured event data. Subscription information is stored in PostgreSQL to enable automatic resubscription after reconnection.
 
 **Why this priority**: This is the core data acquisition capability. Without receiving events from the exchange, there is no data to route or deliver to subscribers.
 
@@ -43,7 +53,7 @@ The system subscribes to multiple data channels from Bybit (trades, tickers, ord
 
 ### User Story 3 - Manage Dynamic Subscriptions via REST API (Priority: P2)
 
-Other microservices can request new subscriptions or cancel existing ones through a REST API. The system processes these requests and updates its active subscriptions accordingly.
+Other microservices can request new subscriptions or cancel existing ones through a REST API authenticated with API keys. The system processes these requests and updates its active subscriptions accordingly.
 
 **Why this priority**: This enables flexibility and allows other services to control what data they need without manual configuration. It's important for operational efficiency but not required for basic data delivery.
 
@@ -55,6 +65,7 @@ Other microservices can request new subscriptions or cancel existing ones throug
 2. **Given** the system has active subscriptions managed via API, **When** a microservice sends a REST API request to cancel a subscription, **Then** the system stops processing events for that channel (but maintains the connection)
 3. **Given** multiple microservices request subscriptions, **When** they request the same channel, **Then** the system maintains a single subscription to the exchange but tracks all requesting services
 4. **Given** a subscription request is received, **When** the request is invalid or the channel doesn't exist, **Then** the system returns an appropriate error response without affecting existing subscriptions
+5. **Given** a REST API request is received, **When** the request lacks a valid API key, **Then** the system returns an authentication error response without processing the request
 
 ---
 
@@ -71,13 +82,13 @@ The system places received events into appropriate queues, organized by event cl
 1. **Given** events are being received from subscribed channels, **When** events arrive, **Then** they are placed into queues organized by event class (e.g., trades queue, order status queue, balance queue)
 2. **Given** events are in queues, **When** a subscriber service connects to consume events, **Then** it receives events in the order they were received, with all original event data preserved
 3. **Given** multiple subscribers are consuming from the same event class queue, **When** events arrive, **Then** all subscribers receive copies of the events (fan-out delivery)
-4. **Given** events are being delivered, **When** a subscriber is temporarily unavailable, **Then** events remain in the queue and are delivered when the subscriber reconnects (within queue retention limits)
+4. **Given** events are being delivered, **When** a subscriber is temporarily unavailable, **Then** events remain in the queue and are delivered when the subscriber reconnects (within 24 hours retention or 100K messages limit, whichever comes first)
 
 ---
 
 ### User Story 5 - Store Critical Data Directly to Database (Priority: P3)
 
-Certain types of incoming data (such as account balances and account balance information) are immediately persisted to the database for reliable record-keeping, independent of queue delivery.
+Certain types of incoming data (such as account balances and account balance information) are immediately persisted to PostgreSQL for reliable record-keeping, independent of queue delivery.
 
 **Why this priority**: This provides data persistence and audit trail, but is not required for real-time event delivery. It's a quality-of-life feature for data integrity.
 
@@ -85,9 +96,9 @@ Certain types of incoming data (such as account balances and account balance inf
 
 **Acceptance Scenarios**:
 
-1. **Given** the system receives events containing account balance information, **When** such events arrive, **Then** they are immediately written to the database with appropriate timestamps
+1. **Given** the system receives events containing account balance information, **When** such events arrive, **Then** they are immediately written to PostgreSQL with appropriate timestamps
 2. **Given** balance data is being stored, **When** duplicate or conflicting balance events arrive, **Then** the system handles them appropriately (e.g., updates existing records or creates new ones based on business rules)
-3. **Given** database write operations, **When** a database write fails, **Then** the system logs the error and continues processing other events without blocking the WebSocket connection
+3. **Given** PostgreSQL write operations, **When** a PostgreSQL write fails, **Then** the system logs the error and continues processing other events without blocking the WebSocket connection
 
 ---
 
@@ -112,11 +123,11 @@ The system logs all significant activities including WebSocket connection events
 
 - What happens when the exchange API is temporarily unavailable for extended periods (beyond normal reconnection attempts)?
 - How does the system handle malformed or unexpected message formats from the exchange?
-- What happens when queue storage reaches capacity limits?
+- What happens when queue storage reaches capacity limits (24 hours retention or 100K messages, whichever comes first)?
 - How does the system handle authentication failures or expired API credentials?
 - What happens when multiple services request conflicting subscription configurations?
-- How does the system behave when database writes are slow or the database is unavailable?
-- What happens when a subscriber consumes events slower than they arrive (queue backlog)?
+- How does the system behave when PostgreSQL writes are slow or PostgreSQL is unavailable?
+- What happens when a subscriber consumes events slower than they arrive (queue backlog approaching 24 hours or 100K messages limit)?
 - How does the system handle timeouts or unresponsive exchange endpoints?
 
 ## Requirements *(mandatory)*
@@ -129,27 +140,28 @@ The system logs all significant activities including WebSocket connection events
 - **FR-004**: System MUST automatically detect WebSocket disconnections and attempt reconnection within 30 seconds
 - **FR-005**: System MUST send heartbeat messages to maintain connection and verify exchange responsiveness
 - **FR-006**: System MUST support subscription to multiple WebSocket channels including trades, tickers, order books, order statuses, balances, and other available channels
-- **FR-007**: System MUST store subscription information to enable automatic resubscription after reconnection
+- **FR-007**: System MUST store subscription information in PostgreSQL to enable automatic resubscription after reconnection
 - **FR-008**: System MUST receive events in JSON format with unique identifiers, event types, timestamps, and payload data
-- **FR-009**: System MUST provide a REST API for other microservices to request new subscriptions or cancel existing ones
-- **FR-010**: System MUST place received events into queues organized by event class (e.g., trades, order status, balances)
+- **FR-009**: System MUST provide a REST API for other microservices to request new subscriptions or cancel existing ones, authenticated via API key
+- **FR-010**: System MUST place received events into RabbitMQ queues organized by event class (e.g., trades, order status, balances)
 - **FR-011**: System MUST deliver events from queues to subscriber services (model service, order manager service, and others) in the order received
 - **FR-012**: System MUST support multiple subscribers consuming from the same event queue without duplicating the WebSocket connection to the exchange
-- **FR-013**: System MUST immediately persist certain event data (account balances, account balance information) to the database upon receipt
+- **FR-013**: System MUST immediately persist certain event data (account balances, account balance information) to PostgreSQL upon receipt
 - **FR-014**: System MUST log WebSocket connection events, incoming messages, REST API requests, and system errors for monitoring and debugging
 - **FR-015**: System MUST handle subscription requests from multiple microservices, maintaining a single exchange subscription per channel while tracking all requesting services
 - **FR-016**: System MUST validate subscription requests and return appropriate error responses for invalid requests without affecting existing subscriptions
 - **FR-017**: System MUST continue processing events and maintaining connections even when database write operations fail
 - **FR-018**: System MUST preserve event data structure and ordering when delivering to subscribers
+- **FR-019**: System MUST enforce queue retention limits of 24 hours or 100K messages per queue (whichever comes first), discarding older messages when limits are reached
 
 ### Key Entities
 
 - **WebSocket Connection**: Represents the persistent connection to Bybit exchange, including authentication state, connection status, and reconnection capabilities
-- **Subscription**: Represents an active subscription to a specific data channel, including channel type, parameters, and the services that requested it
+- **Subscription**: Represents an active subscription to a specific data channel, including channel type, parameters, and the services that requested it, persisted in PostgreSQL for recovery after reconnection
 - **Event**: Represents a data message received from the exchange, including unique identifier, event type, timestamp, and structured payload
-- **Event Queue**: Represents a queue organized by event class that holds events for delivery to subscribers, maintaining order and supporting multiple consumers
+- **Event Queue**: Represents a RabbitMQ queue organized by event class that holds events for delivery to subscribers, maintaining order and supporting multiple consumers (fan-out delivery), with retention limits of 24 hours or 100K messages (whichever comes first)
 - **Subscriber**: Represents a microservice that consumes events from queues (e.g., model service, order manager service)
-- **Account Balance Data**: Represents balance and account information that requires immediate database persistence
+- **Account Balance Data**: Represents balance and account information that requires immediate PostgreSQL persistence
 
 ## Success Criteria *(mandatory)*
 
@@ -159,7 +171,7 @@ The system logs all significant activities including WebSocket connection events
 - **SC-002**: System successfully receives and processes at least 99% of events from subscribed channels without data loss under normal operating conditions
 - **SC-003**: System delivers events to subscribers with latency under 100 milliseconds from the time events are received from the exchange (excluding network transit time to subscribers)
 - **SC-004**: System supports at least 10 concurrent subscriber services consuming from different event queues without performance degradation
-- **SC-005**: System successfully persists critical data (balances, account information) to the database within 1 second of receipt for at least 99% of events
+- **SC-005**: System successfully persists critical data (balances, account information) to PostgreSQL within 1 second of receipt for at least 99% of events
 - **SC-006**: REST API responds to subscription management requests within 500 milliseconds for at least 95% of requests
 - **SC-007**: System automatically resubscribes to all previously active channels within 5 seconds of reconnection after a disconnection event
 - **SC-008**: All system activities (connections, events, API requests, errors) are logged with sufficient detail to diagnose issues within 24 hours of occurrence
