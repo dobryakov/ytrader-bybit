@@ -44,6 +44,18 @@ class Settings(BaseSettings):
         default="ws-gateway", description="Service identifier"
     )
 
+    # WebSocket Connection Strategy
+    bybit_ws_strategy: str = Field(
+        default="dual",
+        description="WebSocket connection strategy: 'dual' (separate public/private connections) or 'single' (one private connection for all). Default: 'dual'",
+    )
+
+    # Bybit Public WebSocket Category
+    bybit_ws_public_category: str = Field(
+        default="linear",
+        description="Bybit public WebSocket category: 'spot', 'linear', 'inverse', 'option', 'spread'. Default: 'linear' for unified trading",
+    )
+
     @property
     def database_url(self) -> str:
         """Construct PostgreSQL connection URL."""
@@ -73,25 +85,33 @@ class Settings(BaseSettings):
 
     @property
     def bybit_ws_url(self) -> str:
-        """Get Bybit WebSocket URL based on environment (private endpoint)."""
-        # DEPRECATED: Use bybit_ws_url_public or bybit_ws_url_private instead
-        # Kept for backward compatibility
-        if self.bybit_environment == "mainnet":
-            return "wss://stream.bybit.com/v5/private"
-        else:
-            return "wss://stream-testnet.bybit.com/v5/private"
+        """
+        Get Bybit WebSocket URL based on environment.
+        
+        For backward compatibility, defaults to private endpoint.
+        Use bybit_ws_url_public or bybit_ws_url_private for explicit endpoint selection.
+        """
+        return self.bybit_ws_url_private
 
     @property
     def bybit_ws_url_public(self) -> str:
-        """Get Bybit WebSocket public endpoint URL based on environment."""
-        if self.bybit_environment == "mainnet":
-            return "wss://stream.bybit.com/v5/public"
-        else:
-            return "wss://stream-testnet.bybit.com/v5/public"
+        """
+        Get Bybit public WebSocket URL based on environment and category.
+        
+        According to Bybit API v5 documentation, public endpoints require category:
+        - spot: Spot trading
+        - linear: USDT/USDC perpetual & futures
+        - inverse: Inverse contracts
+        - option: USDT/USDC options
+        - spread: Spread trading
+        """
+        base_url = "wss://stream.bybit.com" if self.bybit_environment == "mainnet" else "wss://stream-testnet.bybit.com"
+        category = self.bybit_ws_public_category
+        return f"{base_url}/v5/public/{category}"
 
     @property
     def bybit_ws_url_private(self) -> str:
-        """Get Bybit WebSocket private endpoint URL based on environment."""
+        """Get Bybit private WebSocket URL based on environment."""
         if self.bybit_environment == "mainnet":
             return "wss://stream.bybit.com/v5/private"
         else:

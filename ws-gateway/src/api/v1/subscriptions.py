@@ -68,7 +68,8 @@ async def create_subscription(
     """Create a new subscription."""
     trace_id = get_or_create_trace_id()
     try:
-        subscription = await SubscriptionService.create_subscription(
+        # Use subscribe() method which creates subscription and sends it to WebSocket
+        subscription = await SubscriptionService.subscribe(
             channel_type=request.channel_type,
             requesting_service=request.requesting_service,
             symbol=request.symbol,

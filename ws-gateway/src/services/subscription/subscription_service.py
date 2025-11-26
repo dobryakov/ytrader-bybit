@@ -6,10 +6,15 @@ from dataclasses import asdict
 from datetime import datetime
 from typing import List, Optional
 
+from typing import TYPE_CHECKING
+
 from ...config.logging import get_logger
 from ...exceptions import ValidationError
 from ...models.subscription import ChannelType, Subscription
 from ..database.subscription_repository import SubscriptionRepository
+
+if TYPE_CHECKING:
+    from ..websocket.connection_manager import ConnectionManager
 
 logger = get_logger(__name__)
 
@@ -187,6 +192,76 @@ class SubscriptionService:
         return await SubscriptionRepository.deactivate_subscriptions_by_service(
             service_name
         )
+
+    @classmethod
+    async def subscribe(
+        cls,
+        channel_type: ChannelType,
+        requesting_service: str,
+        symbol: Optional[str] = None,
+    ) -> Subscription:
+        """
+        Create a subscription and send it to the appropriate WebSocket connection.
+        
+        This method creates the subscription in the database and sends the subscribe
+        message to the correct endpoint (public or private) based on channel type.
+        
+        Args:
+            channel_type: Type of channel to subscribe to
+            requesting_service: Name of the service requesting the subscription
+            symbol: Optional trading pair symbol
+            
+        Returns:
+            Created Subscription object
+        """
+        # Create subscription in database
+        subscription = await cls.create_subscription(
+            channel_type=channel_type,
+            requesting_service=requesting_service,
+            symbol=symbol,
+        )
+        
+        # Get appropriate connection for this subscription
+        # Import here to avoid circular import
+        from ..websocket.connection_manager import get_connection_manager
+        from ..websocket.subscription import build_subscribe_message
+        
+        connection_manager = get_connection_manager()
+        
+        # Try to get connection, but don't fail subscription creation if connection fails
+        # Connection will be retried on reconnection
+        try:
+            connection = await connection_manager.get_connection_for_subscription(subscription)
+            
+            # Build and send subscribe message
+            msg = build_subscribe_message([subscription])
+            await connection.send(msg)
+            
+            endpoint_type = "public" if channel_type in {"trades", "ticker", "orderbook", "kline", "liquidation"} else "private"
+            logger.info(
+                "subscription_sent_to_websocket",
+                subscription_id=str(subscription.id),
+                topic=subscription.topic,
+                channel_type=subscription.channel_type,
+                requesting_service=requesting_service,
+                endpoint_type=endpoint_type,
+            )
+        except Exception as e:
+            # Log error but don't fail subscription creation
+            # Subscription will be sent on reconnection
+            endpoint_type = "public" if channel_type in {"trades", "ticker", "orderbook", "kline", "liquidation"} else "private"
+            logger.warning(
+                "subscription_connection_failed_will_retry",
+                subscription_id=str(subscription.id),
+                topic=subscription.topic,
+                channel_type=subscription.channel_type,
+                endpoint_type=endpoint_type,
+                error=str(e),
+                error_type=type(e).__name__,
+            )
+            # Subscription is still created in DB, will be sent on reconnection
+        
+        return subscription
 
 
 

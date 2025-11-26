@@ -10,6 +10,8 @@ from uuid import uuid4
 import websockets
 from websockets.client import WebSocketClientProtocol
 
+from typing import Literal
+
 from ...config.logging import get_logger
 from ...config.settings import settings
 from ...models.websocket_state import ConnectionStatus, WebSocketState
@@ -34,8 +36,16 @@ def get_recent_messages():
 class WebSocketConnection:
     """Manages WebSocket connection to Bybit exchange."""
 
-    def __init__(self):
-        """Initialize WebSocket connection manager."""
+    def __init__(self, endpoint_type: Literal["public", "private"] = "private"):
+        """
+        Initialize WebSocket connection manager.
+        
+        Args:
+            endpoint_type: Type of endpoint to connect to - "public" for /v5/public 
+                          (no auth) or "private" for /v5/private (auth required).
+                          Defaults to "private" for backward compatibility.
+        """
+        self._endpoint_type = endpoint_type
         self._websocket: Optional[WebSocketClientProtocol] = None
         self._state = WebSocketState(
             environment=settings.bybit_environment,
@@ -96,16 +106,20 @@ class WebSocketConnection:
             trace_id=trace_id,
         )
 
+        # Get WebSocket URL based on endpoint type
+        ws_url = self._get_ws_url()
+        
         logger.info(
             "websocket_connecting",
-            url=settings.bybit_ws_url,
+            url=ws_url,
+            endpoint_type=self._endpoint_type,
             environment=settings.bybit_environment,
             connection_id=str(self._state.connection_id),
             trace_id=trace_id,
         )
 
-        # Validate credentials before attempting connection (EC4: Handle authentication failures)
-        if not validate_credentials():
+        # Validate credentials only for private endpoints (EC4: Handle authentication failures)
+        if self._endpoint_type == "private" and not validate_credentials():
             error_msg = "Invalid or missing API credentials"
             logger.error(
                 "websocket_connection_failed_credentials",
@@ -120,7 +134,7 @@ class WebSocketConnection:
             try:
                 self._websocket = await asyncio.wait_for(
                     websockets.connect(
-                        settings.bybit_ws_url,
+                        ws_url,
                         ping_interval=None,  # We'll handle ping/pong manually
                         ping_timeout=None,
                     ),
@@ -129,7 +143,7 @@ class WebSocketConnection:
             except asyncio.TimeoutError:
                 logger.error(
                     "websocket_connection_timeout",
-                    url=settings.bybit_ws_url,
+                    url=ws_url,
                     timeout=30.0,
                     connection_id=str(self._state.connection_id),
                     trace_id=trace_id,
@@ -138,12 +152,13 @@ class WebSocketConnection:
 
             logger.info(
                 "websocket_connected",
-                url=settings.bybit_ws_url,
+                url=ws_url,
+                endpoint_type=self._endpoint_type,
                 connection_id=str(self._state.connection_id),
                 trace_id=trace_id,
             )
 
-            # Authenticate
+            # Authenticate (only for private endpoints)
             await self._authenticate()
 
             # Update state and log state change
@@ -197,14 +212,37 @@ class WebSocketConnection:
                 self._websocket = None
             raise ConnectionError(f"Failed to connect to Bybit WebSocket: {e}") from e
 
+    def _get_ws_url(self) -> str:
+        """
+        Get WebSocket URL based on endpoint type.
+        
+        Returns:
+            WebSocket URL string for the configured endpoint type
+        """
+        if self._endpoint_type == "public":
+            return settings.bybit_ws_url_public
+        else:  # private
+            return settings.bybit_ws_url_private
+
     async def _authenticate(self) -> None:
         """
         Authenticate with Bybit WebSocket.
+        
+        For public endpoints, authentication is skipped.
 
         Raises:
             ConnectionError: If authentication fails
         """
         trace_id = get_or_create_trace_id()
+        
+        # Public endpoints do not require authentication
+        if self._endpoint_type == "public":
+            logger.info(
+                "websocket_public_endpoint_no_auth_required",
+                connection_id=str(self._state.connection_id),
+                trace_id=trace_id,
+            )
+            return
         
         if not self._websocket:
             logger.error(
