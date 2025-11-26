@@ -7,6 +7,7 @@ parses and caches latest values in memory for fast access.
 
 import json
 import asyncio
+import threading
 from typing import Dict, Optional, Any
 from datetime import datetime
 from collections import defaultdict
@@ -28,7 +29,7 @@ class MarketDataCache:
         """Initialize market data cache."""
         # Cache structure: symbol -> {price, spread, volume_24h, volatility, last_updated}
         self._cache: Dict[str, Dict[str, Any]] = defaultdict(dict)
-        self._lock = asyncio.Lock()
+        self._lock = threading.Lock()
 
     def update_ticker(self, symbol: str, price: float, volume_24h: float) -> None:
         """
@@ -187,7 +188,9 @@ class MarketDataConsumer:
         """
         try:
             channel = await rabbitmq_manager.get_channel()
-            queue = await rabbitmq_manager.get_queue(queue_name, durable=True)
+            # Use existing queue without redeclaring (queues are created by ws-gateway with TTL)
+            # Just bind to the existing queue
+            queue = await channel.declare_queue(queue_name, durable=True, passive=True)
 
             async with queue.iterator() as queue_iter:
                 async for message in queue_iter:

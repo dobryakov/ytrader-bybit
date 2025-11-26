@@ -8,7 +8,7 @@ import asyncio
 from typing import List, Optional
 
 from ..models.signal import TradingSignal
-from ..services.warmup_signal_generator import warmup_signal_generator
+from ..services.warmup_signal_generator import get_warmup_generator
 from ..services.rate_limiter import rate_limiter
 from ..services.signal_validator import signal_validator, SignalValidationError
 from ..publishers.signal_publisher import signal_publisher

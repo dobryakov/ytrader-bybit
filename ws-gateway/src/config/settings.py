@@ -73,8 +73,25 @@ class Settings(BaseSettings):
 
     @property
     def bybit_ws_url(self) -> str:
-        """Get Bybit WebSocket URL based on environment."""
-        # Use private endpoint for authenticated connections (supports both public and private subscriptions)
+        """Get Bybit WebSocket URL based on environment (private endpoint)."""
+        # DEPRECATED: Use bybit_ws_url_public or bybit_ws_url_private instead
+        # Kept for backward compatibility
+        if self.bybit_environment == "mainnet":
+            return "wss://stream.bybit.com/v5/private"
+        else:
+            return "wss://stream-testnet.bybit.com/v5/private"
+
+    @property
+    def bybit_ws_url_public(self) -> str:
+        """Get Bybit WebSocket public endpoint URL based on environment."""
+        if self.bybit_environment == "mainnet":
+            return "wss://stream.bybit.com/v5/public"
+        else:
+            return "wss://stream-testnet.bybit.com/v5/public"
+
+    @property
+    def bybit_ws_url_private(self) -> str:
+        """Get Bybit WebSocket private endpoint URL based on environment."""
         if self.bybit_environment == "mainnet":
             return "wss://stream.bybit.com/v5/private"
         else:

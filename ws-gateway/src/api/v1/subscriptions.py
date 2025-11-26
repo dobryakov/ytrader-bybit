@@ -10,6 +10,8 @@ from fastapi import APIRouter, HTTPException, Query
 from ...config.logging import get_logger
 from ...exceptions import SubscriptionError, ValidationError
 from ...services.subscription.subscription_service import SubscriptionService
+from ...services.websocket.connection import get_connection
+from ...services.websocket.subscription import build_subscribe_message
 from ...utils.tracing import get_or_create_trace_id
 from .schemas import (
     CreateSubscriptionRequest,
@@ -64,15 +66,54 @@ async def create_subscription(
     request: CreateSubscriptionRequest,
 ) -> SubscriptionResponse:
     """Create a new subscription."""
+    trace_id = get_or_create_trace_id()
     try:
         subscription = await SubscriptionService.create_subscription(
             channel_type=request.channel_type,
             requesting_service=request.requesting_service,
             symbol=request.symbol,
         )
+        
+        # Subscribe to Bybit WebSocket if connection is active
+        # This ensures new subscriptions are immediately active
+        websocket_connection = get_connection()
+        if websocket_connection.is_connected:
+            try:
+                # Get all active subscriptions for this topic to avoid duplicate subscriptions
+                # Bybit allows subscribing to already-subscribed topics, but we want to be efficient
+                all_active_subscriptions = await SubscriptionService.get_active_subscriptions()
+                if all_active_subscriptions:
+                    # Build subscribe message with all unique active topics
+                    subscribe_msg = build_subscribe_message(all_active_subscriptions)
+                    await websocket_connection.send(subscribe_msg)
+                    logger.info(
+                        "websocket_subscribed_after_creation",
+                        subscription_id=str(subscription.id),
+                        topic=subscription.topic,
+                        total_active_topics=len(subscribe_msg.get("args", [])),
+                        trace_id=trace_id,
+                    )
+            except Exception as e:
+                # Log error but don't fail the subscription creation
+                # The subscription will be automatically resubscribed on next reconnection
+                logger.warning(
+                    "websocket_subscribe_after_creation_failed",
+                    subscription_id=str(subscription.id),
+                    topic=subscription.topic,
+                    error=str(e),
+                    error_type=type(e).__name__,
+                    trace_id=trace_id,
+                )
+        else:
+            logger.debug(
+                "websocket_not_connected_skipping_subscribe",
+                subscription_id=str(subscription.id),
+                topic=subscription.topic,
+                trace_id=trace_id,
+            )
+        
         return _to_response_model(subscription)
     except (ValidationError, SubscriptionError) as exc:
-        trace_id = get_or_create_trace_id()
         error = _map_exception_to_error_response(exc)
         status_code = 400 if isinstance(exc, ValidationError) else 409
         logger.error(

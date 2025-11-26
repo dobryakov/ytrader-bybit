@@ -247,4 +247,12 @@ class WarmUpSignalGenerator:
         return signals
 
 
+# Initialize warm-up signal generator with settings
+def get_warmup_generator():
+    """Get warm-up signal generator instance with current settings."""
+    return WarmUpSignalGenerator(
+        min_amount=settings.warmup_min_amount,
+        max_amount=settings.warmup_max_amount,
+        randomness_level=settings.warmup_randomness_level,
+    )
 

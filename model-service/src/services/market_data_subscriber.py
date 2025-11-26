@@ -80,7 +80,8 @@ class MarketDataSubscriber:
                 },
             )
 
-            if response.status_code == 201:
+            if response.status_code in (200, 201):
+                # 201 = created, 200 = already exists (ws-gateway returns 200 for existing subscriptions)
                 data = response.json()
                 subscription_id = data.get("id")
                 if not subscription_id:
@@ -92,6 +93,7 @@ class MarketDataSubscriber:
                     channel_type=channel_type,
                     symbol=symbol,
                     subscription_id=subscription_id,
+                    status_code=response.status_code,
                 )
                 return subscription_id
             elif response.status_code == 409:

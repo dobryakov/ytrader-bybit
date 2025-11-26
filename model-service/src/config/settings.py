@@ -59,6 +59,9 @@ class Settings(BaseSettings):
     # Warm-up Mode Configuration
     warmup_mode_enabled: bool = Field(default=True, alias="WARMUP_MODE_ENABLED")
     warmup_signal_frequency: int = Field(default=60, alias="WARMUP_SIGNAL_FREQUENCY")
+    warmup_min_amount: float = Field(default=100.0, alias="WARMUP_MIN_AMOUNT")
+    warmup_max_amount: float = Field(default=1000.0, alias="WARMUP_MAX_AMOUNT")
+    warmup_randomness_level: float = Field(default=0.5, alias="WARMUP_RANDOMNESS_LEVEL")
 
     # Trading Strategy Configuration
     trading_strategies: Optional[str] = Field(default=None, alias="TRADING_STRATEGIES")
@@ -103,14 +106,6 @@ class Settings(BaseSettings):
         """Validate warm-up signal frequency is positive."""
         if v <= 0:
             raise ValueError("Warm-up signal frequency must be positive")
-        return v
-
-    @field_validator("warmup_randomness_level")
-    @classmethod
-    def validate_randomness_level(cls, v: float) -> float:
-        """Validate randomness level is between 0 and 1."""
-        if not 0.0 <= v <= 1.0:
-            raise ValueError("Randomness level must be between 0.0 and 1.0")
         return v
 
     @field_validator("warmup_randomness_level")
