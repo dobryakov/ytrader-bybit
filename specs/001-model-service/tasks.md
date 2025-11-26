@@ -95,17 +95,18 @@
 - [ ] T033 [P] [US2] Create ModelVersion database repository in model-service/src/database/repositories/model_version_repo.py (CRUD operations for model_versions table)
 - [ ] T034 [P] [US2] Create ModelQualityMetrics database repository in model-service/src/database/repositories/quality_metrics_repo.py (CRUD operations for model_quality_metrics table)
 - [ ] T035 [US2] Implement order execution event consumer in model-service/src/consumers/execution_event_consumer.py (subscribe to RabbitMQ queue order-manager.execution_events, parse and validate events, handle corrupted/invalid events with logging and graceful continuation)
-- [ ] T036 [US2] Implement feature engineering service in model-service/src/services/feature_engineer.py (process execution events and market data into features: MUST use market_data_snapshot from trading signals for features describing market state at decision time, use execution event market_conditions only for performance metrics, generate price features, volume features, technical indicators, market context, execution features)
-- [ ] T037 [US2] Implement label generation service in model-service/src/services/label_generator.py (extract labels from execution events: binary classification, multi-class, regression targets)
-- [ ] T038 [US2] Implement training dataset builder in model-service/src/services/dataset_builder.py (aggregate execution events, match execution events with corresponding trading signals by signal_id, use signal market_data_snapshot for feature engineering, apply feature engineering, generate labels from execution event performance, validate dataset quality)
-- [ ] T039 [US2] Implement ML model trainer service in model-service/src/services/model_trainer.py (train XGBoost and scikit-learn models, support batch retraining, handle model serialization using joblib for scikit-learn and XGBoost native JSON format)
-- [ ] T040 [US2] Implement model quality evaluator in model-service/src/services/quality_evaluator.py (calculate accuracy, precision, recall, f1_score, sharpe_ratio, profit_factor, and other metrics)
-- [ ] T041 [US2] Implement model version manager in model-service/src/services/model_version_manager.py (create model versions, store model files in /models/v{version}/, update database metadata, handle version activation)
-- [ ] T042 [US2] Implement retraining trigger service in model-service/src/services/retraining_trigger.py (detect scheduled periodic retraining, data accumulation thresholds, quality degradation detection)
-- [ ] T043 [US2] Implement training orchestration service in model-service/src/services/training_orchestrator.py (coordinate dataset building, model training, quality evaluation, version management, handle training cancellation and restart on new triggers)
-- [ ] T044 [US2] Integrate training pipeline into main application in model-service/src/main.py (start execution event consumer, trigger retraining based on configured schedules and thresholds)
-- [ ] T045 [US2] Add structured logging for training operations in model-service/src/services/training_orchestrator.py (training start/completion, dataset size, quality metrics, version creation, cancellation events)
-- [ ] T046 [US2] Add configuration for training parameters in model-service/src/config/settings.py (MODEL_TRAINING_MIN_DATASET_SIZE, MODEL_TRAINING_MAX_DURATION_SECONDS, MODEL_RETRAINING_SCHEDULE, MODEL_QUALITY_THRESHOLD_ACCURACY)
+- [ ] T036 [US2] Document order execution event validation rules in model-service/docs/validation-rules.md (specify required fields, value ranges, format constraints, corruption detection criteria, error handling procedures per FR-025)
+- [ ] T037 [US2] Implement feature engineering service in model-service/src/services/feature_engineer.py (process execution events and market data into features: MUST use market_data_snapshot from trading signals for features describing market state at decision time, use execution event market_conditions only for performance metrics, generate price features, volume features, technical indicators, market context, execution features)
+- [ ] T038 [US2] Implement label generation service in model-service/src/services/label_generator.py (extract labels from execution events: binary classification, multi-class, regression targets)
+- [ ] T039 [US2] Implement training dataset builder in model-service/src/services/dataset_builder.py (aggregate execution events, match execution events with corresponding trading signals by signal_id, use signal market_data_snapshot for feature engineering, apply feature engineering, generate labels from execution event performance, validate dataset quality)
+- [ ] T040 [US2] Implement ML model trainer service in model-service/src/services/model_trainer.py (train XGBoost and scikit-learn models, support batch retraining, handle model serialization using joblib for scikit-learn and XGBoost native JSON format)
+- [ ] T041 [US2] Implement model quality evaluator in model-service/src/services/quality_evaluator.py (calculate accuracy, precision, recall, f1_score, sharpe_ratio, profit_factor, and other metrics)
+- [ ] T042 [US2] Implement model version manager in model-service/src/services/model_version_manager.py (create model versions, store model files in /models/v{version}/, update database metadata, handle version activation)
+- [ ] T043 [US2] Implement retraining trigger service in model-service/src/services/retraining_trigger.py (detect scheduled periodic retraining, data accumulation thresholds, quality degradation detection)
+- [ ] T044 [US2] Implement training orchestration service in model-service/src/services/training_orchestrator.py (coordinate dataset building, model training, quality evaluation, version management, handle training cancellation and restart on new triggers)
+- [ ] T045 [US2] Integrate training pipeline into main application in model-service/src/main.py (start execution event consumer, trigger retraining based on configured schedules and thresholds)
+- [ ] T046 [US2] Add structured logging for training operations in model-service/src/services/training_orchestrator.py (training start/completion, dataset size, quality metrics, version creation, cancellation events)
+- [ ] T047 [US2] Add configuration for training parameters in model-service/src/config/settings.py (MODEL_TRAINING_MIN_DATASET_SIZE, MODEL_TRAINING_MAX_DURATION_SECONDS, MODEL_RETRAINING_SCHEDULE, MODEL_QUALITY_THRESHOLD_ACCURACY)
 
 **Checkpoint**: At this point, User Stories 1 AND 2 should both work independently. The system can train models from execution feedback and manage model versions.
 
@@ -119,15 +120,15 @@
 
 ### Implementation for User Story 3
 
-- [ ] T047 [P] [US3] Create OrderPositionState data model in model-service/src/models/position_state.py (read-only model for current orders and positions from shared database)
-- [ ] T048 [US3] Implement order/position state reader in model-service/src/database/repositories/position_state_repo.py (read current open orders and positions from shared PostgreSQL database tables)
-- [ ] T049 [US3] Implement model loader service in model-service/src/services/model_loader.py (load trained models from file system, validate model files, cache active models)
-- [ ] T050 [US3] Implement model inference service in model-service/src/services/model_inference.py (prepare features from order/position state and market data, run model prediction, generate confidence scores, MUST capture market data snapshot at inference time for inclusion in generated signals)
-- [ ] T051 [US3] Implement intelligent signal generator in model-service/src/services/intelligent_signal_generator.py (use model inference to generate trading signals with confidence scores, apply quality thresholds)
-- [ ] T052 [US3] Implement mode transition service in model-service/src/services/mode_transition.py (automatically transition from warm-up mode to model-based generation when model quality reaches configured threshold)
-- [ ] T053 [US3] Integrate intelligent signal generation into main application in model-service/src/main.py (replace warm-up mode with model-based generation when active model is available)
-- [ ] T054 [US3] Add structured logging for model-based signal generation in model-service/src/services/intelligent_signal_generator.py (signal generation, model inference results, confidence scores, mode transitions)
-- [ ] T055 [US3] Update signal publisher to include model_version and is_warmup fields in model-service/src/publishers/signal_publisher.py
+- [ ] T048 [P] [US3] Create OrderPositionState data model in model-service/src/models/position_state.py (read-only model for current orders and positions from shared database)
+- [ ] T049 [US3] Implement order/position state reader in model-service/src/database/repositories/position_state_repo.py (read current open orders and positions from shared PostgreSQL database tables)
+- [ ] T050 [US3] Implement model loader service in model-service/src/services/model_loader.py (load trained models from file system, validate model files, cache active models)
+- [ ] T051 [US3] Implement model inference service in model-service/src/services/model_inference.py (prepare features from order/position state and market data, run model prediction, generate confidence scores, MUST capture market data snapshot at inference time for inclusion in generated signals)
+- [ ] T052 [US3] Implement intelligent signal generator in model-service/src/services/intelligent_signal_generator.py (use model inference to generate trading signals with confidence scores, apply quality thresholds)
+- [ ] T053 [US3] Implement mode transition service in model-service/src/services/mode_transition.py (automatically transition from warm-up mode to model-based generation when model quality reaches configured threshold)
+- [ ] T054 [US3] Integrate intelligent signal generation into main application in model-service/src/main.py (replace warm-up mode with model-based generation when active model is available)
+- [ ] T055 [US3] Add structured logging for model-based signal generation in model-service/src/services/intelligent_signal_generator.py (signal generation, model inference results, confidence scores, mode transitions)
+- [ ] T056 [US3] Update signal publisher to include model_version and is_warmup fields in model-service/src/publishers/signal_publisher.py
 
 **Checkpoint**: At this point, User Stories 1, 2, AND 3 should all work independently. The system can generate signals using trained models and automatically transition from warm-up to model-based mode.
 
@@ -141,18 +142,18 @@
 
 ### Implementation for User Story 4
 
-- [ ] T056 [P] [US4] Implement model versions list API endpoint in model-service/src/api/models.py (GET /api/v1/models with filtering by strategy_id, is_active, pagination)
-- [ ] T057 [P] [US4] Implement model version details API endpoint in model-service/src/api/models.py (GET /api/v1/models/{version} with full details and quality metrics)
-- [ ] T058 [P] [US4] Implement model activation API endpoint in model-service/src/api/models.py (POST /api/v1/models/{version} to activate a model version, deactivate previous active model)
-- [ ] T059 [P] [US4] Implement model quality metrics API endpoint in model-service/src/api/metrics.py (GET /api/v1/models/{version}/metrics with filtering by metric_type)
-- [ ] T060 [P] [US4] Implement training status API endpoint in model-service/src/api/training.py (GET /api/v1/training/status with current training info, last training, next scheduled training)
-- [ ] T061 [P] [US4] Implement manual training trigger API endpoint in model-service/src/api/training.py (POST /api/v1/training/trigger to manually trigger training for a strategy)
-- [ ] T062 [US4] Implement model version history service in model-service/src/services/version_history.py (query and manage version history, support rollback operations)
-- [ ] T063 [US4] Implement quality monitoring service in model-service/src/services/quality_monitor.py (periodically evaluate model quality, detect degradation, trigger alerts)
-- [ ] T064 [US4] Add comprehensive structured logging for all operations in model-service/src/services/ (signal generation, model training, mode transitions, quality evaluation, version management)
-- [ ] T065 [US4] Implement model rollback functionality in model-service/src/services/model_version_manager.py (switch to previous model version, update is_active flags)
-- [ ] T066 [US4] Add monitoring and observability endpoints in model-service/src/api/monitoring.py (model performance metrics, system health details, active models count)
-- [ ] T067 [US4] Implement model cleanup policy in model-service/src/services/model_cleanup.py (keep last N versions, archive old versions, manage disk space)
+- [ ] T057 [P] [US4] Implement model versions list API endpoint in model-service/src/api/models.py (GET /api/v1/models with filtering by strategy_id, is_active, pagination)
+- [ ] T058 [P] [US4] Implement model version details API endpoint in model-service/src/api/models.py (GET /api/v1/models/{version} with full details and quality metrics)
+- [ ] T059 [P] [US4] Implement model activation API endpoint in model-service/src/api/models.py (POST /api/v1/models/{version} to activate a model version, deactivate previous active model)
+- [ ] T060 [P] [US4] Implement model quality metrics API endpoint in model-service/src/api/metrics.py (GET /api/v1/models/{version}/metrics with filtering by metric_type)
+- [ ] T061 [P] [US4] Implement training status API endpoint in model-service/src/api/training.py (GET /api/v1/training/status with current training info, last training, next scheduled training)
+- [ ] T062 [P] [US4] Implement manual training trigger API endpoint in model-service/src/api/training.py (POST /api/v1/training/trigger to manually trigger training for a strategy)
+- [ ] T063 [US4] Implement model version history service in model-service/src/services/version_history.py (query and manage version history, support rollback operations)
+- [ ] T064 [US4] Implement quality monitoring service in model-service/src/services/quality_monitor.py (periodically evaluate model quality, detect degradation, trigger alerts)
+- [ ] T065 [US4] Add comprehensive structured logging for all operations in model-service/src/services/ (signal generation, model training, mode transitions, quality evaluation, version management)
+- [ ] T066 [US4] Implement model rollback functionality in model-service/src/services/model_version_manager.py (switch to previous model version, update is_active flags)
+- [ ] T067 [US4] Add monitoring and observability endpoints in model-service/src/api/monitoring.py (model performance metrics, system health details, active models count)
+- [ ] T068 [US4] Implement model cleanup policy in model-service/src/services/model_cleanup.py (keep last N versions, archive old versions, manage disk space)
 
 **Checkpoint**: All user stories should now be independently functional with full observability and version management capabilities.
 
@@ -162,20 +163,20 @@
 
 **Purpose**: Improvements that affect multiple user stories
 
-- [ ] T068 [P] Update README.md in model-service/ with complete setup, usage, and API documentation
-- [ ] T069 [P] Synchronize quickstart.md in specs/001-model-service/ with actual implementation
-- [ ] T070 [P] Add error handling and retry logic for RabbitMQ operations in model-service/src/publishers/ and model-service/src/consumers/
-- [ ] T071 [P] Add error handling and retry logic for database operations in model-service/src/database/
-- [ ] T072 [P] Implement graceful shutdown handling in model-service/src/main.py (close connections, finish in-progress operations)
-- [ ] T073 [P] Add request/response logging middleware in model-service/src/api/middleware.py (log all API requests and responses with trace IDs)
-- [ ] T074 [P] Add comprehensive error responses with proper HTTP status codes in model-service/src/api/
-- [ ] T075 [P] Implement model file health checks in model-service/src/services/storage.py (verify file existence, permissions, disk space)
-- [ ] T076 [P] Add configuration validation on startup in model-service/src/config/settings.py (validate all required settings, check file paths, verify database connectivity)
-- [ ] T077 [P] Update docker-compose.yml to ensure proper service dependencies and health checks
-- [ ] T078 [P] Add trace ID propagation across all services (consumers, publishers, API endpoints)
-- [ ] T079 Run quickstart.md validation to ensure all examples work correctly
-- [ ] T080 Code cleanup and refactoring (remove unused code, improve code organization)
-- [ ] T081 Performance optimization (connection pooling, model caching, efficient data processing)
+- [ ] T069 [P] Update README.md in model-service/ with complete setup, usage, and API documentation
+- [ ] T070 [P] Synchronize quickstart.md in specs/001-model-service/ with actual implementation
+- [ ] T071 [P] Add error handling and retry logic for RabbitMQ operations in model-service/src/publishers/ and model-service/src/consumers/
+- [ ] T072 [P] Add error handling and retry logic for database operations in model-service/src/database/
+- [ ] T073 [P] Implement graceful shutdown handling in model-service/src/main.py (close connections, finish in-progress operations)
+- [ ] T074 [P] Add request/response logging middleware in model-service/src/api/middleware.py (log all API requests and responses with trace IDs)
+- [ ] T075 [P] Add comprehensive error responses with proper HTTP status codes in model-service/src/api/
+- [ ] T076 [P] Implement model file health checks in model-service/src/services/storage.py (verify file existence, permissions, disk space)
+- [ ] T077 [P] Add configuration validation on startup in model-service/src/config/settings.py (validate all required settings, check file paths, verify database connectivity)
+- [ ] T078 [P] Update docker-compose.yml to ensure proper service dependencies and health checks
+- [ ] T079 [P] Add trace ID propagation across all services (consumers, publishers, API endpoints)
+- [ ] T080 Run quickstart.md validation to ensure all examples work correctly
+- [ ] T081 Code cleanup and refactoring (remove unused code, improve code organization)
+- [ ] T082 Performance optimization (connection pooling, model caching, efficient data processing)
 
 ---
 
@@ -210,7 +211,7 @@
 - All Foundational tasks marked [P] can run in parallel (T012-T017, T019-T021)
 - Once Foundational phase completes, User Stories 1, 2, and 4 can start in parallel (if team capacity allows)
 - User Story 3 must wait for User Story 2 to complete (needs trained models)
-- All API endpoints in US4 marked [P] can run in parallel (T056-T061)
+- All API endpoints in US4 marked [P] can run in parallel (T057-T062)
 - Models within a story marked [P] can run in parallel
 - Different user stories can be worked on in parallel by different team members (except US3 which depends on US2)
 
@@ -320,11 +321,11 @@ With multiple developers:
 
 ## Task Summary
 
-- **Total Tasks**: 81 tasks
+- **Total Tasks**: 82 tasks
 - **Phase 1 (Setup)**: 9 tasks
 - **Phase 2 (Foundational)**: 12 tasks
 - **Phase 3 (User Story 1 - MVP)**: 9 tasks
-- **Phase 4 (User Story 2)**: 16 tasks
+- **Phase 4 (User Story 2)**: 17 tasks
 - **Phase 5 (User Story 3)**: 9 tasks
 - **Phase 6 (User Story 4)**: 12 tasks
 - **Phase 7 (Polish)**: 14 tasks
@@ -332,7 +333,7 @@ With multiple developers:
 ### Task Count per User Story
 
 - **User Story 1 (P1 - MVP)**: 9 tasks
-- **User Story 2 (P2)**: 16 tasks
+- **User Story 2 (P2)**: 17 tasks
 - **User Story 3 (P3)**: 9 tasks
 - **User Story 4 (P4)**: 12 tasks
 
@@ -341,7 +342,7 @@ With multiple developers:
 - **Setup Phase**: 6 parallel tasks (T003-T008)
 - **Foundational Phase**: 9 parallel tasks (T012-T017, T019-T021)
 - **User Story 1**: 1 parallel task (T022)
-- **User Story 2**: 4 parallel tasks (T031-T034)
+- **User Story 2**: 4 parallel tasks (T031-T034), plus T036 can run in parallel with T037+
 - **User Story 4**: 6 parallel tasks (T056-T061)
 
 ### Independent Test Criteria
@@ -357,4 +358,3 @@ With multiple developers:
 - This delivers immediate trading capability without requiring historical data or pre-trained models
 - Enables data collection for future model training
 - Total MVP tasks: 30 tasks (9 + 12 + 9)
-
