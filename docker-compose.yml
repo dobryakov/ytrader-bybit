@@ -65,6 +65,46 @@ services:
       timeout: 5s
       retries: 5
 
+  model-service:
+    build:
+      context: ./model-service
+      dockerfile: Dockerfile
+    container_name: model-service
+    ports:
+      - "${MODEL_SERVICE_PORT:-4500}:4500"
+    environment:
+      - POSTGRES_HOST=${POSTGRES_HOST:-postgres}
+      - POSTGRES_PORT=${POSTGRES_PORT:-5432}
+      - POSTGRES_DB=${POSTGRES_DB:-ytrader}
+      - POSTGRES_USER=${POSTGRES_USER:-ytrader}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - RABBITMQ_HOST=${RABBITMQ_HOST:-rabbitmq}
+      - RABBITMQ_PORT=${RABBITMQ_PORT:-5672}
+      - RABBITMQ_USER=${RABBITMQ_USER:-guest}
+      - RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD:-guest}
+      - MODEL_SERVICE_PORT=${MODEL_SERVICE_PORT:-4500}
+      - MODEL_SERVICE_API_KEY=${MODEL_SERVICE_API_KEY}
+      - MODEL_SERVICE_LOG_LEVEL=${MODEL_SERVICE_LOG_LEVEL:-INFO}
+      - MODEL_SERVICE_SERVICE_NAME=${MODEL_SERVICE_SERVICE_NAME:-model-service}
+      - MODEL_STORAGE_PATH=${MODEL_STORAGE_PATH:-/models}
+      - MODEL_TRAINING_MIN_DATASET_SIZE=${MODEL_TRAINING_MIN_DATASET_SIZE:-1000}
+      - MODEL_TRAINING_MAX_DURATION_SECONDS=${MODEL_TRAINING_MAX_DURATION_SECONDS:-1800}
+      - MODEL_QUALITY_THRESHOLD_ACCURACY=${MODEL_QUALITY_THRESHOLD_ACCURACY:-0.75}
+      - MODEL_RETRAINING_SCHEDULE=${MODEL_RETRAINING_SCHEDULE:-}
+      - SIGNAL_GENERATION_RATE_LIMIT=${SIGNAL_GENERATION_RATE_LIMIT:-60}
+      - SIGNAL_GENERATION_BURST_ALLOWANCE=${SIGNAL_GENERATION_BURST_ALLOWANCE:-10}
+      - WARMUP_MODE_ENABLED=${WARMUP_MODE_ENABLED:-true}
+      - WARMUP_SIGNAL_FREQUENCY=${WARMUP_SIGNAL_FREQUENCY:-60}
+      - TRADING_STRATEGIES=${TRADING_STRATEGIES:-}
+    volumes:
+      - model_storage:/models
+    depends_on:
+      - postgres
+      - rabbitmq
+    networks:
+      - ytrader-network
+    restart: unless-stopped
+
 networks:
   ytrader-network:
     driver: bridge
@@ -72,4 +112,5 @@ networks:
 volumes:
   postgres_data:
   rabbitmq_data:
+  model_storage:
 

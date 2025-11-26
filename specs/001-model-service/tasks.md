@@ -25,15 +25,15 @@
 
 **Purpose**: Project initialization and basic structure
 
-- [ ] T001 Create project structure per implementation plan in model-service/
-- [ ] T002 Initialize Python 3.11+ project with requirements.txt (scikit-learn>=1.3.0, xgboost>=2.0.0, pandas>=2.0.0, joblib>=1.3.0, aio-pika>=9.0.0, asyncpg>=0.29.0, fastapi>=0.104.0, uvicorn[standard]>=0.24.0, pydantic-settings>=2.0.0, structlog>=23.2.0, pytest, pytest-asyncio, pytest-mock)
-- [ ] T003 [P] Create Dockerfile for model-service container in model-service/Dockerfile
-- [ ] T004 [P] Add model-service to docker-compose.yml with PostgreSQL and RabbitMQ dependencies
-- [ ] T005 [P] Configure environment variables in env.example (MODEL_SERVICE_PORT, MODEL_SERVICE_API_KEY, MODEL_STORAGE_PATH, training config, signal generation config, warm-up config)
-- [ ] T006 [P] Create model storage directory structure and Docker volume mount configuration
-- [ ] T007 [P] Setup project structure: model-service/src/models/, model-service/src/services/, model-service/src/api/, model-service/src/consumers/, model-service/src/publishers/, model-service/src/database/, model-service/src/config/, model-service/tests/unit/, model-service/tests/integration/, model-service/tests/e2e/
-- [ ] T008 [P] Configure linting and formatting tools (black, flake8, mypy) in model-service/
-- [ ] T009 Create README.md in model-service/ with setup instructions
+- [X] T001 Create project structure per implementation plan in model-service/
+- [X] T002 Initialize Python 3.11+ project with requirements.txt (scikit-learn>=1.3.0, xgboost>=2.0.0, pandas>=2.0.0, joblib>=1.3.0, aio-pika>=9.0.0, asyncpg>=0.29.0, fastapi>=0.104.0, uvicorn[standard]>=0.24.0, pydantic-settings>=2.0.0, structlog>=23.2.0, pytest, pytest-asyncio, pytest-mock)
+- [X] T003 [P] Create Dockerfile for model-service container in model-service/Dockerfile
+- [X] T004 [P] Add model-service to docker-compose.yml with PostgreSQL and RabbitMQ dependencies
+- [X] T005 [P] Configure environment variables in env.example (MODEL_SERVICE_PORT, MODEL_SERVICE_API_KEY, MODEL_STORAGE_PATH, training config, signal generation config, warm-up config)
+- [X] T006 [P] Create model storage directory structure and Docker volume mount configuration
+- [X] T007 [P] Setup project structure: model-service/src/models/, model-service/src/services/, model-service/src/api/, model-service/src/consumers/, model-service/src/publishers/, model-service/src/database/, model-service/src/config/, model-service/tests/unit/, model-service/tests/integration/, model-service/tests/e2e/
+- [X] T008 [P] Configure linting and formatting tools (black, flake8, mypy) in model-service/
+- [X] T009 Create README.md in model-service/ with setup instructions
 
 ---
 
