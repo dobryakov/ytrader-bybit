@@ -38,6 +38,11 @@ class Settings(BaseSettings):
     rabbitmq_user: str = Field(default="guest", alias="RABBITMQ_USER")
     rabbitmq_password: str = Field(default="guest", alias="RABBITMQ_PASSWORD")
 
+    # WebSocket Gateway Configuration
+    ws_gateway_host: str = Field(default="ws-gateway", alias="WS_GATEWAY_HOST")
+    ws_gateway_port: int = Field(default=4400, alias="WS_GATEWAY_PORT")
+    ws_gateway_api_key: str = Field(..., alias="WS_GATEWAY_API_KEY")
+
     # Model Storage Configuration
     model_storage_path: str = Field(default="/models", alias="MODEL_STORAGE_PATH")
 
@@ -100,6 +105,22 @@ class Settings(BaseSettings):
             raise ValueError("Warm-up signal frequency must be positive")
         return v
 
+    @field_validator("warmup_randomness_level")
+    @classmethod
+    def validate_randomness_level(cls, v: float) -> float:
+        """Validate randomness level is between 0 and 1."""
+        if not 0.0 <= v <= 1.0:
+            raise ValueError("Randomness level must be between 0.0 and 1.0")
+        return v
+
+    @field_validator("warmup_randomness_level")
+    @classmethod
+    def validate_randomness_level(cls, v: float) -> float:
+        """Validate randomness level is between 0 and 1."""
+        if not 0.0 <= v <= 1.0:
+            raise ValueError("Randomness level must be between 0.0 and 1.0")
+        return v
+
     @property
     def database_url(self) -> str:
         """Get PostgreSQL connection URL."""
@@ -115,6 +136,11 @@ class Settings(BaseSettings):
             f"amqp://{self.rabbitmq_user}:{self.rabbitmq_password}"
             f"@{self.rabbitmq_host}:{self.rabbitmq_port}/"
         )
+
+    @property
+    def ws_gateway_url(self) -> str:
+        """Get WebSocket Gateway base URL."""
+        return f"http://{self.ws_gateway_host}:{self.ws_gateway_port}"
 
     @property
     def trading_strategy_list(self) -> List[str]:

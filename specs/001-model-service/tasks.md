@@ -68,15 +68,17 @@
 
 ### Implementation for User Story 1
 
-- [ ] T022 [P] [US1] Create TradingSignal data model in model-service/src/models/signal.py (signal_type, asset, amount, confidence, timestamp, strategy_id, model_version, is_warmup, market_data_snapshot with price, spread, volume_24h, volatility, optional orderbook_depth and technical_indicators, metadata, trace_id)
-- [ ] T023 [US1] Implement warm-up signal generation service in model-service/src/services/warmup_signal_generator.py (heuristics or controlled random generation with configurable frequency and risk parameters, MUST retrieve and include market data snapshot at signal generation time: price, spread, volume_24h, volatility from available sources)
-- [ ] T024 [US1] Implement rate limiting service in model-service/src/services/rate_limiter.py (configurable rate limit with burst allowance for signal generation)
-- [ ] T025 [US1] Implement signal validation service in model-service/src/services/signal_validator.py (required fields, value ranges, format compliance)
-- [ ] T026 [US1] Implement trading signal publisher in model-service/src/publishers/signal_publisher.py (publish to RabbitMQ queue model-service.trading_signals with JSON format)
-- [ ] T027 [US1] Implement warm-up mode orchestrator in model-service/src/services/warmup_orchestrator.py (coordinates signal generation, validation, rate limiting, and publishing)
-- [ ] T028 [US1] Integrate warm-up mode into main application in model-service/src/main.py (start warm-up signal generation loop on service startup when no trained model exists)
-- [ ] T029 [US1] Add structured logging for warm-up mode operations in model-service/src/services/warmup_signal_generator.py (signal generation, rate limiting events, publishing status)
-- [ ] T030 [US1] Add configuration for warm-up mode parameters in model-service/src/config/settings.py (WARMUP_MODE_ENABLED, WARMUP_SIGNAL_FREQUENCY, minimum order parameters, randomness level)
+- [X] T022 [P] [US1] Create TradingSignal data model in model-service/src/models/signal.py (signal_type, asset, amount, confidence, timestamp, strategy_id, model_version, is_warmup, market_data_snapshot with price, spread, volume_24h, volatility, optional orderbook_depth and technical_indicators, metadata, trace_id)
+- [X] T022a [P] [US1] Implement market data subscription service in model-service/src/services/market_data_subscriber.py (subscribe to ws-gateway channels via REST API POST /api/v1/subscriptions for ticker, orderbook, kline channels, manage subscriptions lifecycle, handle subscription errors and retries)
+- [X] T022b [P] [US1] Implement market data consumer in model-service/src/consumers/market_data_consumer.py (consume events from RabbitMQ queues ws-gateway.ticker, ws-gateway.orderbook, ws-gateway.kline, parse and cache latest values in memory for fast access, extract price, spread, volume_24h, volatility from events)
+- [X] T023 [US1] Implement warm-up signal generation service in model-service/src/services/warmup_signal_generator.py (heuristics or controlled random generation with configurable frequency and risk parameters, MUST retrieve and include market data snapshot at signal generation time: price, spread, volume_24h, volatility from cached market data consumer, implement fallback to default values or skip signal generation with logging if data unavailable)
+- [X] T024 [US1] Implement rate limiting service in model-service/src/services/rate_limiter.py (configurable rate limit with burst allowance for signal generation)
+- [X] T025 [US1] Implement signal validation service in model-service/src/services/signal_validator.py (required fields, value ranges, format compliance)
+- [X] T026 [US1] Implement trading signal publisher in model-service/src/publishers/signal_publisher.py (publish to RabbitMQ queue model-service.trading_signals with JSON format)
+- [X] T027 [US1] Implement warm-up mode orchestrator in model-service/src/services/warmup_orchestrator.py (coordinates signal generation, validation, rate limiting, and publishing)
+- [X] T028 [US1] Integrate warm-up mode into main application in model-service/src/main.py (start warm-up signal generation loop on service startup when no trained model exists)
+- [X] T029 [US1] Add structured logging for warm-up mode operations in model-service/src/services/warmup_signal_generator.py (signal generation, rate limiting events, publishing status)
+- [X] T030 [US1] Add configuration for warm-up mode parameters in model-service/src/config/settings.py (WARMUP_MODE_ENABLED, WARMUP_SIGNAL_FREQUENCY, minimum order parameters, randomness level)
 
 **Checkpoint**: At this point, User Story 1 should be fully functional and testable independently. The system can generate and publish warm-up trading signals without any trained models.
 
@@ -321,10 +323,10 @@ With multiple developers:
 
 ## Task Summary
 
-- **Total Tasks**: 82 tasks
+- **Total Tasks**: 84 tasks
 - **Phase 1 (Setup)**: 9 tasks
 - **Phase 2 (Foundational)**: 12 tasks
-- **Phase 3 (User Story 1 - MVP)**: 9 tasks
+- **Phase 3 (User Story 1 - MVP)**: 11 tasks
 - **Phase 4 (User Story 2)**: 17 tasks
 - **Phase 5 (User Story 3)**: 9 tasks
 - **Phase 6 (User Story 4)**: 12 tasks
@@ -332,7 +334,7 @@ With multiple developers:
 
 ### Task Count per User Story
 
-- **User Story 1 (P1 - MVP)**: 9 tasks
+- **User Story 1 (P1 - MVP)**: 11 tasks
 - **User Story 2 (P2)**: 17 tasks
 - **User Story 3 (P3)**: 9 tasks
 - **User Story 4 (P4)**: 12 tasks
@@ -341,7 +343,7 @@ With multiple developers:
 
 - **Setup Phase**: 6 parallel tasks (T003-T008)
 - **Foundational Phase**: 9 parallel tasks (T012-T017, T019-T021)
-- **User Story 1**: 1 parallel task (T022)
+- **User Story 1**: 3 parallel tasks (T022, T022a, T022b)
 - **User Story 2**: 4 parallel tasks (T031-T034), plus T036 can run in parallel with T037+
 - **User Story 4**: 6 parallel tasks (T056-T061)
 
@@ -357,4 +359,4 @@ With multiple developers:
 - **MVP**: Phase 1 (Setup) + Phase 2 (Foundational) + Phase 3 (User Story 1 - Warm-up Mode Signal Generation)
 - This delivers immediate trading capability without requiring historical data or pre-trained models
 - Enables data collection for future model training
-- Total MVP tasks: 30 tasks (9 + 12 + 9)
+- Total MVP tasks: 32 tasks (9 + 12 + 11)
