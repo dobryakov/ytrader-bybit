@@ -125,5 +125,92 @@ class SubscriptionRepository:
             return 0
         return int(row["count"])
 
+    @staticmethod
+    async def get_by_id(subscription_id: UUID) -> Optional[Subscription]:
+        """Fetch a subscription by its ID."""
+        query = """
+            SELECT id, channel_type, symbol, topic, requesting_service,
+                   is_active, created_at, updated_at, last_event_at
+            FROM subscriptions
+            WHERE id = $1
+            LIMIT 1
+        """
+        row = await DatabaseConnection.fetchrow(query, subscription_id)
+        if not row:
+            return None
+        return Subscription(**dict(row))
+
+    @staticmethod
+    async def list_subscriptions(
+        requesting_service: Optional[str] = None,
+        is_active: Optional[bool] = None,
+        channel_type: Optional[str] = None,
+    ) -> List[Subscription]:
+        """List subscriptions with optional filters."""
+        conditions = []
+        params = []
+
+        if requesting_service is not None:
+            conditions.append(f"requesting_service = ${len(params) + 1}")
+            params.append(requesting_service)
+        if is_active is not None:
+            conditions.append(f"is_active = ${len(params) + 1}")
+            params.append(is_active)
+        if channel_type is not None:
+            conditions.append(f"channel_type = ${len(params) + 1}")
+            params.append(channel_type)
+
+        where_clause = ""
+        if conditions:
+            where_clause = "WHERE " + " AND ".join(conditions)
+
+        query = f"""
+            SELECT id, channel_type, symbol, topic, requesting_service,
+                   is_active, created_at, updated_at, last_event_at
+            FROM subscriptions
+            {where_clause}
+        """
+        rows = await DatabaseConnection.fetch(query, *params)
+        return [Subscription(**dict(row)) for row in rows]
+
+    @staticmethod
+    async def find_active_by_topic_and_service(
+        topic: str,
+        service_name: str,
+    ) -> Optional[Subscription]:
+        """Find an active subscription by topic and requesting service."""
+        query = """
+            SELECT id, channel_type, symbol, topic, requesting_service,
+                   is_active, created_at, updated_at, last_event_at
+            FROM subscriptions
+            WHERE is_active = true AND topic = $1 AND requesting_service = $2
+            LIMIT 1
+        """
+        row = await DatabaseConnection.fetchrow(query, topic, service_name)
+        if not row:
+            return None
+        return Subscription(**dict(row))
+
+    @staticmethod
+    async def deactivate_subscriptions_by_service(service_name: str) -> int:
+        """Deactivate all subscriptions for a service, returning number of affected rows."""
+        query = """
+            UPDATE subscriptions
+            SET is_active = false,
+                updated_at = NOW()
+            WHERE requesting_service = $1 AND is_active = true
+        """
+        result = await DatabaseConnection.execute(query, service_name)
+        # asyncpg returns a string like "UPDATE <n>"
+        try:
+            _, count_str = result.split()
+            return int(count_str)
+        except Exception:
+            logger.warning(
+                "subscription_deactivate_service_rowcount_parse_failed",
+                result=result,
+            )
+            return 0
+
 
 

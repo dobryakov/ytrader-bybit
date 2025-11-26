@@ -111,16 +111,16 @@ description: "Task list for WebSocket Gateway feature implementation"
 
 ### Implementation for User Story 3
 
-- [ ] T036 [P] [US3] Implement API key authentication middleware in ws-gateway/src/api/middleware/auth.py
-- [ ] T037 [US3] Implement POST /api/v1/subscriptions endpoint in ws-gateway/src/api/v1/subscriptions.py
-- [ ] T038 [US3] Implement GET /api/v1/subscriptions endpoint with filtering in ws-gateway/src/api/v1/subscriptions.py
-- [ ] T039 [US3] Implement GET /api/v1/subscriptions/{subscription_id} endpoint in ws-gateway/src/api/v1/subscriptions.py
-- [ ] T040 [US3] Implement DELETE /api/v1/subscriptions/{subscription_id} endpoint in ws-gateway/src/api/v1/subscriptions.py
-- [ ] T041 [US3] Implement DELETE /api/v1/subscriptions/by-service/{service_name} endpoint in ws-gateway/src/api/v1/subscriptions.py
-- [ ] T042 [US3] Implement subscription request validation in ws-gateway/src/api/v1/schemas.py
-- [ ] T043 [US3] Integrate REST API endpoints with subscription service in ws-gateway/src/api/v1/subscriptions.py
-- [ ] T044 [US3] Add error handling and appropriate HTTP status codes in ws-gateway/src/api/v1/subscriptions.py
-- [ ] T045 [US3] Add logging for REST API requests and responses in ws-gateway/src/api/middleware/logging.py
+- [X] T036 [P] [US3] Implement API key authentication middleware in ws-gateway/src/api/middleware/auth.py
+- [X] T037 [US3] Implement POST /api/v1/subscriptions endpoint in ws-gateway/src/api/v1/subscriptions.py
+- [X] T038 [US3] Implement GET /api/v1/subscriptions endpoint with filtering in ws-gateway/src/api/v1/subscriptions.py
+- [X] T039 [US3] Implement GET /api/v1/subscriptions/{subscription_id} endpoint in ws-gateway/src/api/v1/subscriptions.py
+- [X] T040 [US3] Implement DELETE /api/v1/subscriptions/{subscription_id} endpoint in ws-gateway/src/api/v1/subscriptions.py
+- [X] T041 [US3] Implement DELETE /api/v1/subscriptions/by-service/{service_name} endpoint in ws-gateway/src/api/v1/subscriptions.py
+- [X] T042 [US3] Implement subscription request validation in ws-gateway/src/api/v1/schemas.py
+- [X] T043 [US3] Integrate REST API endpoints with subscription service in ws-gateway/src/api/v1/subscriptions.py
+- [X] T044 [US3] Add error handling and appropriate HTTP status codes in ws-gateway/src/api/v1/subscriptions.py
+- [X] T045 [US3] Add logging for REST API requests and responses in ws-gateway/src/api/middleware/logging.py
 
 **Checkpoint**: At this point, User Stories 1, 2, AND 3 should all work independently. The service should allow other microservices to manage subscriptions via REST API.
 

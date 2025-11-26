@@ -1,16 +1,19 @@
 """FastAPI application entry point."""
 
 from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 
-from .config.settings import settings
-from .config.logging import setup_logging, get_logger
 from .api.health import router as health_router
+from .api.middleware import APIKeyAuthMiddleware, RequestLoggingMiddleware
+from .api.v1 import subscriptions_router
+from .config.logging import get_logger, setup_logging
+from .config.settings import settings
 from .services.database.connection import DatabaseConnection
 from .services.queue.connection import QueueConnection
 from .services.websocket.connection import get_connection
-from .services.websocket.reconnection import ReconnectionManager
 from .services.websocket.heartbeat import HeartbeatManager
+from .services.websocket.reconnection import ReconnectionManager
 
 # Setup logging first
 setup_logging()
@@ -112,18 +115,29 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Register routers
+#
+# Middleware
+#
+app.add_middleware(RequestLoggingMiddleware)
+app.add_middleware(APIKeyAuthMiddleware)
+
+#
+# Routers
+#
 app.include_router(health_router)
+app.include_router(subscriptions_router)
 
 # Temporary test routers for subscriptions and data viewing
 try:
     from .api.test_subscribe import router as test_subscribe_router
+
     app.include_router(test_subscribe_router)
 except ImportError:
     pass
 
 try:
     from .api.view_data import router as view_data_router
+
     app.include_router(view_data_router)
 except ImportError:
     pass

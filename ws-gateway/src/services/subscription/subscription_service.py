@@ -107,4 +107,41 @@ class SubscriptionService:
         """Update last_event_at for a subscription."""
         await SubscriptionRepository.update_last_event_at(subscription_id, ts)
 
+    # --- New helpers for REST API layer ---
+
+    @staticmethod
+    async def list_subscriptions(
+        requesting_service: Optional[str] = None,
+        is_active: Optional[bool] = None,
+        channel_type: Optional[str] = None,
+    ) -> List[Subscription]:
+        """List subscriptions with optional filters."""
+        return await SubscriptionRepository.list_subscriptions(
+            requesting_service=requesting_service,
+            is_active=is_active,
+            channel_type=channel_type,
+        )
+
+    @staticmethod
+    async def get_subscription_by_id(subscription_id) -> Optional[Subscription]:
+        """Return a subscription by ID."""
+        return await SubscriptionRepository.get_by_id(subscription_id)
+
+    @staticmethod
+    async def deactivate_subscription_if_exists(subscription_id) -> bool:
+        """Deactivate a subscription if it exists. Returns True if it existed."""
+        existing = await SubscriptionRepository.get_by_id(subscription_id)
+        if not existing:
+            return False
+        await SubscriptionRepository.deactivate_subscription(subscription_id)
+        return True
+
+    @staticmethod
+    async def deactivate_subscriptions_by_service(service_name: str) -> int:
+        """Deactivate all subscriptions for a given service."""
+        return await SubscriptionRepository.deactivate_subscriptions_by_service(
+            service_name
+        )
+
+
 

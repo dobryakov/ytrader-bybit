@@ -2,6 +2,9 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# Add /app to PYTHONPATH for imports
+ENV PYTHONPATH=/app
+
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     curl \
@@ -14,6 +17,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY src/ ./src/
 COPY migrations/ ./migrations/
+COPY tests/ ./tests/
 
 # Expose port (non-standard, configured via env)
 EXPOSE 4400
