@@ -1,9 +1,10 @@
-"""Event processing pipeline that integrates queue publishing."""
+"""Event processing pipeline that integrates queue publishing and balance persistence."""
 
 from typing import List
 
 from ...config.logging import get_logger
 from ...models.event import Event
+from ..database.balance_service import BalanceService
 from ..queue.publisher import get_publisher
 from ..queue.router import get_queue_name_for_event
 
@@ -12,10 +13,11 @@ logger = get_logger(__name__)
 
 async def process_events(events: List[Event]) -> None:
     """
-    Process events by publishing them to appropriate queues.
+    Process events by publishing them to appropriate queues and persisting balance events.
 
-    This function implements the core event processing pipeline for User Story 4:
-    - Routes events to queues based on event class
+    This function implements the core event processing pipeline for User Stories 4 and 5:
+    - Routes events to queues based on event class (User Story 4)
+    - Persists balance events to PostgreSQL (User Story 5)
     - Publishes events to RabbitMQ
     - Handles failures gracefully (per FR-017)
 
@@ -29,6 +31,12 @@ async def process_events(events: List[Event]) -> None:
 
     for event in events:
         try:
+            # Persist balance events to database (User Story 5)
+            # This happens before queue publishing to ensure critical data is stored
+            # Per FR-017, database failures don't block queue publishing
+            if event.event_type == "balance":
+                await BalanceService.persist_balance_from_event(event)
+
             # Determine target queue based on event class
             queue_name = get_queue_name_for_event(event)
 

@@ -156,13 +156,13 @@ description: "Task list for WebSocket Gateway feature implementation"
 
 ### Implementation for User Story 5
 
-- [ ] T054 [P] [US5] Create AccountBalance model in ws-gateway/src/models/account_balance.py
-- [ ] T055 [US5] Implement account balance database operations in ws-gateway/src/services/database/balance_repository.py
-- [ ] T056 [US5] Implement balance persistence service in ws-gateway/src/services/database/balance_service.py
-- [ ] T057 [US5] Integrate balance persistence with event processing pipeline in ws-gateway/src/services/websocket/event_processor.py
-- [ ] T058 [US5] Implement balance validation (non-negative, sum consistency) in ws-gateway/src/services/database/balance_service.py
-- [ ] T059 [US5] Handle database write failures gracefully (log and continue, per FR-017) in ws-gateway/src/services/database/balance_service.py
-- [ ] T060 [US5] Add logging for balance persistence operations in ws-gateway/src/services/database/balance_service.py
+- [X] T054 [P] [US5] Create AccountBalance model in ws-gateway/src/models/account_balance.py
+- [X] T055 [US5] Implement account balance database operations in ws-gateway/src/services/database/balance_repository.py
+- [X] T056 [US5] Implement balance persistence service in ws-gateway/src/services/database/balance_service.py
+- [X] T057 [US5] Integrate balance persistence with event processing pipeline in ws-gateway/src/services/websocket/event_processor.py
+- [X] T058 [US5] Implement balance validation (non-negative, sum consistency) in ws-gateway/src/services/database/balance_service.py
+- [X] T059 [US5] Handle database write failures gracefully (log and continue, per FR-017) in ws-gateway/src/services/database/balance_service.py
+- [X] T060 [US5] Add logging for balance persistence operations in ws-gateway/src/services/database/balance_service.py
 
 **Checkpoint**: At this point, User Stories 1, 2, 3, 4, AND 5 should all work independently. Balance events should be persisted to PostgreSQL.
 
