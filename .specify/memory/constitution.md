@@ -1,8 +1,8 @@
 <!--
 Sync Impact Report:
-Version change: N/A → 1.0.0 (initial constitution)
-Modified principles: N/A (new document)
-Added sections: Core Principles (7 principles), Infrastructure & Containers, Development Workflow, Governance
+Version change: 1.0.0 → 1.1.0 (minor: added PostgreSQL migration ownership clarification)
+Modified principles: II. Shared Database Strategy (added PostgreSQL migration ownership clause)
+Added sections: None
 Templates requiring updates:
   ✅ plan-template.md - Constitution Check section aligns with principles
   ✅ spec-template.md - No changes needed (generic template)
@@ -20,6 +20,8 @@ All functionality MUST be organized as independent microservices running in Dock
 
 ### II. Shared Database Strategy
 All microservices MUST use a shared PostgreSQL database for data exchange and persistence. Specialized databases (e.g., vector databases for ML, time-series databases) MAY be used for specific tasks when justified. Database schema changes MUST be managed through reversible migrations whenever possible; irreversible migrations require explicit approval.
+
+**PostgreSQL Migration Ownership**: Since the PostgreSQL database is shared across multiple services in the project, the `ws-gateway` service is designated as the single source of truth for all PostgreSQL migrations and schema structure. All PostgreSQL migrations (including those for existing or future services) MUST be located in the `ws-gateway` service to ensure centralized management and consistency. Other database types (e.g., vector databases for ML models, specialized databases) MAY maintain their own migrations within their respective service containers.
 
 ### III. Inter-Service Communication
 Event-driven communication queues is the PREFERRED method for inter-service messaging, with events organized by entity and class for scalability. HTTP REST API MAY be used for data queries or development convenience. All inter-service communication MUST be logged with full request/response bodies or major attributes, including trace IDs for request flow tracking.
@@ -48,4 +50,4 @@ When modifying services, API contracts MUST be validated and impact on related c
 
 This constitution supersedes all other development practices. All PRs and reviews MUST verify compliance with these principles. Amendments require documentation of the rationale, approval, and a migration plan if breaking changes are involved. Complexity additions MUST be justified with simpler alternatives considered and rejected for documented reasons.
 
-**Version**: 1.0.0 | **Ratified**: 2025-11-25 | **Last Amended**: 2025-11-25
+**Version**: 1.1.0 | **Ratified**: 2025-11-25 | **Last Amended**: 2025-01-27

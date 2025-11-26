@@ -78,6 +78,8 @@ docker compose logs -f postgres rabbitmq
 
 ### 4. Run Database Migrations
 
+**Note**: Per constitution principle II (Shared Database Strategy), the `ws-gateway` service is the single source of truth for all PostgreSQL migrations. All PostgreSQL schema changes (including those for other services) are located in `ws-gateway/migrations/`.
+
 ```bash
 docker compose run --rm ws-gateway python -m migrations.run
 ```

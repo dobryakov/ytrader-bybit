@@ -57,6 +57,7 @@ A microservice that establishes and maintains a single authenticated WebSocket c
 - **Status**: COMPLIANT
 - **Check**: Uses shared PostgreSQL database for subscription state and balance data persistence
 - **Migrations**: Database schema changes will be managed through reversible migrations
+- **Migration Ownership**: As the designated owner of PostgreSQL migrations for the shared database, all PostgreSQL migrations (including those for other services) will be located in `ws-gateway/migrations/` to serve as the single source of truth for PostgreSQL schema structure
 - **Justification**: No specialized database needed for this service
 
 ### III. Inter-Service Communication ✅

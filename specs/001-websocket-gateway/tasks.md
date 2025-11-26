@@ -42,6 +42,8 @@ description: "Task list for WebSocket Gateway feature implementation"
 
 **⚠️ CRITICAL**: No user story work can begin until this phase is complete
 
+**Note on PostgreSQL Migrations**: Per constitution principle II (Shared Database Strategy), the `ws-gateway` service is the single source of truth for all PostgreSQL migrations. All PostgreSQL schema changes (including those for other services in the project) MUST be located in `ws-gateway/migrations/`. Other database types (e.g., vector databases for ML models) may maintain their own migrations within their respective service containers.
+
 - [X] T008 Setup database schema and migrations framework in ws-gateway/migrations/
 - [X] T009 [P] Create database migration for subscriptions table in ws-gateway/migrations/001_create_subscriptions_table.sql
 - [X] T010 [P] Create database migration for account_balances table in ws-gateway/migrations/002_create_account_balances_table.sql

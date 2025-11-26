@@ -338,3 +338,5 @@ CREATE INDEX idx_account_balances_coin_received_at ON account_balances(coin, rec
 - Use `IF EXISTS` and `IF NOT EXISTS` for idempotent migrations
 - Test migrations on testnet database before production
 
+**PostgreSQL Migration Ownership**: Per constitution principle II (Shared Database Strategy), the `ws-gateway` service is the single source of truth for all PostgreSQL migrations. All PostgreSQL schema changes (including those for other services in the project) MUST be located in `ws-gateway/migrations/`. Other database types (e.g., vector databases for ML models) may maintain their own migrations within their respective service containers.
+
