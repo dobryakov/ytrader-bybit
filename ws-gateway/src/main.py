@@ -19,7 +19,6 @@ from .services.queue.monitoring import start_backlog_monitoring, stop_backlog_mo
 from .services.websocket.connection import get_connection
 from .services.websocket.heartbeat import HeartbeatManager
 from .services.websocket.reconnection import ReconnectionManager
-from .services.subscription.subscription_service import SubscriptionService
 
 # Setup logging first
 setup_logging()
@@ -80,35 +79,6 @@ async def lifespan(app: FastAPI):
             await websocket_connection.connect()
             # Start heartbeat after successful connection
             await heartbeat_manager.start()
-            
-            # Subscribe to all active subscriptions after initial connection
-            try:
-                logger.debug("attempting_to_subscribe_active_subscriptions_on_startup")
-                from .services.websocket.subscription import build_subscribe_message
-                active_subscriptions = await SubscriptionService.get_active_subscriptions()
-                logger.debug(
-                    "retrieved_active_subscriptions",
-                    count=len(active_subscriptions) if active_subscriptions else 0,
-                )
-                if active_subscriptions:
-                    subscribe_msg = build_subscribe_message(active_subscriptions)
-                    logger.debug("built_subscribe_message", topics=subscribe_msg.get("args", []))
-                    await websocket_connection.send(subscribe_msg)
-                    logger.info(
-                        "websocket_subscribed_active_subscriptions_on_startup",
-                        subscription_count=len(active_subscriptions),
-                        topics=subscribe_msg.get("args", []),
-                    )
-                else:
-                    logger.info("no_active_subscriptions_to_subscribe_on_startup")
-            except Exception as e:
-                logger.warning(
-                    "failed_to_subscribe_active_subscriptions_on_startup",
-                    error=str(e),
-                    error_type=type(e).__name__,
-                    exc_info=True,
-                )
-            
             logger.info("websocket_connection_initialized")
         except Exception as e:
             trace_id = generate_trace_id()

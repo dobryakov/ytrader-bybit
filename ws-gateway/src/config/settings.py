@@ -87,7 +87,7 @@ class Settings(BaseSettings):
     def bybit_ws_url(self) -> str:
         """
         Get Bybit WebSocket URL based on environment.
-        
+
         For backward compatibility, defaults to private endpoint.
         Use bybit_ws_url_public or bybit_ws_url_private for explicit endpoint selection.
         """
@@ -97,7 +97,7 @@ class Settings(BaseSettings):
     def bybit_ws_url_public(self) -> str:
         """
         Get Bybit public WebSocket URL based on environment and category.
-        
+
         According to Bybit API v5 documentation, public endpoints require category:
         - spot: Spot trading
         - linear: USDT/USDC perpetual & futures
