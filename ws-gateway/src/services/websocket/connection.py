@@ -17,6 +17,7 @@ from ..database.subscription_repository import SubscriptionRepository
 from ..subscription.subscription_service import SubscriptionService
 from .auth import generate_auth_message, validate_auth_response
 from .event_parser import parse_events_from_message
+from .event_processor import process_events
 
 logger = get_logger(__name__)
 
@@ -320,10 +321,11 @@ class WebSocketConnection:
         if not events:
             return
 
-        # Update subscription last_event_at and log events
+        # Update subscription last_event_at
         last_ts = events[-1].timestamp
         await SubscriptionService.update_last_event_at(subscription.id, last_ts)
 
+        # Log events
         for event in events:
             logger.info(
                 "subscription_event_received",
@@ -333,6 +335,9 @@ class WebSocketConnection:
                 event_type=event.event_type,
                 trace_id=event.trace_id,
             )
+
+        # Process events: publish to queues (User Story 4)
+        await process_events(events)
 
     async def subscribe(
         self,

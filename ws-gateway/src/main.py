@@ -11,6 +11,9 @@ from .config.logging import get_logger, setup_logging
 from .config.settings import settings
 from .services.database.connection import DatabaseConnection
 from .services.queue.connection import QueueConnection
+from .services.queue.publisher import get_publisher, close_publisher
+from .services.queue.setup import setup_queues
+from .services.queue.retention import start_monitoring, stop_monitoring
 from .services.websocket.connection import get_connection
 from .services.websocket.heartbeat import HeartbeatManager
 from .services.websocket.reconnection import ReconnectionManager
@@ -39,6 +42,18 @@ async def lifespan(app: FastAPI):
         # Initialize RabbitMQ connection
         await QueueConnection.create_connection()
         logger.info("rabbitmq_connection_initialized")
+
+        # Setup queues (durability, retention)
+        await setup_queues()
+        logger.info("queues_initialized")
+
+        # Initialize queue publisher
+        await get_publisher()
+        logger.info("queue_publisher_initialized")
+
+        # Start queue retention monitoring
+        await start_monitoring()
+        logger.info("queue_retention_monitoring_started")
 
         # Initialize WebSocket connection
         websocket_connection = get_connection()
@@ -93,6 +108,14 @@ async def lifespan(app: FastAPI):
         if websocket_connection:
             await websocket_connection.disconnect()
             logger.info("websocket_connection_closed")
+
+        # Stop queue retention monitoring
+        await stop_monitoring()
+        logger.info("queue_retention_monitoring_stopped")
+
+        # Close queue publisher
+        await close_publisher()
+        logger.info("queue_publisher_closed")
 
         # Close RabbitMQ connection
         await QueueConnection.close_connection()

@@ -134,15 +134,15 @@ description: "Task list for WebSocket Gateway feature implementation"
 
 ### Implementation for User Story 4
 
-- [ ] T046 [US4] Implement queue publisher service using aio-pika in ws-gateway/src/services/queue/publisher.py
-- [ ] T047 [US4] Implement queue initialization and configuration (durability, retention) in ws-gateway/src/services/queue/setup.py
-- [ ] T048 [US4] Implement event routing logic to determine target queue by event class in ws-gateway/src/services/queue/router.py
-- [ ] T049 [US4] Integrate queue publishing with event processing pipeline in ws-gateway/src/services/websocket/event_processor.py
-- [ ] T050 [US4] Implement queue naming convention (ws-gateway.{event_class}) in ws-gateway/src/services/queue/setup.py
-- [ ] T051 [US4] Configure queue retention limits (24 hours or 100K messages) in ws-gateway/src/services/queue/setup.py
-- [ ] T051a [US4] Implement queue retention monitoring and cleanup logic in ws-gateway/src/services/queue/retention.py (monitor queue age/size, discard messages exceeding limits per FR-019)
-- [ ] T052 [US4] Add logging for queue publishing operations in ws-gateway/src/services/queue/publisher.py
-- [ ] T053 [US4] Handle queue connection failures gracefully (log and continue) in ws-gateway/src/services/queue/publisher.py
+- [X] T046 [US4] Implement queue publisher service using aio-pika in ws-gateway/src/services/queue/publisher.py
+- [X] T047 [US4] Implement queue initialization and configuration (durability, retention) in ws-gateway/src/services/queue/setup.py
+- [X] T048 [US4] Implement event routing logic to determine target queue by event class in ws-gateway/src/services/queue/router.py
+- [X] T049 [US4] Integrate queue publishing with event processing pipeline in ws-gateway/src/services/websocket/event_processor.py
+- [X] T050 [US4] Implement queue naming convention (ws-gateway.{event_class}) in ws-gateway/src/services/queue/setup.py
+- [X] T051 [US4] Configure queue retention limits (24 hours or 100K messages) in ws-gateway/src/services/queue/setup.py
+- [X] T051a [US4] Implement queue retention monitoring and cleanup logic in ws-gateway/src/services/queue/retention.py (monitor queue age/size, discard messages exceeding limits per FR-019)
+- [X] T052 [US4] Add logging for queue publishing operations in ws-gateway/src/services/queue/publisher.py
+- [X] T053 [US4] Handle queue connection failures gracefully (log and continue) in ws-gateway/src/services/queue/publisher.py
 
 **Checkpoint**: At this point, User Stories 1, 2, 3, AND 4 should all work independently. Events should be delivered to RabbitMQ queues organized by event class.
 
