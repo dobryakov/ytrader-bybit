@@ -17,6 +17,7 @@ from .services.queue.setup import setup_queues
 from .services.queue.retention import start_monitoring, stop_monitoring
 from .services.queue.monitoring import start_backlog_monitoring, stop_backlog_monitoring
 from .services.websocket.connection import get_connection
+from .services.websocket.connection_manager import get_connection_manager
 from .services.websocket.heartbeat import HeartbeatManager
 from .services.websocket.reconnection import ReconnectionManager
 
@@ -79,6 +80,26 @@ async def lifespan(app: FastAPI):
             await websocket_connection.connect()
             # Start heartbeat after successful connection
             await heartbeat_manager.start()
+            # Resubscribe to active subscriptions after initial connection (private)
+            await reconnection_manager._resubscribe_for_connection(websocket_connection)
+            
+            # Also resubscribe to public subscriptions if any exist
+            # Public connection will be created lazily when needed
+            connection_manager = get_connection_manager()
+            try:
+                public_connection = await connection_manager.get_public_connection()
+                if public_connection and public_connection.is_connected:
+                    public_reconnect_manager = ReconnectionManager(public_connection)
+                    await public_reconnect_manager._resubscribe_for_connection(public_connection)
+                    logger.info("public_connection_resubscribed_on_startup")
+            except Exception as e:
+                logger.warning(
+                    "public_connection_resubscribe_failed",
+                    error=str(e),
+                    error_type=type(e).__name__,
+                )
+                # Non-critical, public connection will be created when subscription is requested
+            
             logger.info("websocket_connection_initialized")
         except Exception as e:
             trace_id = generate_trace_id()

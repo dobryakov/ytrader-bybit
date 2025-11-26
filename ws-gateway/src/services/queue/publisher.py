@@ -13,6 +13,7 @@ from ...exceptions import QueueError
 from ...models.event import Event
 from .connection import QueueConnection
 from .monitoring import record_publish
+from .setup import ensure_queue_exists
 
 logger = get_logger(__name__)
 
@@ -47,15 +48,49 @@ class QueuePublisher:
             await self.initialize()
 
         try:
-            # Queue will be created by setup module, but we ensure it exists here
-            # This is a fallback in case setup wasn't called
+            # First, try to get existing queue with passive=True
+            # This avoids conflicts if queue already exists with TTL
             queue = await self._channel.declare_queue(
                 queue_name,
                 durable=True,
+                passive=True,  # Only check if queue exists, don't create
             )
             self._queues[queue_name] = queue
-            logger.debug("queue_ensured", queue_name=queue_name)
+            logger.debug("queue_ensured_passive", queue_name=queue_name)
             return queue
+        except (aio_pika.exceptions.ChannelNotFoundEntity, aio_pika.exceptions.ChannelClosed):
+            # Queue doesn't exist, try to create it with proper TTL arguments
+            # Extract event_type from queue_name (format: ws-gateway.{event_type})
+            event_type = queue_name.replace("ws-gateway.", "")
+            try:
+                await ensure_queue_exists(event_type)
+            except Exception as e:
+                # If ensure_queue_exists fails (e.g., queue already exists with different args),
+                # try to get it with passive=True anyway
+                logger.warning(
+                    "queue_ensure_failed_trying_passive",
+                    queue_name=queue_name,
+                    error=str(e),
+                )
+            
+            # Try to get the queue again (it might exist now or might have existed all along)
+            try:
+                queue = await self._channel.declare_queue(
+                    queue_name,
+                    durable=True,
+                    passive=True,
+                )
+                self._queues[queue_name] = queue
+                logger.debug("queue_ensured_after_ensure", queue_name=queue_name)
+                return queue
+            except Exception as e2:
+                # If still fails, raise the original error
+                logger.error(
+                    "queue_ensure_final_failed",
+                    queue_name=queue_name,
+                    error=str(e2),
+                )
+                raise QueueError(f"Failed to ensure queue {queue_name}: {e2}") from e2
         except Exception as e:
             logger.error(
                 "queue_ensure_failed",

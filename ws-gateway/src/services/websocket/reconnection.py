@@ -10,7 +10,7 @@ from ..subscription.subscription_service import SubscriptionService
 from .channel_types import get_endpoint_type_for_channel, is_public_channel, is_private_channel
 from .connection import WebSocketConnection
 from .connection_manager import get_connection_manager
-from .subscription import build_subscribe_message
+from .subscription import build_subscribe_message, build_subscribe_messages
 
 logger = get_logger(__name__)
 
@@ -255,13 +255,22 @@ class ReconnectionManager:
                 relevant_subscriptions.append(sub)
 
         if relevant_subscriptions:
-            msg = build_subscribe_message(relevant_subscriptions)
-            await connection.send(msg)
+            # Bybit limits subscription messages to max 10 topics per message
+            # Split into batches if needed
+            messages = build_subscribe_messages(relevant_subscriptions, max_topics_per_message=10)
+            
+            for msg in messages:
+                await connection.send(msg)
+                # Small delay between batches to avoid rate limiting
+                if len(messages) > 1:
+                    await asyncio.sleep(0.1)
+            
             logger.info(
                 "websocket_resubscribed_active_subscriptions",
                 subscription_count=len(relevant_subscriptions),
                 endpoint_type=endpoint_type,
                 total_subscriptions=len(all_subscriptions),
+                message_batches=len(messages),
             )
 
 

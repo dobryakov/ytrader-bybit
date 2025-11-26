@@ -243,24 +243,31 @@ class MarketDataConsumer:
         Process ticker event.
 
         Args:
-            data: Ticker event data
+            data: Ticker event data (may be wrapped in 'payload' or be direct)
         """
         try:
-            # Extract symbol and price from ticker data
-            # Structure may vary, but typically contains 'symbol' and 'lastPrice' or 'price'
-            symbol = data.get("symbol") or data.get("s")
+            # Extract payload if event is wrapped
+            payload = data.get("payload", data)
+            
+            # Extract symbol from payload or topic
+            symbol = payload.get("symbol") or payload.get("s")
             if not symbol:
-                logger.warning("Ticker event missing symbol", data=data)
-                return
+                # Try to extract from topic if available
+                topic = data.get("topic", "")
+                if topic.startswith("tickers."):
+                    symbol = topic.replace("tickers.", "")
+                else:
+                    logger.warning("Ticker event missing symbol", data=data)
+                    return
 
             # Try different possible field names for price
-            price = data.get("lastPrice") or data.get("price") or data.get("c")
+            price = payload.get("lastPrice") or payload.get("price") or payload.get("c")
             if price is None:
                 logger.warning("Ticker event missing price", symbol=symbol, data=data)
                 return
 
             # Try different possible field names for volume
-            volume_24h = data.get("volume24h") or data.get("volume_24h") or data.get("v")
+            volume_24h = payload.get("volume24h") or payload.get("volume_24h") or payload.get("v")
             if volume_24h is None:
                 logger.warning("Ticker event missing volume_24h", symbol=symbol, data=data)
                 return
@@ -276,18 +283,32 @@ class MarketDataConsumer:
         Process orderbook event.
 
         Args:
-            data: Orderbook event data
+            data: Orderbook event data (may be wrapped in 'payload' or be direct)
         """
         try:
-            # Extract symbol and spread from orderbook data
-            symbol = data.get("symbol") or data.get("s")
+            # Extract payload if event is wrapped
+            payload = data.get("payload", data)
+            
+            # Extract symbol from payload or topic
+            symbol = payload.get("symbol") or payload.get("s")
             if not symbol:
-                logger.warning("Orderbook event missing symbol", data=data)
-                return
+                # Try to extract from topic if available
+                topic = data.get("topic", "")
+                if topic.startswith("orderbook."):
+                    # Extract from topic like "orderbook.1.BTCUSDT"
+                    parts = topic.split(".")
+                    if len(parts) >= 3:
+                        symbol = parts[-1]
+                    else:
+                        logger.warning("Orderbook event missing symbol", data=data)
+                        return
+                else:
+                    logger.warning("Orderbook event missing symbol", data=data)
+                    return
 
             # Extract best bid and ask prices
-            bids = data.get("bids") or data.get("b") or []
-            asks = data.get("asks") or data.get("a") or []
+            bids = payload.get("bids") or payload.get("b") or []
+            asks = payload.get("asks") or payload.get("a") or []
 
             if not bids or not asks:
                 logger.warning("Orderbook event missing bid/ask data", symbol=symbol, data=data)
@@ -319,20 +340,34 @@ class MarketDataConsumer:
         Process kline (candlestick) event.
 
         Args:
-            data: Kline event data
+            data: Kline event data (may be wrapped in 'payload' or be direct)
         """
         try:
-            # Extract symbol from kline data
-            symbol = data.get("symbol") or data.get("s")
+            # Extract payload if event is wrapped
+            payload = data.get("payload", data)
+            
+            # Extract symbol from payload or topic
+            symbol = payload.get("symbol") or payload.get("s")
             if not symbol:
-                logger.warning("Kline event missing symbol", data=data)
-                return
+                # Try to extract from topic if available
+                topic = data.get("topic", "")
+                if topic.startswith("kline."):
+                    # Extract from topic like "kline.1.BTCUSDT"
+                    parts = topic.split(".")
+                    if len(parts) >= 3:
+                        symbol = parts[-1]
+                    else:
+                        logger.warning("Kline event missing symbol", data=data)
+                        return
+                else:
+                    logger.warning("Kline event missing symbol", data=data)
+                    return
 
             # Calculate volatility from kline data
             # Volatility = (high - low) / close
-            high = data.get("high") or data.get("h")
-            low = data.get("low") or data.get("l")
-            close = data.get("close") or data.get("c")
+            high = payload.get("high") or payload.get("h")
+            low = payload.get("low") or payload.get("l")
+            close = payload.get("close") or payload.get("c")
 
             if high is None or low is None or close is None:
                 logger.warning("Kline event missing price data", symbol=symbol, data=data)
