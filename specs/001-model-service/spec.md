@@ -97,7 +97,7 @@ The system tracks model quality metrics, maintains version history, and provides
 
 - What happens when no order execution events are received for an extended period (affecting retraining schedules)?
 - How does the system handle retraining conflicts (e.g., scheduled retraining triggered while another training is in progress)? **RESOLVED**: System cancels current training operation and restarts with new data when a new retraining trigger occurs during an in-progress training operation.
-- How does the system handle corrupted or invalid execution event data?
+- How does the system handle corrupted or invalid execution event data? **RESOLVED**: System MUST validate all incoming execution events, log validation failures with full event context and trace IDs, discard invalid events, and continue processing valid events. Invalid events are logged for debugging and monitoring purposes.
 - What happens when the database connection is lost while retrieving order/position state?
 - How does the system handle message queue failures when publishing signals?
 - What happens when model training fails or produces invalid results?
@@ -113,17 +113,17 @@ The system tracks model quality metrics, maintains version history, and provides
 
 - **FR-001**: System MUST subscribe to message queue for enriched order execution events from the order manager microservice (format: plain JSON without schema versioning)
 - **FR-002**: System MUST retrieve current state of open orders and positions from shared PostgreSQL database
-- **FR-003**: System MUST analyze order execution events and associated market data to form training datasets
+- **FR-003**: System MUST analyze order execution events and associated market data to form training datasets. For feature engineering, the system MUST use market data snapshot from trading signals (captured at signal generation time) as the primary source for features describing market state at decision time. Execution event market_conditions (at execution time) are used for performance evaluation and slippage analysis, but not for feature engineering. When matching execution events with signals, the system MUST use the signal's market_data_snapshot for feature construction.
 - **FR-004**: System MUST train or retrain ML models using feedback from order executions, supporting both online learning (continuous incremental updates) and periodic batch retraining
 - **FR-019**: System MUST support configurable retraining triggers: scheduled periodic retraining, data accumulation thresholds, and quality degradation detection
 - **FR-020**: System MUST accumulate execution events and market data for training, processing them either incrementally (online learning) or in batches (periodic retraining)
 - **FR-021**: System MUST automatically trigger model retraining when model quality metrics fall below configured degradation thresholds
 - **FR-022**: System MUST support configurable retraining schedules (e.g., daily, weekly) for periodic batch retraining operations
 - **FR-023**: System MUST cancel any in-progress training operation and restart with new data when a new retraining trigger occurs during an active training operation
-- **FR-005**: System MUST generate high-level trading signals (buy/sell, asset, amount, confidence, timestamp, strategy_id) based on model predictions
+- **FR-005**: System MUST generate high-level trading signals (buy/sell, asset, amount, confidence, timestamp, strategy_id) based on model predictions. Signals MUST include market data snapshot at generation time (price, spread, volume_24h, volatility, and optionally orderbook depth and technical indicators) to enable accurate feature engineering during model training when matched with execution events.
 - **FR-006**: System MUST publish generated trading signals to message queue for order manager microservice (format: plain JSON without schema versioning)
 - **FR-007**: System MUST operate in warm-up mode when no trained model is available, using heuristics or controlled random generation
-- **FR-008**: System MUST generate warm-up signals with configurable frequency and risk parameters
+- **FR-008**: System MUST generate warm-up signals with configurable frequency and risk parameters. Warm-up signals MUST include market data snapshot at generation time (price, spread, volume_24h, volatility) to enable accurate feature engineering during model training. Market data MUST be retrieved from available sources (shared database, message queues, or ws-gateway subscriptions) at the time of signal generation.
 - **FR-024**: System MUST enforce configurable rate limiting on signal generation with burst allowance to prevent resource exhaustion and message queue overload
 - **FR-009**: System MUST accept and aggregate order execution events during warm-up mode for future training
 - **FR-010**: System MUST automatically transition from warm-up mode to model-based generation when model quality reaches configured threshold
@@ -131,14 +131,16 @@ The system tracks model quality metrics, maintains version history, and provides
 - **FR-012**: System MUST track model quality metrics and maintain version history (models stored as files on file system, metadata in PostgreSQL database)
 - **FR-013**: System MUST log all significant operations (signal generation, model training, mode transitions) with appropriate detail
 - **FR-014**: System MUST provide monitoring capabilities for model performance and system health
-- **FR-015**: System MUST handle integration with other microservices (order manager, ws-gateway) through defined interfaces with API key authentication for REST API calls
+- **FR-015**: System MUST handle integration with other microservices (order manager, ws-gateway) through defined interfaces with API key authentication for REST API calls. Integration with ws-gateway is primarily through shared PostgreSQL database (for order/position state) and RabbitMQ message queues (for event consumption). Direct REST API calls to ws-gateway are not required for core functionality.
+- **FR-026**: System MAY subscribe to Bybit WebSocket data channels (trades, ticker, orderbook, kline, etc.) via REST API calls to ws-gateway service when additional real-time market data is required for feature engineering or signal generation. After subscription, events are consumed from RabbitMQ queues (ws-gateway.{event_type}). This is an optional capability that enhances model training and signal generation with real-time market data beyond what is included in order execution events.
 - **FR-016**: System MUST validate trading signals before publishing (required fields, value ranges, format compliance)
 - **FR-017**: System MUST handle errors gracefully (queue failures, database unavailability, model training failures) with appropriate fallbacks
+- **FR-025**: System MUST validate all incoming order execution events, log validation failures with full event context and trace IDs, discard invalid or corrupted events, and continue processing valid events without interruption
 - **FR-018**: System MUST support multiple trading strategies with distinct strategy identifiers
 
 ### Key Entities *(include if feature involves data)*
 
-- **Trading Signal**: Represents a high-level trading decision containing signal type (buy/sell), asset identifier, amount in currency, confidence score (0-1), timestamp, and strategy identifier. Published to message queue for execution.
+- **Trading Signal**: Represents a high-level trading decision containing signal type (buy/sell), asset identifier, amount in currency, confidence score (0-1), timestamp, and strategy identifier. Published to message queue for execution. Signals MUST include market data snapshot at signal generation time (price, spread, volume_24h, volatility, and optionally orderbook depth and technical indicators) to enable accurate feature engineering during model training. This snapshot captures market state at decision time, which is essential for learning correct patterns from execution feedback.
 
 - **Order Execution Event**: Enriched event from order manager containing details about executed trades, including execution price, quantity, fees, timestamp, and associated market conditions. Used for training and performance evaluation.
 
@@ -154,13 +156,13 @@ The system tracks model quality metrics, maintains version history, and provides
 
 ### Measurable Outcomes
 
-- **SC-001**: System generates trading signals within 5 seconds of receiving required input data (order state, market data, or warm-up trigger)
+- **SC-001**: System generates trading signals within 5 seconds (p95 latency) of receiving required input data (order state, market data, or warm-up trigger)
 - **SC-002**: System successfully publishes 99.5% of generated signals to message queue without errors
 - **SC-003**: System processes and incorporates order execution events into training pipeline within 10 seconds of receipt
 - **SC-004**: System completes model training operations within 30 minutes for datasets up to 1 million records
 - **SC-011**: System triggers periodic retraining according to configured schedule with accuracy within 5 minutes of scheduled time
 - **SC-012**: System detects model quality degradation and triggers retraining within 1 minute of threshold breach
-- **SC-005**: System transitions from warm-up mode to model-based generation when model quality metrics exceed 75% accuracy threshold
+- **SC-005**: System transitions from warm-up mode to model-based generation when model quality metrics exceed 75% classification accuracy threshold (percentage of correct buy/sell predictions on validation set)
 - **SC-006**: System maintains model version history with complete metadata for at least 100 previous versions
 - **SC-007**: System logs all critical operations (signal generation, training, mode transitions) with 100% coverage and traceability
 - **SC-008**: System handles message queue and database connection failures with automatic retry and graceful degradation, maintaining 99% uptime
@@ -172,7 +174,7 @@ The system tracks model quality metrics, maintains version history, and provides
 - Order manager microservice exists and publishes enriched execution events to a message queue (using plain JSON format without schema versioning)
 - Shared relational database contains tables for open orders and positions accessible by this microservice
 - Message queue infrastructure is available and configured for event streaming
-- Market data required for analysis is available through integration with other microservices or data sources
+- Market data required for analysis is available through integration with other microservices or data sources. Order execution events include market conditions at execution time. If additional real-time market data is needed (e.g., for feature engineering or signal generation), the system MAY subscribe to Bybit WebSocket channels via ws-gateway REST API (POST /api/v1/subscriptions) and consume events from RabbitMQ queues (ws-gateway.{event_type})
 - Model training can be performed in real-time or near-real-time without blocking signal generation
 - System has sufficient computational resources for ML model training operations
 - Integration interfaces with other microservices are defined and stable
@@ -186,6 +188,6 @@ The system tracks model quality metrics, maintains version history, and provides
 - Order Manager microservice (for execution events and signal consumption)
 - Shared relational database (for order/position state)
 - Message queue infrastructure (for event streaming)
-- Market data sources (for training and signal generation context)
+- Market data sources (for training and signal generation context). Optional: ws-gateway service for subscribing to Bybit WebSocket channels when additional real-time market data is required beyond order execution events
 - Logging and monitoring infrastructure (for observability)
 - Configuration management system (for operational parameters)

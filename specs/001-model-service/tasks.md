@@ -68,8 +68,8 @@
 
 ### Implementation for User Story 1
 
-- [ ] T022 [P] [US1] Create TradingSignal data model in model-service/src/models/signal.py (signal_type, asset, amount, confidence, timestamp, strategy_id, model_version, is_warmup, metadata, trace_id)
-- [ ] T023 [US1] Implement warm-up signal generation service in model-service/src/services/warmup_signal_generator.py (heuristics or controlled random generation with configurable frequency and risk parameters)
+- [ ] T022 [P] [US1] Create TradingSignal data model in model-service/src/models/signal.py (signal_type, asset, amount, confidence, timestamp, strategy_id, model_version, is_warmup, market_data_snapshot with price, spread, volume_24h, volatility, optional orderbook_depth and technical_indicators, metadata, trace_id)
+- [ ] T023 [US1] Implement warm-up signal generation service in model-service/src/services/warmup_signal_generator.py (heuristics or controlled random generation with configurable frequency and risk parameters, MUST retrieve and include market data snapshot at signal generation time: price, spread, volume_24h, volatility from available sources)
 - [ ] T024 [US1] Implement rate limiting service in model-service/src/services/rate_limiter.py (configurable rate limit with burst allowance for signal generation)
 - [ ] T025 [US1] Implement signal validation service in model-service/src/services/signal_validator.py (required fields, value ranges, format compliance)
 - [ ] T026 [US1] Implement trading signal publisher in model-service/src/publishers/signal_publisher.py (publish to RabbitMQ queue model-service.trading_signals with JSON format)
@@ -94,10 +94,10 @@
 - [ ] T032 [P] [US2] Create TrainingDataset data model in model-service/src/models/training_dataset.py (dataset_id, strategy_id, features DataFrame, labels Series, metadata dict)
 - [ ] T033 [P] [US2] Create ModelVersion database repository in model-service/src/database/repositories/model_version_repo.py (CRUD operations for model_versions table)
 - [ ] T034 [P] [US2] Create ModelQualityMetrics database repository in model-service/src/database/repositories/quality_metrics_repo.py (CRUD operations for model_quality_metrics table)
-- [ ] T035 [US2] Implement order execution event consumer in model-service/src/consumers/execution_event_consumer.py (subscribe to RabbitMQ queue order-manager.execution_events, parse and validate events)
-- [ ] T036 [US2] Implement feature engineering service in model-service/src/services/feature_engineer.py (process execution events and market data into features: price features, volume features, technical indicators, market context, execution features)
+- [ ] T035 [US2] Implement order execution event consumer in model-service/src/consumers/execution_event_consumer.py (subscribe to RabbitMQ queue order-manager.execution_events, parse and validate events, handle corrupted/invalid events with logging and graceful continuation)
+- [ ] T036 [US2] Implement feature engineering service in model-service/src/services/feature_engineer.py (process execution events and market data into features: MUST use market_data_snapshot from trading signals for features describing market state at decision time, use execution event market_conditions only for performance metrics, generate price features, volume features, technical indicators, market context, execution features)
 - [ ] T037 [US2] Implement label generation service in model-service/src/services/label_generator.py (extract labels from execution events: binary classification, multi-class, regression targets)
-- [ ] T038 [US2] Implement training dataset builder in model-service/src/services/dataset_builder.py (aggregate execution events, apply feature engineering, generate labels, validate dataset quality)
+- [ ] T038 [US2] Implement training dataset builder in model-service/src/services/dataset_builder.py (aggregate execution events, match execution events with corresponding trading signals by signal_id, use signal market_data_snapshot for feature engineering, apply feature engineering, generate labels from execution event performance, validate dataset quality)
 - [ ] T039 [US2] Implement ML model trainer service in model-service/src/services/model_trainer.py (train XGBoost and scikit-learn models, support batch retraining, handle model serialization using joblib for scikit-learn and XGBoost native JSON format)
 - [ ] T040 [US2] Implement model quality evaluator in model-service/src/services/quality_evaluator.py (calculate accuracy, precision, recall, f1_score, sharpe_ratio, profit_factor, and other metrics)
 - [ ] T041 [US2] Implement model version manager in model-service/src/services/model_version_manager.py (create model versions, store model files in /models/v{version}/, update database metadata, handle version activation)
@@ -122,7 +122,7 @@
 - [ ] T047 [P] [US3] Create OrderPositionState data model in model-service/src/models/position_state.py (read-only model for current orders and positions from shared database)
 - [ ] T048 [US3] Implement order/position state reader in model-service/src/database/repositories/position_state_repo.py (read current open orders and positions from shared PostgreSQL database tables)
 - [ ] T049 [US3] Implement model loader service in model-service/src/services/model_loader.py (load trained models from file system, validate model files, cache active models)
-- [ ] T050 [US3] Implement model inference service in model-service/src/services/model_inference.py (prepare features from order/position state and market data, run model prediction, generate confidence scores)
+- [ ] T050 [US3] Implement model inference service in model-service/src/services/model_inference.py (prepare features from order/position state and market data, run model prediction, generate confidence scores, MUST capture market data snapshot at inference time for inclusion in generated signals)
 - [ ] T051 [US3] Implement intelligent signal generator in model-service/src/services/intelligent_signal_generator.py (use model inference to generate trading signals with confidence scores, apply quality thresholds)
 - [ ] T052 [US3] Implement mode transition service in model-service/src/services/mode_transition.py (automatically transition from warm-up mode to model-based generation when model quality reaches configured threshold)
 - [ ] T053 [US3] Integrate intelligent signal generation into main application in model-service/src/main.py (replace warm-up mode with model-based generation when active model is available)
