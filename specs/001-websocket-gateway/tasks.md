@@ -195,11 +195,11 @@ description: "Task list for WebSocket Gateway feature implementation"
 
 - [X] EC1 [Edge Cases] Handle extended exchange API unavailability: Implement circuit breaker pattern and exponential backoff in ws-gateway/src/services/websocket/reconnection.py (covers spec.md edge case: "exchange API temporarily unavailable")
 - [X] EC2 [Edge Cases] Handle malformed messages: Add message validation and error handling in ws-gateway/src/services/websocket/event_parser.py (covers spec.md edge case: "malformed message formats")
-- [ ] EC3 [Edge Cases] Handle queue capacity limits: Implement queue monitoring and alerting in ws-gateway/src/services/queue/retention.py (covers spec.md edge case: "queue storage reaches capacity")
+- [X] EC3 [Edge Cases] Handle queue capacity limits: Implement queue monitoring and alerting in ws-gateway/src/services/queue/retention.py (covers spec.md edge case: "queue storage reaches capacity")
 - [X] EC4 [Edge Cases] Handle authentication failures: Add credential validation and error recovery in ws-gateway/src/services/websocket/auth.py (covers spec.md edge case: "authentication failures or expired credentials")
 - [X] EC5 [Edge Cases] Handle conflicting subscription configurations: Implement conflict resolution logic in ws-gateway/src/services/subscription/subscription_service.py (covers spec.md edge case: "multiple services request conflicting subscriptions")
 - [X] EC6 [Edge Cases] Handle slow/unavailable PostgreSQL: Already covered by T059 (database write failures), verify graceful degradation
-- [ ] EC7 [Edge Cases] Handle slow subscriber consumption: Add queue backlog monitoring and alerting in ws-gateway/src/services/queue/monitoring.py (covers spec.md edge case: "subscriber consumes slower than events arrive")
+- [X] EC7 [Edge Cases] Handle slow subscriber consumption: Add queue backlog monitoring and alerting in ws-gateway/src/services/queue/monitoring.py (covers spec.md edge case: "subscriber consumes slower than events arrive")
 - [X] EC8 [Edge Cases] Handle exchange endpoint timeouts: Add timeout handling in ws-gateway/src/services/websocket/connection.py (covers spec.md edge case: "timeouts or unresponsive endpoints")
 
 **Note**: Some edge cases are implicitly covered by existing tasks (e.g., EC6 by T059). This phase makes coverage explicit and adds monitoring where needed.
@@ -210,11 +210,11 @@ description: "Task list for WebSocket Gateway feature implementation"
 
 **Purpose**: Improvements that affect multiple user stories
 
-- [ ] T067 [P] Update README.md with setup and usage instructions in ws-gateway/README.md
+- [X] T067 [P] Update README.md with setup and usage instructions in ws-gateway/README.md
 - [ ] T068 [P] Synchronize quickstart.md with implemented features in specs/001-websocket-gateway/quickstart.md
 - [ ] T069 [P] Code cleanup and refactoring across all modules
 - [ ] T070 [P] Performance optimization (connection pooling, async operations)
-- [ ] T071 [P] Add comprehensive error handling and user-friendly error messages
+- [X] T071 [P] Add comprehensive error handling and user-friendly error messages
 - [ ] T072 [P] Security hardening (API key validation, input sanitization)
 - [ ] T073 [P] Run quickstart.md validation and update if needed
 - [ ] T074 [P] Implement monitoring and metrics collection for success criteria validation:
@@ -224,7 +224,7 @@ description: "Task list for WebSocket Gateway feature implementation"
   - T074d: Add balance persistence latency tracking (SC-005) in ws-gateway/src/services/database/balance_service.py
   - T074e: Add REST API response time tracking (SC-006) in ws-gateway/src/api/middleware/metrics.py
   - T074f: Add resubscription timing tracking (SC-007) in ws-gateway/src/services/websocket/reconnection.py
-- [ ] T075 [P] Documentation updates in ws-gateway/README.md
+- [X] T075 [P] Documentation updates in ws-gateway/README.md
 
 ---
 

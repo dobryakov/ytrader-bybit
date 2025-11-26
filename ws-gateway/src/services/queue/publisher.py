@@ -12,6 +12,7 @@ from ...config.settings import settings
 from ...exceptions import QueueError
 from ...models.event import Event
 from .connection import QueueConnection
+from .monitoring import record_publish
 
 logger = get_logger(__name__)
 
@@ -136,6 +137,10 @@ class QueuePublisher:
                 topic=event.topic,
                 trace_id=event.trace_id,
             )
+
+            # Record publish for backlog monitoring (EC7: Track publish rate)
+            record_publish(event.event_type, message_count=1)
+
             return True
 
         except Exception as e:

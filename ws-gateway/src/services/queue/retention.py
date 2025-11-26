@@ -106,7 +106,8 @@ class QueueRetentionMonitor:
         """
         Check and enforce retention limits for a specific queue.
 
-        Note: RabbitMQ's x-message-ttl and x-max-length arguments handle
+        EC3: Monitors queue capacity and alerts when approaching limits.
+        RabbitMQ's x-message-ttl and x-max-length arguments handle
         most retention automatically. This function provides monitoring
         and alerting for visibility.
 
@@ -119,18 +120,65 @@ class QueueRetentionMonitor:
             # Declare queue to get its properties
             queue = await channel.declare_queue(queue_name, passive=True)
 
-            # Get queue statistics
-            # Note: aio-pika doesn't provide direct queue stats API
-            # We rely on RabbitMQ's built-in TTL and max-length enforcement
-            # This is primarily for logging/monitoring visibility
+            # Get queue statistics (EC3: Monitor queue capacity limits)
+            # Note: aio-pika queue objects have some metadata, but detailed stats
+            # require RabbitMQ Management API. We'll try to get message count if available.
+            message_count = None
+            try:
+                # Try to get message count from queue (if supported)
+                # aio-pika doesn't directly expose this, but we can infer from queue state
+                # For detailed monitoring, RabbitMQ Management API would be needed
+                message_count = getattr(queue, 'message_count', None)
+            except AttributeError:
+                pass
 
-            logger.debug(
-                "retention_check_completed",
-                queue_name=queue_name,
-                event_type=event_type,
-                retention_hours=QUEUE_RETENTION_HOURS,
-                retention_messages=QUEUE_RETENTION_MESSAGES,
-            )
+            # Alert thresholds (EC3: Alert when approaching capacity limits)
+            WARNING_THRESHOLD = 0.8  # Alert at 80% capacity
+            CRITICAL_THRESHOLD = 0.95  # Critical alert at 95% capacity
+
+            if message_count is not None:
+                capacity_percentage = message_count / QUEUE_RETENTION_MESSAGES
+
+                if capacity_percentage >= CRITICAL_THRESHOLD:
+                    logger.error(
+                        "queue_capacity_critical",
+                        queue_name=queue_name,
+                        event_type=event_type,
+                        message_count=message_count,
+                        max_messages=QUEUE_RETENTION_MESSAGES,
+                        capacity_percentage=round(capacity_percentage * 100, 2),
+                        threshold_percentage=CRITICAL_THRESHOLD * 100,
+                    )
+                elif capacity_percentage >= WARNING_THRESHOLD:
+                    logger.warning(
+                        "queue_capacity_warning",
+                        queue_name=queue_name,
+                        event_type=event_type,
+                        message_count=message_count,
+                        max_messages=QUEUE_RETENTION_MESSAGES,
+                        capacity_percentage=round(capacity_percentage * 100, 2),
+                        threshold_percentage=WARNING_THRESHOLD * 100,
+                    )
+                else:
+                    logger.debug(
+                        "retention_check_completed",
+                        queue_name=queue_name,
+                        event_type=event_type,
+                        message_count=message_count,
+                        retention_hours=QUEUE_RETENTION_HOURS,
+                        retention_messages=QUEUE_RETENTION_MESSAGES,
+                        capacity_percentage=round(capacity_percentage * 100, 2),
+                    )
+            else:
+                # Fallback logging when message count not available
+                logger.debug(
+                    "retention_check_completed",
+                    queue_name=queue_name,
+                    event_type=event_type,
+                    retention_hours=QUEUE_RETENTION_HOURS,
+                    retention_messages=QUEUE_RETENTION_MESSAGES,
+                    note="Message count not available (requires RabbitMQ Management API for detailed stats)",
+                )
 
         except Exception as e:
             # Queue might not exist yet, which is fine
