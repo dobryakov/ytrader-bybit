@@ -156,6 +156,11 @@
 - [ ] T066 [US4] Implement model rollback functionality in model-service/src/services/model_version_manager.py (switch to previous model version, update is_active flags)
 - [ ] T067 [US4] Add monitoring and observability endpoints in model-service/src/api/monitoring.py (model performance metrics, system health details, active models count)
 - [ ] T068 [US4] Implement model cleanup policy in model-service/src/services/model_cleanup.py (keep last N versions, archive old versions, manage disk space)
+- [ ] T083 [P] [US4] Create database migration script in ws-gateway/migrations/005_create_execution_events_table.sql (execution_events table with columns: id, signal_id, strategy_id, asset, side, execution_price, execution_quantity, execution_fees, executed_at, signal_price, signal_timestamp, performance JSONB, created_at, indexes on executed_at, signal_id, strategy_id for time-series queries)
+- [ ] T084 [US4] Extend execution event consumer in model-service/src/consumers/execution_event_consumer.py to persist execution events to PostgreSQL database (save to execution_events table after validation, handle database errors gracefully, continue processing on persistence failures)
+- [ ] T085 [US4] Extend quality monitoring service in model-service/src/services/quality_monitor.py to periodically evaluate and store metrics (evaluate model quality every hour based on recent execution events, calculate metrics: win_rate, sharpe_ratio, profit_factor, total_pnl, save to model_quality_metrics table with evaluated_at timestamp, support configurable evaluation interval)
+- [ ] T086 [P] [US4] Implement time-series metrics API endpoint in model-service/src/api/metrics.py (GET /api/v1/models/{version}/metrics/time-series with parameters: granularity=hour|day|week, start_time, end_time, metric_names, return time-series data for charting, support aggregation by specified granularity)
+- [ ] T087 [P] [US4] Implement strategy performance time-series API endpoint in model-service/src/api/monitoring.py (GET /api/v1/strategies/{strategy_id}/performance/time-series with parameters: granularity=hour|day|week, start_time, end_time, return metrics: success_rate, total_pnl, avg_pnl, total_orders, successful_orders aggregated by time granularity from execution_events table)
 
 **Checkpoint**: All user stories should now be independently functional with full observability and version management capabilities.
 
@@ -213,9 +218,17 @@
 - All Foundational tasks marked [P] can run in parallel (T012-T017, T019-T021)
 - Once Foundational phase completes, User Stories 1, 2, and 4 can start in parallel (if team capacity allows)
 - User Story 3 must wait for User Story 2 to complete (needs trained models)
-- All API endpoints in US4 marked [P] can run in parallel (T057-T062)
+- All API endpoints in US4 marked [P] can run in parallel (T057-T062, T086-T087)
 - Models within a story marked [P] can run in parallel
 - Different user stories can be worked on in parallel by different team members (except US3 which depends on US2)
+
+### Task Dependencies for Time-Series Reporting (T083-T087)
+
+- **T083** (execution_events table): Can be done independently, must complete before T084
+- **T084** (persist execution events): Depends on T083 (table exists) and T035 (execution event consumer exists)
+- **T085** (periodic quality evaluation): Depends on T064 (quality monitor exists) and T084 (execution events in DB)
+- **T086** (time-series metrics API): Depends on T060 (base metrics endpoint) and T085 (periodic metrics available)
+- **T087** (time-series performance API): Depends on T084 (execution events in DB)
 
 ---
 
@@ -323,13 +336,13 @@ With multiple developers:
 
 ## Task Summary
 
-- **Total Tasks**: 84 tasks
+- **Total Tasks**: 89 tasks
 - **Phase 1 (Setup)**: 9 tasks
 - **Phase 2 (Foundational)**: 12 tasks
 - **Phase 3 (User Story 1 - MVP)**: 11 tasks
 - **Phase 4 (User Story 2)**: 17 tasks
 - **Phase 5 (User Story 3)**: 9 tasks
-- **Phase 6 (User Story 4)**: 12 tasks
+- **Phase 6 (User Story 4)**: 17 tasks
 - **Phase 7 (Polish)**: 14 tasks
 
 ### Task Count per User Story
@@ -337,7 +350,7 @@ With multiple developers:
 - **User Story 1 (P1 - MVP)**: 11 tasks
 - **User Story 2 (P2)**: 17 tasks
 - **User Story 3 (P3)**: 9 tasks
-- **User Story 4 (P4)**: 12 tasks
+- **User Story 4 (P4)**: 17 tasks
 
 ### Parallel Opportunities Identified
 
@@ -345,7 +358,7 @@ With multiple developers:
 - **Foundational Phase**: 9 parallel tasks (T012-T017, T019-T021)
 - **User Story 1**: 3 parallel tasks (T022, T022a, T022b)
 - **User Story 2**: 4 parallel tasks (T031-T034), plus T036 can run in parallel with T037+
-- **User Story 4**: 6 parallel tasks (T056-T061)
+- **User Story 4**: 8 parallel tasks (T057-T062, T083, T086-T087)
 
 ### Independent Test Criteria
 
