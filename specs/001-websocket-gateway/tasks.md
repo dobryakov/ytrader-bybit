@@ -176,12 +176,12 @@ description: "Task list for WebSocket Gateway feature implementation"
 
 ### Implementation for User Story 6
 
-- [ ] T061 [US6] Enhance WebSocket connection logging with trace IDs in ws-gateway/src/services/websocket/connection.py
-- [ ] T062 [US6] Enhance event receipt logging with full message details in ws-gateway/src/services/websocket/event_parser.py
-- [ ] T063 [US6] Enhance REST API request/response logging with trace IDs in ws-gateway/src/api/middleware/logging.py
-- [ ] T064 [US6] Add error logging with sufficient context throughout the application
-- [ ] T065 [US6] Implement trace ID generation and propagation in ws-gateway/src/utils/tracing.py
-- [ ] T066 [US6] Add structured logging for system state changes in ws-gateway/src/services/websocket/connection.py
+- [X] T061 [US6] Enhance WebSocket connection logging with trace IDs in ws-gateway/src/services/websocket/connection.py
+- [X] T062 [US6] Enhance event receipt logging with full message details in ws-gateway/src/services/websocket/event_parser.py
+- [X] T063 [US6] Enhance REST API request/response logging with trace IDs in ws-gateway/src/api/middleware/logging.py
+- [X] T064 [US6] Add error logging with sufficient context throughout the application
+- [X] T065 [US6] Implement trace ID generation and propagation in ws-gateway/src/utils/tracing.py
+- [X] T066 [US6] Add structured logging for system state changes in ws-gateway/src/services/websocket/connection.py
 
 **Checkpoint**: All user stories should now be independently functional with comprehensive logging.
 
@@ -193,14 +193,14 @@ description: "Task list for WebSocket Gateway feature implementation"
 
 **Edge Case Coverage Mapping**:
 
-- [ ] EC1 [Edge Cases] Handle extended exchange API unavailability: Implement circuit breaker pattern and exponential backoff in ws-gateway/src/services/websocket/reconnection.py (covers spec.md edge case: "exchange API temporarily unavailable")
-- [ ] EC2 [Edge Cases] Handle malformed messages: Add message validation and error handling in ws-gateway/src/services/websocket/event_parser.py (covers spec.md edge case: "malformed message formats")
+- [X] EC1 [Edge Cases] Handle extended exchange API unavailability: Implement circuit breaker pattern and exponential backoff in ws-gateway/src/services/websocket/reconnection.py (covers spec.md edge case: "exchange API temporarily unavailable")
+- [X] EC2 [Edge Cases] Handle malformed messages: Add message validation and error handling in ws-gateway/src/services/websocket/event_parser.py (covers spec.md edge case: "malformed message formats")
 - [ ] EC3 [Edge Cases] Handle queue capacity limits: Implement queue monitoring and alerting in ws-gateway/src/services/queue/retention.py (covers spec.md edge case: "queue storage reaches capacity")
-- [ ] EC4 [Edge Cases] Handle authentication failures: Add credential validation and error recovery in ws-gateway/src/services/websocket/auth.py (covers spec.md edge case: "authentication failures or expired credentials")
-- [ ] EC5 [Edge Cases] Handle conflicting subscription configurations: Implement conflict resolution logic in ws-gateway/src/services/subscription/subscription_service.py (covers spec.md edge case: "multiple services request conflicting subscriptions")
-- [ ] EC6 [Edge Cases] Handle slow/unavailable PostgreSQL: Already covered by T059 (database write failures), verify graceful degradation
+- [X] EC4 [Edge Cases] Handle authentication failures: Add credential validation and error recovery in ws-gateway/src/services/websocket/auth.py (covers spec.md edge case: "authentication failures or expired credentials")
+- [X] EC5 [Edge Cases] Handle conflicting subscription configurations: Implement conflict resolution logic in ws-gateway/src/services/subscription/subscription_service.py (covers spec.md edge case: "multiple services request conflicting subscriptions")
+- [X] EC6 [Edge Cases] Handle slow/unavailable PostgreSQL: Already covered by T059 (database write failures), verify graceful degradation
 - [ ] EC7 [Edge Cases] Handle slow subscriber consumption: Add queue backlog monitoring and alerting in ws-gateway/src/services/queue/monitoring.py (covers spec.md edge case: "subscriber consumes slower than events arrive")
-- [ ] EC8 [Edge Cases] Handle exchange endpoint timeouts: Add timeout handling in ws-gateway/src/services/websocket/connection.py (covers spec.md edge case: "timeouts or unresponsive endpoints")
+- [X] EC8 [Edge Cases] Handle exchange endpoint timeouts: Add timeout handling in ws-gateway/src/services/websocket/connection.py (covers spec.md edge case: "timeouts or unresponsive endpoints")
 
 **Note**: Some edge cases are implicitly covered by existing tasks (e.g., EC6 by T059). This phase makes coverage explicit and adds monitoring where needed.
 

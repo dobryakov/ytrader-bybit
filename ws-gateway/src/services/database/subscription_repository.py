@@ -117,6 +117,18 @@ class SubscriptionRepository:
         return Subscription(**dict(row))
 
     @staticmethod
+    async def get_active_subscriptions_by_topic(topic: str) -> List[Subscription]:
+        """Return all active subscriptions for a specific topic (for conflict detection)."""
+        query = """
+            SELECT id, channel_type, symbol, topic, requesting_service,
+                   is_active, created_at, updated_at, last_event_at
+            FROM subscriptions
+            WHERE is_active = true AND topic = $1
+        """
+        rows = await DatabaseConnection.fetch(query, topic)
+        return [Subscription(**dict(row)) for row in rows]
+
+    @staticmethod
     async def count_active_subscriptions() -> int:
         """Return the number of active subscriptions."""
         query = "SELECT COUNT(*) AS count FROM subscriptions WHERE is_active = true"

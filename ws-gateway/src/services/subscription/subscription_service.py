@@ -63,13 +63,57 @@ class SubscriptionService:
         requesting_service: str,
         symbol: Optional[str] = None,
     ) -> Subscription:
-        """Create and persist a new subscription."""
+        """
+        Create and persist a new subscription.
+
+        Handles conflicting subscription configurations (EC5: Handle conflicting subscription configurations).
+        If multiple services request the same topic, all subscriptions are allowed (fan-out pattern).
+        """
         if channel_type not in cls.VALID_CHANNEL_TYPES:
             raise ValidationError(f"Invalid channel_type: {channel_type}")
         if not requesting_service:
             raise ValidationError("requesting_service is required")
 
         topic = cls._build_topic(channel_type, symbol)
+
+        # Check for existing active subscriptions with same topic (EC5: Conflict detection)
+        existing_subscriptions = await SubscriptionRepository.get_active_subscriptions_by_topic(
+            topic
+        )
+
+        # Check if this service already has an active subscription for this topic
+        existing_for_service = [
+            sub
+            for sub in existing_subscriptions
+            if sub.requesting_service == requesting_service
+        ]
+
+        if existing_for_service:
+            # Service already has active subscription - return existing instead of creating duplicate
+            logger.info(
+                "subscription_already_exists_for_service",
+                topic=topic,
+                requesting_service=requesting_service,
+                existing_subscription_id=str(existing_for_service[0].id),
+            )
+            return existing_for_service[0]
+
+        # If other services have subscriptions for this topic, log for visibility
+        if existing_subscriptions:
+            other_services = [
+                sub.requesting_service
+                for sub in existing_subscriptions
+                if sub.requesting_service != requesting_service
+            ]
+            logger.info(
+                "subscription_topic_already_subscribed",
+                topic=topic,
+                requesting_service=requesting_service,
+                other_services=other_services,
+                total_subscriptions_for_topic=len(existing_subscriptions),
+            )
+            # Allow multiple services to subscribe to same topic (fan-out pattern)
+
         subscription = Subscription.create(
             channel_type=channel_type,
             topic=topic,
@@ -80,6 +124,7 @@ class SubscriptionService:
         logger.info(
             "subscription_service_created",
             subscription=asdict(subscription),
+            existing_subscriptions_count=len(existing_subscriptions),
         )
         return subscription
 

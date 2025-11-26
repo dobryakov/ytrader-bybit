@@ -9,6 +9,7 @@ from .api.middleware import APIKeyAuthMiddleware, RequestLoggingMiddleware
 from .api.v1 import subscriptions_router
 from .config.logging import get_logger, setup_logging
 from .config.settings import settings
+from .utils.tracing import generate_trace_id, set_trace_id
 from .services.database.connection import DatabaseConnection
 from .services.queue.connection import QueueConnection
 from .services.queue.publisher import get_publisher, close_publisher
@@ -75,17 +76,30 @@ async def lifespan(app: FastAPI):
             await heartbeat_manager.start()
             logger.info("websocket_connection_initialized")
         except Exception as e:
+            trace_id = generate_trace_id()
+            set_trace_id(trace_id)
             logger.warning(
                 "websocket_initial_connection_failed",
                 error=str(e),
                 error_type=type(e).__name__,
+                environment=settings.bybit_environment,
+                trace_id=trace_id,
+                exc_info=True,
             )
             # Reconnection manager will handle retries
             await reconnection_manager.handle_disconnection()
 
         logger.info("application_started", port=settings.ws_gateway_port)
     except Exception as e:
-        logger.error("application_startup_failed", error=str(e))
+        trace_id = generate_trace_id()
+        set_trace_id(trace_id)
+        logger.error(
+            "application_startup_failed",
+            error=str(e),
+            error_type=type(e).__name__,
+            trace_id=trace_id,
+            exc_info=True,
+        )
         raise
 
     yield
@@ -127,7 +141,15 @@ async def lifespan(app: FastAPI):
 
         logger.info("application_shutdown_complete")
     except Exception as e:
-        logger.error("application_shutdown_error", error=str(e))
+        trace_id = generate_trace_id()
+        set_trace_id(trace_id)
+        logger.error(
+            "application_shutdown_error",
+            error=str(e),
+            error_type=type(e).__name__,
+            trace_id=trace_id,
+            exc_info=True,
+        )
 
 
 # Create FastAPI application

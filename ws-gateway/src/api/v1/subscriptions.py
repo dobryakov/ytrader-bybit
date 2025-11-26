@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException, Query
 from ...config.logging import get_logger
 from ...exceptions import SubscriptionError, ValidationError
 from ...services.subscription.subscription_service import SubscriptionService
+from ...utils.tracing import get_or_create_trace_id
 from .schemas import (
     CreateSubscriptionRequest,
     ErrorResponse,
@@ -71,8 +72,18 @@ async def create_subscription(
         )
         return _to_response_model(subscription)
     except (ValidationError, SubscriptionError) as exc:
+        trace_id = get_or_create_trace_id()
         error = _map_exception_to_error_response(exc)
         status_code = 400 if isinstance(exc, ValidationError) else 409
+        logger.error(
+            "subscription_create_error",
+            error=str(exc),
+            error_type=type(exc).__name__,
+            request_data=request.model_dump(),
+            status_code=status_code,
+            trace_id=trace_id,
+            exc_info=True,
+        )
         raise HTTPException(
             status_code=status_code,
             detail=error.model_dump(),

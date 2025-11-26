@@ -13,9 +13,10 @@ from websockets.client import WebSocketClientProtocol
 from ...config.logging import get_logger
 from ...config.settings import settings
 from ...models.websocket_state import ConnectionStatus, WebSocketState
+from ...utils.tracing import generate_trace_id, get_or_create_trace_id, set_trace_id
 from ..database.subscription_repository import SubscriptionRepository
 from ..subscription.subscription_service import SubscriptionService
-from .auth import generate_auth_message, validate_auth_response
+from .auth import generate_auth_message, validate_auth_response, validate_credentials
 from .event_parser import parse_events_from_message
 from .event_processor import process_events
 
@@ -73,51 +74,123 @@ class WebSocketConnection:
         Raises:
             ConnectionError: If connection or authentication fails
         """
+        # Generate trace ID for this connection attempt
+        trace_id = generate_trace_id()
+        set_trace_id(trace_id)
+
         if self.is_connected:
-            logger.warning("websocket_already_connected")
+            logger.warning(
+                "websocket_already_connected",
+                trace_id=trace_id,
+            )
             return
 
+        # Log state change with trace ID
+        old_status = self._state.status
         self._state.status = ConnectionStatus.CONNECTING
+        logger.info(
+            "websocket_state_changed",
+            old_status=old_status.value if hasattr(old_status, "value") else str(old_status),
+            new_status=self._state.status.value,
+            connection_id=str(self._state.connection_id),
+            trace_id=trace_id,
+        )
+
         logger.info(
             "websocket_connecting",
             url=settings.bybit_ws_url,
             environment=settings.bybit_environment,
+            connection_id=str(self._state.connection_id),
+            trace_id=trace_id,
         )
 
-        try:
-            # Connect to Bybit WebSocket
-            self._websocket = await websockets.connect(
-                settings.bybit_ws_url,
-                ping_interval=None,  # We'll handle ping/pong manually
-                ping_timeout=None,
+        # Validate credentials before attempting connection (EC4: Handle authentication failures)
+        if not validate_credentials():
+            error_msg = "Invalid or missing API credentials"
+            logger.error(
+                "websocket_connection_failed_credentials",
+                error=error_msg,
+                connection_id=str(self._state.connection_id),
+                trace_id=trace_id,
             )
+            raise ConnectionError(error_msg)
 
-            logger.info("websocket_connected", url=settings.bybit_ws_url)
+        try:
+            # Connect to Bybit WebSocket with timeout handling (EC8: Handle exchange endpoint timeouts)
+            try:
+                self._websocket = await asyncio.wait_for(
+                    websockets.connect(
+                        settings.bybit_ws_url,
+                        ping_interval=None,  # We'll handle ping/pong manually
+                        ping_timeout=None,
+                    ),
+                    timeout=30.0,  # 30 second connection timeout
+                )
+            except asyncio.TimeoutError:
+                logger.error(
+                    "websocket_connection_timeout",
+                    url=settings.bybit_ws_url,
+                    timeout=30.0,
+                    connection_id=str(self._state.connection_id),
+                    trace_id=trace_id,
+                )
+                raise ConnectionError("WebSocket connection timeout after 30 seconds") from None
+
+            logger.info(
+                "websocket_connected",
+                url=settings.bybit_ws_url,
+                connection_id=str(self._state.connection_id),
+                trace_id=trace_id,
+            )
 
             # Authenticate
             await self._authenticate()
 
-            # Update state
+            # Update state and log state change
+            old_status = self._state.status
             self._state.status = ConnectionStatus.CONNECTED
             self._state.connected_at = datetime.now()
             self._state.last_error = None
             self._connected_event.set()
 
             logger.info(
+                "websocket_state_changed",
+                old_status=old_status.value if hasattr(old_status, "value") else str(old_status),
+                new_status=self._state.status.value,
+                connection_id=str(self._state.connection_id),
+                trace_id=trace_id,
+            )
+
+            logger.info(
                 "websocket_authenticated",
                 connection_id=str(self._state.connection_id),
+                trace_id=trace_id,
             )
 
             # Start receiving messages
             self._receive_task = asyncio.create_task(self._receive_messages())
 
         except Exception as e:
+            old_status = self._state.status
             self._state.status = ConnectionStatus.DISCONNECTED
             self._state.last_error = str(e)
+
             logger.error(
                 "websocket_connection_failed",
                 error=str(e),
                 error_type=type(e).__name__,
+                connection_id=str(self._state.connection_id),
+                trace_id=trace_id,
+                exc_info=True,
+            )
+
+            logger.info(
+                "websocket_state_changed",
+                old_status=old_status.value if hasattr(old_status, "value") else str(old_status),
+                new_status=self._state.status.value,
+                connection_id=str(self._state.connection_id),
+                reason="connection_failed",
+                trace_id=trace_id,
             )
             if self._websocket:
                 await self._websocket.close()
@@ -131,14 +204,28 @@ class WebSocketConnection:
         Raises:
             ConnectionError: If authentication fails
         """
+        trace_id = get_or_create_trace_id()
+        
         if not self._websocket:
+            logger.error(
+                "websocket_auth_error",
+                error="WebSocket not connected",
+                connection_id=str(self._state.connection_id),
+                trace_id=trace_id,
+                exc_info=True,
+            )
             raise ConnectionError("WebSocket not connected")
 
         # Generate and send authentication message
         auth_message = generate_auth_message()
         await self._websocket.send(json.dumps(auth_message))
 
-        logger.debug("websocket_auth_sent", api_key=settings.bybit_api_key[:8] + "...")
+        logger.debug(
+            "websocket_auth_sent",
+            api_key=settings.bybit_api_key[:8] + "...",
+            connection_id=str(self._state.connection_id),
+            trace_id=trace_id,
+        )
 
         # Wait for authentication response (with timeout)
         try:
@@ -146,18 +233,55 @@ class WebSocketConnection:
             response = json.loads(response_str)
 
             if validate_auth_response(response):
-                logger.info("websocket_auth_success")
+                logger.info(
+                    "websocket_auth_success",
+                    connection_id=str(self._state.connection_id),
+                    trace_id=trace_id,
+                )
             else:
                 error_msg = response.get("ret_msg", "Unknown authentication error")
-                logger.error("websocket_auth_failed", error=error_msg)
+                logger.error(
+                    "websocket_auth_failed",
+                    error=error_msg,
+                    response=response,  # Full response for debugging
+                    connection_id=str(self._state.connection_id),
+                    environment=settings.bybit_environment,
+                    trace_id=trace_id,
+                    exc_info=True,
+                )
                 raise ConnectionError(f"Authentication failed: {error_msg}")
 
         except asyncio.TimeoutError:
-            logger.error("websocket_auth_timeout")
+            logger.error(
+                "websocket_auth_timeout",
+                timeout=10.0,
+                connection_id=str(self._state.connection_id),
+                environment=settings.bybit_environment,
+                trace_id=trace_id,
+                exc_info=True,
+            )
             raise ConnectionError("Authentication timeout") from None
         except json.JSONDecodeError as e:
-            logger.error("websocket_auth_invalid_response", error=str(e))
+            logger.error(
+                "websocket_auth_invalid_response",
+                error=str(e),
+                error_type=type(e).__name__,
+                raw_response=response_str[:200] if 'response_str' in locals() else None,
+                connection_id=str(self._state.connection_id),
+                trace_id=trace_id,
+                exc_info=True,
+            )
             raise ConnectionError(f"Invalid authentication response: {e}") from e
+        except Exception as e:
+            logger.error(
+                "websocket_auth_unexpected_error",
+                error=str(e),
+                error_type=type(e).__name__,
+                connection_id=str(self._state.connection_id),
+                trace_id=trace_id,
+                exc_info=True,
+            )
+            raise ConnectionError(f"Unexpected authentication error: {e}") from e
 
     async def _receive_messages(self) -> None:
         """Continuously receive, parse and log messages from WebSocket."""
@@ -168,6 +292,10 @@ class WebSocketConnection:
             async for message in self._websocket:
                 try:
                     data = json.loads(message)
+                    # Generate trace ID for this message or use existing one
+                    trace_id = data.get("trace_id") or get_or_create_trace_id()
+                    set_trace_id(trace_id)
+
                     # Log subscription confirmations and data messages at INFO level for visibility
                     topic = data.get("topic", data.get("op", "unknown"))
                     if data.get("op") == "subscribe" or topic != "unknown":
@@ -175,13 +303,18 @@ class WebSocketConnection:
                             "websocket_message_received",
                             message_type=topic,
                             op=data.get("op"),
-                            data=data,
+                            topic=topic,
+                            message_id=data.get("req_id"),
+                            full_message=data,  # Full message details for debugging
+                            trace_id=trace_id,
                         )
                     else:
                         logger.debug(
                             "websocket_message_received",
                             message_type=topic,
-                            data=data,
+                            topic=topic,
+                            full_message=data,  # Full message details for debugging
+                            trace_id=trace_id,
                         )
 
                     # Store message for viewing via API (testing)
@@ -200,28 +333,70 @@ class WebSocketConnection:
                     await self._process_message(data, trace_id)
 
                 except json.JSONDecodeError as e:
-                    logger.warning("websocket_invalid_json", error=str(e), raw_message=message[:100])
+                    trace_id = get_or_create_trace_id()
+                    logger.warning(
+                        "websocket_invalid_json",
+                        error=str(e),
+                        error_type=type(e).__name__,
+                        raw_message=message[:200],  # First 200 chars for debugging
+                        trace_id=trace_id,
+                        exc_info=True,
+                    )
                 except Exception as e:
+                    trace_id = get_or_create_trace_id()
                     logger.error(
                         "websocket_message_processing_error",
                         error=str(e),
                         error_type=type(e).__name__,
+                        trace_id=trace_id,
+                        exc_info=True,
                     )
 
         except websockets.exceptions.ConnectionClosed:
-            logger.warning("websocket_connection_closed")
+            trace_id = get_or_create_trace_id()
+            old_status = self._state.status
+            logger.warning(
+                "websocket_connection_closed",
+                connection_id=str(self._state.connection_id),
+                trace_id=trace_id,
+            )
             self._state.status = ConnectionStatus.DISCONNECTED
             self._connected_event.clear()
+
+            logger.info(
+                "websocket_state_changed",
+                old_status=old_status.value if hasattr(old_status, "value") else str(old_status),
+                new_status=self._state.status.value,
+                connection_id=str(self._state.connection_id),
+                reason="connection_closed",
+                trace_id=trace_id,
+            )
+
             # Trigger reconnection (will be handled by reconnection manager if registered)
             await self._handle_disconnection()
         except Exception as e:
+            trace_id = get_or_create_trace_id()
+            old_status = self._state.status
             logger.error(
                 "websocket_receive_error",
                 error=str(e),
                 error_type=type(e).__name__,
+                connection_id=str(self._state.connection_id),
+                trace_id=trace_id,
+                exc_info=True,
             )
             self._state.status = ConnectionStatus.DISCONNECTED
             self._connected_event.clear()
+
+            logger.info(
+                "websocket_state_changed",
+                old_status=old_status.value if hasattr(old_status, "value") else str(old_status),
+                new_status=self._state.status.value,
+                connection_id=str(self._state.connection_id),
+                reason="receive_error",
+                trace_id=trace_id,
+            )
+
             # Trigger reconnection (will be handled by reconnection manager if registered)
             await self._handle_disconnection()
 

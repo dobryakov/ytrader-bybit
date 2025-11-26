@@ -7,12 +7,16 @@ from typing import Any
 import structlog
 from structlog.types import EventDict, Processor
 
+from ..utils.tracing import get_trace_id
 from .settings import settings
 
 
 def add_trace_id(logger: Any, method_name: str, event_dict: EventDict) -> EventDict:
     """Add trace_id to log events if available in context."""
-    # Trace ID will be added by middleware/context vars
+    # Get trace ID from context variables (set by middleware or tracing utilities)
+    trace_id = get_trace_id()
+    if trace_id:
+        event_dict["trace_id"] = trace_id
     return event_dict
 
 
