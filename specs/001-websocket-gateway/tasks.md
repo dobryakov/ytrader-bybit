@@ -242,36 +242,36 @@ description: "Task list for WebSocket Gateway feature implementation"
 
 #### Stage 1: Preparation (Backward Compatibility)
 
-- [ ] T076 [P] [Dual] Add channel classification constants (PUBLIC_CHANNELS, PRIVATE_CHANNELS) in ws-gateway/src/services/websocket/channel_types.py
-- [ ] T077 [Dual] Add endpoint_type parameter to WebSocketConnection.__init__() in ws-gateway/src/services/websocket/connection.py
-- [ ] T078 [Dual] Implement _get_ws_url() method with endpoint type selection in ws-gateway/src/services/websocket/connection.py
-- [ ] T079 [Dual] Modify _authenticate() to skip authentication for public endpoints in ws-gateway/src/services/websocket/connection.py
-- [ ] T080 [Dual] Update bybit_ws_url property in settings to support both endpoint types in ws-gateway/src/config/settings.py
+- [X] T076 [P] [Dual] Add channel classification constants (PUBLIC_CHANNELS, PRIVATE_CHANNELS) in ws-gateway/src/services/websocket/channel_types.py
+- [X] T077 [Dual] Add endpoint_type parameter to WebSocketConnection.__init__() in ws-gateway/src/services/websocket/connection.py
+- [X] T078 [Dual] Implement _get_ws_url() method with endpoint type selection in ws-gateway/src/services/websocket/connection.py
+- [X] T079 [Dual] Modify _authenticate() to skip authentication for public endpoints in ws-gateway/src/services/websocket/connection.py
+- [X] T080 [Dual] Update bybit_ws_url property in settings to support both endpoint types in ws-gateway/src/config/settings.py
 
 #### Stage 2: Connection Manager
 
-- [ ] T081 [Dual] Create ConnectionManager class for managing dual connections in ws-gateway/src/services/websocket/connection_manager.py
-- [ ] T082 [Dual] Implement get_connection_for_subscription() method in ws-gateway/src/services/websocket/connection_manager.py
-- [ ] T083 [Dual] Implement get_public_connection() method with lazy initialization in ws-gateway/src/services/websocket/connection_manager.py
-- [ ] T084 [Dual] Implement get_private_connection() method with lazy initialization in ws-gateway/src/services/websocket/connection_manager.py
-- [ ] T085 [Dual] Update SubscriptionService.subscribe() to use ConnectionManager in ws-gateway/src/services/subscription/subscription_service.py
-- [ ] T086 [Dual] Update reconnection logic to handle both connection types independently in ws-gateway/src/services/websocket/reconnection.py
-- [ ] T087 [Dual] Update resubscription logic to use correct connection for each subscription type in ws-gateway/src/services/websocket/reconnection.py
+- [X] T081 [Dual] Create ConnectionManager class for managing dual connections in ws-gateway/src/services/websocket/connection_manager.py
+- [X] T082 [Dual] Implement get_connection_for_subscription() method in ws-gateway/src/services/websocket/connection_manager.py
+- [X] T083 [Dual] Implement get_public_connection() method with lazy initialization in ws-gateway/src/services/websocket/connection_manager.py
+- [X] T084 [Dual] Implement get_private_connection() method with lazy initialization in ws-gateway/src/services/websocket/connection_manager.py
+- [X] T085 [Dual] Update SubscriptionService.subscribe() to use ConnectionManager in ws-gateway/src/services/subscription/subscription_service.py
+- [X] T086 [Dual] Update reconnection logic to handle both connection types independently in ws-gateway/src/services/websocket/reconnection.py
+- [X] T087 [Dual] Update resubscription logic to use correct connection for each subscription type in ws-gateway/src/services/websocket/reconnection.py
 
 #### Stage 3: Testing
 
-- [ ] T088 [Dual] Add unit tests for channel classification in ws-gateway/tests/unit/test_channel_types.py
-- [ ] T089 [Dual] Add unit tests for ConnectionManager in ws-gateway/tests/unit/test_connection_manager.py
-- [ ] T090 [Dual] Add integration test for public endpoint connection (testnet) in ws-gateway/tests/integration/test_public_endpoint.py
-- [ ] T091 [Dual] Add integration test for dual connection simultaneous operation in ws-gateway/tests/integration/test_dual_connections.py
-- [ ] T092 [Dual] Add integration test for independent reconnection per connection type in ws-gateway/tests/integration/test_dual_reconnection.py
+- [X] T088 [Dual] Add unit tests for channel classification in ws-gateway/tests/unit/test_channel_types.py
+- [X] T089 [Dual] Add unit tests for ConnectionManager in ws-gateway/tests/unit/test_connection_manager.py
+- [X] T090 [Dual] Add integration test for public endpoint connection (testnet) in ws-gateway/tests/integration/test_public_endpoint.py
+- [X] T091 [Dual] Add integration test for dual connection simultaneous operation in ws-gateway/tests/integration/test_dual_connections.py
+- [X] T092 [Dual] Add integration test for independent reconnection per connection type in ws-gateway/tests/integration/test_dual_reconnection.py
 
 #### Stage 4: Documentation & Configuration
 
-- [ ] T093 [P] [Dual] Update README.md with dual connection architecture description in ws-gateway/README.md
-- [ ] T094 [P] [Dual] Add usage examples for public and private subscriptions in ws-gateway/README.md
-- [ ] T095 [P] [Dual] Update ws-service.md specification with dual connection details in docs/ws-service.md
-- [ ] T096 [P] [Dual] Add optional configuration for connection strategy (dual/single) in ws-gateway/src/config/settings.py and env.example
+- [X] T093 [P] [Dual] Update README.md with dual connection architecture description in ws-gateway/README.md
+- [X] T094 [P] [Dual] Add usage examples for public and private subscriptions in ws-gateway/README.md
+- [X] T095 [P] [Dual] Update ws-service.md specification with dual connection details in docs/ws-service.md
+- [X] T096 [P] [Dual] Add optional configuration for connection strategy (dual/single) in ws-gateway/src/config/settings.py and env.example
 
 **Checkpoint**: At this point, the system should support both public and private WebSocket connections, automatically selecting the appropriate endpoint based on subscription channel type. Both connections should maintain independent reconnection behavior.
 

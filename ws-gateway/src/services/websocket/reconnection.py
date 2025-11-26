@@ -7,7 +7,9 @@ from typing import Optional
 from ...config.logging import get_logger
 from ...models.websocket_state import ConnectionStatus
 from ..subscription.subscription_service import SubscriptionService
+from .channel_types import get_endpoint_type_for_channel, is_public_channel, is_private_channel
 from .connection import WebSocketConnection
+from .connection_manager import get_connection_manager
 from .subscription import build_subscribe_message
 
 logger = get_logger(__name__)
@@ -177,14 +179,7 @@ class ReconnectionManager:
                     self._record_success()
 
                     # After successful reconnection, automatically resubscribe
-                    subscriptions = await SubscriptionService.get_active_subscriptions()
-                    if subscriptions:
-                        msg = build_subscribe_message(subscriptions)
-                        await self._connection.send(msg)
-                        logger.info(
-                            "websocket_resubscribed_active_subscriptions",
-                            subscription_count=len(subscriptions),
-                        )
+                    await self._resubscribe_for_connection(self._connection)
 
                     # Reset delay on successful connection
                     self._current_delay = INITIAL_RECONNECT_DELAY
@@ -233,4 +228,123 @@ class ReconnectionManager:
     def reset_delay(self) -> None:
         """Reset reconnection delay to initial value (called on successful connection)."""
         self._current_delay = INITIAL_RECONNECT_DELAY
+
+    async def _resubscribe_for_connection(self, connection: WebSocketConnection) -> None:
+        """
+        Resubscribe to active subscriptions for a specific connection.
+        
+        This method filters subscriptions based on the connection's endpoint type
+        and resubscribes only to relevant channels.
+        
+        Args:
+            connection: WebSocketConnection instance to resubscribe on
+        """
+        # Get all active subscriptions
+        all_subscriptions = await SubscriptionService.get_active_subscriptions()
+        if not all_subscriptions:
+            return
+
+        # Determine endpoint type from connection
+        endpoint_type = connection._endpoint_type if hasattr(connection, '_endpoint_type') else "private"
+        
+        # Filter subscriptions by endpoint type
+        relevant_subscriptions = []
+        for sub in all_subscriptions:
+            sub_endpoint_type = get_endpoint_type_for_channel(sub.channel_type)
+            if sub_endpoint_type == endpoint_type:
+                relevant_subscriptions.append(sub)
+
+        if relevant_subscriptions:
+            msg = build_subscribe_message(relevant_subscriptions)
+            await connection.send(msg)
+            logger.info(
+                "websocket_resubscribed_active_subscriptions",
+                subscription_count=len(relevant_subscriptions),
+                endpoint_type=endpoint_type,
+                total_subscriptions=len(all_subscriptions),
+            )
+
+
+class DualReconnectionManager:
+    """Manages automatic reconnection for both public and private WebSocket connections."""
+
+    def __init__(self):
+        """Initialize dual reconnection manager."""
+        self._connection_manager = get_connection_manager()
+        self._public_reconnect_manager: Optional[ReconnectionManager] = None
+        self._private_reconnect_manager: Optional[ReconnectionManager] = None
+        self._should_reconnect = False
+
+    async def start(self) -> None:
+        """Start monitoring both connections and automatic reconnection."""
+        self._should_reconnect = True
+        
+        # Setup reconnection managers for both connections
+        public_conn = self._connection_manager.get_public_connection_sync()
+        if public_conn:
+            self._public_reconnect_manager = ReconnectionManager(public_conn)
+            public_conn.set_disconnection_callback(
+                self._public_reconnect_manager.handle_disconnection
+            )
+            await self._public_reconnect_manager.start()
+        
+        private_conn = self._connection_manager.get_private_connection_sync()
+        if private_conn:
+            self._private_reconnect_manager = ReconnectionManager(private_conn)
+            private_conn.set_disconnection_callback(
+                self._private_reconnect_manager.handle_disconnection
+            )
+            await self._private_reconnect_manager.start()
+        
+        logger.info("dual_reconnection_manager_started")
+
+    async def stop(self) -> None:
+        """Stop automatic reconnection for both connections."""
+        self._should_reconnect = False
+        
+        if self._public_reconnect_manager:
+            await self._public_reconnect_manager.stop()
+            self._public_reconnect_manager = None
+        
+        if self._private_reconnect_manager:
+            await self._private_reconnect_manager.stop()
+            self._private_reconnect_manager = None
+        
+        logger.info("dual_reconnection_manager_stopped")
+
+    async def handle_public_disconnection(self) -> None:
+        """Handle disconnection of public connection."""
+        if not self._should_reconnect:
+            return
+        
+        # Get or create public connection
+        public_conn = await self._connection_manager.get_public_connection()
+        
+        # Setup reconnection manager if not already set
+        if not self._public_reconnect_manager:
+            self._public_reconnect_manager = ReconnectionManager(public_conn)
+            public_conn.set_disconnection_callback(
+                self._public_reconnect_manager.handle_disconnection
+            )
+            await self._public_reconnect_manager.start()
+        
+        await self._public_reconnect_manager.handle_disconnection()
+
+    async def handle_private_disconnection(self) -> None:
+        """Handle disconnection of private connection."""
+        if not self._should_reconnect:
+            return
+        
+        # Get or create private connection
+        private_conn = await self._connection_manager.get_private_connection()
+        
+        # Setup reconnection manager if not already set
+        if not self._private_reconnect_manager:
+            self._private_reconnect_manager = ReconnectionManager(private_conn)
+            private_conn.set_disconnection_callback(
+                self._private_reconnect_manager.handle_disconnection
+            )
+            await self._private_reconnect_manager.start()
+        
+        await self._private_reconnect_manager.handle_disconnection()
 
