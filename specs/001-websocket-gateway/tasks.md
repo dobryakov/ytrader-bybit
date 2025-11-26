@@ -282,6 +282,79 @@ description: "Task list for WebSocket Gateway feature implementation"
 
 ---
 
+## Phase 11: Multi-Category Public Connection Support
+
+**Purpose**: Extend dual connection support to handle multiple public WebSocket connections for different Bybit categories (spot, linear, inverse, option, spread)
+
+**Reference**: Bybit v5 API requires separate public endpoints for different contract categories:
+- `/v5/public/spot` - Spot trading data
+- `/v5/public/linear` - USDT/USDC perpetual & futures data
+- `/v5/public/inverse` - Inverse contracts data
+- `/v5/public/option` - USDT/USDC options data
+- `/v5/public/spread` - Spread trading data
+
+**Goal**: Support multiple public WebSocket connections simultaneously, automatically creating and managing connections for each required category. This allows subscribing to data from all categories (e.g., spot tickers and linear futures tickers) without requiring manual configuration changes.
+
+**Independent Test**: Can be fully tested by subscribing to channels from different categories (e.g., spot tickers and linear tickers), verifying separate connections are established for each category, and confirming all subscriptions receive events correctly.
+
+### Implementation for Multi-Category Public Connection Support
+
+#### Stage 1: Category Detection and Routing
+
+- [ ] T097 [P] [MultiCat] Add category detection logic based on symbol or explicit category in ws-gateway/src/services/websocket/category_detector.py
+- [ ] T098 [MultiCat] Extend Subscription model to optionally store category information in ws-gateway/src/models/subscription.py
+- [ ] T099 [MultiCat] Implement category-to-endpoint mapping (spot→/spot, linear→/linear, etc.) in ws-gateway/src/services/websocket/category_detector.py
+- [ ] T100 [MultiCat] Add symbol-based category detection (if symbol format indicates category) in ws-gateway/src/services/websocket/category_detector.py
+- [ ] T101 [MultiCat] Update subscription request schema to optionally accept explicit category in ws-gateway/src/api/v1/schemas.py
+
+#### Stage 2: Multi-Connection Manager
+
+- [ ] T102 [MultiCat] Extend ConnectionManager to support multiple public connections (one per category) in ws-gateway/src/services/websocket/connection_manager.py
+- [ ] T103 [MultiCat] Implement get_public_connection(category) method with category parameter in ws-gateway/src/services/websocket/connection_manager.py
+- [ ] T104 [MultiCat] Implement lazy initialization of public connections per category in ws-gateway/src/services/websocket/connection_manager.py
+- [ ] T105 [MultiCat] Update get_connection_for_subscription() to route to correct category-specific connection in ws-gateway/src/services/websocket/connection_manager.py
+- [ ] T106 [MultiCat] Implement connection cleanup for unused categories (optional optimization) in ws-gateway/src/services/websocket/connection_manager.py
+
+#### Stage 3: Reconnection and Resubscription
+
+- [ ] T107 [MultiCat] Update DualReconnectionManager to handle multiple public connections in ws-gateway/src/services/websocket/reconnection.py
+- [ ] T108 [MultiCat] Implement independent reconnection per category in ws-gateway/src/services/websocket/reconnection.py
+- [ ] T109 [MultiCat] Update resubscription logic to use correct category-specific connection in ws-gateway/src/services/websocket/reconnection.py
+- [ ] T110 [MultiCat] Add reconnection tracking per category in ws-gateway/src/services/websocket/reconnection.py
+
+#### Stage 4: Configuration and Settings
+
+- [ ] T111 [P] [MultiCat] Remove BYBIT_WS_PUBLIC_CATEGORY from settings (no longer needed with multi-category support) in ws-gateway/src/config/settings.py
+- [ ] T112 [P] [MultiCat] Update env.example to remove BYBIT_WS_PUBLIC_CATEGORY and add documentation about automatic category detection in env.example
+- [ ] T113 [MultiCat] Add configuration for default category fallback (if category cannot be detected) in ws-gateway/src/config/settings.py
+- [ ] T114 [MultiCat] Add configuration for enabled categories (allow disabling unused categories) in ws-gateway/src/config/settings.py
+
+#### Stage 5: Testing
+
+- [ ] T115 [MultiCat] Add unit tests for category detection logic in ws-gateway/tests/unit/test_category_detector.py
+- [ ] T116 [MultiCat] Add unit tests for multi-category ConnectionManager in ws-gateway/tests/unit/test_connection_manager_multi.py
+- [ ] T117 [MultiCat] Add integration test for simultaneous spot and linear subscriptions in ws-gateway/tests/integration/test_multi_category_public.py
+- [ ] T118 [MultiCat] Add integration test for independent reconnection per category in ws-gateway/tests/integration/test_multi_category_reconnection.py
+- [ ] T119 [MultiCat] Add integration test for category detection from symbols in ws-gateway/tests/integration/test_category_detection.py
+
+#### Stage 6: Documentation and Monitoring
+
+- [ ] T120 [P] [MultiCat] Update README.md with multi-category architecture description in ws-gateway/README.md
+- [ ] T121 [P] [MultiCat] Add usage examples for multi-category subscriptions in ws-gateway/README.md
+- [ ] T122 [P] [MultiCat] Update ws-service.md specification with multi-category details in docs/ws-service.md
+- [ ] T123 [MultiCat] Add health check metrics for active public connections per category in ws-gateway/src/api/health.py
+- [ ] T124 [MultiCat] Add logging for category detection and connection creation per category in ws-gateway/src/services/websocket/connection_manager.py
+
+**Checkpoint**: At this point, the system should support multiple public WebSocket connections (one per category), automatically detecting the required category for each subscription and routing it to the appropriate connection. All category-specific connections should maintain independent reconnection behavior.
+
+**Dependencies**: 
+- Requires completion of Phase 10 (Dual Connection Support)
+- Requires completion of Phase 3 (User Story 1 - WebSocket Connection)
+- Requires completion of Phase 4 (User Story 2 - Subscriptions)
+- Can be implemented after Phase 9 (Polish) or in parallel if needed
+
+---
+
 ## Dependencies & Execution Order
 
 ### Phase Dependencies
@@ -402,7 +475,7 @@ With multiple developers:
 
 ## Task Summary
 
-- **Total Tasks**: 96 (75 original + 13 new: T051a, EC1-EC8, T074a-T074f + 8 new: T076-T096 for dual connection support)
+- **Total Tasks**: 124 (75 original + 13 new: T051a, EC1-EC8, T074a-T074f + 8 new: T076-T096 for dual connection support + 28 new: T097-T124 for multi-category public connection support)
 - **Setup Phase**: 7 tasks
 - **Foundational Phase**: 10 tasks
 - **User Story 1 (P1)**: 8 tasks
@@ -414,8 +487,11 @@ With multiple developers:
 - **Edge Case Handling (Phase 8.5)**: 8 tasks (EC1-EC8, EC6 is verification note)
 - **Polish Phase**: 13 tasks (T074 expanded to T074a-T074f for monitoring)
 - **Dual Connection Support (Phase 10)**: 21 tasks (T076-T096 for public/private endpoint separation)
+- **Multi-Category Public Connection Support (Phase 11)**: 28 tasks (T097-T124 for multiple public connections per category)
 
 **Suggested MVP Scope**: User Stories 1 & 2 (WebSocket Connection + Subscriptions & Events) - 18 implementation tasks plus setup and foundational phases.
 
 **Dual Connection Support**: See Phase 10 for implementation of separate public and private WebSocket connections. Reference architecture document: `/docs/ws-gateway-public-endpoints.md`
+
+**Multi-Category Public Connection Support**: See Phase 11 for implementation of multiple public WebSocket connections (one per category: spot, linear, inverse, option, spread). This extends Phase 10 to support subscribing to data from all Bybit categories simultaneously without manual configuration changes.
 
