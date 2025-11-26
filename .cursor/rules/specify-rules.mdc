@@ -3,6 +3,7 @@
 Auto-generated from all feature plans. Last updated: 2025-11-25
 
 ## Active Technologies
+- Python 3.11+ (async/await support for message queue processing, ML ecosystem maturity) (001-model-service)
 
 - Python 3.11+ (async/await support for WebSocket handling) (001-websocket-gateway)
 
@@ -22,6 +23,7 @@ cd src [ONLY COMMANDS FOR ACTIVE TECHNOLOGIES][ONLY COMMANDS FOR ACTIVE TECHNOLO
 Python 3.11+ (async/await support for WebSocket handling): Follow standard conventions
 
 ## Recent Changes
+- 001-model-service: Added Python 3.11+ (async/await support for message queue processing, ML ecosystem maturity)
 
 - 001-websocket-gateway: Added Python 3.11+ (async/await support for WebSocket handling)
 

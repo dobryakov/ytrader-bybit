@@ -1,0 +1,598 @@
+openapi: 3.1.0
+info:
+  title: Model Service API
+  description: |
+    REST API for managing ML models, training operations, and monitoring model service health.
+    This API provides endpoints for model version management, quality metrics, and system monitoring.
+  version: 1.0.0
+  contact:
+    name: YTrader Team
+
+servers:
+  - url: http://localhost:4500
+    description: Local development server
+  - url: https://model-service.example.com
+    description: Production server
+
+tags:
+  - name: models
+    description: Model version management operations
+  - name: metrics
+    description: Model quality metrics operations
+  - name: training
+    description: Model training operations and status
+  - name: health
+    description: Health check and status endpoints
+
+paths:
+  /health:
+    get:
+      tags:
+        - health
+      summary: Health check
+      description: Returns the health status of the Model Service
+      operationId: getHealth
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '503':
+          description: Service is unhealthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+  /api/v1/models:
+    get:
+      tags:
+        - models
+      summary: List model versions
+      description: |
+        Retrieve a list of all model versions, optionally filtered by strategy_id.
+        Returns model metadata including version, training timestamp, quality metrics summary, and active status.
+      operationId: listModelVersions
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: strategy_id
+          in: query
+          description: Filter by trading strategy identifier
+          required: false
+          schema:
+            type: string
+        - name: is_active
+          in: query
+          description: Filter by active status
+          required: false
+          schema:
+            type: boolean
+        - name: limit
+          in: query
+          description: Maximum number of results to return
+          required: false
+          schema:
+            type: integer
+            default: 100
+            minimum: 1
+            maximum: 1000
+        - name: offset
+          in: query
+          description: Number of results to skip
+          required: false
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
+      responses:
+        '200':
+          description: List of model versions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelVersionListResponse'
+        '401':
+          description: Authentication failed (invalid or missing API key)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/models/{version}:
+    get:
+      tags:
+        - models
+      summary: Get model version details
+      description: Retrieve detailed information about a specific model version including all quality metrics
+      operationId: getModelVersion
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: version
+          in: path
+          required: true
+          description: Model version identifier (e.g., 'v1', 'v2.1')
+          schema:
+            type: string
+            pattern: '^v\d+(\.\d+)?$'
+      responses:
+        '200':
+          description: Model version details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelVersionDetailResponse'
+        '404':
+          description: Model version not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Authentication failed (invalid or missing API key)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    post:
+      tags:
+        - models
+      summary: Activate model version
+      description: |
+        Activate a specific model version for a strategy. This will deactivate the currently active model
+        for the same strategy (if any) and activate the specified version. Returns the activated model version.
+      operationId: activateModelVersion
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: version
+          in: path
+          required: true
+          description: Model version identifier to activate
+          schema:
+            type: string
+            pattern: '^v\d+(\.\d+)?$'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ActivateModelRequest'
+      responses:
+        '200':
+          description: Model version activated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelVersionDetailResponse'
+        '404':
+          description: Model version not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '400':
+          description: Invalid request (e.g., model file not found, quality metrics below threshold)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Authentication failed (invalid or missing API key)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/models/{version}/metrics:
+    get:
+      tags:
+        - metrics
+      summary: Get quality metrics for model version
+      description: Retrieve all quality metrics for a specific model version
+      operationId: getModelMetrics
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: version
+          in: path
+          required: true
+          description: Model version identifier
+          schema:
+            type: string
+            pattern: '^v\d+(\.\d+)?$'
+        - name: metric_type
+          in: query
+          description: Filter by metric type
+          required: false
+          schema:
+            type: string
+            enum: [classification, regression, trading_performance]
+      responses:
+        '200':
+          description: Quality metrics for the model version
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelMetricsResponse'
+        '404':
+          description: Model version not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Authentication failed (invalid or missing API key)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/training/status:
+    get:
+      tags:
+        - training
+      summary: Get training status
+      description: |
+        Retrieve the current status of model training operations, including whether training is in progress,
+        last training completion time, and next scheduled training time.
+      operationId: getTrainingStatus
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: strategy_id
+          in: query
+          description: Filter by trading strategy identifier
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Training status information
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrainingStatusResponse'
+        '401':
+          description: Authentication failed (invalid or missing API key)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/training/trigger:
+    post:
+      tags:
+        - training
+      summary: Trigger manual model training
+      description: |
+        Manually trigger model training or retraining for a strategy. If training is already in progress,
+        it will be cancelled and restarted with new data.
+      operationId: triggerTraining
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TriggerTrainingRequest'
+      responses:
+        '202':
+          description: Training triggered successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TriggerTrainingResponse'
+        '400':
+          description: Invalid request (e.g., insufficient training data, invalid strategy_id)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Authentication failed (invalid or missing API key)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: API key for service-to-service authentication
+
+  schemas:
+    HealthResponse:
+      type: object
+      required:
+        - status
+        - timestamp
+      properties:
+        status:
+          type: string
+          enum: [healthy, unhealthy]
+          description: Service health status
+        timestamp:
+          type: string
+          format: date-time
+          description: Health check timestamp
+        details:
+          type: object
+          description: Additional health check details
+          properties:
+            database:
+              type: string
+              enum: [connected, disconnected]
+            message_queue:
+              type: string
+              enum: [connected, disconnected]
+            model_storage:
+              type: string
+              enum: [accessible, inaccessible]
+            active_models:
+              type: integer
+              description: Number of active model versions
+
+    ModelVersionSummary:
+      type: object
+      required:
+        - id
+        - version
+        - model_type
+        - trained_at
+        - is_active
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique model version identifier
+        version:
+          type: string
+          pattern: '^v\d+(\.\d+)?$'
+          description: Human-readable version identifier
+        model_type:
+          type: string
+          enum: [xgboost, random_forest, logistic_regression, sgd_classifier]
+          description: Type of ML model
+        strategy_id:
+          type: string
+          nullable: true
+          description: Trading strategy identifier (NULL for general models)
+        trained_at:
+          type: string
+          format: date-time
+          description: When model training completed
+        training_duration_seconds:
+          type: integer
+          nullable: true
+          description: Training duration in seconds
+        training_dataset_size:
+          type: integer
+          nullable: true
+          description: Number of records in training dataset
+        is_active:
+          type: boolean
+          description: Whether this version is currently active
+        is_warmup_mode:
+          type: boolean
+          description: Whether system is in warm-up mode
+        quality_metrics_summary:
+          type: object
+          description: Summary of key quality metrics
+          properties:
+            accuracy:
+              type: number
+              format: float
+              minimum: 0
+              maximum: 1
+            sharpe_ratio:
+              type: number
+              format: float
+
+    ModelVersionListResponse:
+      type: object
+      required:
+        - models
+        - total
+      properties:
+        models:
+          type: array
+          items:
+            $ref: '#/components/schemas/ModelVersionSummary'
+        total:
+          type: integer
+          description: Total number of model versions matching the filter
+        limit:
+          type: integer
+          description: Maximum number of results returned
+        offset:
+          type: integer
+          description: Number of results skipped
+
+    ModelVersionDetailResponse:
+      allOf:
+        - $ref: '#/components/schemas/ModelVersionSummary'
+        - type: object
+          properties:
+            file_path:
+              type: string
+              description: File system path to model file
+            training_config:
+              type: object
+              description: Training configuration parameters
+            quality_metrics:
+              type: array
+              items:
+                $ref: '#/components/schemas/QualityMetric'
+
+    QualityMetric:
+      type: object
+      required:
+        - id
+        - metric_name
+        - metric_value
+        - metric_type
+        - evaluated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique metric record identifier
+        metric_name:
+          type: string
+          description: Metric name (e.g., 'accuracy', 'precision', 'sharpe_ratio')
+        metric_value:
+          type: number
+          format: float
+          description: Metric value
+        metric_type:
+          type: string
+          enum: [classification, regression, trading_performance]
+          description: Type of metric
+        evaluated_at:
+          type: string
+          format: date-time
+          description: When metric was calculated
+        evaluation_dataset_size:
+          type: integer
+          nullable: true
+          description: Number of records in evaluation dataset
+        metadata:
+          type: object
+          nullable: true
+          description: Additional metric metadata
+
+    ModelMetricsResponse:
+      type: object
+      required:
+        - model_version_id
+        - version
+        - metrics
+      properties:
+        model_version_id:
+          type: string
+          format: uuid
+          description: Model version identifier
+        version:
+          type: string
+          description: Human-readable version identifier
+        metrics:
+          type: array
+          items:
+            $ref: '#/components/schemas/QualityMetric'
+
+    ActivateModelRequest:
+      type: object
+      properties:
+        strategy_id:
+          type: string
+          nullable: true
+          description: Trading strategy identifier (if not provided, uses model's strategy_id)
+        force:
+          type: boolean
+          default: false
+          description: Force activation even if quality metrics are below threshold
+
+    TrainingStatusResponse:
+      type: object
+      required:
+        - is_training
+      properties:
+        is_training:
+          type: boolean
+          description: Whether training is currently in progress
+        strategy_id:
+          type: string
+          nullable: true
+          description: Trading strategy identifier (if filtered)
+        current_training:
+          type: object
+          nullable: true
+          description: Information about current training operation
+          properties:
+            started_at:
+              type: string
+              format: date-time
+            estimated_completion:
+              type: string
+              format: date-time
+            progress_percent:
+              type: number
+              format: float
+              minimum: 0
+              maximum: 100
+        last_training:
+          type: object
+          nullable: true
+          description: Information about last completed training
+          properties:
+            completed_at:
+              type: string
+              format: date-time
+            version:
+              type: string
+            duration_seconds:
+              type: integer
+        next_scheduled_training:
+          type: string
+          format: date-time
+          nullable: true
+          description: Next scheduled training time (if periodic retraining is configured)
+
+    TriggerTrainingRequest:
+      type: object
+      required:
+        - strategy_id
+      properties:
+        strategy_id:
+          type: string
+          description: Trading strategy identifier
+        training_type:
+          type: string
+          enum: [full, incremental]
+          default: full
+          description: Type of training (full retraining or incremental update)
+
+    TriggerTrainingResponse:
+      type: object
+      required:
+        - status
+        - training_id
+      properties:
+        status:
+          type: string
+          enum: [triggered, queued]
+          description: Training status
+        training_id:
+          type: string
+          format: uuid
+          description: Unique identifier for this training operation
+        message:
+          type: string
+          description: Status message
+
+    ErrorResponse:
+      type: object
+      required:
+        - error
+        - code
+      properties:
+        error:
+          type: string
+          description: Human-readable error message
+        code:
+          type: string
+          description: Machine-readable error code
+        details:
+          type: object
+          nullable: true
+          description: Additional error details
+
