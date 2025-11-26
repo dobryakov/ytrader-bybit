@@ -5,6 +5,16 @@
 **Status**: Draft  
 **Input**: User description: "Микросервис обучения и принятия торговых решений (Model Service)"
 
+## Clarifications
+
+### Session 2025-11-26
+
+- Q: What message format should be used for order execution events and trading signals in the message queue? → A: Plain JSON without schema versioning
+- Q: How should trained ML models be stored and persisted (file system, database, object storage)? → A: File system with database metadata
+- Q: How should the system handle retraining conflicts when multiple triggers occur simultaneously (queue, cancel/restart, concurrent, ignore)? → A: Cancel current training and restart with new data
+- Q: What authentication and authorization approach should be used for service integrations? → A: API key authentication for service-to-service REST API calls (infrastructure services like RabbitMQ and PostgreSQL use their standard username/password authentication)
+- Q: Should rate limiting/throttling be implemented for signal generation to prevent resource exhaustion? → A: Configurable rate limit with burst allowance
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Warm-up Mode Signal Generation (Priority: P1)
@@ -43,6 +53,7 @@ The system trains or retrains ML models in real-time using feedback from order e
 6. **Given** the system is configured for periodic retraining, **When** the scheduled time arrives, **Then** the system triggers model retraining using accumulated data since the last training
 7. **Given** model quality metrics degrade below configured thresholds, **When** quality monitoring detects the degradation, **Then** the system automatically triggers model retraining
 8. **Given** the system has accumulated a configured minimum number of new execution events, **When** the data threshold is reached, **Then** the system triggers model retraining
+9. **Given** a model training operation is in progress, **When** a new retraining trigger occurs (scheduled, data threshold, or quality degradation), **Then** the system cancels the current training operation and restarts with new data
 
 ---
 
@@ -85,7 +96,7 @@ The system tracks model quality metrics, maintains version history, and provides
 ### Edge Cases
 
 - What happens when no order execution events are received for an extended period (affecting retraining schedules)?
-- How does the system handle retraining conflicts (e.g., scheduled retraining triggered while another training is in progress)?
+- How does the system handle retraining conflicts (e.g., scheduled retraining triggered while another training is in progress)? **RESOLVED**: System cancels current training operation and restarts with new data when a new retraining trigger occurs during an in-progress training operation.
 - How does the system handle corrupted or invalid execution event data?
 - What happens when the database connection is lost while retrieving order/position state?
 - How does the system handle message queue failures when publishing signals?
@@ -93,14 +104,14 @@ The system tracks model quality metrics, maintains version history, and provides
 - How does the system handle transitions between warm-up and model-based modes when model quality is borderline?
 - What happens when multiple conflicting signals are generated for the same asset?
 - How does the system handle database schema changes or missing required data?
-- What happens when warm-up mode parameters are misconfigured (e.g., frequency too high, amounts too large)?
+- What happens when warm-up mode parameters are misconfigured (e.g., frequency too high, amounts too large)? **RESOLVED**: System enforces configurable rate limits with burst allowance; signals exceeding the rate limit are throttled to prevent resource exhaustion.
 - How does the system handle partial order execution events or incomplete market data?
 
 ## Requirements *(mandatory)*
 
 ### Functional Requirements
 
-- **FR-001**: System MUST subscribe to message queue for enriched order execution events from the order manager microservice
+- **FR-001**: System MUST subscribe to message queue for enriched order execution events from the order manager microservice (format: plain JSON without schema versioning)
 - **FR-002**: System MUST retrieve current state of open orders and positions from shared PostgreSQL database
 - **FR-003**: System MUST analyze order execution events and associated market data to form training datasets
 - **FR-004**: System MUST train or retrain ML models using feedback from order executions, supporting both online learning (continuous incremental updates) and periodic batch retraining
@@ -108,17 +119,19 @@ The system tracks model quality metrics, maintains version history, and provides
 - **FR-020**: System MUST accumulate execution events and market data for training, processing them either incrementally (online learning) or in batches (periodic retraining)
 - **FR-021**: System MUST automatically trigger model retraining when model quality metrics fall below configured degradation thresholds
 - **FR-022**: System MUST support configurable retraining schedules (e.g., daily, weekly) for periodic batch retraining operations
+- **FR-023**: System MUST cancel any in-progress training operation and restart with new data when a new retraining trigger occurs during an active training operation
 - **FR-005**: System MUST generate high-level trading signals (buy/sell, asset, amount, confidence, timestamp, strategy_id) based on model predictions
-- **FR-006**: System MUST publish generated trading signals to message queue for order manager microservice
+- **FR-006**: System MUST publish generated trading signals to message queue for order manager microservice (format: plain JSON without schema versioning)
 - **FR-007**: System MUST operate in warm-up mode when no trained model is available, using heuristics or controlled random generation
 - **FR-008**: System MUST generate warm-up signals with configurable frequency and risk parameters
+- **FR-024**: System MUST enforce configurable rate limiting on signal generation with burst allowance to prevent resource exhaustion and message queue overload
 - **FR-009**: System MUST accept and aggregate order execution events during warm-up mode for future training
 - **FR-010**: System MUST automatically transition from warm-up mode to model-based generation when model quality reaches configured threshold
 - **FR-011**: System MUST provide configuration for warm-up mode parameters (duration, randomness level, minimum order parameters)
-- **FR-012**: System MUST track model quality metrics and maintain version history
+- **FR-012**: System MUST track model quality metrics and maintain version history (models stored as files on file system, metadata in PostgreSQL database)
 - **FR-013**: System MUST log all significant operations (signal generation, model training, mode transitions) with appropriate detail
 - **FR-014**: System MUST provide monitoring capabilities for model performance and system health
-- **FR-015**: System MUST handle integration with other microservices (order manager, ws-gateway) through defined interfaces
+- **FR-015**: System MUST handle integration with other microservices (order manager, ws-gateway) through defined interfaces with API key authentication for REST API calls
 - **FR-016**: System MUST validate trading signals before publishing (required fields, value ranges, format compliance)
 - **FR-017**: System MUST handle errors gracefully (queue failures, database unavailability, model training failures) with appropriate fallbacks
 - **FR-018**: System MUST support multiple trading strategies with distinct strategy identifiers
@@ -129,7 +142,7 @@ The system tracks model quality metrics, maintains version history, and provides
 
 - **Order Execution Event**: Enriched event from order manager containing details about executed trades, including execution price, quantity, fees, timestamp, and associated market conditions. Used for training and performance evaluation.
 
-- **Model Version**: Represents a trained ML model instance with version identifier, training timestamp, quality metrics, configuration parameters, and performance history. Supports versioning and rollback capabilities.
+- **Model Version**: Represents a trained ML model instance with version identifier, training timestamp, quality metrics, configuration parameters, and performance history. Models are stored as files on the file system (e.g., `/models/v{version}.pkl`), while metadata (version ID, timestamps, quality metrics, configuration, file path) is stored in PostgreSQL database. Supports versioning and rollback capabilities.
 
 - **Order/Position State**: Current snapshot of open orders and positions retrieved from shared database, including order status, position sizes, entry prices, and unrealized P&L. Used as input for signal generation.
 
@@ -151,12 +164,12 @@ The system tracks model quality metrics, maintains version history, and provides
 - **SC-006**: System maintains model version history with complete metadata for at least 100 previous versions
 - **SC-007**: System logs all critical operations (signal generation, training, mode transitions) with 100% coverage and traceability
 - **SC-008**: System handles message queue and database connection failures with automatic retry and graceful degradation, maintaining 99% uptime
-- **SC-009**: Warm-up mode generates signals at configurable frequency (default: 1 signal per minute) with risk parameters preventing excessive exposure
+- **SC-009**: Warm-up mode generates signals at configurable frequency (default: 1 signal per minute) with risk parameters preventing excessive exposure, subject to configurable rate limits with burst allowance
 - **SC-010**: System supports concurrent operation of multiple trading strategies (minimum 5) without interference or performance degradation
 
 ## Assumptions
 
-- Order manager microservice exists and publishes enriched execution events to a message queue
+- Order manager microservice exists and publishes enriched execution events to a message queue (using plain JSON format without schema versioning)
 - Shared relational database contains tables for open orders and positions accessible by this microservice
 - Message queue infrastructure is available and configured for event streaming
 - Market data required for analysis is available through integration with other microservices or data sources
@@ -166,6 +179,7 @@ The system tracks model quality metrics, maintains version history, and provides
 - Configuration management system is available for warm-up mode, retraining schedules, and other operational parameters
 - System supports both online learning (incremental updates) and periodic batch retraining approaches
 - Logging and monitoring infrastructure is available for observability requirements
+- Service-to-service REST API calls use API key authentication; infrastructure services (RabbitMQ, PostgreSQL) use standard username/password authentication
 
 ## Dependencies
 
