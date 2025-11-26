@@ -9,6 +9,8 @@
 
 A microservice that establishes and maintains a single authenticated WebSocket connection to Bybit exchange, subscribes to multiple data channels (trades, tickers, order books, order statuses, balances), and routes events to subscriber services via RabbitMQ queues. The service provides a REST API for dynamic subscription management and persists critical data (balances, subscriptions) to PostgreSQL. Built with Python using async WebSocket libraries, FastAPI for REST endpoints, and structured logging for observability.
 
+**Future Enhancement**: Phase 10 (see tasks.md) will add support for dual WebSocket connections - separate public (`/v5/public`) and private (`/v5/private`) endpoints for better scalability and separation of concerns. Architecture details available in `/docs/ws-gateway-public-endpoints.md`.
+
 ## Technical Context
 
 **Language/Version**: Python 3.11+ (async/await support for WebSocket handling)  
@@ -38,7 +40,7 @@ A microservice that establishes and maintains a single authenticated WebSocket c
 - Must handle Bybit API rate limits and connection limits
 
 **Scale/Scope**: 
-- Single WebSocket connection to Bybit (mainnet or testnet)
+- Single WebSocket connection to Bybit (mainnet or testnet) - **Note**: Future enhancement planned for dual connection support (public `/v5/public` and private `/v5/private` endpoints). See Phase 10 in tasks.md and `/docs/ws-gateway-public-endpoints.md` for details.
 - Multiple concurrent subscriptions (trades, tickers, order books, order statuses, balances)
 - 10+ subscriber services consuming from RabbitMQ queues
 - Queue organization by event class (trades, order_status, balances, etc.)

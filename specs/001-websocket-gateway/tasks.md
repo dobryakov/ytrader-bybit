@@ -228,6 +228,60 @@ description: "Task list for WebSocket Gateway feature implementation"
 
 ---
 
+## Phase 10: Dual Connection Support (Public & Private Endpoints)
+
+**Purpose**: Implement support for separate public and private WebSocket connections to Bybit
+
+**Reference**: See `/docs/ws-gateway-public-endpoints.md` for detailed architecture and implementation plan
+
+**Goal**: Support dual WebSocket connections - one public endpoint (`/v5/public`) for public data channels (tickers, trades, orderbook, kline, liquidation) and one private endpoint (`/v5/private`) for private data channels (wallet, order, position). This provides better scalability, separation of concerns, and eliminates the need for API keys for public data.
+
+**Independent Test**: Can be fully tested by subscribing to both public channels (e.g., tickers.BTCUSDT) and private channels (e.g., wallet), verifying events are received from the correct endpoint, and confirming both connections maintain independent reconnection behavior.
+
+### Implementation for Dual Connection Support
+
+#### Stage 1: Preparation (Backward Compatibility)
+
+- [ ] T076 [P] [Dual] Add channel classification constants (PUBLIC_CHANNELS, PRIVATE_CHANNELS) in ws-gateway/src/services/websocket/channel_types.py
+- [ ] T077 [Dual] Add endpoint_type parameter to WebSocketConnection.__init__() in ws-gateway/src/services/websocket/connection.py
+- [ ] T078 [Dual] Implement _get_ws_url() method with endpoint type selection in ws-gateway/src/services/websocket/connection.py
+- [ ] T079 [Dual] Modify _authenticate() to skip authentication for public endpoints in ws-gateway/src/services/websocket/connection.py
+- [ ] T080 [Dual] Update bybit_ws_url property in settings to support both endpoint types in ws-gateway/src/config/settings.py
+
+#### Stage 2: Connection Manager
+
+- [ ] T081 [Dual] Create ConnectionManager class for managing dual connections in ws-gateway/src/services/websocket/connection_manager.py
+- [ ] T082 [Dual] Implement get_connection_for_subscription() method in ws-gateway/src/services/websocket/connection_manager.py
+- [ ] T083 [Dual] Implement get_public_connection() method with lazy initialization in ws-gateway/src/services/websocket/connection_manager.py
+- [ ] T084 [Dual] Implement get_private_connection() method with lazy initialization in ws-gateway/src/services/websocket/connection_manager.py
+- [ ] T085 [Dual] Update SubscriptionService.subscribe() to use ConnectionManager in ws-gateway/src/services/subscription/subscription_service.py
+- [ ] T086 [Dual] Update reconnection logic to handle both connection types independently in ws-gateway/src/services/websocket/reconnection.py
+- [ ] T087 [Dual] Update resubscription logic to use correct connection for each subscription type in ws-gateway/src/services/websocket/reconnection.py
+
+#### Stage 3: Testing
+
+- [ ] T088 [Dual] Add unit tests for channel classification in ws-gateway/tests/unit/test_channel_types.py
+- [ ] T089 [Dual] Add unit tests for ConnectionManager in ws-gateway/tests/unit/test_connection_manager.py
+- [ ] T090 [Dual] Add integration test for public endpoint connection (testnet) in ws-gateway/tests/integration/test_public_endpoint.py
+- [ ] T091 [Dual] Add integration test for dual connection simultaneous operation in ws-gateway/tests/integration/test_dual_connections.py
+- [ ] T092 [Dual] Add integration test for independent reconnection per connection type in ws-gateway/tests/integration/test_dual_reconnection.py
+
+#### Stage 4: Documentation & Configuration
+
+- [ ] T093 [P] [Dual] Update README.md with dual connection architecture description in ws-gateway/README.md
+- [ ] T094 [P] [Dual] Add usage examples for public and private subscriptions in ws-gateway/README.md
+- [ ] T095 [P] [Dual] Update ws-service.md specification with dual connection details in docs/ws-service.md
+- [ ] T096 [P] [Dual] Add optional configuration for connection strategy (dual/single) in ws-gateway/src/config/settings.py and env.example
+
+**Checkpoint**: At this point, the system should support both public and private WebSocket connections, automatically selecting the appropriate endpoint based on subscription channel type. Both connections should maintain independent reconnection behavior.
+
+**Dependencies**: 
+- Requires completion of Phase 3 (User Story 1 - WebSocket Connection)
+- Requires completion of Phase 4 (User Story 2 - Subscriptions)
+- Can be implemented after Phase 9 (Polish) or in parallel if needed
+
+---
+
 ## Dependencies & Execution Order
 
 ### Phase Dependencies
@@ -348,7 +402,7 @@ With multiple developers:
 
 ## Task Summary
 
-- **Total Tasks**: 88 (75 original + 13 new: T051a, EC1-EC8, T074a-T074f)
+- **Total Tasks**: 96 (75 original + 13 new: T051a, EC1-EC8, T074a-T074f + 8 new: T076-T096 for dual connection support)
 - **Setup Phase**: 7 tasks
 - **Foundational Phase**: 10 tasks
 - **User Story 1 (P1)**: 8 tasks
@@ -359,6 +413,9 @@ With multiple developers:
 - **User Story 6 (P3)**: 6 tasks
 - **Edge Case Handling (Phase 8.5)**: 8 tasks (EC1-EC8, EC6 is verification note)
 - **Polish Phase**: 13 tasks (T074 expanded to T074a-T074f for monitoring)
+- **Dual Connection Support (Phase 10)**: 21 tasks (T076-T096 for public/private endpoint separation)
 
 **Suggested MVP Scope**: User Stories 1 & 2 (WebSocket Connection + Subscriptions & Events) - 18 implementation tasks plus setup and foundational phases.
+
+**Dual Connection Support**: See Phase 10 for implementation of separate public and private WebSocket connections. Reference architecture document: `/docs/ws-gateway-public-endpoints.md`
 
