@@ -65,7 +65,8 @@ async def create_subscription(
 ) -> SubscriptionResponse:
     """Create a new subscription."""
     try:
-        subscription = await SubscriptionService.create_subscription(
+        # Use subscribe() method which creates subscription and sends it to WebSocket
+        subscription = await SubscriptionService.subscribe(
             channel_type=request.channel_type,
             requesting_service=request.requesting_service,
             symbol=request.symbol,

@@ -4,8 +4,12 @@ A microservice that establishes and maintains a single authenticated WebSocket c
 
 ## Features
 
-- **WebSocket Connection**: Single authenticated connection to Bybit (mainnet or testnet) with automatic reconnection and circuit breaker pattern
-- **Subscription Management**: Subscribe to multiple data channels (trades, tickers, order books, order statuses, balances) with conflict resolution
+- **Dual WebSocket Connections**: Separate public (`/v5/public`) and private (`/v5/private`) connections to Bybit for optimal scalability and separation of concerns
+  - Public connection: No authentication required for public data channels (trades, tickers, orderbook, kline, liquidation)
+  - Private connection: Authenticated connection for private data channels (wallet, order, position)
+  - Independent reconnection: Each connection type maintains its own reconnection logic
+- **WebSocket Connection**: Automatic reconnection and circuit breaker pattern for both connection types
+- **Subscription Management**: Subscribe to multiple data channels (trades, tickers, order books, order statuses, balances) with automatic endpoint selection based on channel type
 - **Event Routing**: Route events to RabbitMQ queues organized by event class with retention limits
 - **REST API**: Dynamic subscription management via REST API with API key authentication
 - **Data Persistence**: Persist critical data (balances, subscriptions) to PostgreSQL with graceful error handling
@@ -96,11 +100,38 @@ Returns service health status including WebSocket connection status.
 
 All subscription endpoints require API key authentication via `X-API-Key` header.
 
-- `POST /api/v1/subscriptions` - Create a new subscription
+- `POST /api/v1/subscriptions` - Create a new subscription (automatically uses correct endpoint)
 - `GET /api/v1/subscriptions` - List subscriptions (with optional filters)
 - `GET /api/v1/subscriptions/{subscription_id}` - Get subscription details
 - `DELETE /api/v1/subscriptions/{subscription_id}` - Cancel a subscription
 - `DELETE /api/v1/subscriptions/by-service/{service_name}` - Cancel all subscriptions for a service
+
+#### Subscription Examples
+
+**Subscribe to Public Channel (Ticker)**:
+```bash
+curl -X POST http://localhost:4400/api/v1/subscriptions \
+  -H "X-API-Key: your-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "channel_type": "ticker",
+    "symbol": "BTCUSDT",
+    "requesting_service": "model-service"
+  }'
+```
+This automatically uses the public endpoint (no API credentials needed for Bybit).
+
+**Subscribe to Private Channel (Balance)**:
+```bash
+curl -X POST http://localhost:4400/api/v1/subscriptions \
+  -H "X-API-Key: your-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "channel_type": "balance",
+    "requesting_service": "order-manager"
+  }'
+```
+This automatically uses the private endpoint (requires Bybit API credentials).
 
 See `specs/001-websocket-gateway/contracts/openapi.yaml` for detailed API documentation.
 
@@ -130,8 +161,31 @@ docker compose -f docker-compose.test.yml up --abort-on-container-exit
 
 ## Architecture
 
+### Dual Connection Architecture
+
+The service supports dual WebSocket connections to Bybit:
+
+1. **Public Connection** (`/v5/public`):
+   - No authentication required
+   - Used for public data channels: `trades`, `ticker`, `orderbook`, `kline`, `liquidation`
+   - Automatically selected when subscribing to public channels
+
+2. **Private Connection** (`/v5/private`):
+   - Requires API key authentication
+   - Used for private data channels: `balance` (wallet), `order`, `position`
+   - Automatically selected when subscribing to private channels
+
+**Benefits**:
+- Better scalability: Public data doesn't require API credentials
+- Separation of concerns: Public and private data handled independently
+- Independent reconnection: Each connection type reconnects independently
+- Automatic selection: The system automatically chooses the correct endpoint based on channel type
+
+### Technical Stack
+
 - **Language**: Python 3.11+
 - **WebSocket Client**: `websockets` library with automatic reconnection and circuit breaker
+- **Connection Management**: `ConnectionManager` class manages dual connections with lazy initialization
 - **REST API**: FastAPI with API key authentication middleware
 - **Message Queue**: RabbitMQ (aio-pika) with queue retention and backlog monitoring
 - **Database**: PostgreSQL (asyncpg) with connection pooling
