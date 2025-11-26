@@ -88,16 +88,16 @@ description: "Task list for WebSocket Gateway feature implementation"
 
 ### Implementation for User Story 2
 
-- [ ] T026 [P] [US2] Create Subscription model in ws-gateway/src/models/subscription.py
-- [ ] T027 [P] [US2] Create Event model (in-memory structure) in ws-gateway/src/models/event.py
-- [ ] T028 [US2] Implement subscription database operations in ws-gateway/src/services/database/subscription_repository.py
-- [ ] T029 [US2] Implement subscription management service in ws-gateway/src/services/subscription/subscription_service.py
-- [ ] T030 [US2] Implement Bybit subscription message formatting in ws-gateway/src/services/websocket/subscription.py
-- [ ] T031 [US2] Implement event parsing and validation from Bybit messages in ws-gateway/src/services/websocket/event_parser.py
-- [ ] T032 [US2] Integrate subscription management with WebSocket connection in ws-gateway/src/services/websocket/connection.py
-- [ ] T033 [US2] Implement automatic resubscription after reconnection in ws-gateway/src/services/websocket/reconnection.py
-- [ ] T034 [US2] Add logging for subscription events and received messages in ws-gateway/src/services/websocket/event_parser.py
-- [ ] T035 [US2] Update health check to include active subscriptions count in ws-gateway/src/api/health.py
+- [X] T026 [P] [US2] Create Subscription model in ws-gateway/src/models/subscription.py
+- [X] T027 [P] [US2] Create Event model (in-memory structure) in ws-gateway/src/models/event.py
+- [X] T028 [US2] Implement subscription database operations in ws-gateway/src/services/database/subscription_repository.py
+- [X] T029 [US2] Implement subscription management service in ws-gateway/src/services/subscription/subscription_service.py
+- [X] T030 [US2] Implement Bybit subscription message formatting in ws-gateway/src/services/websocket/subscription.py
+- [X] T031 [US2] Implement event parsing and validation from Bybit messages in ws-gateway/src/services/websocket/event_parser.py
+- [X] T032 [US2] Integrate subscription management with WebSocket connection in ws-gateway/src/services/websocket/connection.py
+- [X] T033 [US2] Implement automatic resubscription after reconnection in ws-gateway/src/services/websocket/reconnection.py
+- [X] T034 [US2] Add logging for subscription events and received messages in ws-gateway/src/services/websocket/event_parser.py
+- [X] T035 [US2] Update health check to include active subscriptions count in ws-gateway/src/api/health.py
 
 **Checkpoint**: At this point, User Stories 1 AND 2 should both work independently. The service should connect to Bybit, subscribe to channels, receive events, and automatically resubscribe after reconnection.
 

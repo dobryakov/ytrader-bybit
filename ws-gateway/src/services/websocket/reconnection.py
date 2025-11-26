@@ -5,7 +5,9 @@ from typing import Optional
 
 from ...config.logging import get_logger
 from ...models.websocket_state import ConnectionStatus
+from ..subscription.subscription_service import SubscriptionService
 from .connection import WebSocketConnection
+from .subscription import build_subscribe_message
 
 logger = get_logger(__name__)
 
@@ -90,6 +92,17 @@ class ReconnectionManager:
                 # Attempt to reconnect
                 try:
                     await self._connection.connect()
+
+                    # After successful reconnection, automatically resubscribe
+                    subscriptions = await SubscriptionService.get_active_subscriptions()
+                    if subscriptions:
+                        msg = build_subscribe_message(subscriptions)
+                        await self._connection.send(msg)
+                        logger.info(
+                            "websocket_resubscribed_active_subscriptions",
+                            subscription_count=len(subscriptions),
+                        )
+
                     # Reset delay on successful connection
                     self._current_delay = INITIAL_RECONNECT_DELAY
                     logger.info("websocket_reconnected_successfully")

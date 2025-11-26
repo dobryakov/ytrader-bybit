@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from typing import Literal
 
 from ..services.database.connection import DatabaseConnection
+from ..services.database.subscription_repository import SubscriptionRepository
 from ..services.queue.connection import QueueConnection
 from ..services.websocket.connection import get_connection
 
@@ -20,6 +21,7 @@ class HealthResponse(BaseModel):
     websocket_status: str = "unknown"
     database_connected: bool = False
     queue_connected: bool = False
+    active_subscriptions: int = 0
 
 
 @router.get("/health", response_model=HealthResponse, tags=["health"])
@@ -44,7 +46,18 @@ async def health_check() -> HealthResponse:
     # Service is healthy if database and queue are connected
     # WebSocket connection status is informational but doesn't affect health
     # (service can be healthy even if WebSocket is temporarily disconnected)
-    overall_status = "healthy" if (database_connected and queue_connected) else "unhealthy"
+    overall_status = (
+        "healthy" if (database_connected and queue_connected) else "unhealthy"
+    )
+
+    # Count active subscriptions (best-effort; errors do not flip overall status)
+    active_subscriptions = 0
+    if database_connected:
+        try:
+            active_subscriptions = await SubscriptionRepository.count_active_subscriptions()
+        except Exception:
+            # Already logged at repository/database layer; keep health check resilient
+            active_subscriptions = 0
 
     return HealthResponse(
         status=overall_status,
@@ -53,5 +66,6 @@ async def health_check() -> HealthResponse:
         websocket_status=websocket_status,
         database_connected=database_connected,
         queue_connected=queue_connected,
+        active_subscriptions=active_subscriptions,
     )
 

@@ -2,9 +2,10 @@
 
 import asyncio
 import json
+from collections import deque
 from datetime import datetime
 from typing import Optional
-from collections import deque
+from uuid import uuid4
 
 import websockets
 from websockets.client import WebSocketClientProtocol
@@ -12,7 +13,10 @@ from websockets.client import WebSocketClientProtocol
 from ...config.logging import get_logger
 from ...config.settings import settings
 from ...models.websocket_state import ConnectionStatus, WebSocketState
+from ..database.subscription_repository import SubscriptionRepository
+from ..subscription.subscription_service import SubscriptionService
 from .auth import generate_auth_message, validate_auth_response
+from .event_parser import parse_events_from_message
 
 logger = get_logger(__name__)
 
@@ -155,7 +159,7 @@ class WebSocketConnection:
             raise ConnectionError(f"Invalid authentication response: {e}") from e
 
     async def _receive_messages(self) -> None:
-        """Continuously receive and log messages from WebSocket."""
+        """Continuously receive, parse and log messages from WebSocket."""
         if not self._websocket:
             return
 
@@ -178,17 +182,22 @@ class WebSocketConnection:
                             message_type=topic,
                             data=data,
                         )
-                    
+
                     # Store message for viewing via API (testing)
-                    _recent_messages.append({
-                        "timestamp": data.get("ts", datetime.now().isoformat()),
-                        "topic": data.get("topic", ""),
-                        "op": data.get("op", ""),
-                        "type": data.get("type", ""),
-                        "data": data
-                    })
-                    
-                    # Message processing will be handled by event processor (Phase 4)
+                    _recent_messages.append(
+                        {
+                            "timestamp": data.get("ts", datetime.now().isoformat()),
+                            "topic": data.get("topic", ""),
+                            "op": data.get("op", ""),
+                            "type": data.get("type", ""),
+                            "data": data,
+                        }
+                    )
+
+                    # Parse and process events for User Story 2
+                    trace_id = data.get("trace_id") or str(uuid4())
+                    await self._process_message(data, trace_id)
+
                 except json.JSONDecodeError as e:
                     logger.warning("websocket_invalid_json", error=str(e), raw_message=message[:100])
                 except Exception as e:
@@ -285,6 +294,68 @@ class WebSocketConnection:
             return True
         except asyncio.TimeoutError:
             return False
+
+    async def _process_message(self, data: dict, trace_id: str) -> None:
+        """Parse events from a WebSocket message and update subscription state.
+
+        This implements the core of User Story 2 for event parsing and
+        subscription tracking. Queue publishing and persistence are handled
+        in later phases.
+        """
+        topic = data.get("topic")
+        if not topic:
+            return
+
+        # Look up active subscription for this topic
+        subscription = await SubscriptionRepository.find_active_by_topic(topic)
+        if not subscription:
+            return
+
+        events = parse_events_from_message(
+            message=data,
+            subscription_lookup={subscription.topic: subscription},
+            trace_id=trace_id,
+        )
+
+        if not events:
+            return
+
+        # Update subscription last_event_at and log events
+        last_ts = events[-1].timestamp
+        await SubscriptionService.update_last_event_at(subscription.id, last_ts)
+
+        for event in events:
+            logger.info(
+                "subscription_event_received",
+                subscription_id=str(subscription.id),
+                channel_type=subscription.channel_type,
+                topic=subscription.topic,
+                event_type=event.event_type,
+                trace_id=event.trace_id,
+            )
+
+    async def subscribe(
+        self,
+        channel_type: str,
+        requesting_service: str,
+        symbol: Optional[str] = None,
+    ):
+        """Create a subscription and send Bybit subscribe message."""
+        subscription = await SubscriptionService.create_subscription(
+            channel_type=channel_type,
+            requesting_service=requesting_service,
+            symbol=symbol,
+        )
+        from .subscription import build_subscribe_message
+
+        msg = build_subscribe_message([subscription])
+        await self.send(msg)
+        logger.info(
+            "websocket_subscription_sent",
+            subscription_id=str(subscription.id),
+            topic=subscription.topic,
+            requesting_service=requesting_service,
+        )
 
 
 # Global WebSocket connection instance
