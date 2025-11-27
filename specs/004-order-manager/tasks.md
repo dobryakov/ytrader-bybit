@@ -147,12 +147,12 @@
 
 ### Implementation for REST API
 
-- [ ] T052 [P] Implement health check endpoint in order-manager/src/api/routes/health.py (/health, /live, /ready with dependency status)
-- [ ] T053 [P] Implement order query endpoints in order-manager/src/api/routes/orders.py (GET /api/v1/orders with filtering, pagination, sorting; GET /api/v1/orders/{order_id})
-- [ ] T054 [P] Implement position query endpoints in order-manager/src/api/routes/positions.py (GET /api/v1/positions with filtering; GET /api/v1/positions/{asset})
-- [ ] T055 [P] Implement manual synchronization endpoint in order-manager/src/api/routes/sync.py (POST /api/v1/sync with scope parameter)
-- [ ] T056 Integrate all routes into FastAPI application in order-manager/src/api/main.py
-- [ ] T057 Add API endpoint logging (request/response logging with trace IDs) in order-manager/src/api/middleware/logging.py
+- [X] T052 [P] Implement health check endpoint in order-manager/src/api/routes/health.py (/health, /live, /ready with dependency status)
+- [X] T053 [P] Implement order query endpoints in order-manager/src/api/routes/orders.py (GET /api/v1/orders with filtering, pagination, sorting; GET /api/v1/orders/{order_id})
+- [X] T054 [P] Implement position query endpoints in order-manager/src/api/routes/positions.py (GET /api/v1/positions with filtering; GET /api/v1/positions/{asset})
+- [X] T055 [P] Implement manual synchronization endpoint in order-manager/src/api/routes/sync.py (POST /api/v1/sync with scope parameter)
+- [X] T056 Integrate all routes into FastAPI application in order-manager/src/api/main.py
+- [X] T057 Add API endpoint logging (request/response logging with trace IDs) in order-manager/src/api/middleware/logging.py
 
 **Checkpoint**: REST API endpoints are available for querying and manual operations
 

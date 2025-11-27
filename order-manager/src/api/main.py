@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .middleware.auth import APIKeyAuthMiddleware
+from .middleware.logging import LoggingMiddleware
 from ..config.settings import settings
 from ..config.logging import get_logger, configure_logging
 
@@ -41,15 +42,19 @@ def create_app(lifespan_context=None) -> FastAPI:
         allow_headers=["*"],
     )
 
+    # Add request/response logging middleware (before auth middleware to log all requests)
+    app.add_middleware(LoggingMiddleware)
+
     # Add API key authentication middleware
     app.add_middleware(APIKeyAuthMiddleware, api_prefix="/api")
 
-    # Register routes will be added here
-    # from .routes import health, orders, positions, sync
-    # app.include_router(health.router, tags=["health"])
-    # app.include_router(orders.router, prefix="/api/v1", tags=["orders"])
-    # app.include_router(positions.router, prefix="/api/v1", tags=["positions"])
-    # app.include_router(sync.router, prefix="/api/v1", tags=["sync"])
+    # Register routes
+    from .routes import health, orders, positions, sync
+
+    app.include_router(health.router, tags=["health"])
+    app.include_router(orders.router, prefix="/api/v1", tags=["orders"])
+    app.include_router(positions.router, prefix="/api/v1", tags=["positions"])
+    app.include_router(sync.router, prefix="/api/v1", tags=["sync"])
 
     return app
 
