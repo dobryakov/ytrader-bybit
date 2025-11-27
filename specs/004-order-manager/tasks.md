@@ -164,12 +164,12 @@
 
 ### Implementation for Position Management
 
-- [ ] T058 [P] Create Position Snapshot model in order-manager/src/models/position.py (PositionSnapshot entity)
-- [ ] T059 Implement position snapshot creation logic in order-manager/src/services/position_manager.py (periodic snapshots based on ORDERMANAGER_POSITION_SNAPSHOT_INTERVAL config)
-- [ ] T060 Implement position validation logic (compute position from order history, compare with stored state) in order-manager/src/services/position_manager.py
-- [ ] T061 Add background task for periodic position snapshots in order-manager/src/main.py (scheduler for snapshot creation)
-- [ ] T062 Add background task for periodic position validation in order-manager/src/main.py (scheduler for validation based on ORDERMANAGER_POSITION_VALIDATION_INTERVAL config)
-- [ ] T063 Add discrepancy handling when computed position differs from stored position in order-manager/src/services/position_manager.py
+- [X] T058 [P] Create Position Snapshot model in order-manager/src/models/position.py (PositionSnapshot entity)
+- [X] T059 Implement position snapshot creation logic in order-manager/src/services/position_manager.py (periodic snapshots based on ORDERMANAGER_POSITION_SNAPSHOT_INTERVAL config)
+- [X] T060 Implement position validation logic (compute position from order history, compare with stored state) in order-manager/src/services/position_manager.py
+- [X] T061 Add background task for periodic position snapshots in order-manager/src/main.py (scheduler for snapshot creation)
+- [X] T062 Add background task for periodic position validation in order-manager/src/main.py (scheduler for validation based on ORDERMANAGER_POSITION_VALIDATION_INTERVAL config)
+- [X] T063 Add discrepancy handling when computed position differs from stored position in order-manager/src/services/position_manager.py
 
 **Checkpoint**: Position management with snapshots and validation is operational
 
