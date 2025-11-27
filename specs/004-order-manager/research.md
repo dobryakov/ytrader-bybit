@@ -115,8 +115,8 @@
 
 **Decision Details**:
 - **Default Behavior**: One signal creates one order (1:1 mapping)
-- **Order Splitting**: Enable via configuration flag `ENABLE_ORDER_SPLITTING=true`
-  - When enabled, split orders when amount exceeds `MAX_SINGLE_ORDER_SIZE` configuration
+- **Order Splitting**: Enable via configuration flag `ORDERMANAGER_ENABLE_ORDER_SPLITTING=true`
+  - When enabled, split orders when amount exceeds `ORDERMANAGER_MAX_SINGLE_ORDER_SIZE` configuration
   - Split into N orders of approximately equal size (respecting min order size)
 - **Data Model**: 
   - `signal_order_relationships` table stores mappings (signal_id, order_id, allocation_amount)
@@ -131,7 +131,7 @@
 **Implementation Notes**:
 - Start with simple 1:1 mapping, add splitting logic incrementally
 - Design data model to support future enhancements (N:1 scale-in, partial allocations)
-- Configuration parameters: `ENABLE_ORDER_SPLITTING`, `MAX_SINGLE_ORDER_SIZE`
+- Configuration parameters: `ORDERMANAGER_ENABLE_ORDER_SPLITTING`, `ORDERMANAGER_MAX_SINGLE_ORDER_SIZE`
 
 ---
 
@@ -222,26 +222,26 @@
 3. **Database Configuration**: PostgreSQL connection (shared with other services)
 4. **RabbitMQ Configuration**: Connection details (shared with other services)
 5. **Order Execution Configuration**:
-   - `ENABLE_DRY_RUN`: Enable dry-run mode (boolean)
-   - `MAX_SINGLE_ORDER_SIZE`: Maximum order size for single order (float, USDT)
-   - `ENABLE_ORDER_SPLITTING`: Enable order splitting for large amounts (boolean)
-   - `ORDER_EXECUTION_TIMEOUT`: Timeout for order creation API calls (seconds)
+   - `ORDERMANAGER_ENABLE_DRY_RUN`: Enable dry-run mode (boolean)
+   - `ORDERMANAGER_MAX_SINGLE_ORDER_SIZE`: Maximum order size for single order (float, USDT)
+   - `ORDERMANAGER_ENABLE_ORDER_SPLITTING`: Enable order splitting for large amounts (boolean)
+   - `ORDERMANAGER_ORDER_EXECUTION_TIMEOUT`: Timeout for order creation API calls (seconds)
 6. **Risk Limits Configuration**:
-   - `MAX_POSITION_SIZE`: Maximum position size per asset (float, base currency)
-   - `MAX_EXPOSURE`: Maximum total exposure across all positions (float, USDT)
-   - `MAX_ORDER_SIZE_RATIO`: Maximum order size as ratio of available balance (float, 0.0-1.0)
+   - `ORDERMANAGER_MAX_POSITION_SIZE`: Maximum position size per asset (float, base currency)
+   - `ORDERMANAGER_MAX_EXPOSURE`: Maximum total exposure across all positions (float, USDT)
+   - `ORDERMANAGER_MAX_ORDER_SIZE_RATIO`: Maximum order size as ratio of available balance (float, 0.0-1.0)
 7. **Retry Configuration**:
-   - `BYBIT_API_RETRY_MAX_ATTEMPTS`: Maximum retry attempts (integer, default 3)
-   - `BYBIT_API_RETRY_BASE_DELAY`: Base delay for exponential backoff (seconds, default 1.0)
-   - `BYBIT_API_RETRY_MAX_DELAY`: Maximum delay between retries (seconds, default 30.0)
-   - `BYBIT_API_RETRY_MULTIPLIER`: Exponential backoff multiplier (float, default 2.0)
+   - `ORDERMANAGER_BYBIT_API_RETRY_MAX_ATTEMPTS`: Maximum retry attempts (integer, default 3)
+   - `ORDERMANAGER_BYBIT_API_RETRY_BASE_DELAY`: Base delay for exponential backoff (seconds, default 1.0)
+   - `ORDERMANAGER_BYBIT_API_RETRY_MAX_DELAY`: Maximum delay between retries (seconds, default 30.0)
+   - `ORDERMANAGER_BYBIT_API_RETRY_MULTIPLIER`: Exponential backoff multiplier (float, default 2.0)
 8. **Order Type Selection Configuration**:
-   - `MARKET_ORDER_CONFIDENCE_THRESHOLD`: Confidence threshold for market orders (float, 0.0-1.0, default 0.9)
-   - `MARKET_ORDER_SPREAD_THRESHOLD`: Spread threshold for market orders (percentage, default 0.1)
-   - `LIMIT_ORDER_PRICE_OFFSET_RATIO`: Price offset ratio for limit orders (float, default 0.5)
+   - `ORDERMANAGER_MARKET_ORDER_CONFIDENCE_THRESHOLD`: Confidence threshold for market orders (float, 0.0-1.0, default 0.9)
+   - `ORDERMANAGER_MARKET_ORDER_SPREAD_THRESHOLD`: Spread threshold for market orders (percentage, default 0.1)
+   - `ORDERMANAGER_LIMIT_ORDER_PRICE_OFFSET_RATIO`: Price offset ratio for limit orders (float, default 0.5)
 9. **Position Management Configuration**:
-   - `POSITION_SNAPSHOT_INTERVAL`: Interval for position snapshots (seconds, default 300)
-   - `POSITION_VALIDATION_INTERVAL`: Interval for position validation (seconds, default 3600)
+   - `ORDERMANAGER_POSITION_SNAPSHOT_INTERVAL`: Interval for position snapshots (seconds, default 300)
+   - `ORDERMANAGER_POSITION_VALIDATION_INTERVAL`: Interval for position validation (seconds, default 3600)
 10. **WebSocket Configuration**:
     - `WS_GATEWAY_HOST`: WebSocket gateway service hostname
     - `WS_GATEWAY_PORT`: WebSocket gateway service port
@@ -271,8 +271,8 @@
   - Cancel all pending orders for same asset (regardless of direction)
   - Create new order based on signal
 - **Configuration Options**:
-  - `CANCEL_OPPOSITE_ORDERS_ONLY`: If true, only cancel orders with opposite direction (buy vs sell)
-  - `CANCEL_STALE_ORDER_TIMEOUT`: Automatically cancel orders older than X seconds (default: 3600 seconds)
+  - `ORDERMANAGER_CANCEL_OPPOSITE_ORDERS_ONLY`: If true, only cancel orders with opposite direction (buy vs sell)
+  - `ORDERMANAGER_CANCEL_STALE_ORDER_TIMEOUT`: Automatically cancel orders older than X seconds (default: 3600 seconds)
 - **Limit Order Cancellation**: When market order signal arrives, cancel all pending limit orders for same asset
 - **Partial Fill Handling**: Do not cancel partially filled orders unless explicitly configured
 - **Cancellation Logging**: Log all cancellations with reason (new signal, stale, opposite direction)
@@ -348,7 +348,7 @@
 **Implementation Notes**:
 - Implement PnL calculation in `position_manager.py`
 - Publish position PnL events to queue for Model Service consumption
-- Configuration: `UNREALIZED_LOSS_WARNING_THRESHOLD` (percentage)
+- Configuration: `ORDERMANAGER_UNREALIZED_LOSS_WARNING_THRESHOLD` (percentage)
 
 ---
 
@@ -402,7 +402,7 @@
 - Simple implementation via configuration flag
 
 **Decision Details**:
-- **Configuration**: `ENABLE_DRY_RUN=true` in `.env`
+- **Configuration**: `ORDERMANAGER_ENABLE_DRY_RUN=true` in `.env`
 - **Behavior**:
   - Accept and validate trading signals normally
   - Process all business logic (order type selection, quantity calculation, risk checks)

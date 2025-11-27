@@ -65,30 +65,30 @@ WS_GATEWAY_PORT=4400
 WS_GATEWAY_API_KEY=your-gateway-api-key
 
 # Order Execution Configuration
-ENABLE_DRY_RUN=false  # Set to 'true' for testing without real orders
-MAX_SINGLE_ORDER_SIZE=10000.0  # Maximum order size in USDT
-ENABLE_ORDER_SPLITTING=false  # Enable order splitting for large amounts
-ORDER_EXECUTION_TIMEOUT=30  # Timeout in seconds
+ORDERMANAGER_ENABLE_DRY_RUN=false  # Set to 'true' for testing without real orders
+ORDERMANAGER_MAX_SINGLE_ORDER_SIZE=10000.0  # Maximum order size in USDT
+ORDERMANAGER_ENABLE_ORDER_SPLITTING=false  # Enable order splitting for large amounts
+ORDERMANAGER_ORDER_EXECUTION_TIMEOUT=30  # Timeout in seconds
 
 # Risk Limits Configuration
-MAX_POSITION_SIZE=1.0  # Maximum position size per asset (base currency)
-MAX_EXPOSURE=50000.0  # Maximum total exposure across all positions (USDT)
-MAX_ORDER_SIZE_RATIO=0.1  # Maximum order size as ratio of available balance
+ORDERMANAGER_MAX_POSITION_SIZE=1.0  # Maximum position size per asset (base currency)
+ORDERMANAGER_MAX_EXPOSURE=50000.0  # Maximum total exposure across all positions (USDT)
+ORDERMANAGER_MAX_ORDER_SIZE_RATIO=0.1  # Maximum order size as ratio of available balance
 
 # Retry Configuration
-BYBIT_API_RETRY_MAX_ATTEMPTS=3
-BYBIT_API_RETRY_BASE_DELAY=1.0  # seconds
-BYBIT_API_RETRY_MAX_DELAY=30.0  # seconds
-BYBIT_API_RETRY_MULTIPLIER=2.0
+ORDERMANAGER_BYBIT_API_RETRY_MAX_ATTEMPTS=3
+ORDERMANAGER_BYBIT_API_RETRY_BASE_DELAY=1.0  # seconds
+ORDERMANAGER_BYBIT_API_RETRY_MAX_DELAY=30.0  # seconds
+ORDERMANAGER_BYBIT_API_RETRY_MULTIPLIER=2.0
 
 # Order Type Selection Configuration
-MARKET_ORDER_CONFIDENCE_THRESHOLD=0.9
-MARKET_ORDER_SPREAD_THRESHOLD=0.1  # percentage
-LIMIT_ORDER_PRICE_OFFSET_RATIO=0.5
+ORDERMANAGER_MARKET_ORDER_CONFIDENCE_THRESHOLD=0.9
+ORDERMANAGER_MARKET_ORDER_SPREAD_THRESHOLD=0.1  # percentage
+ORDERMANAGER_LIMIT_ORDER_PRICE_OFFSET_RATIO=0.5
 
 # Position Management Configuration
-POSITION_SNAPSHOT_INTERVAL=300  # seconds (5 minutes)
-POSITION_VALIDATION_INTERVAL=3600  # seconds (1 hour)
+ORDERMANAGER_POSITION_SNAPSHOT_INTERVAL=300  # seconds (5 minutes)
+ORDERMANAGER_POSITION_VALIDATION_INTERVAL=3600  # seconds (1 hour)
 ```
 
 ### 3. Start Dependencies
@@ -207,7 +207,7 @@ curl -X GET "http://localhost:4600/api/v1/positions" \
 Set in `.env`:
 
 ```bash
-ENABLE_DRY_RUN=true
+ORDERMANAGER_ENABLE_DRY_RUN=true
 ```
 
 Restart service:
@@ -386,12 +386,12 @@ Before deploying to production:
 
 3. **Disable Dry-Run Mode**:
    ```bash
-   ENABLE_DRY_RUN=false
+   ORDERMANAGER_ENABLE_DRY_RUN=false
    ```
 
 4. **Configure Risk Limits**:
-   - Set appropriate `MAX_POSITION_SIZE` and `MAX_EXPOSURE` limits
-   - Adjust `MAX_ORDER_SIZE_RATIO` based on account size
+   - Set appropriate `ORDERMANAGER_MAX_POSITION_SIZE` and `ORDERMANAGER_MAX_EXPOSURE` limits
+   - Adjust `ORDERMANAGER_MAX_ORDER_SIZE_RATIO` based on account size
 
 5. **Set Up Monitoring**:
    - Monitor service health endpoints
