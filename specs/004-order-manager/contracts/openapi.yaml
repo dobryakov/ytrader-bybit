@@ -1,0 +1,688 @@
+openapi: 3.1.0
+info:
+  title: Order Manager API
+  description: |
+    REST API for querying orders, positions, and managing order state synchronization.
+    This API allows other microservices and tools to inspect order execution status,
+    view current positions, and trigger manual state synchronization with Bybit exchange.
+  version: 1.0.0
+  contact:
+    name: YTrader Team
+
+servers:
+  - url: http://localhost:4600
+    description: Local development server
+  - url: https://order-manager.example.com
+    description: Production server
+
+tags:
+  - name: orders
+    description: Order query and management operations
+  - name: positions
+    description: Position state query operations
+  - name: sync
+    description: Manual synchronization operations
+  - name: health
+    description: Health check and status endpoints
+
+paths:
+  /health:
+    get:
+      tags:
+        - health
+      summary: Health check
+      description: Returns the health status of the Order Manager service
+      operationId: getHealth
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '503':
+          description: Service is unhealthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+  /live:
+    get:
+      tags:
+        - health
+      summary: Liveness probe
+      description: Returns service liveness status (service is running and responsive)
+      operationId: getLiveness
+      responses:
+        '200':
+          description: Service is alive
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '503':
+          description: Service is not alive
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+  /ready:
+    get:
+      tags:
+        - health
+      summary: Readiness probe
+      description: Returns service readiness status (service can accept requests, dependencies available)
+      operationId: getReadiness
+      responses:
+        '200':
+          description: Service is ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadinessResponse'
+        '503':
+          description: Service is not ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadinessResponse'
+
+  /api/v1/orders:
+    get:
+      tags:
+        - orders
+      summary: List orders
+      description: |
+        Query orders with filtering, pagination, and sorting capabilities.
+        Returns a list of orders matching the specified filters.
+      operationId: listOrders
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: asset
+          in: query
+          description: Filter by trading pair (e.g., BTCUSDT)
+          required: false
+          schema:
+            type: string
+            example: BTCUSDT
+        - name: status
+          in: query
+          description: Filter by order status (pending, partially_filled, filled, cancelled, rejected, dry_run)
+          required: false
+          schema:
+            type: string
+            enum: [pending, partially_filled, filled, cancelled, rejected, dry_run]
+            example: filled
+        - name: signal_id
+          in: query
+          description: Filter by trading signal ID
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: order_id
+          in: query
+          description: Filter by Bybit order ID
+          required: false
+          schema:
+            type: string
+        - name: side
+          in: query
+          description: Filter by order side (Buy, Sell)
+          required: false
+          schema:
+            type: string
+            enum: [Buy, Sell]
+        - name: date_from
+          in: query
+          description: Filter orders created from this date (ISO 8601 format)
+          required: false
+          schema:
+            type: string
+            format: date-time
+            example: '2025-01-27T00:00:00Z'
+        - name: date_to
+          in: query
+          description: Filter orders created until this date (ISO 8601 format)
+          required: false
+          schema:
+            type: string
+            format: date-time
+            example: '2025-01-27T23:59:59Z'
+        - name: page
+          in: query
+          description: Page number for pagination (1-based)
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: page_size
+          in: query
+          description: Number of items per page
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: sort_by
+          in: query
+          description: Field to sort by (created_at, updated_at, executed_at)
+          required: false
+          schema:
+            type: string
+            enum: [created_at, updated_at, executed_at]
+            default: created_at
+        - name: sort_order
+          in: query
+          description: Sort order (asc, desc)
+          required: false
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+      responses:
+        '200':
+          description: Orders retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderListResponse'
+        '400':
+          description: Invalid request parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Authentication failed (invalid or missing API key)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/orders/{order_id}:
+    get:
+      tags:
+        - orders
+      summary: Get order by ID
+      description: Retrieve detailed information about a specific order by Bybit order ID
+      operationId: getOrderById
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: order_id
+          in: path
+          description: Bybit order ID
+          required: true
+          schema:
+            type: string
+            example: "abc123-def456-ghi789"
+      responses:
+        '200':
+          description: Order retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderResponse'
+        '404':
+          description: Order not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Authentication failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/positions:
+    get:
+      tags:
+        - positions
+      summary: List positions
+      description: Retrieve current position state for all assets or filter by specific asset
+      operationId: listPositions
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: asset
+          in: query
+          description: Filter by trading pair (e.g., BTCUSDT)
+          required: false
+          schema:
+            type: string
+            example: BTCUSDT
+        - name: mode
+          in: query
+          description: Filter by trading mode (one-way, hedge)
+          required: false
+          schema:
+            type: string
+            enum: [one-way, hedge]
+      responses:
+        '200':
+          description: Positions retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PositionListResponse'
+        '401':
+          description: Authentication failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/positions/{asset}:
+    get:
+      tags:
+        - positions
+      summary: Get position by asset
+      description: Retrieve current position state for a specific asset
+      operationId: getPositionByAsset
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: asset
+          in: path
+          description: Trading pair symbol (e.g., BTCUSDT)
+          required: true
+          schema:
+            type: string
+            example: BTCUSDT
+      responses:
+        '200':
+          description: Position retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PositionResponse'
+        '404':
+          description: Position not found (no position for this asset)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Authentication failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/sync:
+    post:
+      tags:
+        - sync
+      summary: Trigger manual synchronization
+      description: |
+        Manually trigger order state synchronization with Bybit exchange.
+        Service queries Bybit REST API for active orders and updates database accordingly.
+      operationId: triggerSync
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SyncRequest'
+      responses:
+        '200':
+          description: Synchronization completed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncResponse'
+        '401':
+          description: Authentication failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error or synchronization failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: API key for authentication
+
+  schemas:
+    HealthResponse:
+      type: object
+      required:
+        - status
+        - timestamp
+      properties:
+        status:
+          type: string
+          enum: [healthy, unhealthy]
+          description: Health status
+        timestamp:
+          type: string
+          format: date-time
+          description: Timestamp of health check
+
+    ReadinessResponse:
+      type: object
+      required:
+        - status
+        - timestamp
+        - dependencies
+      properties:
+        status:
+          type: string
+          enum: [ready, not_ready]
+          description: Readiness status
+        timestamp:
+          type: string
+          format: date-time
+          description: Timestamp of readiness check
+        dependencies:
+          type: object
+          description: Status of service dependencies
+          properties:
+            database:
+              type: string
+              enum: [available, unavailable]
+            rabbitmq:
+              type: string
+              enum: [available, unavailable]
+            bybit_api:
+              type: string
+              enum: [available, unavailable]
+            ws_gateway:
+              type: string
+              enum: [available, unavailable]
+
+    OrderResponse:
+      type: object
+      required:
+        - id
+        - order_id
+        - signal_id
+        - asset
+        - side
+        - order_type
+        - quantity
+        - status
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Internal order identifier
+        order_id:
+          type: string
+          description: Bybit order ID
+        signal_id:
+          type: string
+          format: uuid
+          description: Trading signal identifier
+        asset:
+          type: string
+          description: Trading pair symbol
+          example: BTCUSDT
+        side:
+          type: string
+          enum: [Buy, Sell]
+          description: Order side
+        order_type:
+          type: string
+          enum: [Market, Limit]
+          description: Order type
+        quantity:
+          type: number
+          format: decimal
+          description: Order quantity in base currency
+        price:
+          type: number
+          format: decimal
+          nullable: true
+          description: Limit order price (null for market orders)
+        status:
+          type: string
+          enum: [pending, partially_filled, filled, cancelled, rejected, dry_run]
+          description: Order status
+        filled_quantity:
+          type: number
+          format: decimal
+          description: Quantity that has been filled
+        average_price:
+          type: number
+          format: decimal
+          nullable: true
+          description: Average execution price
+        fees:
+          type: number
+          format: decimal
+          nullable: true
+          description: Total fees paid
+        created_at:
+          type: string
+          format: date-time
+          description: Order creation timestamp
+        updated_at:
+          type: string
+          format: date-time
+          description: Last update timestamp
+        executed_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Order execution timestamp (when fully filled)
+        trace_id:
+          type: string
+          nullable: true
+          description: Trace ID for request tracking
+        is_dry_run:
+          type: boolean
+          description: Whether order was created in dry-run mode
+
+    OrderListResponse:
+      type: object
+      required:
+        - orders
+        - pagination
+      properties:
+        orders:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrderResponse'
+        pagination:
+          $ref: '#/components/schemas/PaginationInfo'
+
+    PositionResponse:
+      type: object
+      required:
+        - id
+        - asset
+        - size
+        - mode
+        - last_updated
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Position identifier
+        asset:
+          type: string
+          description: Trading pair symbol
+          example: BTCUSDT
+        size:
+          type: number
+          format: decimal
+          description: Position size (positive = long, negative = short, zero = no position)
+        average_entry_price:
+          type: number
+          format: decimal
+          nullable: true
+          description: Average entry price
+        unrealized_pnl:
+          type: number
+          format: decimal
+          nullable: true
+          description: Unrealized profit and loss
+        realized_pnl:
+          type: number
+          format: decimal
+          nullable: true
+          description: Realized profit and loss (cumulative)
+        mode:
+          type: string
+          enum: [one-way, hedge]
+          description: Trading mode
+        long_size:
+          type: number
+          format: decimal
+          nullable: true
+          description: Long position size (hedge-mode)
+        short_size:
+          type: number
+          format: decimal
+          nullable: true
+          description: Short position size (hedge-mode)
+        long_avg_price:
+          type: number
+          format: decimal
+          nullable: true
+          description: Average entry price for long position (hedge-mode)
+        short_avg_price:
+          type: number
+          format: decimal
+          nullable: true
+          description: Average entry price for short position (hedge-mode)
+        last_updated:
+          type: string
+          format: date-time
+          description: Last update timestamp
+
+    PositionListResponse:
+      type: object
+      required:
+        - positions
+      properties:
+        positions:
+          type: array
+          items:
+            $ref: '#/components/schemas/PositionResponse'
+
+    SyncRequest:
+      type: object
+      properties:
+        asset:
+          type: string
+          description: Optional - sync only orders for specific asset
+          example: BTCUSDT
+        scope:
+          type: string
+          enum: [all, active]
+          default: active
+          description: Sync scope - 'all' for all orders, 'active' for active orders only
+
+    SyncResponse:
+      type: object
+      required:
+        - status
+        - synced_orders
+        - updated_orders
+        - timestamp
+      properties:
+        status:
+          type: string
+          enum: [completed, failed, partial]
+          description: Synchronization status
+        synced_orders:
+          type: integer
+          description: Number of orders synced
+        updated_orders:
+          type: integer
+          description: Number of orders updated
+        errors:
+          type: array
+          items:
+            type: string
+          description: List of errors encountered during synchronization
+        timestamp:
+          type: string
+          format: date-time
+          description: Synchronization completion timestamp
+
+    PaginationInfo:
+      type: object
+      required:
+        - page
+        - page_size
+        - total_items
+        - total_pages
+      properties:
+        page:
+          type: integer
+          description: Current page number
+        page_size:
+          type: integer
+          description: Number of items per page
+        total_items:
+          type: integer
+          description: Total number of items
+        total_pages:
+          type: integer
+          description: Total number of pages
+
+    ErrorResponse:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: string
+          description: Human-readable error message
+        code:
+          type: string
+          description: Machine-readable error code
+          example: ORDER_NOT_FOUND
+        details:
+          type: object
+          description: Additional error details
+          additionalProperties: true
+
