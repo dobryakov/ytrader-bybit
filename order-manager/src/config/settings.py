@@ -96,6 +96,10 @@ class Settings(BaseSettings):
     order_manager_unrealized_loss_warning_threshold: float = Field(
         default=10.0, alias="ORDERMANAGER_UNREALIZED_LOSS_WARNING_THRESHOLD"
     )
+    order_manager_enable_balance_check: bool = Field(
+        default=True, alias="ORDERMANAGER_ENABLE_BALANCE_CHECK",
+        description="Enable balance check before order creation. If False, balance validation is skipped (Bybit API will reject orders with insufficient balance)."
+    )
 
     @field_validator("order_manager_log_level")
     @classmethod

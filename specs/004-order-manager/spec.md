@@ -89,9 +89,16 @@ As a trading system, I need protection against incorrect or risky trading action
 
 **Independent Test**: Can be fully tested by sending invalid or risky signals and verifying that they are rejected with appropriate safety checks, without creating orders on the exchange.
 
+**Implementation Notes**:
+- Balance check before order creation is **optional** and can be disabled via `ORDERMANAGER_ENABLE_BALANCE_CHECK` configuration (default: `true`).
+- When balance check is disabled, Bybit API will still reject orders with insufficient balance, but early rejection and detailed logging are lost.
+- Disabling balance check reduces API calls and improves performance, but trades off early validation benefits.
+
 **Acceptance Scenarios**:
 
-1. **Given** a signal requests an order amount exceeding available balance, **When** the service processes it, **Then** the order is rejected with a clear error message and no order is created on Bybit
+1. **Given** a signal requests an order amount exceeding available balance, **When** the service processes it, **Then**:
+   - If `ORDERMANAGER_ENABLE_BALANCE_CHECK=true`: the order is rejected with a clear error message and no order is created on Bybit (early rejection)
+   - If `ORDERMANAGER_ENABLE_BALANCE_CHECK=false`: the order is sent to Bybit, which will reject it with insufficient balance error (late rejection)
 2. **Given** a signal has invalid parameters (negative amount, invalid asset), **When** the service processes it, **Then** the signal is rejected with validation error before any exchange API call
 3. **Given** a signal would violate configured risk limits, **When** the service processes it, **Then** the order is rejected or adjusted to comply with limits
 4. **Given** multiple conflicting signals arrive simultaneously, **When** the service processes them, **Then** the service handles conflicts appropriately (e.g., queueing, prioritizing, or rejecting duplicates)
@@ -154,7 +161,7 @@ As a trading system, I need protection against incorrect or risky trading action
 - **FR-012**: System MUST log all order operations (creation, modification, cancellation, status updates) with sufficient detail for debugging and auditing
 - **FR-013**: System MUST publish enriched order events to RabbitMQ queue for other microservices (including model service) when order states change
 - **FR-014**: System MUST enrich published events with additional context (execution price, fees, market conditions, timing) when available
-- **FR-015**: System MUST provide safety mechanisms to prevent execution of incorrect or risky trading actions, including balance validation, parameter validation, and risk limit checks
+- **FR-015**: System MUST provide safety mechanisms to prevent execution of incorrect or risky trading actions, including balance validation (optional, configurable via `ORDERMANAGER_ENABLE_BALANCE_CHECK`), parameter validation, and risk limit checks. Balance validation can be disabled for performance optimization, as Bybit API will reject orders with insufficient balance regardless
 - **FR-016**: System MUST provide tools for manual order state synchronization by querying Bybit REST API directly to refresh order statuses
 - **FR-017**: System MUST handle errors gracefully, including API failures, network issues, and invalid responses, with appropriate retry logic and error reporting. For Bybit API rate limits (429 errors), system MUST implement exponential backoff with configurable retry limits
 - **FR-018**: System MUST maintain trace_id throughout request processing for request flow tracking across microservices
@@ -184,7 +191,7 @@ As a trading system, I need protection against incorrect or risky trading action
 - **SC-002**: System maintains order state accuracy with 99% synchronization rate between database and Bybit exchange (verified through periodic reconciliation)
 - **SC-003**: System successfully executes 95% of valid trading signals without errors (excluding signals rejected due to insufficient balance or risk limits, which are expected rejections)
 - **SC-004**: System publishes order execution events within 1 second of order state changes, enabling timely feedback to model service
-- **SC-005**: System prevents 100% of orders that would exceed available balance from being created on the exchange
+- **SC-005**: System prevents 100% of orders that would exceed available balance from being created on the exchange. When `ORDERMANAGER_ENABLE_BALANCE_CHECK=true`, this is achieved through early rejection before API call. When disabled, Bybit API rejects orders with insufficient balance, achieving the same protection through late rejection
 - **SC-006**: System handles WebSocket disconnections and reconnections without losing order state updates, resubscribing to order topics within 5 seconds of reconnection
 - **SC-007**: System provides manual synchronization capability that can refresh order states for all active orders within 30 seconds
 - **SC-008**: System logs all order operations with sufficient detail such that 100% of order lifecycle events can be traced and audited

@@ -133,13 +133,17 @@ class SignalProcessor:
             current_position = await self.position_manager.get_position(asset)
 
             # Step 5: Risk checks
-            # 5a: Balance check (skip in dry-run mode)
-            if not settings.order_manager_enable_dry_run:
+            # 5a: Balance check (skip in dry-run mode or if disabled)
+            # Note: Balance check is optional - Bybit API will reject orders with insufficient balance anyway.
+            # This check provides early rejection and better logging, but adds an extra API call.
+            if not settings.order_manager_enable_dry_run and settings.order_manager_enable_balance_check:
                 await self.risk_manager.check_balance(signal, quantity, order_price)
             else:
-                logger.debug(
-                    "balance_check_skipped_dry_run",
+                skip_reason = "dry_run" if settings.order_manager_enable_dry_run else "balance_check_disabled"
+                logger.info(
+                    "balance_check_skipped",
                     signal_id=str(signal_id),
+                    reason=skip_reason,
                     trace_id=trace_id,
                 )
 
