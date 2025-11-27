@@ -174,6 +174,15 @@ class Settings(BaseSettings):
         )
 
     @property
+    def database_url_async(self) -> str:
+        """Get async PostgreSQL connection URL for asyncpg."""
+        # asyncpg uses postgresql:// URL format
+        return (
+            f"postgresql://{self.postgres_user}:{self.postgres_password}"
+            f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+        )
+
+    @property
     def rabbitmq_url(self) -> str:
         """Get RabbitMQ connection URL."""
         return (

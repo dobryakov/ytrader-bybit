@@ -40,15 +40,15 @@
 
 **⚠️ CRITICAL**: No user story work can begin until this phase is complete
 
-- [ ] T008 Setup database connection pool in order-manager/src/config/database.py (asyncpg connection pool)
-- [ ] T009 [P] Implement configuration management in order-manager/src/config/settings.py (pydantic-settings with all configuration categories from research.md)
-- [ ] T010 [P] Create base models structure in order-manager/src/models/__init__.py
-- [ ] T011 [P] Implement trace ID utilities in order-manager/src/utils/tracing.py (trace ID generation and propagation)
-- [ ] T012 [P] Implement Bybit REST API client wrapper in order-manager/src/utils/bybit_client.py (httpx async client with HMAC-SHA256 authentication, retry logic with exponential backoff for 429 errors)
-- [ ] T013 [P] Setup FastAPI application structure in order-manager/src/api/main.py (FastAPI app initialization, middleware setup)
-- [ ] T014 [P] Implement API key authentication middleware in order-manager/src/api/middleware/auth.py (X-API-Key header validation)
-- [ ] T015 [P] Setup RabbitMQ connection in order-manager/src/config/rabbitmq.py (aio-pika connection and channel management)
-- [ ] T016 Create service entry point in order-manager/src/main.py (service startup, dependency initialization, graceful shutdown)
+- [X] T008 Setup database connection pool in order-manager/src/config/database.py (asyncpg connection pool)
+- [X] T009 [P] Implement configuration management in order-manager/src/config/settings.py (pydantic-settings with all configuration categories from research.md)
+- [X] T010 [P] Create base models structure in order-manager/src/models/__init__.py
+- [X] T011 [P] Implement trace ID utilities in order-manager/src/utils/tracing.py (trace ID generation and propagation)
+- [X] T012 [P] Implement Bybit REST API client wrapper in order-manager/src/utils/bybit_client.py (httpx async client with HMAC-SHA256 authentication, retry logic with exponential backoff for 429 errors)
+- [X] T013 [P] Setup FastAPI application structure in order-manager/src/api/main.py (FastAPI app initialization, middleware setup)
+- [X] T014 [P] Implement API key authentication middleware in order-manager/src/api/middleware/auth.py (X-API-Key header validation)
+- [X] T015 [P] Setup RabbitMQ connection in order-manager/src/config/rabbitmq.py (aio-pika connection and channel management)
+- [X] T016 Create service entry point in order-manager/src/main.py (service startup, dependency initialization, graceful shutdown)
 
 **Checkpoint**: Foundation ready - user story implementation can now begin in parallel
 
