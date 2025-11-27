@@ -96,35 +96,86 @@ class BybitClient:
 
         return signature
 
-    def _prepare_auth_params(
-        self, params: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
+    def _generate_signature_for_get(
+        self, params: Dict[str, Any], timestamp: int, recv_window: str
+    ) -> str:
         """
-        Prepare authenticated request parameters.
-
+        Generate signature for GET requests.
+        
+        Rule: timestamp + api_key + recv_window + queryString
+        
         Args:
-            params: Additional request parameters
-
+            params: Request parameters (excluding auth params)
+            timestamp: Request timestamp in milliseconds
+            recv_window: Receive window value
+            
         Returns:
-            Dictionary with authentication parameters added
+            Hex-encoded signature string
         """
-        if params is None:
-            params = {}
+        # Sort parameters alphabetically and create query string
+        sorted_params = sorted([(k, str(v)) for k, v in params.items() if v is not None])
+        query_string = "&".join([f"{k}={v}" for k, v in sorted_params])
+        
+        # Create signature string: timestamp + api_key + recv_window + query_string
+        signature_string = f"{timestamp}{self.api_key}{recv_window}{query_string}"
+        
+        # Generate HMAC-SHA256 signature
+        signature = hmac.new(
+            self.api_secret.encode("utf-8"),
+            signature_string.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        
+        return signature
 
-        # Add authentication parameters
-        timestamp = int(time.time() * 1000)  # Current timestamp in milliseconds
-        auth_params = {
-            "api_key": self.api_key,
-            "timestamp": timestamp,
-            "recv_window": "5000",
-            **params,
+    def _generate_signature_for_post(
+        self, json_body: str, timestamp: int, recv_window: str
+    ) -> str:
+        """
+        Generate signature for POST requests.
+        
+        Rule: timestamp + api_key + recv_window + jsonBodyString
+        
+        Args:
+            json_body: JSON body as string
+            timestamp: Request timestamp in milliseconds
+            recv_window: Receive window value
+            
+        Returns:
+            Hex-encoded signature string
+        """
+        # Create signature string: timestamp + api_key + recv_window + jsonBodyString
+        signature_string = f"{timestamp}{self.api_key}{recv_window}{json_body}"
+        
+        # Generate HMAC-SHA256 signature
+        signature = hmac.new(
+            self.api_secret.encode("utf-8"),
+            signature_string.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        
+        return signature
+
+    def _prepare_auth_headers(
+        self, timestamp: int, recv_window: str, signature: str
+    ) -> Dict[str, str]:
+        """
+        Prepare authentication headers for Bybit API v5.
+        
+        Args:
+            timestamp: Request timestamp in milliseconds
+            recv_window: Receive window value
+            signature: Generated signature
+            
+        Returns:
+            Dictionary with authentication headers
+        """
+        return {
+            "X-BAPI-API-KEY": self.api_key,
+            "X-BAPI-TIMESTAMP": str(timestamp),
+            "X-BAPI-RECV-WINDOW": recv_window,
+            "X-BAPI-SIGN": signature,
         }
-
-        # Generate signature
-        signature = self._generate_signature(params, timestamp)
-        auth_params["sign"] = signature
-
-        return auth_params
 
     async def _request_with_retry(
         self,
@@ -153,16 +204,34 @@ class BybitClient:
         trace_id = get_or_create_trace_id()
         client = await self._get_client()
 
-        # Prepare parameters
+        # Prepare authentication
+        timestamp = int(time.time() * 1000)  # Current timestamp in milliseconds
+        recv_window = "5000"  # Standard receive window (5 seconds)
+        
+        # Prepare request parameters and headers
+        request_params = params or {}
+        request_headers: Dict[str, str] = {}
+        
         if authenticated:
-            request_params = self._prepare_auth_params(params)
-        else:
-            request_params = params or {}
+            # Generate signature based on request type
+            if method.upper() == "POST" and json_data:
+                # POST: timestamp + api_key + recv_window + jsonBodyString
+                import json
+                json_body_string = json.dumps(json_data, separators=(",", ":"), sort_keys=False)
+                signature = self._generate_signature_for_post(json_body_string, timestamp, recv_window)
+            else:
+                # GET: timestamp + api_key + recv_window + queryString
+                signature = self._generate_signature_for_get(request_params, timestamp, recv_window)
+            
+            # Add authentication headers (Bybit API v5 uses headers, not query params)
+            request_headers.update(self._prepare_auth_headers(timestamp, recv_window, signature))
 
         # Prepare request data
         request_kwargs: Dict[str, Any] = {}
         if json_data:
             request_kwargs["json"] = json_data
+        if request_headers:
+            request_kwargs["headers"] = request_headers
 
         last_error = None
         for attempt in range(self.max_retries):
@@ -172,16 +241,21 @@ class BybitClient:
                     "bybit_api_request",
                     method=method,
                     endpoint=endpoint,
+                    params_keys=list(request_params.keys()) if request_params else None,
+                    has_json=bool(json_data),
+                    has_auth_headers=authenticated,
                     attempt=attempt + 1,
                     trace_id=trace_id,
                 )
 
                 # Make request
+                # For POST: params in query string, json_data in body, auth in headers
+                # For GET: params in query string, auth in headers
                 response = await client.request(
                     method=method,
                     url=endpoint,
-                    params=request_params,
-                    **request_kwargs,
+                    params=request_params,  # Query string parameters (no auth params)
+                    **request_kwargs,  # JSON body and headers if present
                 )
 
                 # Log response
