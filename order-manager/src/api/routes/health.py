@@ -11,6 +11,7 @@ from ...config.rabbitmq import RabbitMQConnection
 from ...config.settings import settings
 from ...config.logging import get_logger
 from ...utils.bybit_client import get_bybit_client
+from ...utils.metrics import get_metrics_summary
 
 logger = get_logger(__name__)
 
@@ -179,6 +180,35 @@ async def get_readiness():
                     "bybit_api": "unknown",
                     "ws_gateway": "unknown",
                 },
+            },
+        )
+
+
+@router.get("/metrics")
+async def get_metrics():
+    """Get performance metrics summary.
+
+    Returns:
+        Performance metrics including latency statistics and counters
+    """
+    try:
+        from ...utils.metrics import get_metrics_summary
+
+        metrics_summary = get_metrics_summary()
+        return JSONResponse(
+            status_code=200,
+            content={
+                "metrics": metrics_summary,
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+            },
+        )
+    except Exception as e:
+        logger.error("metrics_retrieval_failed", error=str(e), exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": "Failed to retrieve metrics",
+                "timestamp": datetime.utcnow().isoformat() + "Z",
             },
         )
 

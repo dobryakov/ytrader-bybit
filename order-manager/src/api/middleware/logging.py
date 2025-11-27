@@ -9,6 +9,7 @@ from starlette.types import ASGIApp
 
 from ...config.logging import get_logger
 from ...utils.tracing import get_or_create_trace_id, set_trace_id
+from ...utils.metrics import record_latency
 
 logger = get_logger(__name__)
 
@@ -61,6 +62,16 @@ class LoggingMiddleware(BaseHTTPMiddleware):
             response = await call_next(request)
             status_code = response.status_code
             elapsed_time = time.time() - start_time
+
+            # Record metrics
+            elapsed_time_ms = elapsed_time * 1000
+            record_latency(
+                "api_response_times",
+                elapsed_time_ms,
+                method=method,
+                path=path,
+                status_code=status_code,
+            )
 
             # Log response
             logger.info(

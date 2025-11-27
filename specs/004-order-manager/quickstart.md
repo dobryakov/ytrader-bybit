@@ -108,21 +108,29 @@ docker compose logs -f postgres rabbitmq ws-gateway
 
 ### 4. Run Database Migrations
 
-**IMPORTANT**: Per constitution principle II (Shared Database Strategy), PostgreSQL migrations MUST be located in the `ws-gateway` service. Migrations for Order Manager tables (orders, positions, signal_order_relationships, position_snapshots) should be added to `ws-gateway/migrations/` directory.
+**IMPORTANT**: Per constitution principle II (Shared Database Strategy), PostgreSQL migrations MUST be located in the `ws-gateway` service. Migrations for Order Manager tables (orders, positions, signal_order_relationships, position_snapshots) are already created in `ws-gateway/migrations/` directory:
+- `005_create_orders_table.sql`
+- `006_create_signal_order_relationships_table.sql`
+- `007_create_positions_table.sql`
+- `008_create_position_snapshots_table.sql`
 
-Create migration files in `ws-gateway/migrations/`:
-- `XXX_create_orders_table.sql`
-- `XXX_create_signal_order_relationships_table.sql`
-- `XXX_create_positions_table.sql`
-- `XXX_create_position_snapshots_table.sql`
+Migrations are typically run automatically when ws-gateway starts. To verify migrations have been applied:
 
-Run migrations:
+```bash
+docker compose exec postgres psql -U ytrader -d ytrader -c "\dt"
+```
+
+You should see the following tables:
+- `orders`
+- `signal_order_relationships`
+- `positions`
+- `position_snapshots`
+
+If migrations need to be run manually:
 
 ```bash
 docker compose exec ws-gateway python -m migrations.run
 ```
-
-Or if migrations are run automatically on startup, they will execute when ws-gateway starts.
 
 ### 5. Start Order Manager Service
 
@@ -281,6 +289,7 @@ In dry-run mode, orders will have `status: "dry_run"` and `is_dry_run: true`.
 Trigger manual synchronization with Bybit to refresh order states:
 
 ```bash
+# Sync active orders only (currently supported)
 curl -X POST "http://localhost:4600/api/v1/sync" \
   -H "X-API-Key: your-order-manager-api-key" \
   -H "Content-Type: application/json" \
@@ -288,6 +297,8 @@ curl -X POST "http://localhost:4600/api/v1/sync" \
     "scope": "active"
   }'
 ```
+
+**Note**: Currently only `"active"` scope is supported. The `"all"` scope is not yet implemented.
 
 Response:
 
@@ -300,6 +311,11 @@ Response:
   "timestamp": "2025-01-27T10:00:00Z"
 }
 ```
+
+Possible status values:
+- `"completed"`: Synchronization completed successfully
+- `"partial"`: Some orders synced but errors occurred
+- `"failed"`: Synchronization failed with errors
 
 ## Monitoring and Logs
 

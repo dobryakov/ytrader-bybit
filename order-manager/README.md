@@ -110,23 +110,52 @@ See `env.example` for complete configuration options.
 
 ### Docker Setup
 
-1. Build and start the service:
+1. Ensure dependencies are running:
+
+```bash
+# Start PostgreSQL, RabbitMQ, and WebSocket Gateway
+docker compose up -d postgres rabbitmq ws-gateway
+
+# Wait for services to be ready
+docker compose logs -f postgres rabbitmq ws-gateway
+# Press Ctrl+C when services are ready
+```
+
+2. Run database migrations:
+
+Database migrations for Order Manager tables are managed in the `ws-gateway` service per constitution requirement. Migrations should already be applied when ws-gateway starts, but you can verify:
+
+```bash
+docker compose exec postgres psql -U ytrader -d ytrader -c "\dt"
+```
+
+You should see tables: `orders`, `signal_order_relationships`, `positions`, `position_snapshots`.
+
+3. Build and start the service:
 
 ```bash
 docker compose build order-manager
 docker compose up -d order-manager
 ```
 
-2. Check service health:
+4. Check service health:
 
 ```bash
+# Basic health check
 curl http://localhost:4600/health
+
+# Check readiness (includes dependency status)
+curl http://localhost:4600/ready
 ```
 
-3. View logs:
+5. View logs:
 
 ```bash
+# Follow logs
 docker compose logs -f order-manager
+
+# View last 100 lines
+docker compose logs --tail 100 order-manager
 ```
 
 ### Local Development Setup
@@ -172,41 +201,116 @@ uvicorn src.main:app --host 0.0.0.0 --port 4600 --reload
 
 ## API Endpoints
 
+All API endpoints require authentication via `X-API-Key` header. Set the API key in your `.env` file as `ORDERMANAGER_API_KEY`.
+
 ### Health Check
 
+Check service health and dependency status:
+
 ```bash
-GET /health
-GET /live
-GET /ready
+# Basic health check
+curl http://localhost:4600/health
+
+# Liveness probe (service is running)
+curl http://localhost:4600/live
+
+# Readiness probe (dependencies available)
+curl http://localhost:4600/ready
 ```
 
-Returns service health status including database, message queue, and external service checks.
+Example response from `/ready`:
+
+```json
+{
+  "status": "ready",
+  "timestamp": "2025-01-27T10:00:00Z",
+  "dependencies": {
+    "database": "available",
+    "rabbitmq": "available",
+    "bybit_api": "available",
+    "ws_gateway": "available"
+  }
+}
+```
 
 ### Order Queries
 
+Query orders with filtering, pagination, and sorting:
+
 ```bash
-GET /api/v1/orders?asset=BTCUSDT&status=filled&limit=10&offset=0
-GET /api/v1/orders/{order_id}
+# List all orders with pagination
+curl -X GET "http://localhost:4600/api/v1/orders?page=1&page_size=20" \
+  -H "X-API-Key: your-api-key-here"
+
+# Filter by asset and status
+curl -X GET "http://localhost:4600/api/v1/orders?asset=BTCUSDT&status=filled&page=1&page_size=10" \
+  -H "X-API-Key: your-api-key-here"
+
+# Filter by date range
+curl -X GET "http://localhost:4600/api/v1/orders?date_from=2025-01-01T00:00:00Z&date_to=2025-01-31T23:59:59Z" \
+  -H "X-API-Key: your-api-key-here"
+
+# Get order by Bybit order ID
+curl -X GET "http://localhost:4600/api/v1/orders/12345678" \
+  -H "X-API-Key: your-api-key-here"
 ```
 
-Query orders with filtering, pagination, and sorting.
+Query parameters:
+- `asset`: Trading pair (e.g., BTCUSDT)
+- `status`: Order status (pending, partially_filled, filled, cancelled, rejected, dry_run)
+- `signal_id`: Trading signal UUID
+- `order_id`: Bybit order ID
+- `side`: Order side (Buy, Sell)
+- `date_from`: Start date (ISO 8601)
+- `date_to`: End date (ISO 8601)
+- `page`: Page number (default: 1)
+- `page_size`: Items per page (default: 20, max: 100)
+- `sort_by`: Field to sort by (created_at, updated_at, executed_at)
+- `sort_order`: Sort direction (asc, desc)
 
 ### Position Queries
 
-```bash
-GET /api/v1/positions?asset=BTCUSDT
-GET /api/v1/positions/{asset}
-```
+Query current trading positions:
 
-Query current positions.
+```bash
+# List all positions
+curl -X GET "http://localhost:4600/api/v1/positions" \
+  -H "X-API-Key: your-api-key-here"
+
+# Get position for specific asset
+curl -X GET "http://localhost:4600/api/v1/positions/BTCUSDT" \
+  -H "X-API-Key: your-api-key-here"
+```
 
 ### Manual Synchronization
 
+Manually trigger order state synchronization with Bybit exchange:
+
 ```bash
-POST /api/v1/sync?scope=orders
+# Sync all active orders
+curl -X POST "http://localhost:4600/api/v1/sync" \
+  -H "X-API-Key: your-api-key-here" \
+  -H "Content-Type: application/json" \
+  -d '{"scope": "active"}'
+
+# Sync all orders (active and completed)
+curl -X POST "http://localhost:4600/api/v1/sync" \
+  -H "X-API-Key: your-api-key-here" \
+  -H "Content-Type: application/json" \
+  -d '{"scope": "all"}'
 ```
 
-Manually trigger order state synchronization with Bybit exchange.
+Response:
+
+```json
+{
+  "status": "completed",
+  "synced_orders": 5,
+  "updated_orders": 2,
+  "errors": [],
+  "timestamp": "2025-01-27T10:00:00Z"
+}
+```
 
 ## Message Queues
 
@@ -214,9 +318,134 @@ Manually trigger order state synchronization with Bybit exchange.
 
 - `model-service.trading_signals`: Trading signals from model service
 
+The service automatically consumes trading signals from this queue. Signals should follow this format:
+
+```json
+{
+  "signal_id": "uuid",
+  "signal_type": "buy",
+  "asset": "BTCUSDT",
+  "amount": 1000.0,
+  "confidence": 0.85,
+  "timestamp": "2025-01-27T10:00:00Z",
+  "strategy_id": "momentum_v1",
+  "model_version": "v1.0.0",
+  "is_warmup": false,
+  "market_data_snapshot": {
+    "price": 50000.0,
+    "spread": 1.5,
+    "volume_24h": 1000000.0,
+    "volatility": 0.02
+  },
+  "metadata": {},
+  "trace_id": "optional-trace-id"
+}
+```
+
 ### Published Queues
 
 - `order-manager.order_events`: Enriched order execution events
+
+The service publishes enriched order events when order states change (filled, partially_filled, cancelled, rejected). Event format:
+
+```json
+{
+  "event_id": "uuid",
+  "event_type": "filled",
+  "order_id": "bybit-order-id",
+  "signal_id": "uuid",
+  "asset": "BTCUSDT",
+  "side": "Buy",
+  "order_type": "Market",
+  "status": "filled",
+  "quantity": "0.1",
+  "filled_quantity": "0.1",
+  "average_price": "50000.0",
+  "fees": "2.5",
+  "executed_at": "2025-01-27T10:00:00Z",
+  "trace_id": "trace-id"
+}
+```
+
+## Usage Examples
+
+### Testing with Dry-Run Mode
+
+Enable dry-run mode to test order logic without executing real orders:
+
+1. Set in `.env`:
+```bash
+ORDERMANAGER_ENABLE_DRY_RUN=true
+```
+
+2. Restart the service:
+```bash
+docker compose restart order-manager
+```
+
+3. Send a test trading signal to RabbitMQ:
+```bash
+docker compose exec rabbitmq rabbitmqadmin publish \
+  routing_key=model-service.trading_signals \
+  payload='{"signal_id":"test-001","signal_type":"buy","asset":"BTCUSDT","amount":1000.0,"confidence":0.85,"timestamp":"2025-01-27T10:00:00Z","strategy_id":"test","is_warmup":true}'
+```
+
+4. Check logs to see order processing:
+```bash
+docker compose logs -f order-manager
+```
+
+5. Query the order (will have `status: "dry_run"`):
+```bash
+curl -X GET "http://localhost:4600/api/v1/orders?asset=BTCUSDT" \
+  -H "X-API-Key: your-api-key-here"
+```
+
+### Monitoring Order Processing
+
+Monitor order processing in real-time:
+
+```bash
+# Watch service logs
+docker compose logs -f order-manager
+
+# Filter by trace ID
+docker compose logs order-manager | grep "trace-12345"
+
+# Check RabbitMQ queue status
+docker compose exec rabbitmq rabbitmqctl list_queues name messages
+```
+
+### Troubleshooting
+
+**Service won't start:**
+- Check logs: `docker compose logs order-manager`
+- Verify database connection: Ensure PostgreSQL is running and credentials are correct
+- Verify RabbitMQ connection: Ensure RabbitMQ is running and credentials are correct
+- Check Bybit API credentials: Verify API key and secret in `.env`
+
+**Orders not being created:**
+- Verify trading signals are being published to `model-service.trading_signals` queue
+- Check service logs for signal processing errors
+- Ensure dry-run mode is disabled if you want real orders
+- Verify Bybit API credentials are valid and have trading permissions
+- Check available balance for orders
+
+**Order state not updating:**
+- Verify WebSocket Gateway is operational
+- Check that Order Manager has subscribed to order execution events
+- Verify WebSocket connection is active (check WebSocket Gateway logs)
+- Try manual sync: `POST /api/v1/sync`
+
+**Database connection issues:**
+- Verify PostgreSQL is accessible:
+  ```bash
+  docker compose exec postgres psql -U ytrader -d ytrader -c "SELECT 1;"
+  ```
+- Check migration status:
+  ```bash
+  docker compose exec postgres psql -U ytrader -d ytrader -c "\dt"
+  ```
 
 ## Database
 

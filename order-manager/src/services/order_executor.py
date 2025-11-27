@@ -528,9 +528,9 @@ class OrderExecutor:
         if selector.should_use_post_only(order_type):
             params["postOnly"] = True
 
-        # Add reduce_only flag if needed
-        # TODO: Check position and set reduce_only if appropriate
-        # For now, we'll skip this as it requires position lookup
+        # Note: reduce_only flag is not set here as it requires position context
+        # and should be determined by the calling service based on current position state
+        # This allows for more flexible position management strategies
 
         return params
 

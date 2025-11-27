@@ -186,7 +186,7 @@ class SignalProcessor:
 
             # 5c: Position size check
             order_side = "Buy" if signal.signal_type.lower() == "buy" else "Sell"
-            self.risk_manager.check_position_size(asset, current_position, quantity, order_side)
+            self.risk_manager.check_position_size(asset, current_position, quantity, order_side, trace_id=trace_id)
 
             # Step 6: Create order via executor
             from ..services.order_executor import OrderExecutor

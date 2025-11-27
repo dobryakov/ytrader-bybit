@@ -293,7 +293,14 @@ class RiskManager:
 
         return True
 
-    def check_position_size(self, asset: str, current_position: Optional[Position], order_quantity: Decimal, order_side: str) -> bool:
+    def check_position_size(
+        self,
+        asset: str,
+        current_position: Optional[Position],
+        order_quantity: Decimal,
+        order_side: str,
+        trace_id: Optional[str] = None,
+    ) -> bool:
         """Check if order would exceed maximum position size limit.
 
         Args:
@@ -301,7 +308,7 @@ class RiskManager:
             current_position: Current position for asset (None if no position)
             order_quantity: Order quantity in base currency
             order_side: Order side ('Buy' or 'Sell')
-            trace_id: Trace ID for logging
+            trace_id: Optional trace ID for logging
 
         Returns:
             True if position size is within limits, False otherwise
@@ -309,7 +316,9 @@ class RiskManager:
         Raises:
             RiskLimitError: If position size would exceed limits
         """
-        trace_id = None  # TODO: Get from context
+        from ..utils.tracing import get_or_create_trace_id
+
+        trace_id = trace_id or get_or_create_trace_id()
 
         current_size = Decimal("0")
         if current_position:

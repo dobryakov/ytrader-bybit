@@ -1,12 +1,27 @@
 """FastAPI application setup and configuration."""
 
-from fastapi import FastAPI
+from datetime import datetime
+from typing import Optional
+
+from fastapi import FastAPI, Request, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
 
 from .middleware.auth import APIKeyAuthMiddleware
 from .middleware.logging import LoggingMiddleware
 from ..config.settings import settings
 from ..config.logging import get_logger, configure_logging
+from ..exceptions import (
+    OrderManagerError,
+    ConfigurationError,
+    DatabaseError,
+    QueueError,
+    BybitAPIError,
+    OrderExecutionError,
+    RiskLimitError,
+)
+from ..utils.tracing import get_or_create_trace_id
 
 # Configure logging
 configure_logging()
@@ -47,6 +62,113 @@ def create_app(lifespan_context=None) -> FastAPI:
 
     # Add API key authentication middleware
     app.add_middleware(APIKeyAuthMiddleware, api_prefix="/api")
+
+    # Register global exception handlers
+    @app.exception_handler(OrderManagerError)
+    async def order_manager_error_handler(request: Request, exc: OrderManagerError):
+        """Handle OrderManagerError exceptions with consistent error response."""
+        trace_id = get_or_create_trace_id()
+        logger.error(
+            "order_manager_error",
+            error_type=type(exc).__name__,
+            message=exc.message,
+            trace_id=trace_id or exc.trace_id,
+            exc_info=True,
+        )
+
+        # Map exception types to HTTP status codes
+        status_code_map = {
+            ConfigurationError: status.HTTP_500_INTERNAL_SERVER_ERROR,
+            DatabaseError: status.HTTP_503_SERVICE_UNAVAILABLE,
+            QueueError: status.HTTP_503_SERVICE_UNAVAILABLE,
+            BybitAPIError: status.HTTP_502_BAD_GATEWAY,
+            OrderExecutionError: status.HTTP_400_BAD_REQUEST,
+            RiskLimitError: status.HTTP_400_BAD_REQUEST,
+        }
+
+        status_code = status_code_map.get(type(exc), status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        return JSONResponse(
+            status_code=status_code,
+            content={
+                "error": {
+                    "type": type(exc).__name__,
+                    "message": exc.message,
+                    "trace_id": trace_id or exc.trace_id,
+                },
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+            },
+        )
+
+    @app.exception_handler(HTTPException)
+    async def http_exception_handler(request: Request, exc: HTTPException):
+        """Handle HTTPException with consistent error response."""
+        trace_id = get_or_create_trace_id()
+        logger.warning(
+            "http_exception",
+            status_code=exc.status_code,
+            detail=exc.detail,
+            trace_id=trace_id,
+        )
+
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "error": {
+                    "type": "HTTPException",
+                    "message": exc.detail,
+                    "trace_id": trace_id,
+                },
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+            },
+        )
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_exception_handler(request: Request, exc: RequestValidationError):
+        """Handle request validation errors with consistent error response."""
+        trace_id = get_or_create_trace_id()
+        logger.warning(
+            "validation_error",
+            errors=exc.errors(),
+            trace_id=trace_id,
+        )
+
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content={
+                "error": {
+                    "type": "ValidationError",
+                    "message": "Request validation failed",
+                    "details": exc.errors(),
+                    "trace_id": trace_id,
+                },
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+            },
+        )
+
+    @app.exception_handler(Exception)
+    async def general_exception_handler(request: Request, exc: Exception):
+        """Handle unexpected exceptions with consistent error response."""
+        trace_id = get_or_create_trace_id()
+        logger.error(
+            "unexpected_error",
+            error_type=type(exc).__name__,
+            error=str(exc),
+            trace_id=trace_id,
+            exc_info=True,
+        )
+
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={
+                "error": {
+                    "type": "InternalServerError",
+                    "message": "An unexpected error occurred",
+                    "trace_id": trace_id,
+                },
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+            },
+        )
 
     # Register routes
     from .routes import health, orders, positions, sync

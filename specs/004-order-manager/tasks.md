@@ -179,14 +179,14 @@
 
 **Purpose**: Improvements that affect multiple user stories
 
-- [ ] T064 [P] Update README.md with complete setup and usage instructions in order-manager/README.md
-- [ ] T065 [P] Synchronize quickstart.md with actual implementation in specs/004-order-manager/quickstart.md
-- [ ] T066 Code cleanup and refactoring (review all services for consistency)
-- [ ] T067 [P] Add comprehensive error handling across all services (consistent error responses)
-- [ ] T068 [P] Add performance monitoring and metrics (order processing latency, queue depth, API response times)
-- [ ] T069 Security hardening (API key rotation, secure credential storage, input sanitization)
+- [X] T064 [P] Update README.md with complete setup and usage instructions in order-manager/README.md
+- [X] T065 [P] Synchronize quickstart.md with actual implementation in specs/004-order-manager/quickstart.md
+- [X] T066 Code cleanup and refactoring (review all services for consistency)
+- [X] T067 [P] Add comprehensive error handling across all services (consistent error responses)
+- [X] T068 [P] Add performance monitoring and metrics (order processing latency, queue depth, API response times)
+- [X] T069 Security hardening (API key rotation, secure credential storage, input sanitization)
 - [ ] T070 Run quickstart.md validation (verify all steps work end-to-end)
-- [ ] T071 Add database migration files in ws-gateway/migrations/ (XXX_create_orders_table.sql, XXX_create_signal_order_relationships_table.sql, XXX_create_positions_table.sql, XXX_create_position_snapshots_table.sql per constitution requirement)
+- [X] T071 Add database migration files in ws-gateway/migrations/ (XXX_create_orders_table.sql, XXX_create_signal_order_relationships_table.sql, XXX_create_positions_table.sql, XXX_create_position_snapshots_table.sql per constitution requirement)
 
 ---
 
