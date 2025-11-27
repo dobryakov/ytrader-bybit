@@ -3,7 +3,7 @@
 **Input**: Design documents from `/specs/004-order-manager/`
 **Prerequisites**: plan.md (required), spec.md (required for user stories), research.md, data-model.md, contracts/
 
-**Tests**: Tests are OPTIONAL - only include them if explicitly requested in the feature specification. This task list does not include test tasks by default.
+**Tests**: Per Constitution Principle IV (Testing Discipline), tests MUST run inside Docker containers. Test tasks are organized separately to maintain clear separation between implementation and testing phases. Unit tests run in service containers; integration and e2e tests run in separate test containers connected to the main `docker-compose.yml`. After completing each implementation task, relevant automated tests MUST be executed.
 
 **Organization**: Tasks are grouped by user story to enable independent implementation and testing of each story.
 

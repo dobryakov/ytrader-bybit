@@ -145,8 +145,6 @@ As a trading system, I need protection against incorrect or risky trading action
 - **FR-005.9**: System MUST provide REST API endpoints for querying order lists, viewing position state, health/live/readiness probes, and manual resynchronization. All endpoints (except health probes) MUST require API key authentication via X-API-Key header
 - **FR-005.10**: System MUST implement reconciliation and recovery procedures that define which orders are considered active, startup state synchronization, and handling of missed WebSocket events during downtime
 - **FR-005.11**: System MUST implement or define responsibility for stop-loss/take-profit mechanism, including rules for automatic stop-order placement and handling of positions with significant unrealized PnL
-- **FR-005.12**: System MUST implement hybrid position storage strategy: store current position state in database with periodic snapshots, compute positions from orders for validation, and maintain data consistency procedures
-- **FR-005.13**: System MUST provide dry-run mode that accepts signals but does not send orders to Bybit, with comprehensive logging of simulated operations
 - **FR-006**: System MUST create orders on Bybit exchange via REST API with appropriate order parameters (symbol, side, quantity, order type)
 - **FR-007**: System MUST modify existing orders on Bybit via REST API when signal indicates order changes are needed
 - **FR-008**: System MUST cancel orders on Bybit via REST API when signals indicate cancellation is needed
@@ -158,17 +156,17 @@ As a trading system, I need protection against incorrect or risky trading action
 - **FR-014**: System MUST enrich published events with additional context (execution price, fees, market conditions, timing) when available
 - **FR-015**: System MUST provide safety mechanisms to prevent execution of incorrect or risky trading actions, including balance validation, parameter validation, and risk limit checks
 - **FR-016**: System MUST provide tools for manual order state synchronization by querying Bybit REST API directly to refresh order statuses
+- **FR-017**: System MUST handle errors gracefully, including API failures, network issues, and invalid responses, with appropriate retry logic and error reporting. For Bybit API rate limits (429 errors), system MUST implement exponential backoff with configurable retry limits
+- **FR-018**: System MUST maintain trace_id throughout request processing for request flow tracking across microservices
+- **FR-019**: System MUST handle duplicate signals (same signal_id) by tracking signal processing state: reject duplicates if previous processing succeeded, but allow retry if previous processing failed (retry mechanism)
+- **FR-020**: System MUST support both warm-up mode signals (is_warmup=true) and model-generated signals (is_warmup=false) with appropriate handling for each type
 - **FR-021**: System MUST provide REST API endpoints for querying orders with filtering, pagination, and sorting capabilities. Endpoints MUST require API key authentication via X-API-Key header
 - **FR-022**: System MUST provide REST API endpoint for retrieving current position state with all relevant position information. Endpoint MUST require API key authentication via X-API-Key header
 - **FR-023**: System MUST implement health, liveness, and readiness probe endpoints that report service and dependency status. Health probe endpoints MAY be unauthenticated for monitoring purposes
 - **FR-024**: System MUST implement reconciliation procedures on service startup to recover order state and detect missed events
 - **FR-025**: System MUST implement or coordinate stop-loss/take-profit mechanism with defined responsibility boundaries and automatic placement rules
-- **FR-026**: System MUST implement hybrid position storage strategy: store current position state with periodic snapshots, compute from orders for validation, with defined data model, snapshot frequency, and consistency procedures
-- **FR-027**: System MUST support dry-run mode that processes signals without sending orders to Bybit and provides comprehensive logging of simulated operations
-- **FR-017**: System MUST handle errors gracefully, including API failures, network issues, and invalid responses, with appropriate retry logic and error reporting. For Bybit API rate limits (429 errors), system MUST implement exponential backoff with configurable retry limits
-- **FR-018**: System MUST maintain trace_id throughout request processing for request flow tracking across microservices
-- **FR-019**: System MUST handle duplicate signals (same signal_id) by tracking signal processing state: reject duplicates if previous processing succeeded, but allow retry if previous processing failed (retry mechanism)
-- **FR-020**: System MUST support both warm-up mode signals (is_warmup=true) and model-generated signals (is_warmup=false) with appropriate handling for each type
+- **FR-026**: System MUST implement hybrid position storage strategy: store current position state in database with periodic snapshots, compute positions from orders for validation, and maintain data consistency procedures. The implementation MUST include: (1) defined data model for position storage and snapshots (see data-model.md), (2) configurable snapshot frequency via `ORDERMANAGER_POSITION_SNAPSHOT_INTERVAL`, (3) position computation algorithm for validation, and (4) discrepancy handling procedures when computed position differs from stored state
+- **FR-027**: System MUST support dry-run mode that processes signals without sending orders to Bybit and provides comprehensive logging of simulated operations. Dry-run mode MUST: (1) accept and validate all trading signals normally, (2) perform full order processing logic (type selection, quantity calculation, risk checks), (3) simulate order creation/modification/cancellation without API calls to Bybit, (4) log all simulated operations with sufficient detail for validation, and (5) be configurable via `ORDERMANAGER_DRY_RUN` environment variable
 
 ### Key Entities *(include if feature involves data)*
 
@@ -217,9 +215,24 @@ As a trading system, I need protection against incorrect or risky trading action
 - **RabbitMQ Message Broker**: Provides queues for signal consumption and event publishing
 - **Bybit Exchange API**: REST API for order creation, modification, cancellation, and state queries; WebSocket for real-time events (via gateway)
 
-## Design Decisions Required
+## Design Decisions
 
-The following architectural and logical decisions must be made during design and implementation:
+**Status**: The following architectural and logical decisions have been resolved and documented in `research.md`. Implementation should reference the decisions documented there. For details on each decision, see the corresponding section in `research.md`:
+
+- **Decision 1 (Order Type Selection)**: See `research.md` section "2. Order Type Selection Strategy"
+- **Decision 2 (Quantity Calculation)**: See `research.md` section "3. Quantity Calculation from Amount"
+- **Decision 3 (Signal-to-Order Relationships)**: See `research.md` section "4. Signal-to-Order Relationship Logic"
+- **Decision 4 (Position Management)**: See `research.md` section "5. Position Management Rules"
+- **Decision 5 (Signal Processing Order)**: See `research.md` section "6. Signal Processing Order and Priority"
+- **Decision 6 (Configuration Parameters)**: See `research.md` section "7. Configuration Parameters"
+- **Decision 7 (Order Cancellation)**: See `research.md` section "8. Order Cancellation Strategy"
+- **Decision 8 (Query API)**: See `research.md` section "9. Query API and State Inspection"
+- **Decision 9 (Reconciliation)**: See `research.md` section "10. Reconciliation and Recovery After Restart"
+- **Decision 10 (Stop-Loss/Take-Profit)**: See `research.md` section "11. Stop-Loss / Take-Profit Mechanism"
+- **Decision 11 (Position Storage)**: See `research.md` section "12. Position History Storage"
+- **Decision 12 (Dry-Run Mode)**: See `research.md` section "13. Dry-Run Mode"
+
+The following sections document the original decision questions for reference:
 
 ### 1. Order Type Selection Mechanism (Market vs Limit)
 
