@@ -198,15 +198,24 @@ class RiskManager:
 
             # Check if balance is sufficient
             if signal.signal_type.lower() == "buy" and required_balance > usdt_balance:
+                shortfall = required_balance - usdt_balance
+                shortfall_percentage = (shortfall / required_balance) * 100 if required_balance > 0 else 0
                 error_msg = (
-                    f"Insufficient balance: required={required_balance}, "
-                    f"available={usdt_balance}"
+                    f"Insufficient balance: required={required_balance} USDT, "
+                    f"available={usdt_balance} USDT, shortfall={shortfall} USDT ({shortfall_percentage:.2f}%)"
                 )
                 logger.error(
                     "balance_check_failed",
                     signal_id=str(signal.signal_id),
+                    asset=signal.asset,
+                    signal_type=signal.signal_type,
                     required=float(required_balance),
                     available=float(usdt_balance),
+                    shortfall=float(shortfall),
+                    shortfall_percentage=float(shortfall_percentage),
+                    order_quantity=float(order_quantity),
+                    order_price=float(order_price),
+                    error_type="RiskLimitError",
                     trace_id=trace_id,
                 )
                 raise RiskLimitError(error_msg)
@@ -244,19 +253,31 @@ class RiskManager:
         """
         trace_id = signal.trace_id
         order_value = order_quantity * order_price
+        max_order_size = self.max_exposure * self.max_order_size_ratio
 
-        # Check against max order size ratio of available balance
-        # This is a simplified check - in reality, we'd check against actual balance
-        if order_value > self.max_exposure * self.max_order_size_ratio:
+        # Check against max order size ratio of max exposure
+        if order_value > max_order_size:
+            excess = order_value - max_order_size
+            excess_percentage = (excess / order_value) * 100 if order_value > 0 else 0
             error_msg = (
-                f"Order size exceeds limit: order_value={order_value}, "
-                f"max_ratio={self.max_order_size_ratio}, max_exposure={self.max_exposure}"
+                f"Order size exceeds limit: order_value={order_value} USDT, "
+                f"max_allowed={max_order_size} USDT (max_exposure={self.max_exposure} * "
+                f"max_ratio={self.max_order_size_ratio}), excess={excess} USDT ({excess_percentage:.2f}%)"
             )
             logger.error(
                 "order_size_check_failed",
                 signal_id=str(signal.signal_id),
+                asset=signal.asset,
+                signal_type=signal.signal_type,
                 order_value=float(order_value),
+                order_quantity=float(order_quantity),
+                order_price=float(order_price),
+                max_order_size=float(max_order_size),
+                max_exposure=float(self.max_exposure),
                 max_ratio=float(self.max_order_size_ratio),
+                excess=float(excess),
+                excess_percentage=float(excess_percentage),
+                error_type="RiskLimitError",
                 trace_id=trace_id,
             )
             raise RiskLimitError(error_msg)
@@ -264,7 +285,9 @@ class RiskManager:
         logger.debug(
             "order_size_check_passed",
             signal_id=str(signal.signal_id),
+            asset=signal.asset,
             order_value=float(order_value),
+            max_order_size=float(max_order_size),
             trace_id=trace_id,
         )
 
@@ -298,19 +321,26 @@ class RiskManager:
         else:  # SELL
             new_size = current_size - order_quantity
 
-        # Check against max position size
+        # Check against max position size (absolute value)
         if abs(new_size) > self.max_position_size:
+            excess = abs(new_size) - self.max_position_size
+            excess_percentage = (excess / abs(new_size)) * 100 if new_size != 0 else 0
             error_msg = (
                 f"Position size would exceed limit: current={current_size}, "
-                f"order={order_quantity}, new={new_size}, max={self.max_position_size}"
+                f"order={order_quantity} ({order_side}), new={new_size}, "
+                f"max={self.max_position_size}, excess={excess} ({excess_percentage:.2f}%)"
             )
             logger.error(
                 "position_size_check_failed",
                 asset=asset,
                 current_size=float(current_size),
                 order_quantity=float(order_quantity),
+                order_side=order_side,
                 new_size=float(new_size),
                 max_size=float(self.max_position_size),
+                excess=float(excess),
+                excess_percentage=float(excess_percentage),
+                error_type="RiskLimitError",
                 trace_id=trace_id,
             )
             raise RiskLimitError(error_msg)
@@ -319,17 +349,21 @@ class RiskManager:
             "position_size_check_passed",
             asset=asset,
             current_size=float(current_size),
+            order_quantity=float(order_quantity),
+            order_side=order_side,
             new_size=float(new_size),
+            max_size=float(self.max_position_size),
             trace_id=trace_id,
         )
 
         return True
 
-    def check_max_exposure(self, total_exposure: Decimal) -> bool:
+    def check_max_exposure(self, total_exposure: Decimal, trace_id: Optional[str] = None) -> bool:
         """Check if total exposure across all positions exceeds maximum.
 
         Args:
             total_exposure: Total exposure across all positions (in USDT)
+            trace_id: Trace ID for logging
 
         Returns:
             True if exposure is within limits, False otherwise
@@ -338,14 +372,20 @@ class RiskManager:
             RiskLimitError: If exposure exceeds limits
         """
         if total_exposure > self.max_exposure:
+            excess = total_exposure - self.max_exposure
+            excess_percentage = (excess / total_exposure) * 100 if total_exposure > 0 else 0
             error_msg = (
-                f"Total exposure exceeds limit: exposure={total_exposure}, "
-                f"max={self.max_exposure}"
+                f"Total exposure exceeds limit: exposure={total_exposure} USDT, "
+                f"max={self.max_exposure} USDT, excess={excess} USDT ({excess_percentage:.2f}%)"
             )
             logger.error(
                 "max_exposure_check_failed",
                 total_exposure=float(total_exposure),
                 max_exposure=float(self.max_exposure),
+                excess=float(excess),
+                excess_percentage=float(excess_percentage),
+                error_type="RiskLimitError",
+                trace_id=trace_id,
             )
             raise RiskLimitError(error_msg)
 
@@ -353,6 +393,8 @@ class RiskManager:
             "max_exposure_check_passed",
             total_exposure=float(total_exposure),
             max_exposure=float(self.max_exposure),
+            utilization_percentage=float((total_exposure / self.max_exposure) * 100) if self.max_exposure > 0 else 0,
+            trace_id=trace_id,
         )
 
         return True

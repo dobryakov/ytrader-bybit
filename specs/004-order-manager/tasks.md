@@ -129,13 +129,13 @@
 
 ### Implementation for User Story 4
 
-- [ ] T045 [US4] Enhance signal validation with comprehensive parameter validation in order-manager/src/services/signal_processor.py (negative amounts, invalid assets, confidence range, required fields)
-- [ ] T046 [US4] Enhance balance validation to prevent orders exceeding available balance in order-manager/src/services/risk_manager.py
-- [ ] T047 [US4] Implement risk limit checks (max exposure, max order size, position size limits) in order-manager/src/services/risk_manager.py
-- [ ] T048 [US4] Add duplicate signal handling (track signal processing state, reject duplicates if previous succeeded, allow retry if previous failed) in order-manager/src/services/signal_processor.py
-- [ ] T049 [US4] Add conflict resolution for simultaneous signals in order-manager/src/services/signal_processor.py (queue handling for same asset)
-- [ ] T050 [US4] Add error handling and rejection logging with clear error messages in order-manager/src/services/signal_processor.py
-- [ ] T051 [US4] Add safety mechanism logging for all rejections in order-manager/src/services/risk_manager.py
+- [X] T045 [US4] Enhance signal validation with comprehensive parameter validation in order-manager/src/services/signal_processor.py (negative amounts, invalid assets, confidence range, required fields)
+- [X] T046 [US4] Enhance balance validation to prevent orders exceeding available balance in order-manager/src/services/risk_manager.py
+- [X] T047 [US4] Implement risk limit checks (max exposure, max order size, position size limits) in order-manager/src/services/risk_manager.py
+- [X] T048 [US4] Add duplicate signal handling (track signal processing state, reject duplicates if previous succeeded, allow retry if previous failed) in order-manager/src/services/signal_processor.py
+- [X] T049 [US4] Add conflict resolution for simultaneous signals in order-manager/src/services/signal_processor.py (queue handling for same asset)
+- [X] T050 [US4] Add error handling and rejection logging with clear error messages in order-manager/src/services/signal_processor.py
+- [X] T051 [US4] Add safety mechanism logging for all rejections in order-manager/src/services/risk_manager.py
 
 **Checkpoint**: At this point, all user stories should work together - orders are created safely with proper validation and risk protection
 

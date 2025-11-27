@@ -121,6 +121,38 @@ class SignalProcessor:
         asset = signal.asset
 
         try:
+            # Step 0: Check for duplicate signal
+            duplicate_check = await self._check_duplicate_signal(signal_id, trace_id)
+            if duplicate_check is not None:
+                # Duplicate signal detected
+                if duplicate_check["status"] == "succeeded":
+                    logger.warning(
+                        "duplicate_signal_rejected",
+                        signal_id=str(signal_id),
+                        asset=asset,
+                        reason="Signal already processed successfully",
+                        existing_order_id=str(duplicate_check["order_id"]),
+                        trace_id=trace_id,
+                    )
+                    # Return the existing order instead of creating a new one
+                    from ..config.database import DatabaseConnection
+                    pool = await DatabaseConnection.get_pool()
+                    query = "SELECT * FROM orders WHERE id = $1"
+                    row = await pool.fetchrow(query, duplicate_check["order_id"])
+                    if row:
+                        from ..models.order import Order
+                        return Order.from_dict(dict(row))
+                    return None
+                elif duplicate_check["status"] == "failed":
+                    logger.info(
+                        "duplicate_signal_retry_allowed",
+                        signal_id=str(signal_id),
+                        asset=asset,
+                        reason="Previous processing failed, allowing retry",
+                        trace_id=trace_id,
+                    )
+                    # Allow retry for failed signals
+
             # Step 1: Cancel existing orders for this asset if needed
             await self._cancel_existing_orders(asset, signal)
 
@@ -171,6 +203,8 @@ class SignalProcessor:
             # Step 7: Create signal-order relationship
             if order:
                 await self._create_signal_order_relationship(signal_id, order.id, trace_id)
+                # Mark signal as succeeded in tracking
+                await self._mark_signal_processing_status(signal_id, "succeeded", None, trace_id, order.id)
 
             logger.info(
                 "signal_processing_complete",
@@ -183,38 +217,95 @@ class SignalProcessor:
             return order
 
         except RiskLimitError as e:
+            error_msg = f"Risk limit exceeded: {str(e)}"
             logger.warning(
                 "signal_rejected_risk_limit",
                 signal_id=str(signal_id),
                 asset=asset,
+                signal_type=signal.signal_type,
+                amount=float(signal.amount),
                 error=str(e),
+                error_type="RiskLimitError",
                 trace_id=trace_id,
             )
+            # Mark signal as failed in tracking
+            await self._mark_signal_processing_status(signal_id, "failed", error_msg, trace_id)
             # Publish rejection event with signal information
             await self._publish_signal_rejection_event(
                 signal=signal,
-                rejection_reason=f"Risk limit exceeded: {str(e)}",
+                rejection_reason=error_msg,
                 trace_id=trace_id,
             )
             return None
         except OrderExecutionError as e:
+            error_msg = f"Order execution failed: {str(e)}"
             logger.error(
                 "signal_processing_failed",
                 signal_id=str(signal_id),
                 asset=asset,
+                signal_type=signal.signal_type,
+                amount=float(signal.amount),
                 error=str(e),
+                error_type="OrderExecutionError",
                 trace_id=trace_id,
+                exc_info=True,
             )
+            # Mark signal as failed in tracking
+            await self._mark_signal_processing_status(signal_id, "failed", error_msg, trace_id)
             # Publish rejection event with signal information
             await self._publish_signal_rejection_event(
                 signal=signal,
-                rejection_reason=f"Order execution failed: {str(e)}",
+                rejection_reason=error_msg,
                 trace_id=trace_id,
             )
             raise
+        except ValueError as e:
+            # Validation errors
+            error_msg = f"Signal validation failed: {str(e)}"
+            logger.error(
+                "signal_validation_failed",
+                signal_id=str(signal_id),
+                asset=asset,
+                error=str(e),
+                error_type="ValueError",
+                trace_id=trace_id,
+            )
+            # Mark signal as failed in tracking
+            await self._mark_signal_processing_status(signal_id, "failed", error_msg, trace_id)
+            # Publish rejection event
+            await self._publish_signal_rejection_event(
+                signal=signal,
+                rejection_reason=error_msg,
+                trace_id=trace_id,
+            )
+            raise OrderExecutionError(error_msg) from e
+        except Exception as e:
+            # Unexpected errors
+            error_msg = f"Unexpected error during signal processing: {str(e)}"
+            logger.error(
+                "signal_processing_unexpected_error",
+                signal_id=str(signal_id),
+                asset=asset,
+                error=str(e),
+                error_type=type(e).__name__,
+                trace_id=trace_id,
+                exc_info=True,
+            )
+            # Mark signal as failed in tracking
+            await self._mark_signal_processing_status(signal_id, "failed", error_msg, trace_id)
+            # Publish rejection event
+            await self._publish_signal_rejection_event(
+                signal=signal,
+                rejection_reason=error_msg,
+                trace_id=trace_id,
+            )
+            raise OrderExecutionError(error_msg) from e
 
     async def _process_asset_queue(self, asset: str) -> None:
         """Process signals from queue for a specific asset (FIFO).
+
+        Implements per-symbol FIFO queue to ensure signals for the same asset
+        are processed sequentially, preventing conflicts from simultaneous signals.
 
         Args:
             asset: Trading pair symbol
@@ -226,6 +317,17 @@ class SignalProcessor:
             try:
                 # Get signal from queue (blocks until available)
                 signal = await queue.get()
+                queue_size = queue.qsize()
+                
+                if queue_size > 0:
+                    logger.info(
+                        "signal_processing_from_queue",
+                        asset=asset,
+                        signal_id=str(signal.signal_id),
+                        queue_size=queue_size,
+                        trace_id=signal.trace_id,
+                        note="Processing signal from FIFO queue (conflict resolution for simultaneous signals)",
+                    )
 
                 # Process signal
                 await self._process_signal_internal(signal)
@@ -241,37 +343,79 @@ class SignalProcessor:
                     "asset_queue_processor_error",
                     asset=asset,
                     error=str(e),
+                    error_type=type(e).__name__,
+                    exc_info=True,
                 )
                 queue.task_done()
 
     def _validate_signal(self, signal: TradingSignal) -> None:
-        """Validate trading signal parameters.
+        """Validate trading signal parameters with comprehensive validation.
 
         Args:
             signal: Trading signal to validate
 
         Raises:
-            ValueError: If signal validation fails
+            ValueError: If signal validation fails with detailed error message
         """
-        # Required fields
-        if not signal.signal_id:
-            raise ValueError("Signal ID is required")
-        if not signal.asset:
-            raise ValueError("Asset is required")
-        if not signal.amount or signal.amount <= 0:
-            raise ValueError("Amount must be positive")
-        if signal.confidence < 0 or signal.confidence > 1:
-            raise ValueError("Confidence must be between 0.0 and 1.0")
-        if not signal.market_data_snapshot or not signal.market_data_snapshot.price:
-            raise ValueError("Market data snapshot with price is required")
+        errors = []
 
-        # Asset format validation
-        if len(signal.asset) < 4:
-            raise ValueError("Asset must be a valid trading pair")
+        # Required fields validation
+        if not signal.signal_id:
+            errors.append("Signal ID is required")
+        
+        if not signal.asset:
+            errors.append("Asset is required")
+        elif len(signal.asset) < 4:
+            errors.append(f"Asset must be a valid trading pair (minimum 4 characters), got: '{signal.asset}'")
+        elif not signal.asset.isupper():
+            errors.append(f"Asset must be uppercase (e.g., 'BTCUSDT'), got: '{signal.asset}'")
+        elif not signal.asset.isalnum():
+            errors.append(f"Asset must contain only alphanumeric characters, got: '{signal.asset}'")
+
+        # Amount validation - must be positive and reasonable
+        if signal.amount is None:
+            errors.append("Amount is required")
+        elif signal.amount <= 0:
+            errors.append(f"Amount must be positive, got: {signal.amount}")
+        elif signal.amount < Decimal("0.01"):
+            errors.append(f"Amount must be at least 0.01 USDT, got: {signal.amount}")
+
+        # Confidence validation - must be in valid range
+        if signal.confidence is None:
+            errors.append("Confidence is required")
+        elif signal.confidence < 0:
+            errors.append(f"Confidence must be non-negative, got: {signal.confidence}")
+        elif signal.confidence > 1:
+            errors.append(f"Confidence must not exceed 1.0, got: {signal.confidence}")
+
+        # Market data snapshot validation
+        if not signal.market_data_snapshot:
+            errors.append("Market data snapshot is required")
+        elif not signal.market_data_snapshot.price:
+            errors.append("Market data snapshot must include price")
+        elif signal.market_data_snapshot.price <= 0:
+            errors.append(f"Market data snapshot price must be positive, got: {signal.market_data_snapshot.price}")
 
         # Signal type validation
-        if signal.signal_type.lower() not in {"buy", "sell"}:
-            raise ValueError("Signal type must be 'buy' or 'sell'")
+        if not signal.signal_type:
+            errors.append("Signal type is required")
+        elif signal.signal_type.lower() not in {"buy", "sell"}:
+            errors.append(f"Signal type must be 'buy' or 'sell', got: '{signal.signal_type}'")
+
+        # Strategy ID validation
+        if not signal.strategy_id:
+            errors.append("Strategy ID is required")
+        elif len(signal.strategy_id) > 100:
+            errors.append(f"Strategy ID must not exceed 100 characters, got: {len(signal.strategy_id)}")
+
+        # Timestamp validation
+        if not signal.timestamp:
+            errors.append("Timestamp is required")
+
+        # Raise comprehensive error if any validation failed
+        if errors:
+            error_message = "Signal validation failed: " + "; ".join(errors)
+            raise ValueError(error_message)
 
     async def _cancel_existing_orders(self, asset: str, signal: TradingSignal) -> None:
         """Cancel existing orders for asset based on cancellation strategy.
@@ -487,4 +631,91 @@ class SignalProcessor:
                 exc_info=True,
             )
             # Don't raise - event publishing failure shouldn't block rejection processing
+
+    async def _check_duplicate_signal(self, signal_id: UUID, trace_id: Optional[str]) -> Optional[dict]:
+        """Check if signal has already been processed.
+
+        Args:
+            signal_id: Signal ID to check
+            trace_id: Trace ID for logging
+
+        Returns:
+            None if signal is new, dict with status and order_id if duplicate
+        """
+        try:
+            from ..config.database import DatabaseConnection
+            pool = await DatabaseConnection.get_pool()
+            
+            # Check if signal has already been processed by looking at signal_order_relationships
+            query = """
+                SELECT sor.order_id, o.status
+                FROM signal_order_relationships sor
+                JOIN orders o ON sor.order_id = o.id
+                WHERE sor.signal_id = $1
+                ORDER BY sor.created_at DESC
+                LIMIT 1
+            """
+            row = await pool.fetchrow(query, str(signal_id))
+            
+            if row:
+                order_id = row["order_id"]
+                order_status = row["status"]
+                
+                # If order was successfully created (not rejected), signal is duplicate
+                if order_status not in ("rejected", "dry_run"):
+                    return {
+                        "status": "succeeded",
+                        "order_id": order_id,
+                    }
+                else:
+                    # Previous attempt failed, allow retry
+                    return {
+                        "status": "failed",
+                        "order_id": order_id,
+                    }
+            
+            return None
+
+        except Exception as e:
+            logger.error(
+                "duplicate_signal_check_error",
+                signal_id=str(signal_id),
+                error=str(e),
+                trace_id=trace_id,
+            )
+            # On error, allow processing to continue (fail open)
+            return None
+
+    async def _mark_signal_processing_status(
+        self,
+        signal_id: UUID,
+        status: str,
+        error_message: Optional[str],
+        trace_id: Optional[str],
+        order_id: Optional[UUID] = None,
+    ) -> None:
+        """Mark signal processing status for tracking.
+
+        This is a lightweight tracking mechanism. The actual status is tracked
+        via signal_order_relationships and orders tables, but we can add additional
+        tracking here if needed.
+
+        Args:
+            signal_id: Signal ID
+            status: Processing status ('succeeded', 'failed', 'processing')
+            error_message: Error message if failed
+            trace_id: Trace ID for logging
+            order_id: Order ID if succeeded
+        """
+        # For now, we rely on signal_order_relationships table for tracking
+        # This method can be extended to add a dedicated signal_processing_status table
+        # if more detailed tracking is needed
+        logger.debug(
+            "signal_processing_status_marked",
+            signal_id=str(signal_id),
+            status=status,
+            order_id=str(order_id) if order_id else None,
+            error_message=error_message,
+            trace_id=trace_id,
+        )
 
