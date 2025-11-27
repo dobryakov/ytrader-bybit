@@ -47,6 +47,14 @@ class RiskManager:
 
             response = await bybit_client.get(endpoint, params=params, authenticated=True)
             
+            # Log full response for debugging
+            logger.info(
+                "bybit_balance_response",
+                response=response,
+                response_keys=list(response.keys()) if isinstance(response, dict) else None,
+                trace_id=trace_id,
+            )
+            
             # Check response status
             ret_code = response.get("retCode", 0)
             ret_msg = response.get("retMsg", "")
@@ -110,29 +118,75 @@ class RiskManager:
                 )
                 return True
 
-            # Find USDT balance (quote currency)
+            # For unified account, use totalAvailableBalance from account level
+            # This is more reliable than coin-level availableToWithdraw which may be empty
             account = list_data[0]
-            coins = account.get("coin", [])
-
-            usdt_balance = Decimal("0")
-            for coin in coins:
-                if coin.get("coin") == "USDT":
-                    available_value = coin.get("availableToWithdraw", "0")
-                    # Handle None, empty string, or invalid values
-                    if available_value is None or available_value == "":
-                        available_value = "0"
+            account_type = account.get("accountType", "")
+            
+            # Try to get totalAvailableBalance from account (unified account)
+            if account_type == "UNIFIED":
+                total_available = account.get("totalAvailableBalance", "0")
+                if total_available and total_available != "":
                     try:
-                        usdt_balance = Decimal(str(available_value))
+                        usdt_balance = Decimal(str(total_available))
+                        logger.info(
+                            "balance_check_using_total_available",
+                            signal_id=str(signal.signal_id),
+                            total_available_balance=str(usdt_balance),
+                            trace_id=trace_id,
+                        )
                     except (ValueError, TypeError) as e:
                         logger.warning(
-                            "balance_check_invalid_value",
+                            "balance_check_invalid_total_available",
                             signal_id=str(signal.signal_id),
-                            available_value=available_value,
+                            total_available=total_available,
                             error=str(e),
                             trace_id=trace_id,
                         )
                         usdt_balance = Decimal("0")
-                    break
+                else:
+                    # Fallback to coin-level balance
+                    usdt_balance = Decimal("0")
+                    coins = account.get("coin", [])
+                    for coin in coins:
+                        if coin.get("coin") == "USDT":
+                            # Try walletBalance if availableToWithdraw is empty
+                            wallet_balance = coin.get("walletBalance", "0")
+                            if wallet_balance and wallet_balance != "":
+                                try:
+                                    usdt_balance = Decimal(str(wallet_balance))
+                                    logger.info(
+                                        "balance_check_using_wallet_balance",
+                                        signal_id=str(signal.signal_id),
+                                        wallet_balance=str(usdt_balance),
+                                        trace_id=trace_id,
+                                    )
+                                except (ValueError, TypeError):
+                                    usdt_balance = Decimal("0")
+                            break
+            else:
+                # For non-unified accounts, use coin-level balance
+                coins = account.get("coin", [])
+                usdt_balance = Decimal("0")
+                for coin in coins:
+                    if coin.get("coin") == "USDT":
+                        # Try availableToWithdraw first, then walletBalance
+                        available_value = coin.get("availableToWithdraw", "")
+                        if not available_value or available_value == "":
+                            available_value = coin.get("walletBalance", "0")
+                        if available_value and available_value != "":
+                            try:
+                                usdt_balance = Decimal(str(available_value))
+                            except (ValueError, TypeError) as e:
+                                logger.warning(
+                                    "balance_check_invalid_value",
+                                    signal_id=str(signal.signal_id),
+                                    available_value=available_value,
+                                    error=str(e),
+                                    trace_id=trace_id,
+                                )
+                                usdt_balance = Decimal("0")
+                        break
 
             # Calculate required balance
             if signal.signal_type.lower() == "buy":

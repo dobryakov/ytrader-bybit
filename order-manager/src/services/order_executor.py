@@ -82,12 +82,224 @@ class OrderExecutor:
                 price=price,
             )
 
+            # Log order parameters for debugging
+            logger.info(
+                "order_creation_bybit_params",
+                signal_id=str(signal_id),
+                asset=asset,
+                bybit_params=bybit_params,
+                trace_id=trace_id,
+            )
+
             # Call Bybit API to create order
             bybit_client = get_bybit_client()
             endpoint = "/v5/order/create"
             response = await bybit_client.post(endpoint, json_data=bybit_params, authenticated=True)
 
             # Parse response
+            ret_code = response.get("retCode", 0)
+            ret_msg = response.get("retMsg", "")
+            
+            # Handle specific error codes
+            if ret_code != 0:
+                # Error 30208: "The order price is higher than the maximum buying price"
+                # This can happen for Market orders if account settings reject orders outside price limits
+                if ret_code == 30208:
+                    logger.warning(
+                        "order_creation_price_limit_error",
+                        signal_id=str(signal_id),
+                        asset=asset,
+                        ret_code=ret_code,
+                        ret_msg=ret_msg,
+                        note="This may be due to account settings. Consider using Limit orders or checking /v5/account/set-limit-px-action",
+                        trace_id=trace_id,
+                    )
+                    # Try to get price limits for debugging
+                    try:
+                        price_limit_response = await bybit_client.get(
+                            "/v5/market/price-limit",
+                            params={"category": "linear", "symbol": asset},
+                            authenticated=False,
+                        )
+                        price_limits = price_limit_response.get("result", {})
+                        logger.info(
+                            "order_creation_price_limits",
+                            signal_id=str(signal_id),
+                            asset=asset,
+                            buy_limit=price_limits.get("buyLmt"),
+                            sell_limit=price_limits.get("sellLmt"),
+                            trace_id=trace_id,
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "order_creation_price_limit_fetch_failed",
+                            signal_id=str(signal_id),
+                            error=str(e),
+                            trace_id=trace_id,
+                        )
+                    
+                    # Try to enable automatic price adjustment for linear category
+                    try:
+                        logger.info(
+                            "order_creation_enabling_price_adjustment",
+                            signal_id=str(signal_id),
+                            asset=asset,
+                            category="linear",
+                            trace_id=trace_id,
+                        )
+                        adjust_response = await bybit_client.post(
+                            "/v5/account/set-limit-px-action",
+                            json_data={"category": "linear", "modifyEnable": True},
+                            authenticated=True,
+                        )
+                        logger.info(
+                            "order_creation_price_adjustment_enabled",
+                            signal_id=str(signal_id),
+                            asset=asset,
+                            response=adjust_response,
+                            trace_id=trace_id,
+                        )
+                        # Retry order creation after enabling price adjustment
+                        logger.info(
+                            "order_creation_retrying_after_price_adjustment",
+                            signal_id=str(signal_id),
+                            asset=asset,
+                            trace_id=trace_id,
+                        )
+                        response = await bybit_client.post(endpoint, json_data=bybit_params, authenticated=True)
+                        ret_code = response.get("retCode", 0)
+                        ret_msg = response.get("retMsg", "")
+                        if ret_code == 0:
+                            # Success after enabling price adjustment - continue with normal flow
+                            result = response.get("result", {})
+                            bybit_order_id = result.get("orderId")
+                            if bybit_order_id:
+                                logger.info(
+                                    "order_creation_success_after_price_adjustment",
+                                    signal_id=str(signal_id),
+                                    asset=asset,
+                                    bybit_order_id=bybit_order_id,
+                                    trace_id=trace_id,
+                                )
+                                # Continue with order creation flow
+                                order = await self._save_order_to_database(
+                                    signal=signal,
+                                    bybit_order_id=bybit_order_id,
+                                    order_type=order_type,
+                                    quantity=quantity,
+                                    price=price,
+                                    trace_id=trace_id,
+                                )
+                                logger.info(
+                                    "order_creation_complete",
+                                    signal_id=str(signal_id),
+                                    asset=asset,
+                                    order_id=str(order.id),
+                                    bybit_order_id=bybit_order_id,
+                                    trace_id=trace_id,
+                                )
+                                return order
+                    except Exception as e:
+                        logger.warning(
+                            "order_creation_price_adjustment_failed",
+                            signal_id=str(signal_id),
+                            asset=asset,
+                            error=str(e),
+                            trace_id=trace_id,
+                        )
+                    
+                    # If price adjustment didn't help, try converting Market order to Limit order
+                    # This is a workaround for testnet limitations with Market orders
+                    if order_type == "Market":
+                        logger.info(
+                            "order_creation_fallback_to_limit",
+                            signal_id=str(signal_id),
+                            asset=asset,
+                            reason="Market order failed with 30208, trying Limit order as fallback",
+                            trace_id=trace_id,
+                        )
+                        # Get current market price for Limit order
+                        try:
+                            ticker_response = await bybit_client.get(
+                                "/v5/market/tickers",
+                                params={"category": "linear", "symbol": asset},
+                                authenticated=False,
+                            )
+                            ticker_data = ticker_response.get("result", {}).get("list", [])
+                            if ticker_data:
+                                current_price = Decimal(str(ticker_data[0].get("lastPrice", signal.market_data_snapshot.price)))
+                                # Use current price for Limit order
+                                limit_price = current_price
+                                logger.info(
+                                    "order_creation_limit_price_from_ticker",
+                                    signal_id=str(signal_id),
+                                    asset=asset,
+                                    limit_price=float(limit_price),
+                                    trace_id=trace_id,
+                                )
+                                
+                                # Prepare Limit order parameters
+                                limit_params = self._prepare_bybit_order_params(
+                                    signal=signal,
+                                    order_type="Limit",
+                                    quantity=quantity,
+                                    price=limit_price,
+                                )
+                                
+                                # Try creating Limit order
+                                limit_response = await bybit_client.post(endpoint, json_data=limit_params, authenticated=True)
+                                limit_ret_code = limit_response.get("retCode", 0)
+                                limit_ret_msg = limit_response.get("retMsg", "")
+                                
+                                if limit_ret_code == 0:
+                                    limit_result = limit_response.get("result", {})
+                                    limit_order_id = limit_result.get("orderId")
+                                    if limit_order_id:
+                                        logger.info(
+                                            "order_creation_limit_fallback_success",
+                                            signal_id=str(signal_id),
+                                            asset=asset,
+                                            bybit_order_id=limit_order_id,
+                                            trace_id=trace_id,
+                                        )
+                                        # Save Limit order to database
+                                        order = await self._save_order_to_database(
+                                            signal=signal,
+                                            bybit_order_id=limit_order_id,
+                                            order_type="Limit",
+                                            quantity=quantity,
+                                            price=limit_price,
+                                            trace_id=trace_id,
+                                        )
+                                        logger.info(
+                                            "order_creation_complete",
+                                            signal_id=str(signal_id),
+                                            asset=asset,
+                                            order_id=str(order.id),
+                                            bybit_order_id=limit_order_id,
+                                            trace_id=trace_id,
+                                        )
+                                        return order
+                        except Exception as e:
+                            logger.warning(
+                                "order_creation_limit_fallback_failed",
+                                signal_id=str(signal_id),
+                                asset=asset,
+                                error=str(e),
+                                trace_id=trace_id,
+                            )
+                
+                error_msg = f"Bybit API error: {ret_msg} (code: {ret_code})"
+                logger.error(
+                    "order_creation_api_error",
+                    signal_id=str(signal_id),
+                    asset=asset,
+                    ret_code=ret_code,
+                    ret_msg=ret_msg,
+                    trace_id=trace_id,
+                )
+                raise OrderExecutionError(error_msg)
+            
             result = response.get("result", {})
             bybit_order_id = result.get("orderId")
 
@@ -251,10 +463,14 @@ class OrderExecutor:
             "side": side,
             "orderType": order_type,
             "qty": str(quantity),
-            "timeInForce": selector.get_time_in_force(order_type),
         }
 
-        # Add price for limit orders
+        # Add timeInForce - required for Limit orders, optional for Market orders
+        if order_type == "Limit":
+            params["timeInForce"] = selector.get_time_in_force(order_type)
+        # For Market orders, timeInForce is optional - omit it to avoid issues
+
+        # Add price for limit orders only
         if order_type == "Limit" and price:
             params["price"] = str(price)
 
