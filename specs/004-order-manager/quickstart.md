@@ -36,10 +36,10 @@ Edit `.env` and set the following variables (add to existing configuration):
 
 ```bash
 # Order Manager Service Configuration
-ORDER_MANAGER_PORT=4600
-ORDER_MANAGER_API_KEY=your-order-manager-api-key  # For REST API authentication
-ORDER_MANAGER_LOG_LEVEL=INFO
-ORDER_MANAGER_SERVICE_NAME=order-manager
+ORDERMANAGER_PORT=4600
+ORDERMANAGER_API_KEY=your-order-manager-api-key  # For REST API authentication
+ORDERMANAGER_LOG_LEVEL=INFO
+ORDERMANAGER_SERVICE_NAME=order-manager
 
 # Bybit API Configuration (shared with other services)
 BYBIT_API_KEY=your_testnet_api_key

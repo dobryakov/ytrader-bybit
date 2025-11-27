@@ -44,9 +44,9 @@ class Settings(BaseSettings):
     rabbitmq_password: str = Field(default="guest", alias="RABBITMQ_PASSWORD")
 
     # WebSocket Gateway Configuration
-    order_manager_ws_gateway_host: str = Field(default="ws-gateway", alias="ORDERMANAGER_WS_GATEWAY_HOST")
-    order_manager_ws_gateway_port: int = Field(default=4400, alias="ORDERMANAGER_WS_GATEWAY_PORT")
-    order_manager_ws_gateway_api_key: str = Field(..., alias="ORDERMANAGER_WS_GATEWAY_API_KEY")
+    ws_gateway_host: str = Field(default="ws-gateway", alias="WS_GATEWAY_HOST")
+    ws_gateway_port: int = Field(default=4400, alias="WS_GATEWAY_PORT")
+    ws_gateway_api_key: str = Field(..., alias="WS_GATEWAY_API_KEY")
 
     # Order Execution Configuration
     order_manager_enable_dry_run: bool = Field(default=False, alias="ORDERMANAGER_ENABLE_DRY_RUN")
@@ -197,7 +197,7 @@ class Settings(BaseSettings):
     @property
     def ws_gateway_url(self) -> str:
         """Get WebSocket Gateway base URL."""
-        return f"http://{self.order_manager_ws_gateway_host}:{self.order_manager_ws_gateway_port}"
+        return f"http://{self.ws_gateway_host}:{self.ws_gateway_port}"
 
     @property
     def bybit_api_base_url(self) -> str:

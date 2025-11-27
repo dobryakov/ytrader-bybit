@@ -67,10 +67,10 @@ ORDERMANAGER_API_KEY=your-api-key-here
 ORDERMANAGER_LOG_LEVEL=INFO
 ORDERMANAGER_SERVICE_NAME=order-manager
 
-# WebSocket Gateway Configuration
-ORDERMANAGER_WS_GATEWAY_HOST=ws-gateway
-ORDERMANAGER_WS_GATEWAY_PORT=4400
-ORDERMANAGER_WS_GATEWAY_API_KEY=your-ws-gateway-api-key
+# WebSocket Gateway Configuration (shared with other services)
+WS_GATEWAY_HOST=ws-gateway
+WS_GATEWAY_PORT=4400
+WS_GATEWAY_API_KEY=your-ws-gateway-api-key
 
 # Order Execution Configuration
 ORDERMANAGER_ENABLE_DRY_RUN=false
