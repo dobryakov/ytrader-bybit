@@ -23,14 +23,59 @@
 
 ## Пример входного сигнала
 
+Сигналы приходят из очереди RabbitMQ `model-service.trading_signals` в формате JSON:
+
+```json
 {
-  "signal": "sell",
+  "signal_id": "550e8400-e29b-41d4-a716-446655440000",
+  "signal_type": "sell",
   "asset": "ETHUSDT",
-  "amount": 500,
+  "amount": 500.0,
   "confidence": 0.90,
   "timestamp": "2025-11-25T21:35:00Z",
-  "strategy_id": "strat-002"
+  "strategy_id": "strat-002",
+  "model_version": null,
+  "is_warmup": true,
+  "market_data_snapshot": {
+    "price": 3000.0,
+    "spread": 1.5,
+    "volume_24h": 1000000.0,
+    "volatility": 0.02,
+    "orderbook_depth": {
+      "bid_depth": 100.0,
+      "ask_depth": 120.0
+    },
+    "technical_indicators": null
+  },
+  "metadata": {
+    "reasoning": "Warm-up signal: sell based on heuristics",
+    "risk_score": 0.3,
+    "randomness_level": 0.5
+  },
+  "trace_id": "trace-12345"
 }
+```
+
+**Поля сигнала:**
+
+- `signal_id` (string, UUID) - уникальный идентификатор сигнала
+- `signal_type` (string) - тип сигнала: "buy" или "sell"
+- `asset` (string) - торговый инструмент (например, "BTCUSDT", "ETHUSDT")
+- `amount` (float) - сумма в quote currency (USDT), должна быть > 0
+- `confidence` (float) - уверенность модели (0.0-1.0)
+- `timestamp` (string, ISO 8601) - время генерации сигнала
+- `strategy_id` (string) - идентификатор торговой стратегии
+- `model_version` (string|null) - версия модели, использованной для генерации (null для warm-up режима)
+- `is_warmup` (boolean) - флаг, указывающий на warm-up режим
+- `market_data_snapshot` (object) - снапшот рыночных данных на момент генерации сигнала:
+  - `price` (float) - текущая цена
+  - `spread` (float) - спред bid-ask
+  - `volume_24h` (float) - объем торгов за 24 часа
+  - `volatility` (float) - волатильность
+  - `orderbook_depth` (object|null) - глубина стакана (bid_depth, ask_depth)
+  - `technical_indicators` (object|null) - технические индикаторы (RSI, MACD и т.д.)
+- `metadata` (object|null) - дополнительные метаданные (reasoning, risk_score и т.д.)
+- `trace_id` (string|null) - идентификатор для трейсинга запросов
 
 ## Технологический стек
 
