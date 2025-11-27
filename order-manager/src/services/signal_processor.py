@@ -14,6 +14,7 @@ from ..services.order_type_selector import OrderTypeSelector
 from ..services.quantity_calculator import QuantityCalculator
 from ..services.position_manager import PositionManager
 from ..services.risk_manager import RiskManager
+from ..publishers.order_event_publisher import OrderEventPublisher
 # Import OrderExecutor locally to avoid circular dependency
 from ..exceptions import OrderExecutionError, RiskLimitError
 from ..utils.tracing import get_or_create_trace_id
@@ -35,6 +36,7 @@ class SignalProcessor:
         self.quantity_calculator = QuantityCalculator()
         self.position_manager = PositionManager()
         self.risk_manager = RiskManager()
+        self.event_publisher = OrderEventPublisher()
         # Initialize OrderExecutor lazily to avoid circular dependency
         self._order_executor = None
 
@@ -188,6 +190,12 @@ class SignalProcessor:
                 error=str(e),
                 trace_id=trace_id,
             )
+            # Publish rejection event with signal information
+            await self._publish_signal_rejection_event(
+                signal=signal,
+                rejection_reason=f"Risk limit exceeded: {str(e)}",
+                trace_id=trace_id,
+            )
             return None
         except OrderExecutionError as e:
             logger.error(
@@ -195,6 +203,12 @@ class SignalProcessor:
                 signal_id=str(signal_id),
                 asset=asset,
                 error=str(e),
+                trace_id=trace_id,
+            )
+            # Publish rejection event with signal information
+            await self._publish_signal_rejection_event(
+                signal=signal,
+                rejection_reason=f"Order execution failed: {str(e)}",
                 trace_id=trace_id,
             )
             raise
@@ -382,4 +396,95 @@ class SignalProcessor:
             )
             # Don't fail order creation if relationship creation fails
             pass
+
+    async def _publish_signal_rejection_event(
+        self,
+        signal: TradingSignal,
+        rejection_reason: str,
+        trace_id: Optional[str] = None,
+    ) -> None:
+        """
+        Publish rejection event for a signal that was rejected before order creation.
+
+        Args:
+            signal: Trading signal that was rejected
+            rejection_reason: Reason for rejection
+            trace_id: Optional trace ID
+        """
+        try:
+            # Create a minimal order-like object for event publishing
+            # Since no order was created, we'll use signal information
+            from uuid import uuid4
+            from datetime import datetime
+            from decimal import Decimal
+
+            # Create a temporary order object for event publishing
+            # This represents a "rejected" order that was never created
+            rejected_order = Order(
+                id=uuid4(),
+                order_id=f"REJECTED-{signal.signal_id}",
+                signal_id=signal.signal_id,
+                asset=signal.asset,
+                side="Buy" if signal.signal_type.lower() == "buy" else "Sell",
+                order_type="Market",  # Default, not important for rejection
+                quantity=Decimal("0"),  # No quantity since order wasn't created
+                price=None,
+                status="rejected",
+                filled_quantity=Decimal("0"),
+                created_at=datetime.utcnow(),
+                updated_at=datetime.utcnow(),
+                trace_id=trace_id,
+                is_dry_run=False,
+            )
+
+            # Prepare signal information
+            signal_info = {
+                "signal_id": str(signal.signal_id),
+                "signal_type": signal.signal_type,
+                "asset": signal.asset,
+                "amount": float(signal.amount),
+                "confidence": float(signal.confidence),
+                "strategy_id": signal.strategy_id,
+                "model_version": signal.model_version,
+                "is_warmup": signal.is_warmup,
+            }
+
+            # Prepare market conditions from signal snapshot if available
+            market_conditions = None
+            if signal.market_data_snapshot:
+                market_conditions = {
+                    "price": float(signal.market_data_snapshot.price),
+                    "spread": float(signal.market_data_snapshot.spread) if signal.market_data_snapshot.spread else None,
+                    "volume_24h": float(signal.market_data_snapshot.volume_24h) if signal.market_data_snapshot.volume_24h else None,
+                    "volatility": float(signal.market_data_snapshot.volatility) if signal.market_data_snapshot.volatility else None,
+                    "timestamp": signal.timestamp.isoformat() if signal.timestamp else None,
+                }
+
+            # Publish rejection event
+            await self.event_publisher.publish_order_event(
+                order=rejected_order,
+                event_type="rejected",
+                trace_id=trace_id,
+                rejection_reason=rejection_reason,
+                signal_info=signal_info,
+                market_conditions=market_conditions,
+            )
+
+            logger.info(
+                "signal_rejection_event_published",
+                signal_id=str(signal.signal_id),
+                asset=signal.asset,
+                rejection_reason=rejection_reason,
+                trace_id=trace_id,
+            )
+
+        except Exception as e:
+            logger.error(
+                "signal_rejection_event_publish_failed",
+                signal_id=str(signal.signal_id),
+                error=str(e),
+                trace_id=trace_id,
+                exc_info=True,
+            )
+            # Don't raise - event publishing failure shouldn't block rejection processing
 

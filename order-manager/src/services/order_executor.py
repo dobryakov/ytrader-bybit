@@ -10,6 +10,7 @@ from ..config.database import DatabaseConnection
 from ..config.logging import get_logger
 from ..models.trading_signal import TradingSignal
 from ..models.order import Order
+from ..publishers.order_event_publisher import OrderEventPublisher
 from ..utils.bybit_client import get_bybit_client
 from ..exceptions import OrderExecutionError, BybitAPIError
 
@@ -18,6 +19,10 @@ logger = get_logger(__name__)
 
 class OrderExecutor:
     """Service for executing orders on Bybit exchange via REST API."""
+
+    def __init__(self):
+        """Initialize order executor."""
+        self.event_publisher = OrderEventPublisher()
 
     async def create_order(
         self,
@@ -376,6 +381,16 @@ class OrderExecutor:
             trace_id=trace_id,
         )
 
+        # Get order from database to capture before state
+        order = await self._get_order_by_bybit_id(order_id, trace_id)
+        before_state = None
+        if order:
+            before_state = {
+                "status": order.status,
+                "filled_quantity": str(order.filled_quantity),
+                "average_price": str(order.average_price) if order.average_price else None,
+            }
+
         # Check if dry-run mode
         if settings.order_manager_enable_dry_run:
             logger.info(
@@ -386,6 +401,24 @@ class OrderExecutor:
             )
             # Update order status in database
             await self._update_order_status_in_db(order_id, "cancelled", trace_id)
+            
+            # Get updated order and publish event
+            if order:
+                updated_order = await self._get_order_by_bybit_id(order_id, trace_id)
+                if updated_order:
+                    after_state = {
+                        "status": updated_order.status,
+                        "filled_quantity": str(updated_order.filled_quantity),
+                        "average_price": str(updated_order.average_price) if updated_order.average_price else None,
+                    }
+                    await self.event_publisher.publish_order_event(
+                        order=updated_order,
+                        event_type="cancelled",
+                        trace_id=trace_id,
+                        before_state=before_state,
+                        after_state=after_state,
+                    )
+            
             return True
 
         try:
@@ -403,6 +436,23 @@ class OrderExecutor:
 
             # Update order status in database
             await self._update_order_status_in_db(order_id, "cancelled", trace_id)
+
+            # Get updated order and publish modification event
+            if order:
+                updated_order = await self._get_order_by_bybit_id(order_id, trace_id)
+                if updated_order:
+                    after_state = {
+                        "status": updated_order.status,
+                        "filled_quantity": str(updated_order.filled_quantity),
+                        "average_price": str(updated_order.average_price) if updated_order.average_price else None,
+                    }
+                    await self.event_publisher.publish_order_event(
+                        order=updated_order,
+                        event_type="cancelled",
+                        trace_id=trace_id,
+                        before_state=before_state,
+                        after_state=after_state,
+                    )
 
             logger.info(
                 "order_cancellation_complete",
@@ -643,4 +693,42 @@ class OrderExecutor:
                 error=str(e),
                 trace_id=trace_id,
             )
+
+    async def _get_order_by_bybit_id(
+        self, bybit_order_id: str, trace_id: Optional[str] = None
+    ) -> Optional[Order]:
+        """
+        Get order from database by Bybit order ID.
+
+        Args:
+            bybit_order_id: Bybit order ID
+            trace_id: Optional trace ID
+
+        Returns:
+            Order object if found, None otherwise
+        """
+        try:
+            pool = await DatabaseConnection.get_pool()
+            query = """
+                SELECT id, order_id, signal_id, asset, side, order_type, quantity, price,
+                       status, filled_quantity, average_price, fees, created_at, updated_at,
+                       executed_at, trace_id, is_dry_run
+                FROM orders
+                WHERE order_id = $1
+            """
+            row = await pool.fetchrow(query, bybit_order_id)
+
+            if row is None:
+                return None
+
+            return Order.from_dict(dict(row))
+
+        except Exception as e:
+            logger.error(
+                "order_query_by_bybit_id_failed",
+                bybit_order_id=bybit_order_id,
+                error=str(e),
+                trace_id=trace_id,
+            )
+            return None
 

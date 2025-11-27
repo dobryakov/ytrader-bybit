@@ -110,12 +110,12 @@
 
 ### Implementation for User Story 3
 
-- [ ] T039 [US3] Implement order event publisher service in order-manager/src/publishers/order_event_publisher.py (RabbitMQ publisher for enriched order events)
-- [ ] T040 [US3] Add event enrichment logic (execution price, fees, market conditions, timing) in order-manager/src/publishers/order_event_publisher.py
-- [ ] T041 [US3] Integrate event publishing when order states change in order-manager/src/services/event_subscriber.py (publish on filled, partially_filled, cancelled, rejected)
-- [ ] T042 [US3] Add event publishing for order rejections with rejection reason in order-manager/src/services/signal_processor.py
-- [ ] T043 [US3] Add event publishing for order modifications with before/after state comparison in order-manager/src/services/order_executor.py
-- [ ] T044 [US3] Add logging for event publishing operations in order-manager/src/publishers/order_event_publisher.py
+- [X] T039 [US3] Implement order event publisher service in order-manager/src/publishers/order_event_publisher.py (RabbitMQ publisher for enriched order events)
+- [X] T040 [US3] Add event enrichment logic (execution price, fees, market conditions, timing) in order-manager/src/publishers/order_event_publisher.py
+- [X] T041 [US3] Integrate event publishing when order states change in order-manager/src/services/event_subscriber.py (publish on filled, partially_filled, cancelled, rejected)
+- [X] T042 [US3] Add event publishing for order rejections with rejection reason in order-manager/src/services/signal_processor.py
+- [X] T043 [US3] Add event publishing for order modifications with before/after state comparison in order-manager/src/services/order_executor.py
+- [X] T044 [US3] Add logging for event publishing operations in order-manager/src/publishers/order_event_publisher.py
 
 **Checkpoint**: At this point, User Stories 1, 2, AND 3 should all work independently - orders are created, states are maintained, and events are published
 

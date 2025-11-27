@@ -16,6 +16,7 @@ from ..config.rabbitmq import RabbitMQConnection
 from ..config.settings import settings
 from ..models.order import Order
 from ..services.position_manager import PositionManager
+from ..publishers.order_event_publisher import OrderEventPublisher
 from ..exceptions import DatabaseError, QueueError
 from ..utils.tracing import generate_trace_id, set_trace_id
 
@@ -30,6 +31,7 @@ class EventSubscriber:
         self.queue_name = "ws-gateway.order"
         self._consumer_tag = f"order-manager-event-subscriber-{id(self)}"
         self.position_manager = PositionManager()
+        self.event_publisher = OrderEventPublisher()
         self._subscription_id: Optional[str] = None
 
     async def subscribe_to_order_events(self, trace_id: Optional[str] = None) -> None:
@@ -400,6 +402,48 @@ class EventSubscriber:
                 status_changed=status_changed,
                 trace_id=trace_id,
             )
+
+            # Get updated order from database to publish event with latest state
+            updated_order = await self._get_order_by_bybit_id(order.order_id, trace_id)
+            if not updated_order:
+                logger.warning(
+                    "order_not_found_after_update",
+                    order_id=order.order_id,
+                    trace_id=trace_id,
+                )
+                updated_order = order  # Fallback to original order
+
+            # Publish order event if status changed
+            if status_changed:
+                event_type = new_status
+                # Map status to event type
+                if new_status == "partially_filled":
+                    event_type = "partially_filled"
+                elif new_status == "filled":
+                    event_type = "filled"
+                elif new_status == "cancelled":
+                    event_type = "cancelled"
+                elif new_status == "rejected":
+                    event_type = "rejected"
+
+                # Extract market conditions from event_data if available
+                market_conditions = None
+                if event_data.get("payload"):
+                    payload = event_data.get("payload", {})
+                    # Try to extract market data if available
+                    if "price" in payload or "avgPrice" in payload:
+                        market_conditions = {
+                            "price": float(avg_price) if avg_price else None,
+                            "timestamp": event_data.get("timestamp"),
+                        }
+
+                # Publish enriched order event
+                await self.event_publisher.publish_order_event(
+                    order=updated_order,
+                    event_type=event_type,
+                    trace_id=trace_id,
+                    market_conditions=market_conditions,
+                )
 
             # Update position if order was filled (fully or partially)
             if new_status in ["filled", "partially_filled"] and status_changed:
