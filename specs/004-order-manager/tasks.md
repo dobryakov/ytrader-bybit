@@ -24,13 +24,13 @@
 
 **Purpose**: Project initialization and basic structure
 
-- [ ] T001 Create project structure per implementation plan in order-manager/
-- [ ] T002 Initialize Python project with dependencies in order-manager/requirements.txt (FastAPI, httpx, aio-pika, asyncpg, pydantic-settings, structlog, pytest, pytest-asyncio)
-- [ ] T003 [P] Create Dockerfile for order-manager service in order-manager/Dockerfile
-- [ ] T004 [P] Create docker-compose.yml service definition for order-manager (port 4600)
-- [ ] T005 [P] Configure environment variables in env.example (ORDER_MANAGER_*, BYBIT_*, database, RabbitMQ, WebSocket gateway, order execution, risk limits, retry, order type selection, position management configs)
-- [ ] T006 [P] Create README.md in order-manager/README.md with setup instructions
-- [ ] T007 [P] Configure logging infrastructure in order-manager/src/config/logging.py (structlog with trace IDs)
+- [X] T001 Create project structure per implementation plan in order-manager/
+- [X] T002 Initialize Python project with dependencies in order-manager/requirements.txt (FastAPI, httpx, aio-pika, asyncpg, pydantic-settings, structlog, pytest, pytest-asyncio)
+- [X] T003 [P] Create Dockerfile for order-manager service in order-manager/Dockerfile
+- [X] T004 [P] Create docker-compose.yml service definition for order-manager (port 4600)
+- [X] T005 [P] Configure environment variables in env.example (ORDER_MANAGER_*, BYBIT_*, database, RabbitMQ, WebSocket gateway, order execution, risk limits, retry, order type selection, position management configs)
+- [X] T006 [P] Create README.md in order-manager/README.md with setup instructions
+- [X] T007 [P] Configure logging infrastructure in order-manager/src/config/logging.py (structlog with trace IDs)
 
 ---
 
