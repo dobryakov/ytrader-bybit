@@ -286,27 +286,13 @@ class OrderExecutor:
             trace_id: Trace ID
 
         Returns:
-            Order object with dry_run status
+            Order object with dry_run status (saved to database)
         """
+        # Generate dry-run order ID
         order_id = f"DRY-RUN-{uuid4()}"
-        side = "Buy" if signal.signal_type.lower() == "buy" else "Sell"
 
-        order = Order(
-            id=uuid4(),
-            order_id=order_id,
-            signal_id=signal.signal_id,
-            asset=signal.asset,
-            side=side,
-            order_type=order_type,
-            quantity=quantity,
-            price=price,
-            status="dry_run",
-            trace_id=trace_id,
-            is_dry_run=True,
-        )
-
-        # Save to database
-        await self._save_order_to_database(
+        # Save to database (this will create the order with proper UUID and return it)
+        order = await self._save_order_to_database(
             signal=signal,
             bybit_order_id=order_id,
             order_type=order_type,
@@ -314,6 +300,16 @@ class OrderExecutor:
             price=price,
             trace_id=trace_id,
             is_dry_run=True,
+        )
+
+        logger.info(
+            "dry_run_order_created",
+            signal_id=str(signal.signal_id),
+            order_id=str(order.id),
+            bybit_order_id=order_id,
+            asset=signal.asset,
+            quantity=float(quantity),
+            trace_id=trace_id,
         )
 
         return order

@@ -102,7 +102,7 @@ class TradingSignal(BaseModel):
             for field in ["spread", "volume_24h", "volatility"]:
                 if field in market_data and market_data[field] is not None:
                     if isinstance(market_data[field], (str, float)):
-                        market_data["price"] = Decimal(str(market_data[field]))
+                        market_data[field] = Decimal(str(market_data[field]))
             data["market_data_snapshot"] = MarketDataSnapshot(**market_data)
 
         return cls(**data)

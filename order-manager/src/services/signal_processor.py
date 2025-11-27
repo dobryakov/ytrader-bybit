@@ -133,8 +133,15 @@ class SignalProcessor:
             current_position = await self.position_manager.get_position(asset)
 
             # Step 5: Risk checks
-            # 5a: Balance check
-            await self.risk_manager.check_balance(signal, quantity, order_price)
+            # 5a: Balance check (skip in dry-run mode)
+            if not settings.order_manager_enable_dry_run:
+                await self.risk_manager.check_balance(signal, quantity, order_price)
+            else:
+                logger.debug(
+                    "balance_check_skipped_dry_run",
+                    signal_id=str(signal_id),
+                    trace_id=trace_id,
+                )
 
             # 5b: Order size check
             self.risk_manager.check_order_size(signal, quantity, order_price)

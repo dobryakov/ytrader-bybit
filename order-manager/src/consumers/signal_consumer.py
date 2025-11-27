@@ -145,7 +145,7 @@ class SignalConsumer:
                     trace_id=trace_id,
                 )
                 # Message will be rejected and sent to dead letter queue
-                message.nack(requeue=False)
+                await message.nack(requeue=False)
 
             except OrderExecutionError as e:
                 logger.error(
@@ -155,7 +155,7 @@ class SignalConsumer:
                     trace_id=trace_id,
                 )
                 # Message will be rejected and sent to dead letter queue
-                message.nack(requeue=False)
+                await message.nack(requeue=False)
 
             except Exception as e:
                 logger.error(
@@ -165,7 +165,7 @@ class SignalConsumer:
                     trace_id=trace_id,
                 )
                 # Message will be rejected and sent to dead letter queue
-                message.nack(requeue=False)
+                await message.nack(requeue=False)
 
             finally:
                 # Clear trace ID from context
