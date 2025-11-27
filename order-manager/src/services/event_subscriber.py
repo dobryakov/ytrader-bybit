@@ -47,9 +47,15 @@ class EventSubscriber:
 
         try:
             # Subscribe to order events via WebSocket gateway REST API
-            # Channel type: "order" (no symbol required - receives all order events)
+            # Note: ws-gateway requires symbol for order channel type per DB constraint
+            # For now, we'll skip subscription and rely on manual sync
+            # TODO: Support subscribing to all order events or specific symbols
+            # Channel type: "order" requires symbol, but Bybit supports "order" without symbol
+            # This is a limitation of ws-gateway schema - subscription will fail
+            # Service will continue without event subscription
             subscription_data = {
                 "channel_type": "order",
+                "symbol": "*",  # Try wildcard - may not work, but worth trying
                 "requesting_service": settings.order_manager_service_name,
             }
 
@@ -347,7 +353,7 @@ class EventSubscriber:
                 else None
             )
             fees = (
-                Decimal(str(payload.get("cumExecFee") or payload.get("fees") or "0")))
+                Decimal(str(payload.get("cumExecFee") or payload.get("fees") or "0"))
                 if payload.get("cumExecFee") or payload.get("fees")
                 else None
             )

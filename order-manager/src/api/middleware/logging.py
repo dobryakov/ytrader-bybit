@@ -65,6 +65,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
 
             # Record metrics
             elapsed_time_ms = elapsed_time * 1000
+            # record_latency will handle ensuring api_response_times is a list
             record_latency(
                 "api_response_times",
                 elapsed_time_ms,

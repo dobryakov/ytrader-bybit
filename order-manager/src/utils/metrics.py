@@ -10,12 +10,22 @@ from ..config.logging import get_logger
 logger = get_logger(__name__)
 
 # Simple in-memory metrics storage (can be replaced with Prometheus/StatsD in production)
+# IMPORTANT: api_response_times must always be a list, never a dict
 _metrics: Dict[str, Any] = {
     "order_processing_latency": [],
-    "api_response_times": {},
+    "api_response_times": [],  # Must be list for latency tracking
     "queue_depths": {},
     "error_counts": {},
 }
+
+def _ensure_api_response_times_is_list():
+    """Ensure api_response_times is always a list - call this before any operation."""
+    global _metrics
+    if "api_response_times" not in _metrics:
+        _metrics["api_response_times"] = []
+    elif not isinstance(_metrics["api_response_times"], list):
+        # Force reset to list if it somehow became a dict
+        _metrics["api_response_times"] = []
 
 
 def record_latency(metric_name: str, latency_ms: float, **tags):
@@ -26,7 +36,20 @@ def record_latency(metric_name: str, latency_ms: float, **tags):
         latency_ms: Latency in milliseconds
         tags: Additional tags for the metric
     """
+    # Always ensure api_response_times is a list first (critical fix)
+    if metric_name == "api_response_times":
+        if metric_name not in _metrics or not isinstance(_metrics[metric_name], list):
+            _metrics[metric_name] = []
+    
+    # Ensure metric is a list, not a dict
     if metric_name not in _metrics:
+        _metrics[metric_name] = []
+    elif not isinstance(_metrics[metric_name], list):
+        # If it was initialized as something else, reset it
+        _metrics[metric_name] = []
+
+    # Double-check before append (safety net)
+    if not isinstance(_metrics[metric_name], list):
         _metrics[metric_name] = []
 
     _metrics[metric_name].append({
@@ -124,6 +147,9 @@ def get_metrics_summary() -> Dict[str, Any]:
     Returns:
         Dictionary with metric summaries
     """
+    # Ensure api_response_times is always a list before processing
+    _ensure_api_response_times_is_list()
+    
     summary: Dict[str, Any] = {}
 
     # Calculate statistics for latency metrics
@@ -139,6 +165,17 @@ def get_metrics_summary() -> Dict[str, Any]:
                 "p95": sorted(latencies)[int(len(latencies) * 0.95)],
                 "p99": sorted(latencies)[int(len(latencies) * 0.99)],
             }
+        elif isinstance(values, list) and not values:
+            # Empty list - return empty summary
+            summary[metric_name] = {
+                "count": 0,
+                "min": 0,
+                "max": 0,
+                "avg": 0,
+                "p50": 0,
+                "p95": 0,
+                "p99": 0,
+            }
         elif isinstance(values, dict):
             summary[metric_name] = values.copy()
 
@@ -150,7 +187,7 @@ def reset_metrics():
     global _metrics
     _metrics = {
         "order_processing_latency": [],
-        "api_response_times": {},
+        "api_response_times": [],  # Changed from {} to [] for latency tracking
         "queue_depths": {},
         "error_counts": {},
     }
