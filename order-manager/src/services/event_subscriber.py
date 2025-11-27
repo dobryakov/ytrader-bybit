@@ -340,9 +340,9 @@ class EventSubscriber:
         try:
             # Extract order status and execution details from payload
             bybit_status = payload.get("orderStatus") or payload.get("status", "")
-            filled_qty = Decimal(str(payload.get("cumExecQty") or payload.get("executed_qty") or "0")))
+            filled_qty = Decimal(str(payload.get("cumExecQty") or payload.get("executed_qty") or "0"))
             avg_price = (
-                Decimal(str(payload.get("avgPrice") or payload.get("avg_price") or "0")))
+                Decimal(str(payload.get("avgPrice") or payload.get("avg_price") or "0"))
                 if payload.get("avgPrice") or payload.get("avg_price")
                 else None
             )

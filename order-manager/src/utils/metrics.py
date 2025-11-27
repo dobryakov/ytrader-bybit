@@ -55,8 +55,10 @@ def increment_counter(metric_name: str, value: int = 1, **tags):
         value: Value to increment by
         tags: Additional tags for the metric
     """
+    if "counters" not in _metrics:
+        _metrics["counters"] = {}
     key = f"{metric_name}:{':'.join(f'{k}={v}' for k, v in sorted(tags.items()))}"
-    _metrics.setdefault("counters", {})[key] = _metrics["counters"].get(key, 0) + value
+    _metrics["counters"][key] = _metrics["counters"].get(key, 0) + value
 
     logger.debug(
         "counter_incremented",
