@@ -62,21 +62,21 @@
 
 ### Implementation for User Story 1
 
-- [ ] T017 [P] [US1] Create Order model in order-manager/src/models/order.py (Order entity with all fields from data-model.md)
-- [ ] T018 [P] [US1] Create Trading Signal model in order-manager/src/models/trading_signal.py (in-memory structure for consumed signals)
-- [ ] T019 [P] [US1] Create Signal-Order Relationship model in order-manager/src/models/signal_order_rel.py (SignalOrderRelationship entity)
-- [ ] T020 [P] [US1] Create Position model in order-manager/src/models/position.py (Position entity with one-way and hedge-mode support)
-- [ ] T021 [US1] Implement order type selector service in order-manager/src/services/order_type_selector.py (market vs limit selection logic per research.md decisions)
-- [ ] T022 [US1] Implement quantity calculator service in order-manager/src/services/quantity_calculator.py (amount to quantity conversion with tick size/lot size precision per research.md)
-- [ ] T023 [US1] Implement position manager service in order-manager/src/services/position_manager.py (position query, update, validation logic)
-- [ ] T024 [US1] Implement risk manager service in order-manager/src/services/risk_manager.py (risk limits enforcement: max exposure, max order size, position size limits)
-- [ ] T025 [US1] Implement signal processor service in order-manager/src/services/signal_processor.py (signal validation, per-symbol FIFO queue, order decision logic, cancellation strategy)
-- [ ] T026 [US1] Implement order executor service in order-manager/src/services/order_executor.py (Bybit REST API order creation, modification, cancellation with retry logic and dry-run mode support)
-- [ ] T027 [US1] Implement signal consumer in order-manager/src/consumers/signal_consumer.py (RabbitMQ consumer for model-service.trading_signals queue, signal processing orchestration)
-- [ ] T028 [US1] Add signal validation logic (required fields, data types, value ranges) in order-manager/src/services/signal_processor.py
-- [ ] T029 [US1] Add balance checking logic before order creation in order-manager/src/services/risk_manager.py
-- [ ] T030 [US1] Add order cancellation logic for existing orders when new signals arrive in order-manager/src/services/signal_processor.py
-- [ ] T031 [US1] Add logging for all signal processing and order execution operations in order-manager/src/services/signal_processor.py and order-manager/src/services/order_executor.py
+- [X] T017 [P] [US1] Create Order model in order-manager/src/models/order.py (Order entity with all fields from data-model.md)
+- [X] T018 [P] [US1] Create Trading Signal model in order-manager/src/models/trading_signal.py (in-memory structure for consumed signals)
+- [X] T019 [P] [US1] Create Signal-Order Relationship model in order-manager/src/models/signal_order_rel.py (SignalOrderRelationship entity)
+- [X] T020 [P] [US1] Create Position model in order-manager/src/models/position.py (Position entity with one-way and hedge-mode support)
+- [X] T021 [US1] Implement order type selector service in order-manager/src/services/order_type_selector.py (market vs limit selection logic per research.md decisions)
+- [X] T022 [US1] Implement quantity calculator service in order-manager/src/services/quantity_calculator.py (amount to quantity conversion with tick size/lot size precision per research.md)
+- [X] T023 [US1] Implement position manager service in order-manager/src/services/position_manager.py (position query, update, validation logic)
+- [X] T024 [US1] Implement risk manager service in order-manager/src/services/risk_manager.py (risk limits enforcement: max exposure, max order size, position size limits)
+- [X] T025 [US1] Implement signal processor service in order-manager/src/services/signal_processor.py (signal validation, per-symbol FIFO queue, order decision logic, cancellation strategy)
+- [X] T026 [US1] Implement order executor service in order-manager/src/services/order_executor.py (Bybit REST API order creation, modification, cancellation with retry logic and dry-run mode support)
+- [X] T027 [US1] Implement signal consumer in order-manager/src/consumers/signal_consumer.py (RabbitMQ consumer for model-service.trading_signals queue, signal processing orchestration)
+- [X] T028 [US1] Add signal validation logic (required fields, data types, value ranges) in order-manager/src/services/signal_processor.py
+- [X] T029 [US1] Add balance checking logic before order creation in order-manager/src/services/risk_manager.py
+- [X] T030 [US1] Add order cancellation logic for existing orders when new signals arrive in order-manager/src/services/signal_processor.py
+- [X] T031 [US1] Add logging for all signal processing and order execution operations in order-manager/src/services/signal_processor.py and order-manager/src/services/order_executor.py
 
 **Checkpoint**: At this point, User Story 1 should be fully functional and testable independently - signals can be received, processed, and executed as orders on Bybit
 

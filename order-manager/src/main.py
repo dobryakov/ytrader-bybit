@@ -16,6 +16,7 @@ from .config.logging import get_logger, configure_logging
 from .utils.bybit_client import get_bybit_client, close_bybit_client
 from .utils.tracing import generate_trace_id, set_trace_id
 from .config.settings import settings
+from .consumers.signal_consumer import SignalConsumer
 
 # Configure logging first
 configure_logging()
@@ -47,7 +48,14 @@ async def lifespan(app: FastAPI):
         get_bybit_client()
         logger.info("bybit_client_initialized", trace_id=trace_id)
 
-        # TODO: Initialize signal consumer
+        # Initialize and start signal consumer
+        signal_consumer = SignalConsumer()
+        await signal_consumer.start()
+        logger.info("signal_consumer_started", trace_id=trace_id)
+
+        # Store consumer for shutdown
+        app.state.signal_consumer = signal_consumer
+
         # TODO: Initialize event subscriber
         # TODO: Start background tasks (position snapshots, validation)
 
@@ -68,6 +76,11 @@ async def lifespan(app: FastAPI):
     logger.info("application_shutting_down", service=settings.order_manager_service_name)
     
     try:
+        # Stop signal consumer
+        if hasattr(app.state, "signal_consumer"):
+            await app.state.signal_consumer.stop()
+            logger.info("signal_consumer_stopped")
+
         # Close Bybit client
         await close_bybit_client()
         logger.info("bybit_client_closed")
