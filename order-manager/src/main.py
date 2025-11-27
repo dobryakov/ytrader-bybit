@@ -17,6 +17,8 @@ from .utils.bybit_client import get_bybit_client, close_bybit_client
 from .utils.tracing import generate_trace_id, set_trace_id
 from .config.settings import settings
 from .consumers.signal_consumer import SignalConsumer
+from .services.event_subscriber import EventSubscriber
+from .services.order_state_sync import OrderStateSync
 
 # Configure logging first
 configure_logging()
@@ -56,7 +58,32 @@ async def lifespan(app: FastAPI):
         # Store consumer for shutdown
         app.state.signal_consumer = signal_consumer
 
-        # TODO: Initialize event subscriber
+        # Perform startup reconciliation - sync active orders with Bybit
+        order_state_sync = OrderStateSync()
+        try:
+            sync_result = await order_state_sync.sync_active_orders(trace_id=trace_id)
+            logger.info(
+                "startup_reconciliation_completed",
+                synced_count=sync_result["synced_count"],
+                discrepancies_count=len(sync_result["discrepancies"]),
+                trace_id=trace_id,
+            )
+        except Exception as e:
+            logger.warning(
+                "startup_reconciliation_failed",
+                error=str(e),
+                trace_id=trace_id,
+            )
+            # Don't fail startup if reconciliation fails - service can still operate
+
+        # Initialize and start event subscriber for order execution events
+        event_subscriber = EventSubscriber()
+        await event_subscriber.start()
+        logger.info("event_subscriber_started", trace_id=trace_id)
+
+        # Store event subscriber for shutdown
+        app.state.event_subscriber = event_subscriber
+
         # TODO: Start background tasks (position snapshots, validation)
 
         logger.info("application_started", port=settings.order_manager_port, trace_id=trace_id)
@@ -76,6 +103,11 @@ async def lifespan(app: FastAPI):
     logger.info("application_shutting_down", service=settings.order_manager_service_name)
     
     try:
+        # Stop event subscriber
+        if hasattr(app.state, "event_subscriber"):
+            await app.state.event_subscriber.stop()
+            logger.info("event_subscriber_stopped")
+
         # Stop signal consumer
         if hasattr(app.state, "signal_consumer"):
             await app.state.signal_consumer.stop()

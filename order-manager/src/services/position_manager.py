@@ -63,6 +63,7 @@ class PositionManager:
         size_delta: Decimal,
         execution_price: Decimal,
         mode: str = "one-way",
+        trace_id: Optional[str] = None,
     ) -> Position:
         """Update position based on order execution.
 
@@ -71,11 +72,11 @@ class PositionManager:
             size_delta: Change in position size (positive for buy, negative for sell)
             execution_price: Price at which order was executed
             mode: Trading mode ('one-way' or 'hedge')
+            trace_id: Optional trace ID for request tracking
 
         Returns:
             Updated Position object
         """
-        trace_id = None  # TODO: Get from context
         try:
             pool = await DatabaseConnection.get_pool()
 

@@ -90,13 +90,13 @@
 
 ### Implementation for User Story 2
 
-- [ ] T032 [US2] Implement order state synchronization service in order-manager/src/services/order_state_sync.py (startup reconciliation, manual sync, active order query from Bybit API)
-- [ ] T033 [US2] Implement event subscriber service in order-manager/src/services/event_subscriber.py (WebSocket event subscription handler, order state update logic from execution events)
-- [ ] T034 [US2] Implement order state update logic when execution events received in order-manager/src/services/event_subscriber.py (handle filled, partially_filled, cancelled, rejected events)
-- [ ] T035 [US2] Implement startup reconciliation procedure in order-manager/src/services/order_state_sync.py (query active orders from Bybit, compare with database, sync discrepancies)
-- [ ] T036 [US2] Add WebSocket gateway subscription management (subscribe to order execution events on startup) in order-manager/src/services/event_subscriber.py
-- [ ] T037 [US2] Add position update logic when orders are filled in order-manager/src/services/position_manager.py (update position size, average price, PnL when order execution events received)
-- [ ] T038 [US2] Add logging for order state synchronization operations in order-manager/src/services/order_state_sync.py
+- [X] T032 [US2] Implement order state synchronization service in order-manager/src/services/order_state_sync.py (startup reconciliation, manual sync, active order query from Bybit API)
+- [X] T033 [US2] Implement event subscriber service in order-manager/src/services/event_subscriber.py (WebSocket event subscription handler, order state update logic from execution events)
+- [X] T034 [US2] Implement order state update logic when execution events received in order-manager/src/services/event_subscriber.py (handle filled, partially_filled, cancelled, rejected events)
+- [X] T035 [US2] Implement startup reconciliation procedure in order-manager/src/services/order_state_sync.py (query active orders from Bybit, compare with database, sync discrepancies)
+- [X] T036 [US2] Add WebSocket gateway subscription management (subscribe to order execution events on startup) in order-manager/src/services/event_subscriber.py
+- [X] T037 [US2] Add position update logic when orders are filled in order-manager/src/services/position_manager.py (update position size, average price, PnL when order execution events received)
+- [X] T038 [US2] Add logging for order state synchronization operations in order-manager/src/services/order_state_sync.py
 
 **Checkpoint**: At this point, User Stories 1 AND 2 should both work independently - orders are created and their states are accurately maintained
 
