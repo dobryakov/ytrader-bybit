@@ -96,7 +96,7 @@
 - [ ] T032 [P] [US2] Create TrainingDataset data model in model-service/src/models/training_dataset.py (dataset_id, strategy_id, features DataFrame, labels Series, metadata dict)
 - [ ] T033 [P] [US2] Create ModelVersion database repository in model-service/src/database/repositories/model_version_repo.py (CRUD operations for model_versions table)
 - [ ] T034 [P] [US2] Create ModelQualityMetrics database repository in model-service/src/database/repositories/quality_metrics_repo.py (CRUD operations for model_quality_metrics table)
-- [ ] T035 [US2] Implement order execution event consumer in model-service/src/consumers/execution_event_consumer.py (subscribe to RabbitMQ queue order-manager.execution_events, parse and validate events, handle corrupted/invalid events with logging and graceful continuation)
+- [ ] T035 [US2] Implement order execution event consumer in model-service/src/consumers/execution_event_consumer.py (subscribe to RabbitMQ queue order-manager.order_events, parse and validate events, handle corrupted/invalid events with logging and graceful continuation)
 - [ ] T036 [US2] Document order execution event validation rules in model-service/docs/validation-rules.md (specify required fields, value ranges, format constraints, corruption detection criteria, error handling procedures per FR-025)
 - [ ] T037 [US2] Implement feature engineering service in model-service/src/services/feature_engineer.py (process execution events and market data into features: MUST use market_data_snapshot from trading signals for features describing market state at decision time, use execution event market_conditions only for performance metrics, generate price features, volume features, technical indicators, market context, execution features)
 - [ ] T038 [US2] Implement label generation service in model-service/src/services/label_generator.py (extract labels from execution events: binary classification, multi-class, regression targets)
@@ -170,8 +170,9 @@
 
 **Purpose**: Improvements that affect multiple user stories
 
-- [ ] T069 [P] Update README.md in model-service/ with complete setup, usage, and API documentation
-- [ ] T070 [P] Synchronize quickstart.md in specs/001-model-service/ with actual implementation
+- [ ] T069 [P] Update README.md in model-service/ with complete setup, usage, and API documentation (fix queue name: order-manager.order_events instead of order-manager.execution_events)
+- [ ] T070 [P] Synchronize quickstart.md in specs/001-model-service/ with actual implementation (fix queue name: order-manager.order_events instead of order-manager.execution_events)
+- [ ] T088 [P] Fix queue name references in documentation: update data-model.md in specs/001-model-service/ to use correct queue name order-manager.order_events instead of order-manager.execution_events
 - [ ] T071 [P] Add error handling and retry logic for RabbitMQ operations in model-service/src/publishers/ and model-service/src/consumers/
 - [ ] T072 [P] Add error handling and retry logic for database operations in model-service/src/database/
 - [ ] T073 [P] Implement graceful shutdown handling in model-service/src/main.py (close connections, finish in-progress operations)
@@ -336,14 +337,14 @@ With multiple developers:
 
 ## Task Summary
 
-- **Total Tasks**: 89 tasks
+- **Total Tasks**: 90 tasks
 - **Phase 1 (Setup)**: 9 tasks
 - **Phase 2 (Foundational)**: 12 tasks
 - **Phase 3 (User Story 1 - MVP)**: 11 tasks
 - **Phase 4 (User Story 2)**: 17 tasks
 - **Phase 5 (User Story 3)**: 9 tasks
 - **Phase 6 (User Story 4)**: 17 tasks
-- **Phase 7 (Polish)**: 14 tasks
+- **Phase 7 (Polish)**: 15 tasks
 
 ### Task Count per User Story
 
