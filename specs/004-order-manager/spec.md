@@ -5,6 +5,16 @@
 **Status**: Draft  
 **Input**: User description: "Order Manager microservice for managing Bybit orders and executing trading signals"
 
+## Clarifications
+
+### Session 2025-11-27
+
+- Q: How should REST API endpoints be secured? → A: API Key Authentication (X-API-Key header), similar to WebSocket Gateway service
+- Q: How should duplicate signals with the same signal_id be handled? → A: Allow duplicates if previous processing failed (retry mechanism)
+- Q: How should the system handle Bybit API rate limits? → A: Implement exponential backoff with configurable retry limits
+- Q: What should be the FIFO ordering scope for signal processing? → A: Per symbol (asset) FIFO
+- Q: How should positions be stored and retrieved? → A: Hybrid: store current position with periodic snapshots, compute from orders for validation
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Execute Trading Signals (Priority: P1)
@@ -129,13 +139,13 @@ As a trading system, I need protection against incorrect or risky trading action
 - **FR-005.3**: System MUST implement quantity calculation mechanism that converts quote currency amount from signals to base currency quantity with defined precision (tick size/lot size), rounding rules, and handling of minimum quantity violations
 - **FR-005.4**: System MUST implement signal-to-order relationship logic that defines when one signal creates multiple orders, how to store N signals → M orders relationships, rules for incremental position building (scale-in), and handling of partial repeated signals (scale-in/scale-out)
 - **FR-005.5**: System MUST implement position management rules that account for current position size, average price, PnL, and Bybit hedging mode (one-way vs hedge-mode) when processing signals and creating orders
-- **FR-005.6**: System MUST implement signal processing order and priority mechanism that handles out-of-order signals, simultaneous signals for the same asset, and defines FIFO ordering rules (per symbol, signal_id, trace_id, or global)
-- **FR-005.7**: System MUST provide configurable risk limits (max exposure, max order size) and retry parameters with defined configuration format, validation, and enforcement mechanisms
+- **FR-005.6**: System MUST implement signal processing order and priority mechanism that handles out-of-order signals, simultaneous signals for the same asset, and defines FIFO ordering rules. FIFO scope MUST be per symbol (asset): signals for the same asset processed in order, different assets can process in parallel
+- **FR-005.7**: System MUST provide configurable risk limits (max exposure, max order size) and retry parameters with defined configuration format, validation, and enforcement mechanisms. Retry strategy MUST use exponential backoff with configurable retry limits for Bybit API calls
 - **FR-005.8**: System MUST implement order cancellation strategy that defines when to cancel existing orders, rules for cancelling on opposite signals, handling of limit orders when market signals arrive, and automatic cancellation of stale orders
-- **FR-005.9**: System MUST provide REST API endpoints for querying order lists, viewing position state, health/live/readiness probes, and manual resynchronization
+- **FR-005.9**: System MUST provide REST API endpoints for querying order lists, viewing position state, health/live/readiness probes, and manual resynchronization. All endpoints (except health probes) MUST require API key authentication via X-API-Key header
 - **FR-005.10**: System MUST implement reconciliation and recovery procedures that define which orders are considered active, startup state synchronization, and handling of missed WebSocket events during downtime
 - **FR-005.11**: System MUST implement or define responsibility for stop-loss/take-profit mechanism, including rules for automatic stop-order placement and handling of positions with significant unrealized PnL
-- **FR-005.12**: System MUST implement position storage strategy that defines whether positions are stored in database or computed from orders, snapshot frequency, and data consistency procedures
+- **FR-005.12**: System MUST implement hybrid position storage strategy: store current position state in database with periodic snapshots, compute positions from orders for validation, and maintain data consistency procedures
 - **FR-005.13**: System MUST provide dry-run mode that accepts signals but does not send orders to Bybit, with comprehensive logging of simulated operations
 - **FR-006**: System MUST create orders on Bybit exchange via REST API with appropriate order parameters (symbol, side, quantity, order type)
 - **FR-007**: System MUST modify existing orders on Bybit via REST API when signal indicates order changes are needed
@@ -148,16 +158,16 @@ As a trading system, I need protection against incorrect or risky trading action
 - **FR-014**: System MUST enrich published events with additional context (execution price, fees, market conditions, timing) when available
 - **FR-015**: System MUST provide safety mechanisms to prevent execution of incorrect or risky trading actions, including balance validation, parameter validation, and risk limit checks
 - **FR-016**: System MUST provide tools for manual order state synchronization by querying Bybit REST API directly to refresh order statuses
-- **FR-021**: System MUST provide REST API endpoints for querying orders with filtering, pagination, and sorting capabilities
-- **FR-022**: System MUST provide REST API endpoint for retrieving current position state with all relevant position information
-- **FR-023**: System MUST implement health, liveness, and readiness probe endpoints that report service and dependency status
+- **FR-021**: System MUST provide REST API endpoints for querying orders with filtering, pagination, and sorting capabilities. Endpoints MUST require API key authentication via X-API-Key header
+- **FR-022**: System MUST provide REST API endpoint for retrieving current position state with all relevant position information. Endpoint MUST require API key authentication via X-API-Key header
+- **FR-023**: System MUST implement health, liveness, and readiness probe endpoints that report service and dependency status. Health probe endpoints MAY be unauthenticated for monitoring purposes
 - **FR-024**: System MUST implement reconciliation procedures on service startup to recover order state and detect missed events
 - **FR-025**: System MUST implement or coordinate stop-loss/take-profit mechanism with defined responsibility boundaries and automatic placement rules
-- **FR-026**: System MUST implement position storage or computation strategy with defined data model, snapshot frequency, and consistency procedures
+- **FR-026**: System MUST implement hybrid position storage strategy: store current position state with periodic snapshots, compute from orders for validation, with defined data model, snapshot frequency, and consistency procedures
 - **FR-027**: System MUST support dry-run mode that processes signals without sending orders to Bybit and provides comprehensive logging of simulated operations
-- **FR-017**: System MUST handle errors gracefully, including API failures, network issues, and invalid responses, with appropriate retry logic and error reporting
+- **FR-017**: System MUST handle errors gracefully, including API failures, network issues, and invalid responses, with appropriate retry logic and error reporting. For Bybit API rate limits (429 errors), system MUST implement exponential backoff with configurable retry limits
 - **FR-018**: System MUST maintain trace_id throughout request processing for request flow tracking across microservices
-- **FR-019**: System MUST handle duplicate signals (same signal_id) appropriately, either by ignoring duplicates or by tracking signal processing state
+- **FR-019**: System MUST handle duplicate signals (same signal_id) by tracking signal processing state: reject duplicates if previous processing succeeded, but allow retry if previous processing failed (retry mechanism)
 - **FR-020**: System MUST support both warm-up mode signals (is_warmup=true) and model-generated signals (is_warmup=false) with appropriate handling for each type
 
 ### Key Entities *(include if feature involves data)*
@@ -335,7 +345,7 @@ Signals may arrive out of order or simultaneously, but processing rules are not 
 
 - **Is FIFO ordering needed?**
   - Whether to enforce FIFO (First In First Out) processing
-  - FIFO scope: per symbol, per signal_id, per trace_id, or global
+  - FIFO scope: per symbol (clarified - signals for same asset processed in order, different assets can process in parallel)
   - Rules for maintaining signal processing order
   - Impact of FIFO on concurrent signal processing and performance
   - Handling of signal dependencies and ordering requirements
@@ -360,11 +370,11 @@ System requires configurable parameters for risk management and reliability, but
   - Validation and enforcement of risk limits
 
 - **Retry parameters:**
-  - Retry strategy for failed API calls (number of retries, backoff strategy)
+  - Retry strategy: exponential backoff with configurable retry limits (clarified)
   - Retry rules for different error types (network errors, rate limits, API errors)
   - Timeout configurations for API calls
   - Retry queue management and persistence
-  - Maximum retry attempts and exponential backoff parameters
+  - Maximum retry attempts and exponential backoff parameters (base delay, max delay, multiplier)
   - Handling of permanently failed operations
 
 - **Other configuration parameters:**
@@ -413,7 +423,7 @@ Order Manager typically should provide query capabilities, but specific endpoint
   - Filtering capabilities (by asset, status, date range, signal_id)
   - Pagination and sorting options
   - Response format and data structure
-  - Authentication and authorization requirements
+  - Authentication: API key authentication via X-API-Key header (clarified)
 
 - **Endpoint for position state viewing:**
   - Endpoint for retrieving current position information
@@ -495,26 +505,26 @@ The specification mentions PnL accounting and risk limits, but stop-loss/take-pr
 
 Position is defined as an entity, but storage strategy is not specified. The following decisions must be made:
 
-- **Should position be stored in database?**
-  - Decision on persistent storage vs computed-on-demand
+- **Position storage strategy (clarified):**
+  - Hybrid approach: store current position state in database with periodic snapshots, compute positions from orders for validation
   - Data model for position storage (current state, historical snapshots)
-  - Storage of position history (all changes, periodic snapshots, or event-based)
+  - Storage of position history (periodic snapshots, event-based updates)
   - Relationship between stored positions and orders
 
-- **Or should position always be computed from orders?**
-  - Algorithm for computing position from order history
+- **Position computation for validation:**
+  - Algorithm for computing position from order history (used for validation against stored state)
   - Performance considerations for position calculation
-  - Caching strategy for computed positions
+  - Validation frequency and triggers
   - Handling of order history gaps in position calculation
 
 - **Position snapshot strategy:**
-  - Frequency of position snapshots (real-time, periodic, event-based)
+  - Frequency of position snapshots (periodic, event-based) - to be determined
   - Data included in position snapshots (size, price, PnL, timestamp)
   - Retention policy for position history
   - Query patterns for position history retrieval
 
 - **Data consistency:**
-  - Ensuring consistency between stored positions and computed positions
+  - Ensuring consistency between stored positions and computed positions (validation mechanism)
   - Handling of discrepancies between stored and computed positions
   - Reconciliation procedures for position data
 
