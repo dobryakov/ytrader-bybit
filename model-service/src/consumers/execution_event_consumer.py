@@ -187,8 +187,14 @@ class ExecutionEventConsumer:
             body = message.body.decode("utf-8")
             data = json.loads(body)
 
+            # Only process filled events - other events don't have execution details
+            event_type = data.get("event_type", "")
+            if event_type != "filled":
+                logger.debug("Skipping non-filled event", event_type=event_type, event_keys=list(data.keys()))
+                return
+            
             # Transform order-manager format to expected format
-            logger.debug("Processing order event", event_keys=list(data.keys()), has_order="order" in data)
+            logger.debug("Processing filled order event", event_keys=list(data.keys()), has_order="order" in data)
             transformed_data = await self._transform_order_manager_event(data)
             if not transformed_data:
                 logger.warning("Failed to transform order-manager event", event_data_keys=list(data.keys()), has_order="order" in data)
@@ -379,14 +385,41 @@ class ExecutionEventConsumer:
             order_id = order_data.get("order_id")
             asset = order_data.get("asset")
             side = order_data.get("side", "").lower()
+            event_type = data.get("event_type", "")
+            
+            # Log event details for debugging
+            logger.debug(
+                "Transforming order event",
+                order_id=order_id,
+                event_type=event_type,
+                order_keys=list(order_data.keys()),
+                average_price_raw=order_data.get("average_price"),
+                filled_quantity_raw=order_data.get("filled_quantity"),
+            )
+            
             filled_quantity = float(order_data.get("filled_quantity", "0"))
-            average_price = float(order_data.get("average_price", "0")) if order_data.get("average_price") else None
+            average_price_raw = order_data.get("average_price")
+            average_price = None
+            if average_price_raw:
+                try:
+                    average_price = float(average_price_raw)
+                except (ValueError, TypeError):
+                    logger.warning("Cannot convert average_price to float", order_id=order_id, average_price_raw=average_price_raw, type=type(average_price_raw).__name__)
+                    average_price = None
+            
             fees = float(order_data.get("fees", "0")) if order_data.get("fees") else 0.0
             executed_at_str = order_data.get("executed_at")
             created_at_str = order_data.get("created_at")
 
             if not average_price or average_price <= 0:
-                logger.warning("Order event missing or invalid average_price", order_id=order_id)
+                logger.warning(
+                    "Order event missing or invalid average_price",
+                    order_id=order_id,
+                    event_type=event_type,
+                    average_price=average_price,
+                    average_price_raw=average_price_raw,
+                    filled_quantity=filled_quantity,
+                )
                 return None
 
             if filled_quantity <= 0:

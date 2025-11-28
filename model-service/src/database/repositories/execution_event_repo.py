@@ -8,6 +8,7 @@ from typing import Optional, List, Dict, Any
 from datetime import datetime, timezone
 from uuid import UUID
 import asyncpg
+import json
 from decimal import Decimal
 
 from ..base import BaseRepository
@@ -92,6 +93,9 @@ class ExecutionEventRepository(BaseRepository[Dict[str, Any]]):
                 signal_timestamp_iso=signal_timestamp.isoformat(),
             )
             
+            # Serialize performance dict to JSON string for JSONB column
+            performance_json = json.dumps(performance) if isinstance(performance, dict) else performance
+            
             record = await self._fetchrow(
                 query,
                 UUID(signal_id) if isinstance(signal_id, str) else signal_id,
@@ -104,7 +108,7 @@ class ExecutionEventRepository(BaseRepository[Dict[str, Any]]):
                 executed_at,
                 Decimal(str(signal_price)),
                 signal_timestamp,
-                performance,
+                performance_json,
             )
             if not record:
                 raise ValueError("Failed to create execution event")
