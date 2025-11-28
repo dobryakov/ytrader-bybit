@@ -21,7 +21,9 @@ from .consumers.market_data_consumer import market_data_consumer
 from .consumers.execution_event_consumer import ExecutionEventConsumer
 from .publishers.signal_publisher import signal_publisher
 from .services.warmup_orchestrator import warmup_orchestrator
+from .services.intelligent_orchestrator import intelligent_orchestrator
 from .services.training_orchestrator import training_orchestrator
+from .services.mode_transition import mode_transition
 from .database.repositories.model_version_repo import ModelVersionRepository
 
 # Configure logging
@@ -59,54 +61,66 @@ async def lifespan(app: FastAPI):
         await signal_publisher.initialize()
         logger.info("Signal publisher initialized")
 
-        # Check if trained model exists
+        # Subscribe to market data channels (needed for both warm-up and intelligent modes)
+        subscriber = MarketDataSubscriber(
+            ws_gateway_url=settings.ws_gateway_url,
+            api_key=settings.ws_gateway_api_key,
+        )
+
+        # Get trading strategies and default assets
+        strategies = settings.trading_strategy_list
+        assets = ["BTCUSDT", "ETHUSDT"]  # TODO: Make configurable
+
+        if strategies:
+            try:
+                # Subscribe to all required channels for all assets
+                subscriptions = await subscriber.subscribe_all_channels(assets, "model-service")
+                logger.info(
+                    "Subscribed to market data channels",
+                    subscriptions=subscriptions,
+                )
+            except Exception as e:
+                logger.error(
+                    "Failed to subscribe to market data channels",
+                    error=str(e),
+                    exc_info=True,
+                )
+                # Continue anyway - can work with fallback values
+
+        # Start market data consumer (needed for both modes)
+        try:
+            await market_data_consumer.start()
+            logger.info("Market data consumer started")
+        except Exception as e:
+            logger.error(
+                "Failed to start market data consumer",
+                error=str(e),
+                exc_info=True,
+            )
+            # Continue anyway - can work with fallback values
+
+        # Check if trained model exists and start appropriate orchestrator
         model_version_repo = ModelVersionRepository()
         active_model = await model_version_repo.get_active_by_strategy(None)  # Check for default strategy
         has_trained_model = active_model is not None
 
-        if not has_trained_model and settings.warmup_mode_enabled:
-            logger.info("No trained model found, starting warm-up mode")
-
-            # Subscribe to market data channels
-            subscriber = MarketDataSubscriber(
-                ws_gateway_url=settings.ws_gateway_url,
-                api_key=settings.ws_gateway_api_key,
-            )
-
-            # Get trading strategies and default assets
-            strategies = settings.trading_strategy_list
-            assets = ["BTCUSDT", "ETHUSDT"]  # TODO: Make configurable
-
-            if strategies:
-                try:
-                    # Subscribe to all required channels for all assets
-                    subscriptions = await subscriber.subscribe_all_channels(assets, "model-service")
-                    logger.info(
-                        "Subscribed to market data channels",
-                        subscriptions=subscriptions,
-                    )
-                except Exception as e:
-                    logger.error(
-                        "Failed to subscribe to market data channels",
-                        error=str(e),
-                        exc_info=True,
-                    )
-                    # Continue anyway - warm-up mode can work with fallback values
-
-            # Start market data consumer
+        if has_trained_model:
+            logger.info("Active model found, starting intelligent signal generation", model_version=active_model["version"])
             try:
-                await market_data_consumer.start()
-                logger.info("Market data consumer started")
+                # Start intelligent orchestrator
+                await intelligent_orchestrator.start()
+                logger.info("Intelligent orchestrator started")
             except Exception as e:
                 logger.error(
-                    "Failed to start market data consumer",
+                    "Failed to start intelligent orchestrator",
                     error=str(e),
                     exc_info=True,
                 )
-                # Continue anyway - warm-up mode can work with fallback values
-
-            # Start warm-up orchestrator
+                raise
+        elif settings.warmup_mode_enabled:
+            logger.info("No trained model found, starting warm-up mode")
             try:
+                # Start warm-up orchestrator
                 await warmup_orchestrator.start()
                 logger.info("Warm-up orchestrator started")
             except Exception as e:
@@ -116,6 +130,8 @@ async def lifespan(app: FastAPI):
                     exc_info=True,
                 )
                 raise
+        else:
+            logger.warning("No trained model and warm-up mode disabled, signal generation will not start")
 
         # Start execution event consumer for training pipeline
         async def handle_execution_event(event):
@@ -156,6 +172,10 @@ async def lifespan(app: FastAPI):
         if hasattr(app.state, "execution_event_consumer"):
             await app.state.execution_event_consumer.stop()
             logger.info("Execution event consumer stopped")
+
+        # Stop intelligent orchestrator
+        await intelligent_orchestrator.stop()
+        logger.info("Intelligent orchestrator stopped")
 
         # Stop warm-up orchestrator
         await warmup_orchestrator.stop()

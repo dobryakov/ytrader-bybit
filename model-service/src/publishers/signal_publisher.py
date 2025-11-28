@@ -83,7 +83,9 @@ class SignalPublisher:
                 asset=signal.asset,
                 amount=signal.amount,
                 strategy_id=signal.strategy_id,
+                model_version=signal.model_version,
                 is_warmup=signal.is_warmup,
+                confidence=signal.confidence,
                 queue=self.queue_name,
             )
 
