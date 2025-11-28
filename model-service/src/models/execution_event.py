@@ -5,7 +5,7 @@ Represents an enriched event from the order manager microservice containing
 details about executed trades for model training purposes.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any
 from uuid import uuid4
 from pydantic import BaseModel, Field, field_validator
@@ -74,7 +74,7 @@ class OrderExecutionEvent(BaseModel):
     @classmethod
     def validate_executed_at(cls, v: datetime) -> datetime:
         """Validate executed_at is not in the future."""
-        if v > datetime.utcnow():
+        if v > datetime.now(timezone.utc):
             raise ValueError("executed_at cannot be in the future")
         return v
 
@@ -82,7 +82,7 @@ class OrderExecutionEvent(BaseModel):
     @classmethod
     def validate_signal_timestamp(cls, v: datetime) -> datetime:
         """Validate signal_timestamp is not in the future."""
-        if v > datetime.utcnow():
+        if v > datetime.now(timezone.utc):
             raise ValueError("signal_timestamp cannot be in the future")
         return v
 

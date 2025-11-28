@@ -23,6 +23,11 @@ class DatabaseConnectionPool:
         self._pool: Optional[asyncpg.Pool] = None
         self._lock = asyncio.Lock()
 
+    @staticmethod
+    async def _init_connection(conn):
+        """Initialize connection with timezone settings."""
+        await conn.execute("SET timezone = 'UTC'")
+
     async def create_pool(
         self,
         min_size: int = 10,
@@ -72,6 +77,7 @@ class DatabaseConnectionPool:
                     max_queries=max_queries,
                     max_inactive_connection_lifetime=max_inactive_connection_lifetime,
                     command_timeout=60,  # 60 second timeout for queries
+                    init=DatabaseConnectionPool._init_connection,
                 )
                 logger.info("Database connection pool created successfully")
                 return pool

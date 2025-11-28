@@ -5,7 +5,7 @@ Provides CRUD operations for execution_events table.
 """
 
 from typing import Optional, List, Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID
 import asyncpg
 from decimal import Decimal
@@ -70,6 +70,28 @@ class ExecutionEventRepository(BaseRepository[Dict[str, Any]]):
             RETURNING *
         """
         try:
+            # Convert to UTC timezone-aware first, then to naive for PostgreSQL timestamp without time zone
+            if executed_at.tzinfo is None:
+                executed_at = executed_at.replace(tzinfo=timezone.utc)
+            else:
+                executed_at = executed_at.astimezone(timezone.utc)
+            # Convert to naive datetime for PostgreSQL timestamp without time zone
+            executed_at = executed_at.replace(tzinfo=None)
+            
+            if signal_timestamp.tzinfo is None:
+                signal_timestamp = signal_timestamp.replace(tzinfo=timezone.utc)
+            else:
+                signal_timestamp = signal_timestamp.astimezone(timezone.utc)
+            # Convert to naive datetime for PostgreSQL timestamp without time zone
+            signal_timestamp = signal_timestamp.replace(tzinfo=None)
+            
+            logger.debug(
+                "Inserting execution event",
+                signal_id=signal_id,
+                executed_at_iso=executed_at.isoformat(),
+                signal_timestamp_iso=signal_timestamp.isoformat(),
+            )
+            
             record = await self._fetchrow(
                 query,
                 UUID(signal_id) if isinstance(signal_id, str) else signal_id,

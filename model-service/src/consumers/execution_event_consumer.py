@@ -9,7 +9,7 @@ and graceful continuation.
 import json
 import asyncio
 from typing import Callable, Optional, Any, Dict
-from datetime import datetime
+from datetime import datetime, timezone
 
 import aio_pika
 from aio_pika.abc import AbstractIncomingMessage
@@ -188,10 +188,12 @@ class ExecutionEventConsumer:
             data = json.loads(body)
 
             # Transform order-manager format to expected format
+            logger.debug("Processing order event", event_keys=list(data.keys()), has_order="order" in data)
             transformed_data = await self._transform_order_manager_event(data)
             if not transformed_data:
-                logger.warning("Failed to transform order-manager event", event_data_keys=list(data.keys()))
+                logger.warning("Failed to transform order-manager event", event_data_keys=list(data.keys()), has_order="order" in data)
                 return
+            logger.debug("Event transformed successfully", transformed_keys=list(transformed_data.keys()))
 
             # Validate and parse the execution event
             execution_event = self._validate_and_parse_event(transformed_data)
@@ -244,7 +246,7 @@ class ExecutionEventConsumer:
         Validate and parse execution event from dictionary.
 
         Args:
-            data: Raw event data from message queue
+            data: Transformed event data (should be in expected format after transformation)
 
         Returns:
             Parsed OrderExecutionEvent or None if validation fails
@@ -267,9 +269,10 @@ class ExecutionEventConsumer:
             missing_fields = [field for field in required_fields if field not in data]
             if missing_fields:
                 logger.warning(
-                    "Execution event missing required fields",
+                    "Execution event missing required fields after transformation",
                     missing_fields=missing_fields,
                     event_data_keys=list(data.keys()),
+                    has_order_key="order" in data,  # Check if still in order-manager format
                 )
                 return None
 
@@ -372,11 +375,73 @@ class ExecutionEventConsumer:
                 logger.warning("Order event missing signal_id", event_data_keys=list(data.keys()))
                 return None
 
-            # Get signal information from database
-            signal_info = await self._get_signal_info(signal_id)
-            if not signal_info:
-                logger.warning("Signal not found in database", signal_id=signal_id)
+            # Extract order execution details first (needed for fallback)
+            order_id = order_data.get("order_id")
+            asset = order_data.get("asset")
+            side = order_data.get("side", "").lower()
+            filled_quantity = float(order_data.get("filled_quantity", "0"))
+            average_price = float(order_data.get("average_price", "0")) if order_data.get("average_price") else None
+            fees = float(order_data.get("fees", "0")) if order_data.get("fees") else 0.0
+            executed_at_str = order_data.get("executed_at")
+            created_at_str = order_data.get("created_at")
+
+            if not average_price or average_price <= 0:
+                logger.warning("Order event missing or invalid average_price", order_id=order_id)
                 return None
+
+            if filled_quantity <= 0:
+                logger.warning("Order event has zero or negative filled_quantity", order_id=order_id)
+                return None
+
+            # Try to get signal information from event first, then from database
+            signal_info = None
+            signal_data = data.get("signal", {})
+            
+            # Check if signal data is in the event
+            if signal_data and signal_data.get("strategy_id"):
+                signal_price = float(signal_data.get("price", "0")) if signal_data.get("price") else None
+                if not signal_price or signal_price <= 0:
+                    # Try to get from market_data_snapshot if available
+                    market_snapshot = signal_data.get("market_data_snapshot") or {}
+                    if isinstance(market_snapshot, dict):
+                        signal_price = float(market_snapshot.get("price", "0"))
+                
+                if signal_price and signal_price > 0:
+                    signal_info = {
+                        "signal_id": signal_id,
+                        "strategy_id": signal_data.get("strategy_id", "unknown"),
+                        "price": str(signal_price),
+                        "timestamp": signal_data.get("timestamp") or created_at_str or executed_at_str,
+                    }
+                    logger.debug("Using signal data from event", signal_id=signal_id)
+            
+            # If not in event, try database
+            if not signal_info:
+                signal_info = await self._get_signal_info(signal_id)
+            
+            # If still not found, use fallback from order data
+            if not signal_info:
+                logger.warning("Signal not found in database or event, using fallback", signal_id=signal_id)
+                # Try to extract price from order price field (for limit orders) or use execution price as fallback
+                order_price = float(order_data.get("price", "0")) if order_data.get("price") else None
+                # For market orders, use execution price as signal price (best approximation)
+                # For limit orders, use order price
+                signal_price = order_price if (order_price and order_price > 0) else average_price
+                
+                if not signal_price or signal_price <= 0:
+                    logger.warning("Cannot determine signal price", signal_id=signal_id, order_price=order_price, average_price=average_price)
+                    return None
+                
+                # Try to get strategy_id from signal_data if available, otherwise use "unknown"
+                strategy_id_fallback = signal_data.get("strategy_id") if signal_data else "unknown"
+                
+                signal_info = {
+                    "signal_id": signal_id,
+                    "strategy_id": strategy_id_fallback,
+                    "price": str(signal_price),
+                    "timestamp": created_at_str or executed_at_str or datetime.now(timezone.utc).isoformat(),
+                }
+                logger.info("Using fallback signal data", signal_id=signal_id, signal_price=signal_price, strategy_id=strategy_id_fallback)
 
             # Extract order execution details
             order_id = order_data.get("order_id")
@@ -401,9 +466,9 @@ class ExecutionEventConsumer:
                 try:
                     executed_at = datetime.fromisoformat(executed_at_str.replace("Z", "+00:00"))
                 except (ValueError, AttributeError):
-                    executed_at = datetime.utcnow()
+                    executed_at = datetime.now(timezone.utc)
             else:
-                executed_at = datetime.utcnow()
+                executed_at = datetime.now(timezone.utc)
 
             # Get signal price and timestamp
             signal_price = float(signal_info.get("price", "0"))
@@ -506,6 +571,30 @@ class ExecutionEventConsumer:
             return None
 
     async def _persist_execution_event(self, execution_event: OrderExecutionEvent) -> None:
+        # Ensure all datetime objects are timezone-aware (asyncpg requires this)
+        # Convert to UTC timezone-aware datetime
+        executed_at = execution_event.executed_at
+        if executed_at.tzinfo is None:
+            executed_at = executed_at.replace(tzinfo=timezone.utc)
+        else:
+            # Ensure it's UTC timezone
+            executed_at = executed_at.astimezone(timezone.utc)
+        
+        signal_timestamp = execution_event.signal_timestamp
+        if signal_timestamp.tzinfo is None:
+            signal_timestamp = signal_timestamp.replace(tzinfo=timezone.utc)
+        else:
+            # Ensure it's UTC timezone
+            signal_timestamp = signal_timestamp.astimezone(timezone.utc)
+        
+        # Log datetime info for debugging
+        logger.debug(
+            "Preparing datetime for database",
+            executed_at_tzinfo=str(executed_at.tzinfo),
+            signal_timestamp_tzinfo=str(signal_timestamp.tzinfo),
+            executed_at_iso=executed_at.isoformat(),
+            signal_timestamp_iso=signal_timestamp.isoformat(),
+        )
         """
         Persist execution event to PostgreSQL database.
 
@@ -525,9 +614,9 @@ class ExecutionEventConsumer:
                 execution_price=execution_event.execution_price,
                 execution_quantity=execution_event.execution_quantity,
                 execution_fees=execution_event.execution_fees,
-                executed_at=execution_event.executed_at,
+                executed_at=executed_at,
                 signal_price=execution_event.signal_price,
-                signal_timestamp=execution_event.signal_timestamp,
+                signal_timestamp=signal_timestamp,
                 performance={
                     "slippage": execution_event.performance.slippage,
                     "slippage_percent": execution_event.performance.slippage_percent,
