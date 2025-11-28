@@ -90,6 +90,12 @@ class ModelTrainingError(ModelServiceError):
     pass
 
 
+class ModelInferenceError(ModelServiceError):
+    """Raised when model inference fails."""
+
+    pass
+
+
 class DatasetError(ModelServiceError):
     """Raised when dataset operations fail."""
 

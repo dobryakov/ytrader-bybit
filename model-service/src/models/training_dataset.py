@@ -22,6 +22,8 @@ class TrainingDataset(BaseModel):
     during training operations.
     """
 
+    model_config = {"arbitrary_types_allowed": True}
+
     dataset_id: str = Field(default_factory=lambda: str(uuid4()), description="Unique identifier for this dataset")
     strategy_id: str = Field(..., description="Trading strategy identifier")
     features: pd.DataFrame = Field(..., description="pandas DataFrame with feature columns")
