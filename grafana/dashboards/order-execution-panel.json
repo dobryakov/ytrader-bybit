@@ -17,7 +17,7 @@
       "editorMode": "code",
       "format": "table",
       "rawQuery": true,
-      "rawSql": "SELECT\n    o.order_id,\n    e.signal_id,\n    e.asset,\n    e.side,\n    e.execution_price,\n    e.execution_quantity,\n    e.execution_fees,\n    e.executed_at,\n    o.status as closure_status\nFROM execution_events e\nLEFT JOIN orders o ON e.signal_id = o.signal_id\nORDER BY e.executed_at DESC\nLIMIT 100;",
+      "rawSql": "SELECT\n    o.order_id,\n    o.signal_id,\n    o.asset,\n    o.side,\n    e.execution_price,\n    e.execution_quantity,\n    e.execution_fees,\n    COALESCE(e.executed_at, o.created_at) as executed_at,\n    o.status as closure_status\nFROM orders o\nLEFT JOIN execution_events e ON e.signal_id = o.signal_id\nORDER BY COALESCE(e.executed_at, o.created_at) DESC\nLIMIT 100;",
       "refId": "A",
       "sql": {
         "columns": [

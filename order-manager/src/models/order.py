@@ -32,15 +32,19 @@ class Order(BaseModel):
     executed_at: Optional[datetime] = Field(None, description="When order was fully executed (filled)")
     trace_id: Optional[str] = Field(None, description="Trace ID for request flow tracking", max_length=100)
     is_dry_run: bool = Field(default=False, description="Whether order was created in dry-run mode")
+    rejection_reason: Optional[str] = Field(None, description="Reason for order rejection (for rejected orders)")
 
     @field_validator("side")
     @classmethod
     def validate_side(cls, v: str) -> str:
-        """Validate order side is 'Buy' or 'Sell'."""
-        v_upper = v.upper()
-        if v_upper not in {"BUY", "SELL"}:
-            raise ValueError("Side must be 'Buy' or 'Sell'")
-        return v_upper
+        """Validate order side is 'Buy' or 'SELL' (database constraint format)."""
+        v_normalized = v.strip()
+        if v_normalized.upper() == "BUY":
+            return "Buy"
+        elif v_normalized.upper() == "SELL":
+            return "SELL"
+        else:
+            raise ValueError("Side must be 'Buy' or 'SELL'")
 
     @field_validator("order_type")
     @classmethod
@@ -101,6 +105,7 @@ class Order(BaseModel):
             "executed_at": self.executed_at,
             "trace_id": self.trace_id,
             "is_dry_run": self.is_dry_run,
+            "rejection_reason": self.rejection_reason,
         }
 
     @classmethod

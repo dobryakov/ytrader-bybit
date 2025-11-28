@@ -119,6 +119,11 @@ class SignalProcessor:
         trace_id = signal.trace_id or get_or_create_trace_id()
         signal_id = signal.signal_id
         asset = signal.asset
+        
+        # Initialize variables for error handling (will be set during processing)
+        order_type = None
+        quantity = None
+        limit_price = None
 
         try:
             # Step 0: Check for duplicate signal
@@ -185,7 +190,7 @@ class SignalProcessor:
             self.risk_manager.check_order_size(signal, quantity, order_price)
 
             # 5c: Position size check
-            order_side = "Buy" if signal.signal_type.lower() == "buy" else "Sell"
+            order_side = "Buy" if signal.signal_type.lower() == "buy" else "SELL"
             self.risk_manager.check_position_size(asset, current_position, quantity, order_side, trace_id=trace_id)
 
             # Step 6: Create order via executor
@@ -250,14 +255,38 @@ class SignalProcessor:
                 trace_id=trace_id,
                 exc_info=True,
             )
-            # Mark signal as failed in tracking
-            await self._mark_signal_processing_status(signal_id, "failed", error_msg, trace_id)
-            # Publish rejection event with signal information
-            await self._publish_signal_rejection_event(
+            
+            # Save rejected order to database before publishing event
+            # Use calculated values if available, otherwise use defaults
+            rejected_order = await self._save_rejected_order(
                 signal=signal,
+                order_type=order_type or "Market",
+                quantity=quantity,
+                price=limit_price,
                 rejection_reason=error_msg,
                 trace_id=trace_id,
             )
+            
+            # Mark signal as failed in tracking
+            await self._mark_signal_processing_status(signal_id, "failed", error_msg, trace_id)
+            
+            # Create signal-order relationship if order was saved
+            if rejected_order:
+                await self._create_signal_order_relationship(signal_id, rejected_order.id, trace_id)
+                # Publish rejection event with saved order
+                await self._publish_signal_rejection_event(
+                    signal=signal,
+                    rejected_order=rejected_order,
+                    rejection_reason=error_msg,
+                    trace_id=trace_id,
+                )
+            else:
+                # Fallback: try to publish event without saved order
+                await self._publish_signal_rejection_event(
+                    signal=signal,
+                    rejection_reason=error_msg,
+                    trace_id=trace_id,
+                )
             raise
         except ValueError as e:
             # Validation errors
@@ -541,11 +570,154 @@ class SignalProcessor:
             # Don't fail order creation if relationship creation fails
             pass
 
+    async def _save_rejected_order(
+        self,
+        signal: TradingSignal,
+        order_type: str,
+        quantity: Optional[Decimal],
+        price: Optional[Decimal],
+        rejection_reason: str,
+        trace_id: Optional[str] = None,
+    ) -> Optional[Order]:
+        """
+        Save rejected order to database.
+
+        Args:
+            signal: Trading signal that was rejected
+            order_type: Order type that was attempted
+            quantity: Calculated quantity (may be None if calculation failed)
+            price: Limit price if applicable
+            rejection_reason: Reason for rejection
+            trace_id: Optional trace ID
+
+        Returns:
+            Saved Order object or None if save failed
+        """
+        try:
+            from ..config.database import DatabaseConnection
+            from uuid import uuid4
+            from decimal import Decimal
+
+            pool = await DatabaseConnection.get_pool()
+            # Database constraint requires 'Buy' or 'SELL' (not 'Sell')
+            side = "Buy" if signal.signal_type.lower() == "buy" else "SELL"
+            
+            # Use calculated quantity if available, otherwise estimate from signal amount
+            if quantity is None or quantity <= 0:
+                # Fallback: estimate quantity from signal amount and current price
+                if signal.market_data_snapshot and signal.market_data_snapshot.price:
+                    estimated_qty = Decimal(str(float(signal.amount) / float(signal.market_data_snapshot.price)))
+                    # Ensure minimum quantity > 0
+                    quantity = max(estimated_qty, Decimal("0.000001"))
+                else:
+                    # Last resort: use minimal quantity
+                    quantity = Decimal("0.000001")
+
+            order_uuid = uuid4()
+            bybit_order_id = f"REJECTED-{signal.signal_id}"
+            
+            # First try to insert, if conflict then update rejection_reason
+            query = """
+                INSERT INTO orders
+                (id, order_id, signal_id, asset, side, order_type, quantity, price,
+                 status, filled_quantity, created_at, updated_at, trace_id, is_dry_run, rejection_reason)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW(), $11, $12, $13)
+                ON CONFLICT (order_id) DO UPDATE SET
+                    rejection_reason = COALESCE(EXCLUDED.rejection_reason, orders.rejection_reason),
+                    updated_at = NOW()
+                RETURNING id, order_id, signal_id, asset, side, order_type, quantity, price,
+                          status, filled_quantity, average_price, fees, created_at, updated_at,
+                          executed_at, trace_id, is_dry_run, rejection_reason
+            """
+            row = await pool.fetchrow(
+                query,
+                str(order_uuid),
+                bybit_order_id,
+                str(signal.signal_id),
+                signal.asset,
+                side,
+                order_type,
+                str(quantity),
+                str(price) if price else None,
+                "rejected",
+                "0",
+                trace_id,
+                False,
+                rejection_reason,
+            )
+            
+            # If row is None, order already exists (duplicate) - ON CONFLICT should have updated it
+            if row is None:
+                logger.debug(
+                    "rejected_order_already_exists",
+                    order_id=bybit_order_id,
+                    signal_id=str(signal.signal_id),
+                    trace_id=trace_id,
+                )
+                # Try to fetch existing order and update rejection_reason if needed
+                query_update_existing = """
+                    UPDATE orders
+                    SET rejection_reason = $1, updated_at = NOW()
+                    WHERE order_id = $2
+                    RETURNING id, order_id, signal_id, asset, side, order_type, quantity, price,
+                              status, filled_quantity, average_price, fees, created_at, updated_at,
+                              executed_at, trace_id, is_dry_run, rejection_reason
+                """
+                row = await pool.fetchrow(query_update_existing, rejection_reason, bybit_order_id)
+                if row:
+                    order_data = dict(row)
+                    return Order.from_dict(order_data)
+                # If still not found, try without update
+                query_existing = "SELECT * FROM orders WHERE order_id = $1"
+                row = await pool.fetchrow(query_existing, bybit_order_id)
+                if row:
+                    order_data = dict(row)
+                    return Order.from_dict(order_data)
+                return None
+
+            order_data = dict(row)
+            # Debug: Check if rejection_reason is in row
+            db_rejection_reason = order_data.get("rejection_reason")
+            if not db_rejection_reason:
+                logger.warning(
+                    "rejection_reason_not_saved",
+                    order_id=bybit_order_id,
+                    signal_id=str(signal.signal_id),
+                    rejection_reason_param=rejection_reason,
+                    db_rejection_reason=db_rejection_reason,
+                    trace_id=trace_id,
+                )
+            order = Order.from_dict(order_data)
+
+            logger.info(
+                "rejected_order_saved_to_database",
+                order_id=str(order.id),
+                signal_id=str(signal.signal_id),
+                asset=signal.asset,
+                rejection_reason=rejection_reason,
+                db_rejection_reason=db_rejection_reason,
+                trace_id=trace_id,
+            )
+
+            return order
+
+        except Exception as e:
+            logger.error(
+                "rejected_order_save_failed",
+                signal_id=str(signal.signal_id),
+                asset=signal.asset,
+                error=str(e),
+                trace_id=trace_id,
+                exc_info=True,
+            )
+            return None
+
     async def _publish_signal_rejection_event(
         self,
         signal: TradingSignal,
         rejection_reason: str,
         trace_id: Optional[str] = None,
+        rejected_order: Optional[Order] = None,
     ) -> None:
         """
         Publish rejection event for a signal that was rejected before order creation.
@@ -554,32 +726,40 @@ class SignalProcessor:
             signal: Trading signal that was rejected
             rejection_reason: Reason for rejection
             trace_id: Optional trace ID
+            rejected_order: Optional rejected order object (if already saved to database)
         """
         try:
-            # Create a minimal order-like object for event publishing
-            # Since no order was created, we'll use signal information
-            from uuid import uuid4
-            from datetime import datetime
-            from decimal import Decimal
+            # Use provided order or create a minimal order object for event publishing
+            if rejected_order:
+                order_for_event = rejected_order
+            else:
+                # Create a minimal order-like object for event publishing
+                from uuid import uuid4
+                from datetime import datetime
+                from decimal import Decimal
 
-            # Create a temporary order object for event publishing
-            # This represents a "rejected" order that was never created
-            rejected_order = Order(
-                id=uuid4(),
-                order_id=f"REJECTED-{signal.signal_id}",
-                signal_id=signal.signal_id,
-                asset=signal.asset,
-                side="Buy" if signal.signal_type.lower() == "buy" else "Sell",
-                order_type="Market",  # Default, not important for rejection
-                quantity=Decimal("0"),  # No quantity since order wasn't created
-                price=None,
-                status="rejected",
-                filled_quantity=Decimal("0"),
-                created_at=datetime.utcnow(),
-                updated_at=datetime.utcnow(),
-                trace_id=trace_id,
-                is_dry_run=False,
-            )
+                # Calculate estimated quantity from signal amount
+                quantity = Decimal("0.000001")  # Minimum quantity
+                if signal.market_data_snapshot and signal.market_data_snapshot.price:
+                    estimated_qty = Decimal(str(float(signal.amount) / float(signal.market_data_snapshot.price)))
+                    quantity = max(estimated_qty, Decimal("0.000001"))
+
+                order_for_event = Order(
+                    id=uuid4(),
+                    order_id=f"REJECTED-{signal.signal_id}",
+                    signal_id=signal.signal_id,
+                    asset=signal.asset,
+                    side="Buy" if signal.signal_type.lower() == "buy" else "SELL",
+                    order_type="Market",
+                    quantity=quantity,
+                    price=None,
+                    status="rejected",
+                    filled_quantity=Decimal("0"),
+                    created_at=datetime.utcnow(),
+                    updated_at=datetime.utcnow(),
+                    trace_id=trace_id,
+                    is_dry_run=False,
+                )
 
             # Prepare signal information
             signal_info = {
@@ -606,7 +786,7 @@ class SignalProcessor:
 
             # Publish rejection event
             await self.event_publisher.publish_order_event(
-                order=rejected_order,
+                order=order_for_event,
                 event_type="rejected",
                 trace_id=trace_id,
                 rejection_reason=rejection_reason,

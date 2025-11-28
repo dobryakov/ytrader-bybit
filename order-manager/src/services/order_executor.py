@@ -50,7 +50,7 @@ class OrderExecutor:
         trace_id = trace_id or signal.trace_id
         signal_id = signal.signal_id
         asset = signal.asset
-        side = "Buy" if signal.signal_type.lower() == "buy" else "Sell"
+        side = "Buy" if signal.signal_type.lower() == "buy" else "SELL"
 
         logger.info(
             "order_creation_started",
@@ -505,7 +505,7 @@ class OrderExecutor:
 
         selector = OrderTypeSelector()
         asset = signal.asset
-        side = "Buy" if signal.signal_type.lower() == "buy" else "Sell"
+        side = "Buy" if signal.signal_type.lower() == "buy" else "SELL"
 
         params = {
             "category": "linear",
@@ -606,7 +606,7 @@ class OrderExecutor:
         """
         try:
             pool = await DatabaseConnection.get_pool()
-            side = "Buy" if signal.signal_type.lower() == "buy" else "Sell"
+            side = "Buy" if signal.signal_type.lower() == "buy" else "SELL"
             status = "dry_run" if is_dry_run else "pending"
 
             query = """
