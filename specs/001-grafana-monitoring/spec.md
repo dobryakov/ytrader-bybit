@@ -5,6 +5,16 @@
 **Status**: Draft  
 **Input**: User description: "Задача - добавить визуальный мониторинг состояния проекта с помощью Grafana. Реализовать в отдельном контейнере. Предполагается, что Grafana будет в первую очередь брать данные из существующих БД, из REST API и из очередей RabbitMQ. Доступ к UI Grafana должен быть из внешнего мира, прикрыт авторизацией (способ авторизации - на выбор). Grafana Фаза 1: список недавних торговых сигналов от модели, список недавних ордеров с информацией как каждый из них был закрыт, состояние и статистика модели, базовые метрики качества, большие лаги в очередях rabbitmq (для диагностики все ли очереди разбираются вовремя), health-статус в целом и с разбивкой по сервисам, перечень или статистика ошибок (по возможности)."
 
+## Clarifications
+
+### Session 2025-11-28
+
+- Q: How should Grafana UI authentication credentials be managed? → A: Single admin user with username/password stored in `.env` file (default: admin/admin, configurable)
+- Q: Which RabbitMQ queues should be monitored for lags? → A: All queues in RabbitMQ (including system queues like `amq.*`)
+- Q: How should Grafana access the PostgreSQL database? → A: Read-only PostgreSQL user with credentials stored in `.env` file (separate from service credentials)
+- Q: How should Grafana access RabbitMQ for queue monitoring? → A: RabbitMQ Management API (HTTP API on management plugin port) with credentials stored in `.env` file
+- Q: How should Grafana authenticate when accessing REST API endpoints (health checks, model statistics, WebSocket connection state)? → A: Use existing service API keys from `.env` file where required (e.g., `WS_GATEWAY_API_KEY` for ws-gateway endpoints that require authentication)
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - View Recent Trading Signals (Priority: P1)
@@ -68,7 +78,7 @@ Operators can monitor RabbitMQ queue lengths and message processing rates to det
 
 **Acceptance Scenarios**:
 
-1. **Given** RabbitMQ is running with active queues, **When** a user accesses the Grafana dashboard, **Then** they see queue length and message processing rates for all monitored queues
+1. **Given** RabbitMQ is running with active queues, **When** a user accesses the Grafana dashboard, **Then** they see queue length and message processing rates for all queues in RabbitMQ (including system queues)
 2. **Given** a queue is backing up (high message count, low consumption rate), **When** a user views the queue monitoring dashboard, **Then** they can identify which queue has the lag and see how severe it is
 3. **Given** queue metrics are tracked over time, **When** a user views the queue monitoring dashboard, **Then** they can see trends showing when queues started backing up
 4. **Given** multiple queues exist, **When** a user views the queue monitoring dashboard, **Then** they can see all queues in a single view to compare their health
@@ -128,15 +138,15 @@ Operators can monitor the WebSocket connection status and metrics for the connec
 - **FR-003**: System MUST display a list of recent orders (e.g., last 100 orders or last 24 hours) with execution status and closure information: order ID, signal ID, asset, side, execution price, execution quantity, execution fees, executed timestamp, closure status (filled/cancelled/rejected)
 - **FR-004**: System MUST display model state information: active model version, training status, warm-up mode status, current strategy IDs
 - **FR-005**: System MUST display basic model quality metrics: win rate, total orders count, successful orders count, total PnL (when available from execution events)
-- **FR-006**: System MUST monitor RabbitMQ queue lengths and message processing rates for all relevant queues to detect lags
+- **FR-006**: System MUST monitor RabbitMQ queue lengths and message processing rates for all queues in RabbitMQ (including system queues like `amq.*`) to detect lags
 - **FR-007**: System MUST display overall system health status (healthy/unhealthy) aggregated from all services
 - **FR-008**: System MUST display individual service health status for each monitored service (ws-gateway, model-service, order-manager, postgres, rabbitmq)
 - **FR-009**: System MUST display error statistics or error lists for services when available (e.g., error counts, recent error messages)
 - **FR-010**: System MUST display WebSocket connection metrics to Bybit exchange: connection status (connected/disconnected/connecting/reconnecting), environment (mainnet/testnet), connection duration, last heartbeat timestamp, reconnection count, last error message, and active subscriptions count
-- **FR-011**: System MUST connect to PostgreSQL database to query trading signals, orders, and execution events
-- **FR-012**: System MUST connect to REST API endpoints to retrieve health status, model statistics, and WebSocket connection state
-- **FR-013**: System MUST connect to RabbitMQ to monitor queue metrics (queue length, message rate, consumer count)
-- **FR-014**: System MUST implement authentication for Grafana UI access using basic authentication (username/password)
+- **FR-011**: System MUST connect to PostgreSQL database to query trading signals, orders, and execution events using a read-only database user. Database credentials (host, port, database name, username, password) MUST be configurable via `.env` file (separate from service database credentials)
+- **FR-012**: System MUST connect to REST API endpoints to retrieve health status, model statistics, and WebSocket connection state. Authentication MUST use existing service API keys from `.env` file where required (e.g., `WS_GATEWAY_API_KEY` for ws-gateway endpoints that require authentication)
+- **FR-013**: System MUST connect to RabbitMQ Management API (HTTP API on management plugin port) to monitor queue metrics (queue length, message rate, consumer count). RabbitMQ Management API credentials (host, port, username, password) MUST be configurable via `.env` file
+- **FR-014**: System MUST implement authentication for Grafana UI access using basic authentication (username/password) with a single admin user. Credentials (username and password) MUST be configurable via `.env` file with default values (admin/admin) for initial setup
 - **FR-015**: System MUST run Grafana in a separate Docker container managed via docker-compose.yml
 - **FR-016**: System MUST handle data source connection failures gracefully without crashing the dashboard
 - **FR-017**: System MUST update dashboard data automatically or provide manual refresh capability
@@ -148,7 +158,7 @@ Operators can monitor the WebSocket connection status and metrics for the connec
 - **Order Execution Event**: Represents an executed order with closure information, including order ID, signal ID, strategy ID, asset, side, execution price, execution quantity, execution fees, executed timestamp, and performance metrics. Source: PostgreSQL `execution_events` table
 - **Model State**: Represents current model status including active model version ID, training status (idle/training), warm-up mode status, and active strategy IDs. Source: Model service REST API or database
 - **Model Quality Metrics**: Represents performance indicators including win rate, total orders count, successful orders count, total PnL. Source: Calculated from `execution_events` table or model service REST API
-- **Queue Metrics**: Represents RabbitMQ queue health including queue name, message count (queue length), message publishing rate, message consumption rate, consumer count. Source: RabbitMQ management API
+- **Queue Metrics**: Represents RabbitMQ queue health including queue name, message count (queue length), message publishing rate, message consumption rate, consumer count. Source: RabbitMQ management API. All queues in RabbitMQ are monitored, including system queues
 - **Service Health Status**: Represents health state of a service including service name, overall status (healthy/unhealthy), component statuses (database, queue, websocket), error information. Source: Service health check REST API endpoints
 - **WebSocket Connection State**: Represents WebSocket connection to Bybit exchange including connection ID, environment (mainnet/testnet), status (connected/disconnected/connecting/reconnecting), connected timestamp, last heartbeat timestamp, reconnection count, last error message, and active subscriptions count. Source: ws-gateway service health endpoint (`/health`) or WebSocket state API
 
@@ -173,16 +183,16 @@ Operators can monitor the WebSocket connection status and metrics for the connec
 - Services (ws-gateway, model-service, order-manager) expose `/health` REST API endpoints that return health status
 - ws-gateway service `/health` endpoint returns WebSocket connection state including status, reconnection count, last heartbeat, and active subscriptions
 - Model service exposes REST API endpoints for model state and statistics (or this information can be derived from database)
-- RabbitMQ management API is accessible for queue monitoring (standard RabbitMQ management plugin)
-- Grafana can connect to PostgreSQL as a data source
-- Grafana can query REST APIs using HTTP data source or similar plugin
-- Grafana can monitor RabbitMQ queues using appropriate data source or plugin
+- RabbitMQ management API is accessible for queue monitoring (standard RabbitMQ management plugin). Grafana connects to the Management API using credentials configured via `.env` file
+- Grafana can connect to PostgreSQL as a data source using a read-only database user with credentials configured via `.env` file
+- Grafana can query REST APIs using HTTP data source or similar plugin. Authentication uses existing service API keys from `.env` file where endpoints require authentication
+- Grafana can monitor RabbitMQ queues using the RabbitMQ Management API data source or plugin with credentials configured via `.env` file
 - No major modifications to existing services are required to provide monitoring data (data is available from existing sources)
-- Basic authentication (username/password) is used for Grafana UI access, which is the standard default for monitoring dashboards
+- Basic authentication (username/password) is used for Grafana UI access with a single admin user. Credentials are configured via `.env` file (default: admin/admin), which is the standard default for monitoring dashboards
 
 ## Dependencies
 
-- PostgreSQL database must be running and accessible
+- PostgreSQL database must be running and accessible with a read-only user account for Grafana (credentials configured via `.env` file)
 - RabbitMQ must be running with management plugin enabled
 - Services (ws-gateway, model-service, order-manager) must be running and exposing health check endpoints
 - Docker and Docker Compose V2 must be available for container management
