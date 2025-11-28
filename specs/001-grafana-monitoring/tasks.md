@@ -58,10 +58,10 @@
 
 ### Implementation for User Story 1
 
-- [ ] T012 [US1] Create Trading Signals dashboard panel JSON in grafana/dashboards/trading-signals-panel.json with PostgreSQL query for recent signals from trading_signals table
-- [ ] T013 [US1] Add Trading Signals panel to main dashboard JSON file grafana/dashboards/trading-system-monitoring.json with table visualization showing signal_id, asset, side, price, confidence, timestamp, strategy_id
-- [ ] T014 [US1] Configure dashboard panel query in grafana/dashboards/trading-system-monitoring.json to use PostgreSQL data source with SQL query from data-model.md querying trading_signals table (last 100 signals, prioritizing quantity)
-- [ ] T015 [US1] Add auto-refresh configuration to Trading Signals panel in grafana/dashboards/trading-system-monitoring.json (60 seconds interval)
+- [X] T012 [US1] Create Trading Signals dashboard panel JSON in grafana/dashboards/trading-signals-panel.json with PostgreSQL query for recent signals from trading_signals table
+- [X] T013 [US1] Add Trading Signals panel to main dashboard JSON file grafana/dashboards/trading-system-monitoring.json with table visualization showing signal_id, asset, side, price, confidence, timestamp, strategy_id
+- [X] T014 [US1] Configure dashboard panel query in grafana/dashboards/trading-system-monitoring.json to use PostgreSQL data source with SQL query from data-model.md querying trading_signals table (last 100 signals, prioritizing quantity)
+- [X] T015 [US1] Add auto-refresh configuration to Trading Signals panel in grafana/dashboards/trading-system-monitoring.json (60 seconds interval)
 
 **Checkpoint**: At this point, User Story 1 should be fully functional and testable independently
 

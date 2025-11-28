@@ -8,6 +8,7 @@ apiVersion: 1
 datasources:
   # PostgreSQL Data Source for trading signals, orders, and model metrics
   - name: PostgreSQL
+    uid: PostgreSQL
     type: postgres
     access: proxy
     url: postgres:5432
