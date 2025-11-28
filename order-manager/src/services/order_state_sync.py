@@ -28,7 +28,9 @@ class OrderStateSync:
         Synchronize active orders from Bybit with database.
 
         Queries all active orders from Bybit API and compares with database,
-        updating any discrepancies.
+        updating any discrepancies. Also checks all pending/partially_filled orders
+        from database that are not in active list to detect filled/cancelled orders
+        that may have been missed during downtime.
 
         Args:
             trace_id: Optional trace ID for request tracking
@@ -57,7 +59,7 @@ class OrderStateSync:
             bybit_orders_map = {order["orderId"]: order for order in bybit_orders}
             db_orders_map = {order.order_id: order for order in db_orders}
 
-            # Find discrepancies
+            # Find discrepancies for orders that exist in both
             all_order_ids = set(bybit_orders_map.keys()) | set(db_orders_map.keys())
 
             for order_id in all_order_ids:
@@ -72,30 +74,90 @@ class OrderStateSync:
                         order_id=order_id,
                         trace_id=trace_id,
                     )
-                elif db_order and not bybit_order:
-                    # Order exists in database but not in Bybit - mark as cancelled if pending
-                    if db_order.status in ["pending", "partially_filled"]:
-                        await self._update_order_status(
-                            db_order.id,
-                            "cancelled",
-                            trace_id=trace_id,
-                        )
-                        discrepancies.append(
-                            {
-                                "order_id": order_id,
-                                "issue": "order_not_found_in_bybit",
-                                "action": "marked_cancelled",
-                            }
-                        )
-                        synced_count += 1
                 elif bybit_order and db_order:
-                    # Compare states
+                    # Compare states for active orders
                     discrepancy = await self._compare_and_sync_order(
                         bybit_order, db_order, trace_id
                     )
                     if discrepancy:
                         discrepancies.append(discrepancy)
                         synced_count += 1
+
+            # Critical: Check all pending/partially_filled orders from DB that are NOT in active Bybit list
+            # These orders may have been filled or cancelled while services were down
+            db_orders_not_in_active = [
+                db_order
+                for db_order in db_orders
+                if db_order.order_id not in bybit_orders_map
+            ]
+
+            if db_orders_not_in_active:
+                logger.info(
+                    "checking_missed_orders",
+                    count=len(db_orders_not_in_active),
+                    trace_id=trace_id,
+                    message="Checking pending orders that are not in active list - they may have been filled/cancelled during downtime"
+                )
+
+                for db_order in db_orders_not_in_active:
+                    try:
+                        # Query specific order from Bybit to get its current status
+                        # This will return the order even if it's filled/cancelled
+                        synced_order = await self.sync_order_by_id(
+                            db_order.order_id, trace_id=trace_id
+                        )
+
+                        if synced_order is None:
+                            # Order not found in Bybit - likely cancelled or expired
+                            if db_order.status in ["pending", "partially_filled"]:
+                                await self._update_order_status(
+                                    db_order.id,
+                                    "cancelled",
+                                    trace_id=trace_id,
+                                )
+                                discrepancies.append(
+                                    {
+                                        "order_id": db_order.order_id,
+                                        "issue": "order_not_found_in_bybit",
+                                        "action": "marked_cancelled",
+                                    }
+                                )
+                                synced_count += 1
+                                logger.info(
+                                    "order_marked_cancelled_not_found",
+                                    order_id=db_order.order_id,
+                                    old_status=db_order.status,
+                                    trace_id=trace_id,
+                                )
+                        elif synced_order.status != db_order.status:
+                            # Order status changed (e.g., pending -> filled)
+                            discrepancies.append(
+                                {
+                                    "order_id": db_order.order_id,
+                                    "issue": "status_changed_during_downtime",
+                                    "old_status": db_order.status,
+                                    "new_status": synced_order.status,
+                                    "action": "updated_from_bybit",
+                                }
+                            )
+                            synced_count += 1
+                            logger.info(
+                                "order_status_updated_during_sync",
+                                order_id=db_order.order_id,
+                                old_status=db_order.status,
+                                new_status=synced_order.status,
+                                trace_id=trace_id,
+                            )
+                    except Exception as e:
+                        # Log error but continue with other orders
+                        errors.append(f"Failed to sync order {db_order.order_id}: {e}")
+                        logger.error(
+                            "order_sync_by_id_failed_in_batch",
+                            order_id=db_order.order_id,
+                            error=str(e),
+                            trace_id=trace_id,
+                            exc_info=True,
+                        )
 
             logger.info(
                 "order_sync_completed",
@@ -409,6 +471,10 @@ class OrderStateSync:
         """
         Synchronize a specific order by Bybit order ID.
 
+        Tries to find order in realtime endpoint first, then in history endpoint
+        if not found. This ensures we can sync orders that were filled/cancelled
+        during downtime.
+
         Args:
             bybit_order_id: Bybit order ID
             trace_id: Optional trace ID
@@ -419,7 +485,7 @@ class OrderStateSync:
         trace_id = trace_id or get_or_create_trace_id()
 
         try:
-            # Query order from Bybit
+            # First, try to find order in realtime endpoint (active orders)
             params = {
                 "category": "linear",
                 "orderId": bybit_order_id,
@@ -430,27 +496,37 @@ class OrderStateSync:
                 params=params,
             )
 
-            if response.get("retCode") != 0:
-                error_msg = response.get("retMsg", "Unknown error")
-                if "not found" in error_msg.lower():
-                    logger.warning(
-                        "order_not_found_in_bybit",
-                        order_id=bybit_order_id,
-                        trace_id=trace_id,
-                    )
-                    return None
-                raise BybitAPIError(f"Bybit API error: {error_msg}")
+            bybit_order = None
+            if response.get("retCode") == 0:
+                orders = response.get("result", {}).get("list", [])
+                if orders:
+                    bybit_order = orders[0]
 
-            orders = response.get("result", {}).get("list", [])
-            if not orders:
+            # If not found in realtime, try history endpoint (filled/cancelled orders)
+            if not bybit_order:
+                logger.debug(
+                    "order_not_found_in_realtime_trying_history",
+                    order_id=bybit_order_id,
+                    trace_id=trace_id,
+                )
+                response = await self.bybit_client.get(
+                    "/v5/order/history",
+                    params=params,
+                )
+
+                if response.get("retCode") == 0:
+                    orders = response.get("result", {}).get("list", [])
+                    if orders:
+                        bybit_order = orders[0]
+
+            # If still not found, order doesn't exist in Bybit
+            if not bybit_order:
                 logger.warning(
                     "order_not_found_in_bybit",
                     order_id=bybit_order_id,
                     trace_id=trace_id,
                 )
                 return None
-
-            bybit_order = orders[0]
 
             # Find order in database
             pool = await DatabaseConnection.get_pool()
