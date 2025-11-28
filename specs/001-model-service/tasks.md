@@ -80,6 +80,9 @@
 - [X] T029 [US1] Add structured logging for warm-up mode operations in model-service/src/services/warmup_signal_generator.py (signal generation, rate limiting events, publishing status)
 - [X] T030 [US1] Add configuration for warm-up mode parameters in model-service/src/config/settings.py (WARMUP_MODE_ENABLED, WARMUP_SIGNAL_FREQUENCY, minimum order parameters, randomness level)
 - [X] T030a [US1] Add configuration for open orders check behavior in model-service/src/config/settings.py (SIGNAL_GENERATION_SKIP_IF_OPEN_ORDER=true/false to enable/disable skipping signal generation when open order exists, SIGNAL_GENERATION_CHECK_OPPOSITE_ORDERS_ONLY=true/false to check only opposite direction orders or all orders, default: skip if any open order exists)
+- [ ] T030b [P] [US1] Create AccountBalance database repository in model-service/src/database/repositories/account_balance_repo.py (read latest available balance for a coin from account_balances table using coin and ORDER BY received_at DESC LIMIT 1, handle missing balance data gracefully, support querying multiple coins)
+- [ ] T030c [US1] Implement balance-aware signal amount calculator in model-service/src/services/balance_calculator.py (extract base/quote currency from trading pair, determine required currency for order type buy/sell, retrieve available balance from account_balance_repo, calculate maximum affordable amount based on balance with safety margin, adapt signal amount to fit available balance if needed, return adapted amount or None if insufficient balance)
+- [ ] T030d [US1] Extend warm-up signal generator to use balance calculator in model-service/src/services/warmup_signal_generator.py (before generating signal amount, check available balance using balance_calculator, adapt signal amount to available balance if calculated amount exceeds balance, skip signal generation if balance is insufficient, log balance checks and amount adaptations with structured logging)
 
 **Checkpoint**: At this point, User Story 1 should be fully functional and testable independently. The system can generate and publish warm-up trading signals without any trained models.
 
@@ -131,6 +134,7 @@
 - [X] T051 [US3] Implement model inference service in model-service/src/services/model_inference.py (prepare features from order/position state and market data, run model prediction, generate confidence scores, MUST capture market data snapshot at inference time for inclusion in generated signals)
 - [X] T052 [US3] Implement intelligent signal generator in model-service/src/services/intelligent_signal_generator.py (use model inference to generate trading signals with confidence scores, apply quality thresholds)
 - [X] T052a [US3] Add open orders check in intelligent signal generator in model-service/src/services/intelligent_signal_generator.py (before generating signal, check if there are existing open orders with status 'pending' or 'partially_filled' for the same asset and strategy_id, skip signal generation if open order exists, log reason for skipping with structured logging including asset, strategy_id, existing_order_id, order_status)
+- [ ] T052b [US3] Extend intelligent signal generator to use balance calculator in model-service/src/services/intelligent_signal_generator.py (after model inference generates signal amount, check available balance using balance_calculator service, adapt signal amount to available balance if model-suggested amount exceeds balance, skip signal generation if balance is insufficient, log balance checks and amount adaptations with structured logging including original_model_amount and adapted_amount)
 - [X] T053 [US3] Implement mode transition service in model-service/src/services/mode_transition.py (automatically transition from warm-up mode to model-based generation when model quality reaches configured threshold)
 - [X] T054 [US3] Integrate intelligent signal generation into main application in model-service/src/main.py (replace warm-up mode with model-based generation when active model is available)
 - [X] T055 [US3] Add structured logging for model-based signal generation in model-service/src/services/intelligent_signal_generator.py (signal generation, model inference results, confidence scores, mode transitions)
@@ -253,6 +257,13 @@
 - **T091** (metrics): Depends on T052a (open orders check exists) to track skipped signals
 - **T092** (documentation): Can be done independently, but should complete after T030a and T052a to document implemented behavior
 
+### Task Dependencies for Balance-Aware Signal Generation (T030b, T030c, T030d, T052b)
+
+- **T030b** (account balance repository): Can be done independently, must complete before T030c (balance calculator needs repository to read balances from database)
+- **T030c** (balance calculator): Depends on T030b (account_balance_repo exists), must complete before T030d and T052b (signal generators need balance calculator to adapt amounts)
+- **T030d** (warm-up balance integration): Depends on T030c (balance_calculator exists) and T023 (warmup_signal_generator exists). Extends T023 to add balance-aware signal amount calculation
+- **T052b** (intelligent balance integration): Depends on T030c (balance_calculator exists) and T052 (intelligent_signal_generator exists). Extends T052 to add balance-aware signal amount calculation
+
 ---
 
 ## Parallel Example: User Story 1
@@ -359,20 +370,20 @@ With multiple developers:
 
 ## Task Summary
 
-- **Total Tasks**: 98 tasks
+- **Total Tasks**: 102 tasks
 - **Phase 1 (Setup)**: 9 tasks
 - **Phase 2 (Foundational)**: 12 tasks
-- **Phase 3 (User Story 1 - MVP)**: 12 tasks (added T030a)
+- **Phase 3 (User Story 1 - MVP)**: 15 tasks (added T030a, T030b, T030c, T030d)
 - **Phase 4 (User Story 2)**: 19 tasks (added T037a, T039a)
-- **Phase 5 (User Story 3)**: 10 tasks (added T052a)
+- **Phase 5 (User Story 3)**: 11 tasks (added T052a, T052b)
 - **Phase 6 (User Story 4)**: 17 tasks
 - **Phase 7 (Polish)**: 19 tasks (added T091, T092)
 
 ### Task Count per User Story
 
-- **User Story 1 (P1 - MVP)**: 11 tasks
+- **User Story 1 (P1 - MVP)**: 14 tasks (added T030b, T030c, T030d)
 - **User Story 2 (P2)**: 17 tasks
-- **User Story 3 (P3)**: 9 tasks
+- **User Story 3 (P3)**: 10 tasks (added T052b)
 - **User Story 4 (P4)**: 17 tasks
 
 ### Parallel Opportunities Identified

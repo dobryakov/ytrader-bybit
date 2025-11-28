@@ -100,6 +100,10 @@ class Settings(BaseSettings):
         default=True, alias="ORDERMANAGER_ENABLE_BALANCE_CHECK",
         description="Enable balance check before order creation. If False, balance validation is skipped (Bybit API will reject orders with insufficient balance)."
     )
+    order_manager_enable_order_size_reduction: bool = Field(
+        default=True, alias="ORDERMANAGER_ENABLE_ORDER_SIZE_REDUCTION",
+        description="Enable automatic order size reduction when insufficient balance error (110007) occurs. If True, system will try to reduce order size and retry."
+    )
 
     @field_validator("order_manager_log_level")
     @classmethod
