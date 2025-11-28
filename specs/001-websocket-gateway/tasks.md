@@ -224,6 +224,7 @@ description: "Task list for WebSocket Gateway feature implementation"
   - T074d: Add balance persistence latency tracking (SC-005) in ws-gateway/src/services/database/balance_service.py
   - T074e: Add REST API response time tracking (SC-006) in ws-gateway/src/api/middleware/metrics.py
   - T074f: Add resubscription timing tracking (SC-007) in ws-gateway/src/services/websocket/reconnection.py
+- [ ] T074g [P] [Grafana] Extend health check endpoint to include full WebSocket state for Grafana monitoring: Add fields to HealthResponse in ws-gateway/src/api/health.py (environment: mainnet/testnet from websocket_connection.state.environment, connected_at: timestamp from websocket_connection.state.connected_at for duration calculation, last_heartbeat_at: timestamp from websocket_connection.state.last_heartbeat_at, reconnect_count: integer from websocket_connection.state.reconnect_count, last_error: string from websocket_connection.state.last_error). Required for Grafana dashboard FR-010 compliance.
 - [X] T075 [P] Documentation updates in ws-gateway/README.md
 
 ---

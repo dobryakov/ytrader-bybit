@@ -60,7 +60,7 @@
 
 - [ ] T012 [US1] Create Trading Signals dashboard panel JSON in grafana/dashboards/trading-signals-panel.json with PostgreSQL query for recent signals from trading_signals table
 - [ ] T013 [US1] Add Trading Signals panel to main dashboard JSON file grafana/dashboards/trading-system-monitoring.json with table visualization showing signal_id, asset, side, price, confidence, timestamp, strategy_id
-- [ ] T014 [US1] Configure dashboard panel query in grafana/dashboards/trading-system-monitoring.json to use PostgreSQL data source with SQL query from data-model.md querying trading_signals table (last 100 signals or last 24 hours)
+- [ ] T014 [US1] Configure dashboard panel query in grafana/dashboards/trading-system-monitoring.json to use PostgreSQL data source with SQL query from data-model.md querying trading_signals table (last 100 signals, prioritizing quantity)
 - [ ] T015 [US1] Add auto-refresh configuration to Trading Signals panel in grafana/dashboards/trading-system-monitoring.json (60 seconds interval)
 
 **Checkpoint**: At this point, User Story 1 should be fully functional and testable independently
@@ -77,7 +77,7 @@
 
 - [ ] T016 [P] [US2] Create Order Execution dashboard panel JSON in grafana/dashboards/order-execution-panel.json with PostgreSQL query joining execution_events and orders tables
 - [ ] T017 [US2] Add Order Execution panel to main dashboard JSON file grafana/dashboards/trading-system-monitoring.json with table visualization showing order_id, signal_id, asset, side, execution_price, execution_quantity, execution_fees, executed_at, closure_status
-- [ ] T018 [US2] Configure dashboard panel query in grafana/dashboards/trading-system-monitoring.json to use PostgreSQL data source with SQL query from data-model.md (last 100 orders or last 24 hours)
+- [ ] T018 [US2] Configure dashboard panel query in grafana/dashboards/trading-system-monitoring.json to use PostgreSQL data source with SQL query from data-model.md (last 100 orders, prioritizing quantity)
 - [ ] T019 [US2] Add auto-refresh configuration to Order Execution panel in grafana/dashboards/trading-system-monitoring.json (60 seconds interval)
 
 **Checkpoint**: At this point, User Stories 1 AND 2 should both work independently
@@ -169,7 +169,7 @@
 
 - [ ] T043 [P] [US7] Create Event History dashboard panel JSON in grafana/dashboards/event-history-panel.json with PostgreSQL query aggregating events from multiple tables (execution_events, orders, model_versions, subscriptions)
 - [ ] T044 [US7] Add Event History panel to main dashboard JSON file grafana/dashboards/trading-system-monitoring.json with table visualization showing event_type, event_timestamp, event_id, related_entity_ids, event_details, service_name
-- [ ] T045 [US7] Configure dashboard panel query in grafana/dashboards/trading-system-monitoring.json to use PostgreSQL data source with unified SQL query from data-model.md (UNION ALL of event types, last 200 events or last 24 hours)
+- [ ] T045 [US7] Configure dashboard panel query in grafana/dashboards/trading-system-monitoring.json to use PostgreSQL data source with unified SQL query from data-model.md (UNION ALL of event types, last 200 events, prioritizing quantity)
 - [ ] T046 [US7] Add event filtering capabilities to Event History panel: filter by event_type (signal, order, model training, subscription, connection) and by service_name (model-service, order-manager, ws-gateway)
 - [ ] T047 [US7] Add auto-refresh configuration to Event History panel in grafana/dashboards/trading-system-monitoring.json (60 seconds interval)
 - [ ] T048 [US7] Add chronological sorting (event_timestamp DESC) to Event History panel query in grafana/dashboards/trading-system-monitoring.json

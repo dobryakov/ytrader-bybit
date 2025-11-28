@@ -30,13 +30,13 @@ Grafana connects to the shared PostgreSQL database using a read-only user accoun
 **Recent Trading Signals** (via trading_signals table):
 - Query trading_signals table directly (model-service persists all signals to database)
 - Fields: signal_id, asset, side, price, confidence, timestamp, strategy_id, model_version, is_warmup, market_data_snapshot
-- Limit: Last 100 records or last 24 hours
+- Limit: Last 100 records (prioritizes quantity over time range)
 - Uses indexed timestamp column for efficient queries
 
 **Recent Orders**:
 - Query orders table with execution_events for closure information
 - Fields: order_id, signal_id, asset, side, execution_price, execution_quantity, execution_fees, executed_at, status
-- Limit: Last 100 records or last 24 hours
+- Limit: Last 100 records (prioritizes quantity over time range)
 
 **Model State**:
 - Query model_versions for active models (is_active=true)
@@ -161,7 +161,7 @@ Grafana queries service health endpoints and statistics APIs via HTTP data sourc
 - `is_warmup` (BOOLEAN) - Whether signal was generated during warm-up mode
 - `market_data_snapshot` (JSONB) - Market data at time of signal generation
 
-**Query**:
+**Query** (prioritizes quantity: last 100 signals):
 ```sql
 SELECT 
     signal_id,
@@ -175,7 +175,6 @@ SELECT
     is_warmup,
     market_data_snapshot
 FROM trading_signals
-WHERE timestamp >= NOW() - INTERVAL '24 hours'
 ORDER BY timestamp DESC
 LIMIT 100;
 ```
@@ -197,7 +196,7 @@ LIMIT 100;
 - `executed_at` (TIMESTAMP) - Execution timestamp
 - `closure_status` (VARCHAR) - Status: filled, cancelled, rejected (from orders.status)
 
-**Query**:
+**Query** (prioritizes quantity: last 100 orders):
 ```sql
 SELECT 
     e.id,
@@ -212,7 +211,6 @@ SELECT
     o.status as closure_status
 FROM execution_events e
 LEFT JOIN orders o ON e.signal_id = o.signal_id
-WHERE e.executed_at >= NOW() - INTERVAL '24 hours'
 ORDER BY e.executed_at DESC
 LIMIT 100;
 ```
@@ -256,7 +254,7 @@ ORDER BY trained_at DESC;
 - `win_rate` (DECIMAL) - Percentage of successful orders (calculated)
 - `total_orders_count` (INTEGER) - Total orders executed
 - `successful_orders_count` (INTEGER) - Orders with positive PnL
-- `total_pnl` (DECIMAL) - Total profit and loss (calculated from execution_events.performance)
+- `total_pnl` (DECIMAL) - Total profit and loss (calculated from execution_events.performance). Available when `execution_events.performance` JSONB field contains `realized_pnl` key with a numeric value. NULL or excluded if field is missing or invalid.
 
 **Queries**:
 
@@ -376,7 +374,6 @@ SELECT
     jsonb_build_object('asset', asset, 'side', side, 'price', price, 'strategy_id', strategy_id, 'confidence', confidence, 'model_version', model_version, 'is_warmup', is_warmup) as event_details,
     'model-service' as service_name
 FROM trading_signals
-WHERE timestamp >= NOW() - INTERVAL '24 hours'
 
 UNION ALL
 
@@ -393,14 +390,13 @@ SELECT
     jsonb_build_object('asset', asset, 'side', side, 'status', status) as event_details,
     'order-manager' as service_name
 FROM orders
-WHERE created_at >= NOW() - INTERVAL '24 hours'
 
 UNION ALL
 
 -- Model training events (from model_versions)
 SELECT 
     CASE 
-        WHEN is_active = true AND trained_at >= NOW() - INTERVAL '24 hours' THEN 'model_training_completed'
+        WHEN is_active = true THEN 'model_training_completed'
         ELSE NULL
     END as event_type,
     trained_at as event_timestamp,
@@ -409,7 +405,7 @@ SELECT
     jsonb_build_object('strategy_id', strategy_id, 'model_type', model_type) as event_details,
     'model-service' as service_name
 FROM model_versions
-WHERE trained_at >= NOW() - INTERVAL '24 hours' AND is_active = true
+WHERE is_active = true AND trained_at IS NOT NULL
 
 UNION ALL
 
@@ -425,7 +421,6 @@ SELECT
     jsonb_build_object('channel_type', channel_type, 'symbol', symbol, 'requesting_service', requesting_service) as event_details,
     'ws-gateway' as service_name
 FROM subscriptions
-WHERE created_at >= NOW() - INTERVAL '24 hours' OR updated_at >= NOW() - INTERVAL '24 hours'
 
 ORDER BY event_timestamp DESC
 LIMIT 200;
