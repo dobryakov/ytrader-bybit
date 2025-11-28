@@ -1269,7 +1269,9 @@ class OrderExecutor:
         
         # Try iterative reduction with multiple attempts
         max_reduction_attempts = 3
-        reduction_factors = [Decimal("0.8"), Decimal("0.6"), Decimal("0.4")]  # 80%, 60%, 40% of max_quantity
+        reduction_factors = [Decimal("0.7"), Decimal("0.5"), Decimal("0.3")]  # 70%, 50%, 30% of original quantity
+        
+        previous_reduced_quantity = None
         
         for attempt in range(max_reduction_attempts):
             # Calculate reduced quantity for this attempt
@@ -1277,9 +1279,19 @@ class OrderExecutor:
                 # First attempt: use max_quantity or 95% of original (whichever is smaller)
                 reduced_quantity = min(max_quantity, original_quantity * Decimal("0.95"))
             else:
-                # Subsequent attempts: reduce based on factor
+                # Subsequent attempts: reduce from original using reduction factor
+                # Then ensure it's within max_quantity limit
                 reduction_factor = reduction_factors[min(attempt - 1, len(reduction_factors) - 1)]
-                reduced_quantity = max_quantity * reduction_factor
+                # Calculate reduced quantity as percentage of original
+                reduced_quantity = original_quantity * reduction_factor
+                # But don't exceed what we can afford (max_quantity)
+                reduced_quantity = min(reduced_quantity, max_quantity)
+                # Also ensure we're reducing from previous attempt (not increasing)
+                if previous_reduced_quantity is not None:
+                    reduced_quantity = min(reduced_quantity, previous_reduced_quantity)
+            
+            # Store for next iteration
+            previous_reduced_quantity = reduced_quantity
             
             # Ensure reduced quantity is at least minimum order quantity
             if reduced_quantity < min_order_qty:
