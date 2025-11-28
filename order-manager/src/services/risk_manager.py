@@ -188,43 +188,77 @@ class RiskManager:
                                 usdt_balance = Decimal("0")
                         break
 
-            # Calculate required balance
+            # Calculate required balance and check against appropriate currency
             if signal.signal_type.lower() == "buy":
+                # Buy orders need USDT (quote currency)
                 required_balance = order_quantity * order_price
+                available_balance = usdt_balance
+                currency = "USDT"
+                
+                if required_balance > available_balance:
+                    shortfall = required_balance - available_balance
+                    shortfall_percentage = (shortfall / required_balance) * 100 if required_balance > 0 else 0
+                    error_msg = (
+                        f"Insufficient balance: required={required_balance} {currency}, "
+                        f"available={available_balance} {currency}, shortfall={shortfall} {currency} ({shortfall_percentage:.2f}%)"
+                    )
+                    logger.error(
+                        "balance_check_failed",
+                        signal_id=str(signal.signal_id),
+                        asset=signal.asset,
+                        signal_type=signal.signal_type,
+                        required=float(required_balance),
+                        available=float(available_balance),
+                        shortfall=float(shortfall),
+                        shortfall_percentage=float(shortfall_percentage),
+                        order_quantity=float(order_quantity),
+                        order_price=float(order_price),
+                        currency=currency,
+                        error_type="RiskLimitError",
+                        trace_id=trace_id,
+                    )
+                    raise RiskLimitError(error_msg)
             else:
-                # For sell orders, check if we have the asset
-                # This is a simplified check - in reality, we'd check base currency balance
-                required_balance = Decimal("0")
-
-            # Check if balance is sufficient
-            if signal.signal_type.lower() == "buy" and required_balance > usdt_balance:
-                shortfall = required_balance - usdt_balance
-                shortfall_percentage = (shortfall / required_balance) * 100 if required_balance > 0 else 0
-                error_msg = (
-                    f"Insufficient balance: required={required_balance} USDT, "
-                    f"available={usdt_balance} USDT, shortfall={shortfall} USDT ({shortfall_percentage:.2f}%)"
-                )
-                logger.error(
-                    "balance_check_failed",
-                    signal_id=str(signal.signal_id),
-                    asset=signal.asset,
-                    signal_type=signal.signal_type,
-                    required=float(required_balance),
-                    available=float(usdt_balance),
-                    shortfall=float(shortfall),
-                    shortfall_percentage=float(shortfall_percentage),
-                    order_quantity=float(order_quantity),
-                    order_price=float(order_price),
-                    error_type="RiskLimitError",
-                    trace_id=trace_id,
-                )
-                raise RiskLimitError(error_msg)
+                # Sell orders need base currency (e.g., BTC)
+                # Extract base currency from trading pair (e.g., BTCUSDT -> BTC)
+                base_currency = self._extract_base_currency(signal.asset)
+                required_balance = order_quantity  # For sell, required balance is quantity in base currency
+                
+                # Get base currency balance from account
+                base_currency_balance = self._get_coin_balance(account, base_currency)
+                available_balance = base_currency_balance
+                currency = base_currency
+                
+                if required_balance > available_balance:
+                    shortfall = required_balance - available_balance
+                    shortfall_percentage = (shortfall / required_balance) * 100 if required_balance > 0 else 0
+                    error_msg = (
+                        f"Insufficient balance: required={required_balance} {currency}, "
+                        f"available={available_balance} {currency}, shortfall={shortfall} {currency} ({shortfall_percentage:.2f}%)"
+                    )
+                    logger.error(
+                        "balance_check_failed",
+                        signal_id=str(signal.signal_id),
+                        asset=signal.asset,
+                        signal_type=signal.signal_type,
+                        required=float(required_balance),
+                        available=float(available_balance),
+                        shortfall=float(shortfall),
+                        shortfall_percentage=float(shortfall_percentage),
+                        order_quantity=float(order_quantity),
+                        order_price=float(order_price),
+                        currency=currency,
+                        error_type="RiskLimitError",
+                        trace_id=trace_id,
+                    )
+                    raise RiskLimitError(error_msg)
 
             logger.info(
                 "balance_check_passed",
                 signal_id=str(signal.signal_id),
-                required=float(required_balance) if signal.signal_type.lower() == "buy" else 0,
-                available=float(usdt_balance),
+                required=float(required_balance),
+                available=float(available_balance),
+                currency=currency,
                 trace_id=trace_id,
             )
 
@@ -235,6 +269,71 @@ class RiskManager:
         except Exception as e:
             logger.error("balance_check_error", signal_id=str(signal.signal_id), error=str(e), trace_id=trace_id)
             raise OrderExecutionError(f"Balance check failed: {e}") from e
+
+    def _extract_base_currency(self, trading_pair: str) -> str:
+        """Extract base currency from trading pair symbol.
+        
+        Examples:
+            BTCUSDT -> BTC
+            ETHUSDT -> ETH
+            BTCUSDC -> BTC
+            ADAUSDT -> ADA
+        
+        Args:
+            trading_pair: Trading pair symbol (e.g., 'BTCUSDT')
+            
+        Returns:
+            Base currency symbol (e.g., 'BTC')
+        """
+        # Common quote currencies (ordered by length to match longer ones first)
+        quote_currencies = ['USDT', 'USDC', 'BUSD', 'DAI', 'TUSD', 'USDD', 'EUR', 'GBP', 'JPY']
+        
+        trading_pair_upper = trading_pair.upper()
+        
+        # Try to match known quote currencies
+        for quote in quote_currencies:
+            if trading_pair_upper.endswith(quote):
+                base = trading_pair_upper[:-len(quote)]
+                return base
+        
+        # Fallback: assume last 4 characters are quote currency
+        if len(trading_pair) >= 8:
+            return trading_pair_upper[:-4]
+        
+        # Last resort: assume last 3 characters are quote currency
+        if len(trading_pair) >= 6:
+            return trading_pair_upper[:-3]
+        
+        # If pair is too short, return as-is (shouldn't happen for valid pairs)
+        return trading_pair_upper
+
+    def _get_coin_balance(self, account: dict, coin: str) -> Decimal:
+        """Get available balance for a specific coin from account data.
+        
+        Args:
+            account: Account data from Bybit API response
+            coin: Coin symbol (e.g., 'BTC', 'USDT')
+            
+        Returns:
+            Available balance as Decimal, or Decimal('0') if not found
+        """
+        coins = account.get("coin", [])
+        
+        for coin_data in coins:
+            if coin_data.get("coin") == coin:
+                # Try availableToWithdraw first, then walletBalance
+                available_value = coin_data.get("availableToWithdraw", "")
+                if not available_value or available_value == "":
+                    available_value = coin_data.get("walletBalance", "0")
+                
+                if available_value and available_value != "":
+                    try:
+                        return Decimal(str(available_value))
+                    except (ValueError, TypeError):
+                        return Decimal("0")
+                break
+        
+        return Decimal("0")
 
     def check_order_size(self, signal: TradingSignal, order_quantity: Decimal, order_price: Decimal) -> bool:
         """Check if order size exceeds maximum order size limit.

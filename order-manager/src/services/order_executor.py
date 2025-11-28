@@ -1128,8 +1128,52 @@ class OrderExecutor:
         if reduced_quantity < min_quantity:
             reduced_quantity = min_quantity
         
-        # Round to reasonable precision (6 decimal places for most cryptocurrencies)
-        reduced_quantity = reduced_quantity.quantize(Decimal("0.000001"), rounding="ROUND_DOWN")
+        # Round to valid precision using symbol info (tick_size and lot_size)
+        # Import QuantityCalculator to get symbol info and apply proper rounding
+        from ..services.quantity_calculator import QuantityCalculator
+        quantity_calculator = QuantityCalculator()
+        
+        try:
+            # Get symbol info to apply proper rounding
+            symbol_info = await quantity_calculator._get_symbol_info(asset, trace_id)
+            # Apply precision rounding using QuantityCalculator's method
+            reduced_quantity = quantity_calculator._apply_precision(reduced_quantity, symbol_info, trace_id)
+            
+            # Validate minimum quantity after rounding
+            min_order_qty = Decimal(str(symbol_info.get("min_order_qty", "0")))
+            if reduced_quantity < min_order_qty:
+                logger.warning(
+                    "order_reduction_below_min_after_rounding",
+                    signal_id=str(signal_id),
+                    asset=asset,
+                    reduced_quantity=float(reduced_quantity),
+                    min_order_qty=float(min_order_qty),
+                    trace_id=trace_id,
+                )
+                # If reduced quantity is below minimum, try using minimum quantity if it's within balance
+                if min_order_qty <= max_quantity:
+                    reduced_quantity = min_order_qty
+                else:
+                    # Cannot create order - reduced quantity below minimum and minimum exceeds balance
+                    logger.info(
+                        "order_reduction_impossible_below_min",
+                        signal_id=str(signal_id),
+                        asset=asset,
+                        min_order_qty=float(min_order_qty),
+                        max_quantity=float(max_quantity),
+                        trace_id=trace_id,
+                    )
+                    return None
+        except Exception as e:
+            logger.warning(
+                "order_reduction_symbol_info_error",
+                signal_id=str(signal_id),
+                asset=asset,
+                error=str(e),
+                trace_id=trace_id,
+            )
+            # Fallback to simple rounding if symbol info fetch fails
+            reduced_quantity = reduced_quantity.quantize(Decimal("0.000001"), rounding="ROUND_DOWN")
         
         logger.info(
             "order_reduction_calculated",
