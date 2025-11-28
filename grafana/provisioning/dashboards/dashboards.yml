@@ -1,0 +1,18 @@
+# Grafana Dashboard Provisioning Configuration
+# This file defines dashboards that will be automatically loaded when Grafana starts
+# Location: grafana/provisioning/dashboards/dashboards.yml
+
+apiVersion: 1
+
+providers:
+  - name: 'Trading System Monitoring'
+    orgId: 1
+    folder: ''
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 10
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: true
+

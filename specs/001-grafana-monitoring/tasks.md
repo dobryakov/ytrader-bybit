@@ -25,9 +25,9 @@
 
 **Purpose**: Project initialization and basic structure
 
-- [ ] T001 Create Grafana directory structure: grafana/provisioning/datasources/, grafana/provisioning/dashboards/, grafana/dashboards/
-- [ ] T002 [P] Add Grafana environment variables to env.example: GRAFANA_PORT, GRAFANA_ADMIN_USER, GRAFANA_ADMIN_PASSWORD, GRAFANA_POSTGRES_USER, GRAFANA_POSTGRES_PASSWORD
-- [ ] T003 [P] Create Dockerfile for Grafana service in grafana/Dockerfile (or use official image in docker-compose.yml)
+- [X] T001 Create Grafana directory structure: grafana/provisioning/datasources/, grafana/provisioning/dashboards/, grafana/dashboards/
+- [X] T002 [P] Add Grafana environment variables to env.example: GRAFANA_PORT, GRAFANA_ADMIN_USER, GRAFANA_ADMIN_PASSWORD, GRAFANA_POSTGRES_USER, GRAFANA_POSTGRES_PASSWORD
+- [X] T003 [P] Create Dockerfile for Grafana service in grafana/Dockerfile (or use official image in docker-compose.yml)
 
 ---
 
@@ -37,14 +37,14 @@
 
 **⚠️ CRITICAL**: No user story work can begin until this phase is complete
 
-- [ ] T004 Create read-only PostgreSQL user for Grafana monitoring: Create migration script in ws-gateway/migrations/ (following constitution: all PostgreSQL migrations must be in ws-gateway service). Migration should create user `grafana_monitor` with read-only permissions (SELECT on trading_signals, orders, execution_events, model_versions, model_quality_metrics, subscriptions tables)
-- [ ] T005 Add Grafana service to docker-compose.yml with port mapping, environment variables, volumes, and health check
-- [ ] T006 [P] Create PostgreSQL data source provisioning file in grafana/provisioning/datasources/datasources.yml with connection configuration
-- [ ] T007 [P] Create RabbitMQ HTTP API data source provisioning entry in grafana/provisioning/datasources/datasources.yml for queue monitoring
-- [ ] T008 [P] Create service health HTTP data source provisioning entries in grafana/provisioning/datasources/datasources.yml for ws-gateway, model-service, order-manager
-- [ ] T009 Create dashboard provisioning configuration file in grafana/provisioning/dashboards/dashboards.yml
-- [ ] T010 [P] Create integration test file tests/integration/test_grafana_container.py to verify Grafana container starts and health endpoint responds
-- [ ] T011 [P] Create integration test file tests/integration/test_grafana_datasources.py to verify data source connectivity (PostgreSQL, RabbitMQ, service endpoints)
+- [X] T004 Create read-only PostgreSQL user for Grafana monitoring: Create migration script in ws-gateway/migrations/ (following constitution: all PostgreSQL migrations must be in ws-gateway service). Migration should create user `grafana_monitor` with read-only permissions (SELECT on trading_signals, orders, execution_events, model_versions, model_quality_metrics, subscriptions tables)
+- [X] T005 Add Grafana service to docker-compose.yml with port mapping, environment variables, volumes, and health check
+- [X] T006 [P] Create PostgreSQL data source provisioning file in grafana/provisioning/datasources/datasources.yml with connection configuration
+- [X] T007 [P] Create RabbitMQ HTTP API data source provisioning entry in grafana/provisioning/datasources/datasources.yml for queue monitoring
+- [X] T008 [P] Create service health HTTP data source provisioning entries in grafana/provisioning/datasources/datasources.yml for ws-gateway, model-service, order-manager
+- [X] T009 Create dashboard provisioning configuration file in grafana/provisioning/dashboards/dashboards.yml
+- [X] T010 [P] Create integration test file tests/integration/test_grafana_container.py to verify Grafana container starts and health endpoint responds
+- [X] T011 [P] Create integration test file tests/integration/test_grafana_datasources.py to verify data source connectivity (PostgreSQL, RabbitMQ, service endpoints)
 
 **Checkpoint**: Foundation ready - user story implementation can now begin in parallel
 

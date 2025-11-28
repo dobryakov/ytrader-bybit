@@ -1,0 +1,77 @@
+# Grafana Data Source Provisioning Configuration
+# This file defines data sources that will be automatically configured when Grafana starts
+# Location: grafana/provisioning/datasources/datasources.yml
+# Note: Environment variables are substituted by entrypoint script before Grafana starts
+
+apiVersion: 1
+
+datasources:
+  # PostgreSQL Data Source for trading signals, orders, and model metrics
+  - name: PostgreSQL
+    type: postgres
+    access: proxy
+    url: postgres:5432
+    database: ${POSTGRES_DB}
+    user: ${GRAFANA_POSTGRES_USER}
+    secureJsonData:
+      password: ${GRAFANA_POSTGRES_PASSWORD}
+    jsonData:
+      sslmode: disable
+      maxOpenConns: 100
+      maxIdleConns: 100
+      connMaxLifetime: 14400
+      postgresVersion: 1500
+      timescaledb: false
+    isDefault: true
+
+  # HTTP Data Source for RabbitMQ Management API (JSON format)
+  # Note: Using Infinity data source plugin for HTTP/JSON endpoints
+  - name: RabbitMQ HTTP API
+    type: infinity
+    access: proxy
+    url: http://rabbitmq:15672
+    basicAuth: true
+    basicAuthUser: ${RABBITMQ_USER}
+    secureJsonData:
+      basicAuthPassword: ${RABBITMQ_PASSWORD}
+    jsonData:
+      auth_type: basic
+      allowed_hosts:
+        - rabbitmq:15672
+    isDefault: false
+
+  # HTTP Data Source for ws-gateway Service Health
+  - name: ws-gateway Health
+    type: infinity
+    access: proxy
+    url: http://ws-gateway:4400
+    basicAuth: false
+    jsonData:
+      auth_type: none
+      allowed_hosts:
+        - ws-gateway:4400
+    isDefault: false
+
+  # HTTP Data Source for model-service Service Health
+  - name: model-service Health
+    type: infinity
+    access: proxy
+    url: http://model-service:4500
+    basicAuth: false
+    jsonData:
+      auth_type: none
+      allowed_hosts:
+        - model-service:4500
+    isDefault: false
+
+  # HTTP Data Source for order-manager Service Health
+  - name: order-manager Health
+    type: infinity
+    access: proxy
+    url: http://order-manager:4600
+    basicAuth: false
+    jsonData:
+      auth_type: none
+      allowed_hosts:
+        - order-manager:4600
+    isDefault: false
