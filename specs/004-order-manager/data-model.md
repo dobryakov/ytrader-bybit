@@ -45,7 +45,7 @@ Represents a trading order placed on Bybit exchange. Orders are created from tra
 - `idx_orders_asset_status` on `(asset, status)` (for active order queries per asset)
 
 **Validation Rules**:
-- `side` must be 'Buy' or 'Sell'
+- `side` must be 'Buy' or 'SELL' (see **Data Format Conventions** section below)
 - `order_type` must be 'Market' or 'Limit'
 - `status` must be one of: 'pending', 'partially_filled', 'filled', 'cancelled', 'rejected', 'dry_run'
 - `price` must be NULL for market orders, NOT NULL for limit orders
@@ -307,4 +307,69 @@ Migrations should be:
 - Reversible whenever possible
 - Include indexes and constraints
 - Follow existing migration patterns in ws-gateway service
+
+---
+
+## Data Format Conventions
+
+### Order Side Format
+
+**CRITICAL**: The `side` field has different formats depending on context. This is important to prevent API errors and database constraint violations.
+
+#### Bybit API Format
+- **Format**: `"Buy"` or `"Sell"` (capitalize first letter only)
+- **Used in**: All API requests to Bybit (`/v5/order/create`, etc.)
+- **Examples**: 
+  ```python
+  params = {"side": "Buy"}  # ✅ Correct for Bybit API
+  params = {"side": "Sell"}  # ✅ Correct for Bybit API
+  params = {"side": "SELL"}  # ❌ Wrong - will cause "Side invalid (code: 10001)"
+  ```
+
+#### Database Format
+- **Format**: `"Buy"` or `"SELL"` (uppercase for SELL)
+- **Used in**: All database inserts/updates in the `orders` table
+- **Database constraint**: `CHECK (side IN ('Buy', 'SELL'))`
+- **Examples**:
+  ```python
+  side_db = "Buy"   # ✅ Correct for database
+  side_db = "SELL"  # ✅ Correct for database
+  side_db = "Sell"  # ❌ Wrong - violates constraint "chk_side"
+  ```
+
+#### Implementation Pattern
+
+When creating orders, use different variables for API and database:
+
+```python
+# Side for Bybit API: "Buy" or "Sell" (capitalize first letter only)
+side_api = "Buy" if signal.signal_type.lower() == "buy" else "Sell"
+
+# Side for database: "Buy" or "SELL" (uppercase for SELL per constraint)
+side_db = "Buy" if signal.signal_type.lower() == "buy" else "SELL"
+
+# Use side_api for Bybit API requests
+params = {"side": side_api, ...}
+
+# Use side_db when saving to database
+query = "INSERT INTO orders (side, ...) VALUES ($1, ...)"
+await pool.execute(query, side_db, ...)
+```
+
+**Why this matters**:
+- Bybit API expects `"Sell"` (capitalize first letter), not `"SELL"` (all uppercase)
+- Database constraint requires `"SELL"` (all uppercase), not `"Sell"` (capitalize first letter)
+- Using wrong format causes:
+  - Bybit API: `"Side invalid (code: 10001)"` error
+  - Database: `CHECK constraint "chk_side" violation` error
+
+**File locations where this is used**:
+- `order-manager/src/services/order_executor.py`: `_prepare_bybit_order_params()` method
+- `order-manager/src/services/order_executor.py`: `_save_order_to_database()` method
+- `order-manager/src/services/order_executor.py`: `_save_rejected_order()` method
+- `order-manager/src/services/signal_processor.py`: `_save_rejected_order()` method
+
+**References**:
+- Bybit API Documentation: `/v5/order/create` endpoint requires `side` as `"Buy"` or `"Sell"`
+- Database migration: See constraint definition in orders table migration
 

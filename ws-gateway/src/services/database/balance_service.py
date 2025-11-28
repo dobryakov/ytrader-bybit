@@ -286,24 +286,9 @@ class BalanceService:
         total_order_im = account_data.get("totalOrderIM", 0) or account_data.get("totalOrderIMByMp", 0) or 0
         
         # Determine base currency for margin
-        # For unified accounts, find the coin with highest usdValue and marginCollateral=true
-        base_currency = "USDT"  # Default
-        if account_type == "UNIFIED":
-            coins = account_data.get("coin", [])
-            if isinstance(coins, list) and len(coins) > 0:
-                max_usd_value = Decimal(0)
-                for coin_data in coins:
-                    if isinstance(coin_data, dict):
-                        margin_collateral = coin_data.get("marginCollateral", False)
-                        usd_value_str = coin_data.get("usdValue", "0")
-                        if margin_collateral and usd_value_str:
-                            try:
-                                usd_value = Decimal(str(usd_value_str))
-                                if usd_value > max_usd_value:
-                                    max_usd_value = usd_value
-                                    base_currency = str(coin_data.get("coin", "USDT"))
-                            except (InvalidOperation, ValueError, TypeError):
-                                pass
+        # For unified accounts, always use USDT as base currency for margin calculations
+        # This ensures consistent margin calculations regardless of which coin has highest value
+        base_currency = "USDT"  # Always USDT for unified accounts margin
         
         # Parse decimal values
         try:

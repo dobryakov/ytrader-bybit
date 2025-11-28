@@ -81,3 +81,64 @@
 
 - Рассмотри возможность написать этот микросервис как Ruby on Rails API-only application.
 - Если данному микросервису нужен cron, исполни его внутри контейнера или в отдельном контейнере, но не относи на хост-машину.
+
+## Форматы данных и конвенции
+
+### Формат поля `side` (сторона ордера)
+
+**ВАЖНО**: Поле `side` имеет разные форматы в зависимости от контекста. Это критично для предотвращения ошибок API и нарушений ограничений базы данных.
+
+#### Формат для Bybit API
+- **Формат**: `"Buy"` или `"Sell"` (только первая буква заглавная)
+- **Используется в**: Всех запросах к Bybit API (`/v5/order/create` и т.д.)
+- **Примеры**:
+  ```python
+  params = {"side": "Buy"}   # ✅ Правильно для Bybit API
+  params = {"side": "Sell"}  # ✅ Правильно для Bybit API
+  params = {"side": "SELL"}  # ❌ Неправильно - вызовет ошибку "Side invalid (code: 10001)"
+  ```
+
+#### Формат для базы данных
+- **Формат**: `"Buy"` или `"SELL"` (все заглавные для SELL)
+- **Используется в**: Всех операциях вставки/обновления в таблице `orders`
+- **Ограничение БД**: `CHECK (side IN ('Buy', 'SELL'))`
+- **Примеры**:
+  ```python
+  side_db = "Buy"   # ✅ Правильно для базы данных
+  side_db = "SELL"  # ✅ Правильно для базы данных
+  side_db = "Sell"  # ❌ Неправильно - нарушает constraint "chk_side"
+  ```
+
+#### Паттерн реализации
+
+При создании ордеров используйте разные переменные для API и базы данных:
+
+```python
+# Side для Bybit API: "Buy" или "Sell" (только первая буква заглавная)
+side_api = "Buy" if signal.signal_type.lower() == "buy" else "Sell"
+
+# Side для базы данных: "Buy" или "SELL" (все заглавные для SELL по constraint)
+side_db = "Buy" if signal.signal_type.lower() == "buy" else "SELL"
+
+# Используйте side_api для запросов к Bybit API
+params = {"side": side_api, ...}
+
+# Используйте side_db при сохранении в базу данных
+query = "INSERT INTO orders (side, ...) VALUES ($1, ...)"
+await pool.execute(query, side_db, ...)
+```
+
+**Почему это важно**:
+- Bybit API ожидает `"Sell"` (первая буква заглавная), а не `"SELL"` (все заглавные)
+- Ограничение базы данных требует `"SELL"` (все заглавные), а не `"Sell"` (первая буква заглавная)
+- Использование неправильного формата вызывает:
+  - Bybit API: ошибку `"Side invalid (code: 10001)"`
+  - База данных: нарушение `CHECK constraint "chk_side"`
+
+**Места в коде, где это используется**:
+- `order-manager/src/services/order_executor.py`: метод `_prepare_bybit_order_params()`
+- `order-manager/src/services/order_executor.py`: метод `_save_order_to_database()`
+- `order-manager/src/services/order_executor.py`: метод `_save_rejected_order()`
+- `order-manager/src/services/signal_processor.py`: метод `_save_rejected_order()`
+
+**См. также**: Спецификация в `specs/004-order-manager/data-model.md`, раздел "Data Format Conventions"

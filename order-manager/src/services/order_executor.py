@@ -52,7 +52,7 @@ class OrderExecutor:
         trace_id = trace_id or signal.trace_id
         signal_id = signal.signal_id
         asset = signal.asset
-        side = "Buy" if signal.signal_type.lower() == "buy" else "Sell"
+        side = "Buy" if signal.signal_type.lower() == "buy" else "SELL"
 
         logger.info(
             "order_creation_started",
@@ -82,7 +82,7 @@ class OrderExecutor:
 
         try:
             # Prepare order parameters for Bybit API
-            bybit_params = self._prepare_bybit_order_params(
+            bybit_params = await self._prepare_bybit_order_params(
                 signal=signal,
                 order_type=order_type,
                 quantity=quantity,
@@ -338,7 +338,7 @@ class OrderExecutor:
                                 )
                                 
                                 # Prepare Limit order parameters
-                                limit_params = self._prepare_bybit_order_params(
+                                limit_params = await self._prepare_bybit_order_params(
                                     signal=signal,
                                     order_type="Limit",
                                     quantity=quantity,
@@ -577,7 +577,7 @@ class OrderExecutor:
             )
             return False
 
-    def _prepare_bybit_order_params(
+    async def _prepare_bybit_order_params(
         self,
         signal: TradingSignal,
         order_type: str,
@@ -599,12 +599,15 @@ class OrderExecutor:
 
         selector = OrderTypeSelector()
         asset = signal.asset
-        side = "Buy" if signal.signal_type.lower() == "buy" else "Sell"
+        # Side for Bybit API: "Buy" or "Sell" (not "SELL")
+        side_api = "Buy" if signal.signal_type.lower() == "buy" else "Sell"
+        # Side for database: "Buy" or "SELL" (uppercase for SELL per constraint)
+        side_db = "Buy" if signal.signal_type.lower() == "buy" else "SELL"
 
         params = {
             "category": "linear",
             "symbol": asset,
-            "side": side,
+            "side": side_api,
             "orderType": order_type,
             "qty": str(quantity),
         }
@@ -623,26 +626,31 @@ class OrderExecutor:
             params["postOnly"] = True
 
         # Set reduce_only flag based on current position
-        # For sell orders: reduce_only if we have a long position (positive size)
-        # For buy orders: reduce_only if we have a short position (negative size)
+        # IMPORTANT: reduce_only should only be set when order would reduce existing position
+        # - Sell order + Long position (positive size) = close/reduce long
+        # - Buy order + Short position (negative size) = close/reduce short
         try:
             position = await self.position_manager.get_position(asset)
-            if position:
-                if side == "Sell" and position.size > 0:
+            if position and abs(position.size) > Decimal("0.00000001"):  # Position exists and is significant
+                is_reducing_long = side_api == "Sell" and position.size > 0
+                is_reducing_short = side_api == "Buy" and position.size < 0
+                
+                if is_reducing_long or is_reducing_short:
                     params["reduceOnly"] = True
                     logger.debug(
-                        "reduce_only_set_for_sell",
+                        "reduce_only_set",
                         asset=asset,
+                        side=side_api,
                         position_size=float(position.size),
-                        reason="Long position exists, setting reduce_only for sell order",
+                        reason=f"{'Reducing long' if is_reducing_long else 'Reducing short'} position, setting reduce_only",
                     )
-                elif side == "Buy" and position.size < 0:
-                    params["reduceOnly"] = True
+                else:
                     logger.debug(
-                        "reduce_only_set_for_buy",
+                        "reduce_only_not_set",
                         asset=asset,
+                        side=side_api,
                         position_size=float(position.size),
-                        reason="Short position exists, setting reduce_only for buy order",
+                        reason="Order side does not reduce position, not setting reduce_only",
                     )
         except Exception as e:
             logger.warning(
@@ -728,7 +736,7 @@ class OrderExecutor:
         """
         try:
             pool = await DatabaseConnection.get_pool()
-            side = "Buy" if signal.signal_type.lower() == "buy" else "Sell"
+            side = "Buy" if signal.signal_type.lower() == "buy" else "SELL"
             status = "dry_run" if is_dry_run else "pending"
 
             query = """
@@ -1764,7 +1772,7 @@ class OrderExecutor:
                 endpoint = "/v5/order/create"
                 
                 # Prepare order parameters with reduced quantity
-                bybit_params = self._prepare_bybit_order_params(
+                bybit_params = await self._prepare_bybit_order_params(
                     signal=signal,
                     order_type=order_type,
                     quantity=reduced_quantity,
@@ -1899,7 +1907,7 @@ class OrderExecutor:
         """
         try:
             pool = await DatabaseConnection.get_pool()
-            side = "Buy" if signal.signal_type.lower() == "buy" else "Sell"
+            side = "Buy" if signal.signal_type.lower() == "buy" else "SELL"
             
             # Validate rejection_reason is not empty
             if not rejection_reason or not rejection_reason.strip():
