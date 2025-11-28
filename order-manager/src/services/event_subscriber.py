@@ -69,12 +69,14 @@ class EventSubscriber:
                     json=subscription_data,
                 )
 
-                if response.status_code == 201:
+                if response.status_code in (200, 201):
+                    # 200 = subscription already exists, 201 = newly created
                     result = response.json()
                     self._subscription_id = result.get("id")
                     logger.info(
                         "order_events_subscription_created",
                         subscription_id=self._subscription_id,
+                        status_code=response.status_code,
                         trace_id=trace_id,
                     )
                 elif response.status_code == 409:
@@ -137,9 +139,18 @@ class EventSubscriber:
             channel = await RabbitMQConnection.get_channel()
 
             # Declare queue (ensure it exists)
+            # Use same parameters as ws-gateway:
+            # - x-message-ttl: 24 hours (86400000 ms)
+            # - x-max-length: 100K messages
+            # - x-overflow: drop-head
             queue = await channel.declare_queue(
                 self.queue_name,
                 durable=True,  # Queue survives broker restart
+                arguments={
+                    "x-message-ttl": 86400000,  # 24 hours in milliseconds
+                    "x-max-length": 100000,  # Maximum 100K messages
+                    "x-overflow": "drop-head",  # Drop oldest messages when limit reached
+                },
             )
 
             logger.info(

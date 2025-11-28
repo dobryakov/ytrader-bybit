@@ -367,6 +367,17 @@ class SignalProcessor:
                             error=str(unlock_error),
                             trace_id=trace_id,
                         )
+            except Exception as e:
+                # Handle errors during lock acquisition or processing
+                logger.error(
+                    "signal_processing_lock_error",
+                    signal_id=str(signal_id),
+                    error=str(e),
+                    error_type=type(e).__name__,
+                    trace_id=trace_id,
+                    exc_info=True,
+                )
+                raise OrderExecutionError(f"Failed to process signal: {e}") from e
 
     async def _process_asset_queue(self, asset: str) -> None:
         """Process signals from queue for a specific asset (FIFO).

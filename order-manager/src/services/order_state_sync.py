@@ -145,7 +145,6 @@ class OrderStateSync:
             response = await self.bybit_client.get(
                 "/v5/order/realtime",
                 params=params,
-                trace_id=trace_id,
             )
 
             if response.get("retCode") != 0:
@@ -429,7 +428,6 @@ class OrderStateSync:
             response = await self.bybit_client.get(
                 "/v5/order/realtime",
                 params=params,
-                trace_id=trace_id,
             )
 
             if response.get("retCode") != 0:
