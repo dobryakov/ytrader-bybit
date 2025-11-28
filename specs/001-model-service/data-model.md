@@ -246,7 +246,7 @@ Represents an enriched event from the order manager microservice containing deta
 }
 ```
 
-**Queue**: `order-manager.execution_events` (consumed by model service)
+**Queue**: `order-manager.order_events` (consumed by model service)
 
 **Processing Flow**:
 1. Order execution event consumed from RabbitMQ

@@ -31,7 +31,7 @@ class DatabaseConnectionPool:
         max_inactive_connection_lifetime: float = 300.0,
     ) -> asyncpg.Pool:
         """
-        Create and configure connection pool.
+        Create and configure connection pool with retry logic.
 
         Args:
             min_size: Minimum number of connections in the pool
@@ -43,14 +43,16 @@ class DatabaseConnectionPool:
             Configured connection pool
 
         Raises:
-            DatabaseConnectionError: If pool creation fails
+            DatabaseConnectionError: If pool creation fails after retries
         """
+        from ..config.retry import retry_async
+
         async with self._lock:
             if self._pool is not None:
                 logger.info("Connection pool already exists")
                 return self._pool
 
-            try:
+            async def _create_pool_attempt():
                 logger.info(
                     "Creating database connection pool",
                     host=settings.postgres_host,
@@ -59,7 +61,7 @@ class DatabaseConnectionPool:
                     min_size=min_size,
                     max_size=max_size,
                 )
-                self._pool = await asyncpg.create_pool(
+                pool = await asyncpg.create_pool(
                     host=settings.postgres_host,
                     port=settings.postgres_port,
                     user=settings.postgres_user,
@@ -72,9 +74,19 @@ class DatabaseConnectionPool:
                     command_timeout=60,  # 60 second timeout for queries
                 )
                 logger.info("Database connection pool created successfully")
+                return pool
+
+            try:
+                self._pool = await retry_async(
+                    _create_pool_attempt,
+                    max_retries=3,
+                    initial_delay=1.0,
+                    max_delay=10.0,
+                    operation_name="create_db_pool",
+                )
                 return self._pool
             except Exception as e:
-                logger.error("Failed to create database connection pool", error=str(e), exc_info=True)
+                logger.error("Failed to create database connection pool after retries", error=str(e), exc_info=True)
                 raise DatabaseConnectionError(f"Failed to create connection pool: {e}") from e
 
     async def close_pool(self) -> None:
@@ -101,7 +113,7 @@ class DatabaseConnectionPool:
 
     async def execute(self, query: str, *args) -> str:
         """
-        Execute a query and return the result.
+        Execute a query and return the result with retry logic.
 
         Args:
             query: SQL query string
@@ -111,18 +123,29 @@ class DatabaseConnectionPool:
             Query result
 
         Raises:
-            DatabaseConnectionError: If execution fails
+            DatabaseConnectionError: If execution fails after retries
         """
-        pool = await self.get_pool()
-        try:
+        from ..config.retry import retry_async
+
+        async def _execute_attempt():
+            pool = await self.get_pool()
             return await pool.execute(query, *args)
+
+        try:
+            return await retry_async(
+                _execute_attempt,
+                max_retries=2,
+                initial_delay=0.5,
+                max_delay=3.0,
+                operation_name="db_execute",
+            )
         except Exception as e:
-            logger.error("Database query execution failed", query=query, error=str(e), exc_info=True)
+            logger.error("Database query execution failed after retries", query=query[:100], error=str(e), exc_info=True)
             raise DatabaseConnectionError(f"Query execution failed: {e}") from e
 
     async def fetch(self, query: str, *args) -> list:
         """
-        Execute a query and fetch all results.
+        Execute a query and fetch all results with retry logic.
 
         Args:
             query: SQL query string
@@ -132,18 +155,29 @@ class DatabaseConnectionPool:
             List of records
 
         Raises:
-            DatabaseConnectionError: If execution fails
+            DatabaseConnectionError: If execution fails after retries
         """
-        pool = await self.get_pool()
-        try:
+        from ..config.retry import retry_async
+
+        async def _fetch_attempt():
+            pool = await self.get_pool()
             return await pool.fetch(query, *args)
+
+        try:
+            return await retry_async(
+                _fetch_attempt,
+                max_retries=2,
+                initial_delay=0.5,
+                max_delay=3.0,
+                operation_name="db_fetch",
+            )
         except Exception as e:
-            logger.error("Database query fetch failed", query=query, error=str(e), exc_info=True)
+            logger.error("Database query fetch failed after retries", query=query[:100], error=str(e), exc_info=True)
             raise DatabaseConnectionError(f"Query fetch failed: {e}") from e
 
     async def fetchrow(self, query: str, *args) -> Optional[asyncpg.Record]:
         """
-        Execute a query and fetch a single row.
+        Execute a query and fetch a single row with retry logic.
 
         Args:
             query: SQL query string
@@ -153,18 +187,29 @@ class DatabaseConnectionPool:
             Single record or None
 
         Raises:
-            DatabaseConnectionError: If execution fails
+            DatabaseConnectionError: If execution fails after retries
         """
-        pool = await self.get_pool()
-        try:
+        from ..config.retry import retry_async
+
+        async def _fetchrow_attempt():
+            pool = await self.get_pool()
             return await pool.fetchrow(query, *args)
+
+        try:
+            return await retry_async(
+                _fetchrow_attempt,
+                max_retries=2,
+                initial_delay=0.5,
+                max_delay=3.0,
+                operation_name="db_fetchrow",
+            )
         except Exception as e:
-            logger.error("Database query fetchrow failed", query=query, error=str(e), exc_info=True)
+            logger.error("Database query fetchrow failed after retries", query=query[:100], error=str(e), exc_info=True)
             raise DatabaseConnectionError(f"Query fetchrow failed: {e}") from e
 
     async def fetchval(self, query: str, *args) -> Optional[any]:
         """
-        Execute a query and fetch a single value.
+        Execute a query and fetch a single value with retry logic.
 
         Args:
             query: SQL query string
@@ -174,13 +219,24 @@ class DatabaseConnectionPool:
             Single value or None
 
         Raises:
-            DatabaseConnectionError: If execution fails
+            DatabaseConnectionError: If execution fails after retries
         """
-        pool = await self.get_pool()
-        try:
+        from ..config.retry import retry_async
+
+        async def _fetchval_attempt():
+            pool = await self.get_pool()
             return await pool.fetchval(query, *args)
+
+        try:
+            return await retry_async(
+                _fetchval_attempt,
+                max_retries=2,
+                initial_delay=0.5,
+                max_delay=3.0,
+                operation_name="db_fetchval",
+            )
         except Exception as e:
-            logger.error("Database query fetchval failed", query=query, error=str(e), exc_info=True)
+            logger.error("Database query fetchval failed after retries", query=query[:100], error=str(e), exc_info=True)
             raise DatabaseConnectionError(f"Query fetchval failed: {e}") from e
 
     @property

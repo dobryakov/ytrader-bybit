@@ -42,14 +42,16 @@ class SignalPublisher:
 
     async def publish(self, signal: TradingSignal) -> None:
         """
-        Publish a trading signal to RabbitMQ.
+        Publish a trading signal to RabbitMQ with retry logic.
 
         Args:
             signal: TradingSignal to publish
 
         Raises:
-            MessageQueueError: If publishing fails
+            MessageQueueError: If publishing fails after retries
         """
+        from ..config.retry import retry_async
+
         if not self._queue:
             await self.initialize()
 
@@ -59,7 +61,7 @@ class SignalPublisher:
             trace_id=signal.trace_id,
         )
 
-        try:
+        async def _publish_attempt():
             # Convert signal to dictionary
             signal_dict = signal.to_dict()
 
@@ -74,6 +76,15 @@ class SignalPublisher:
                     delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
                 ),
                 routing_key=self.queue_name,
+            )
+
+        try:
+            await retry_async(
+                _publish_attempt,
+                max_retries=3,
+                initial_delay=0.5,
+                max_delay=5.0,
+                operation_name="publish_signal",
             )
 
             logger.info(
@@ -91,7 +102,7 @@ class SignalPublisher:
 
         except Exception as e:
             logger.error(
-                "Failed to publish trading signal",
+                "Failed to publish trading signal after retries",
                 signal_id=signal.signal_id,
                 error=str(e),
                 exc_info=True,

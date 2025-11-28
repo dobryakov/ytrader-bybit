@@ -148,21 +148,123 @@ class Settings(BaseSettings):
         """
         Validate configuration on startup.
 
-        Checks file paths, database connectivity, and other critical settings.
+        Checks file paths, database connectivity, RabbitMQ connectivity, and other critical settings.
+
+        Raises:
+            ValueError: If any validation fails
+            ConfigurationError: If configuration is invalid
         """
         import os
         from pathlib import Path
+        from .exceptions import ConfigurationError
+        from .logging import get_logger
+
+        logger = get_logger(__name__)
+        errors = []
 
         # Validate model storage path exists and is writable
-        storage_path = Path(self.model_storage_path)
-        if not storage_path.exists():
-            try:
-                storage_path.mkdir(parents=True, exist_ok=True)
-            except OSError as e:
-                raise ValueError(f"Cannot create model storage directory: {e}")
+        try:
+            storage_path = Path(self.model_storage_path)
+            if not storage_path.exists():
+                try:
+                    storage_path.mkdir(parents=True, exist_ok=True)
+                    logger.info("Created model storage directory", path=str(storage_path))
+                except OSError as e:
+                    errors.append(f"Cannot create model storage directory: {e}")
 
-        if not os.access(storage_path, os.W_OK):
-            raise ValueError(f"Model storage path is not writable: {self.model_storage_path}")
+            if storage_path.exists() and not os.access(storage_path, os.W_OK):
+                errors.append(f"Model storage path is not writable: {self.model_storage_path}")
+
+            if storage_path.exists() and not os.access(storage_path, os.R_OK):
+                errors.append(f"Model storage path is not readable: {self.model_storage_path}")
+        except Exception as e:
+            errors.append(f"Error validating model storage path: {e}")
+
+        # Validate port ranges
+        if not 1 <= self.model_service_port <= 65535:
+            errors.append(f"Model service port must be between 1 and 65535, got {self.model_service_port}")
+
+        if not 1 <= self.postgres_port <= 65535:
+            errors.append(f"PostgreSQL port must be between 1 and 65535, got {self.postgres_port}")
+
+        if not 1 <= self.rabbitmq_port <= 65535:
+            errors.append(f"RabbitMQ port must be between 1 and 65535, got {self.rabbitmq_port}")
+
+        if not 1 <= self.ws_gateway_port <= 65535:
+            errors.append(f"WebSocket Gateway port must be between 1 and 65535, got {self.ws_gateway_port}")
+
+        # Validate API key is not empty
+        if not self.model_service_api_key or len(self.model_service_api_key.strip()) == 0:
+            errors.append("MODEL_SERVICE_API_KEY is required and cannot be empty")
+
+        if not self.ws_gateway_api_key or len(self.ws_gateway_api_key.strip()) == 0:
+            errors.append("WS_GATEWAY_API_KEY is required and cannot be empty")
+
+        # Validate database credentials
+        if not self.postgres_db or len(self.postgres_db.strip()) == 0:
+            errors.append("POSTGRES_DB is required and cannot be empty")
+
+        if not self.postgres_user or len(self.postgres_user.strip()) == 0:
+            errors.append("POSTGRES_USER is required and cannot be empty")
+
+        if not self.postgres_password or len(self.postgres_password.strip()) == 0:
+            errors.append("POSTGRES_PASSWORD is required and cannot be empty")
+
+        # Validate training configuration
+        if self.model_training_min_dataset_size <= 0:
+            errors.append(f"MODEL_TRAINING_MIN_DATASET_SIZE must be positive, got {self.model_training_min_dataset_size}")
+
+        if self.model_training_max_duration_seconds <= 0:
+            errors.append(f"MODEL_TRAINING_MAX_DURATION_SECONDS must be positive, got {self.model_training_max_duration_seconds}")
+
+        # Validate signal generation configuration
+        if self.signal_generation_rate_limit <= 0:
+            errors.append(f"SIGNAL_GENERATION_RATE_LIMIT must be positive, got {self.signal_generation_rate_limit}")
+
+        if self.signal_generation_burst_allowance < 0:
+            errors.append(f"SIGNAL_GENERATION_BURST_ALLOWANCE must be non-negative, got {self.signal_generation_burst_allowance}")
+
+        # Validate warm-up configuration
+        if self.warmup_mode_enabled:
+            if self.warmup_signal_frequency <= 0:
+                errors.append(f"WARMUP_SIGNAL_FREQUENCY must be positive, got {self.warmup_signal_frequency}")
+
+            if self.warmup_min_amount < 0:
+                errors.append(f"WARMUP_MIN_AMOUNT must be non-negative, got {self.warmup_min_amount}")
+
+            if self.warmup_max_amount < self.warmup_min_amount:
+                errors.append(f"WARMUP_MAX_AMOUNT ({self.warmup_max_amount}) must be >= WARMUP_MIN_AMOUNT ({self.warmup_min_amount})")
+
+        # Validate URL formats (basic check)
+        try:
+            # Test database URL format
+            db_url = self.database_url
+            if not db_url.startswith("postgresql://"):
+                errors.append(f"Invalid database URL format: {db_url}")
+
+            # Test RabbitMQ URL format
+            rmq_url = self.rabbitmq_url
+            if not rmq_url.startswith("amqp://"):
+                errors.append(f"Invalid RabbitMQ URL format: {rmq_url}")
+
+            # Test WebSocket Gateway URL format
+            ws_url = self.ws_gateway_url
+            if not ws_url.startswith("http://") and not ws_url.startswith("https://"):
+                errors.append(f"Invalid WebSocket Gateway URL format: {ws_url}")
+        except Exception as e:
+            errors.append(f"Error validating URL formats: {e}")
+
+        # Check for conflicting configurations
+        if not self.warmup_mode_enabled and not self.trading_strategy_list:
+            logger.warning("Warm-up mode is disabled and no trading strategies configured - signal generation may not work")
+
+        # Raise error if any validation failed
+        if errors:
+            error_message = "Configuration validation failed:\n" + "\n".join(f"  - {error}" for error in errors)
+            logger.error("Configuration validation failed", errors=errors)
+            raise ConfigurationError(error_message)
+
+        logger.info("Configuration validation passed")
 
 
 # Global settings instance

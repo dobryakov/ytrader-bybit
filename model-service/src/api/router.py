@@ -24,6 +24,7 @@ api_router = APIRouter(prefix="/api/v1")
 
 # Import and register API routers
 from . import models, metrics, training, monitoring
+from .middleware import RequestResponseLoggingMiddleware
 
 api_router.include_router(models.router)
 api_router.include_router(metrics.router)

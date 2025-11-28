@@ -215,46 +215,139 @@ class ModelStorage:
             logger.error("Failed to get disk space info", error=str(e), exc_info=True)
             raise ModelStorageError(f"Failed to get disk space info: {e}") from e
 
-    def health_check(self) -> dict:
+    def health_check(self, check_model_files: bool = False, model_versions: Optional[list] = None) -> dict:
         """
-        Perform health check on model storage.
+        Perform comprehensive health check on model storage.
+
+        Args:
+            check_model_files: Whether to verify model file integrity (default: False)
+            model_versions: List of model versions to check (default: None, checks all)
 
         Returns:
-            Dictionary with health check results (healthy, path, writable, disk_space)
+            Dictionary with health check results including:
+            - healthy: Overall health status
+            - path: Storage path
+            - writable: Whether directory is writable
+            - readable: Whether directory is readable
+            - disk_space: Disk space information
+            - disk_space_warning: Warning if disk space is low (< 10% free)
+            - disk_space_critical: Critical if disk space is very low (< 5% free)
+            - model_files_checked: Number of model files checked (if check_model_files=True)
+            - model_files_healthy: Number of healthy model files (if check_model_files=True)
+            - model_files_errors: List of model file errors (if check_model_files=True)
         """
         try:
-            # Check directory exists and is writable
-            if not self.base_path.exists():
-                return {
-                    "healthy": False,
-                    "path": str(self.base_path),
-                    "writable": False,
-                    "error": "Directory does not exist",
-                }
-
-            if not os.access(self.base_path, os.W_OK):
-                return {
-                    "healthy": False,
-                    "path": str(self.base_path),
-                    "writable": False,
-                    "error": "Directory is not writable",
-                }
-
-            # Get disk space
-            disk_info = self.get_disk_space_info()
-
-            return {
+            health_result = {
                 "healthy": True,
                 "path": str(self.base_path),
-                "writable": True,
-                "disk_space": disk_info,
+                "writable": False,
+                "readable": False,
+                "disk_space": None,
+                "disk_space_warning": False,
+                "disk_space_critical": False,
             }
+
+            # Check directory exists
+            if not self.base_path.exists():
+                health_result.update({
+                    "healthy": False,
+                    "writable": False,
+                    "readable": False,
+                    "error": "Directory does not exist",
+                })
+                return health_result
+
+            # Check directory permissions
+            health_result["readable"] = os.access(self.base_path, os.R_OK)
+            health_result["writable"] = os.access(self.base_path, os.W_OK)
+
+            if not health_result["readable"]:
+                health_result.update({
+                    "healthy": False,
+                    "error": "Directory is not readable",
+                })
+                return health_result
+
+            if not health_result["writable"]:
+                health_result.update({
+                    "healthy": False,
+                    "error": "Directory is not writable",
+                })
+                return health_result
+
+            # Get disk space
+            try:
+                disk_info = self.get_disk_space_info()
+                health_result["disk_space"] = disk_info
+
+                # Check disk space thresholds
+                if disk_info["total"] > 0:
+                    free_percent = (disk_info["free"] / disk_info["total"]) * 100
+                    if free_percent < 5:
+                        health_result["disk_space_critical"] = True
+                        health_result["healthy"] = False
+                    elif free_percent < 10:
+                        health_result["disk_space_warning"] = True
+            except Exception as e:
+                logger.warning("Failed to get disk space info", error=str(e))
+                health_result["disk_space"] = None
+
+            # Check model file integrity if requested
+            if check_model_files:
+                model_files_checked = 0
+                model_files_healthy = 0
+                model_files_errors = []
+
+                # Get list of versions to check
+                if model_versions is None:
+                    # Check all version directories
+                    version_dirs = [d for d in self.base_path.iterdir() if d.is_dir() and d.name.startswith("v")]
+                    model_versions = [d.name.lstrip("v") for d in version_dirs]
+
+                for version in model_versions:
+                    model_files_checked += 1
+                    try:
+                        # Check if model file exists
+                        model_path = self.get_model_path(version)
+                        if not model_path.exists():
+                            model_files_errors.append(f"Model file not found: {version}")
+                            continue
+
+                        # Check file permissions
+                        if not os.access(model_path, os.R_OK):
+                            model_files_errors.append(f"Model file not readable: {version}")
+                            continue
+
+                        # Try to load model to verify integrity (if check_model_files is True)
+                        try:
+                            # Just check if file can be opened, don't fully load
+                            with open(model_path, "rb") as f:
+                                # Read first few bytes to verify file is not corrupted
+                                f.read(1024)
+                            model_files_healthy += 1
+                        except Exception as e:
+                            model_files_errors.append(f"Model file corrupted or unreadable: {version} - {str(e)}")
+                    except Exception as e:
+                        model_files_errors.append(f"Error checking model file: {version} - {str(e)}")
+
+                health_result.update({
+                    "model_files_checked": model_files_checked,
+                    "model_files_healthy": model_files_healthy,
+                    "model_files_errors": model_files_errors,
+                })
+
+                # If any model files have errors, mark as unhealthy
+                if model_files_errors:
+                    health_result["healthy"] = False
+
+            return health_result
         except Exception as e:
             logger.error("Model storage health check failed", error=str(e), exc_info=True)
             return {
                 "healthy": False,
                 "path": str(self.base_path),
                 "writable": False,
+                "readable": False,
                 "error": str(e),
             }
 

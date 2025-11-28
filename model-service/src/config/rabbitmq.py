@@ -29,16 +29,18 @@ class RabbitMQConnectionManager:
 
     async def connect(self) -> None:
         """
-        Establish connection to RabbitMQ.
+        Establish connection to RabbitMQ with retry logic.
 
         Raises:
-            MessageQueueConnectionError: If connection fails
+            MessageQueueConnectionError: If connection fails after retries
         """
         if self._connection and not self._connection.is_closed:
             logger.info("RabbitMQ connection already established")
             return
 
-        try:
+        from .retry import retry_async
+
+        async def _connect_attempt():
             logger.info(
                 "Connecting to RabbitMQ",
                 host=settings.rabbitmq_host,
@@ -50,8 +52,17 @@ class RabbitMQConnectionManager:
             )
             self._channel = await self._connection.channel()
             logger.info("RabbitMQ connection established")
+
+        try:
+            await retry_async(
+                _connect_attempt,
+                max_retries=3,
+                initial_delay=1.0,
+                max_delay=10.0,
+                operation_name="rabbitmq_connect",
+            )
         except Exception as e:
-            logger.error("Failed to connect to RabbitMQ", error=str(e), exc_info=True)
+            logger.error("Failed to connect to RabbitMQ after retries", error=str(e), exc_info=True)
             raise MessageQueueConnectionError(f"Failed to connect to RabbitMQ: {e}") from e
 
     async def disconnect(self) -> None:
@@ -70,7 +81,7 @@ class RabbitMQConnectionManager:
 
     async def get_channel(self) -> Channel:
         """
-        Get or create a channel.
+        Get or create a channel with retry logic.
 
         Returns:
             RabbitMQ channel
@@ -78,13 +89,28 @@ class RabbitMQConnectionManager:
         Raises:
             MessageQueueConnectionError: If connection is not established
         """
-        if not self._connection or self._connection.is_closed:
-            await self.connect()
+        from .retry import retry_async
 
-        if not self._channel or self._channel.is_closed:
-            self._channel = await self._connection.channel()
+        async def _get_channel_attempt():
+            if not self._connection or self._connection.is_closed:
+                await self.connect()
 
-        return self._channel
+            if not self._channel or self._channel.is_closed:
+                self._channel = await self._connection.channel()
+
+            return self._channel
+
+        try:
+            return await retry_async(
+                _get_channel_attempt,
+                max_retries=2,
+                initial_delay=0.5,
+                max_delay=5.0,
+                operation_name="rabbitmq_get_channel",
+            )
+        except Exception as e:
+            logger.error("Failed to get RabbitMQ channel after retries", error=str(e), exc_info=True)
+            raise MessageQueueConnectionError(f"Failed to get RabbitMQ channel: {e}") from e
 
     async def get_exchange(
         self, name: str, exchange_type: aio_pika.ExchangeType = aio_pika.ExchangeType.TOPIC

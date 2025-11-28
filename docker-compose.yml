@@ -26,8 +26,10 @@ services:
       - WS_GATEWAY_LOG_LEVEL=${WS_GATEWAY_LOG_LEVEL:-INFO}
       - WS_GATEWAY_SERVICE_NAME=${WS_GATEWAY_SERVICE_NAME:-ws-gateway}
     depends_on:
-      - postgres
-      - rabbitmq
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     networks:
       - ytrader-network
     restart: unless-stopped
@@ -107,11 +109,21 @@ services:
     volumes:
       - model_storage:/models
     depends_on:
-      - postgres
-      - rabbitmq
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      ws-gateway:
+        condition: service_started
     networks:
       - ytrader-network
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4500/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
 
   order-manager:
     build:

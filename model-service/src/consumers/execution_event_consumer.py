@@ -74,32 +74,84 @@ class ExecutionEventConsumer:
             logger.info("Execution event consumer stopped", queue=self._queue_name)
 
     async def _consume_queue(self) -> None:
-        """Consume messages from the execution events queue."""
-        try:
-            channel = await rabbitmq_manager.get_channel()
-            # Use existing queue without redeclaring (queues are created by order-manager)
-            # Just bind to the existing queue
-            queue = await channel.declare_queue(self._queue_name, durable=True, passive=True)
+        """Consume messages from the execution events queue with reconnection logic."""
+        from ..config.retry import retry_async
 
-            async with queue.iterator() as queue_iter:
-                async for message in queue_iter:
+        max_reconnect_attempts = 5
+        reconnect_delay = 2.0
+
+        while self._running:
+            try:
+                async def _connect_and_consume():
+                    channel = await rabbitmq_manager.get_channel()
+                    # Use existing queue without redeclaring (queues are created by order-manager)
+                    # Just bind to the existing queue
+                    queue = await channel.declare_queue(self._queue_name, durable=True, passive=True)
+                    return queue
+
+                queue = await retry_async(
+                    _connect_and_consume,
+                    max_retries=3,
+                    initial_delay=1.0,
+                    max_delay=5.0,
+                    operation_name="connect_to_queue",
+                )
+
+                logger.info("Connected to execution events queue", queue=self._queue_name)
+
+                async with queue.iterator() as queue_iter:
+                    async for message in queue_iter:
+                        if not self._running:
+                            break
+                        try:
+                            async with message.process():
+                                await self._process_message(message)
+                        except Exception as e:
+                            logger.error(
+                                "Error processing execution event message",
+                                queue=self._queue_name,
+                                error=str(e),
+                                exc_info=True,
+                            )
+                            # Continue processing other messages - don't let one bad message stop the consumer
+
+            except asyncio.CancelledError:
+                logger.info("Execution event consumer cancelled", queue=self._queue_name)
+                raise
+            except Exception as e:
+                if not self._running:
+                    break
+
+                logger.error(
+                    "Execution event consumer error, attempting reconnection",
+                    queue=self._queue_name,
+                    error=str(e),
+                    exc_info=True,
+                )
+
+                # Attempt reconnection with exponential backoff
+                for attempt in range(max_reconnect_attempts):
+                    if not self._running:
+                        break
+
                     try:
-                        async with message.process():
-                            await self._process_message(message)
-                    except Exception as e:
-                        logger.error(
-                            "Error processing execution event message",
+                        await asyncio.sleep(reconnect_delay * (2 ** attempt))
+                        logger.info(
+                            "Reconnecting to execution events queue",
                             queue=self._queue_name,
-                            error=str(e),
-                            exc_info=True,
+                            attempt=attempt + 1,
                         )
-                        # Continue processing other messages - don't let one bad message stop the consumer
-        except asyncio.CancelledError:
-            logger.info("Execution event consumer cancelled", queue=self._queue_name)
-            raise
-        except Exception as e:
-            logger.error("Execution event consumer error", queue=self._queue_name, error=str(e), exc_info=True)
-            raise
+                        break  # Exit retry loop to attempt reconnection
+                    except asyncio.CancelledError:
+                        raise
+                else:
+                    # All reconnection attempts failed
+                    logger.error(
+                        "Failed to reconnect to execution events queue after all attempts",
+                        queue=self._queue_name,
+                        max_attempts=max_reconnect_attempts,
+                    )
+                    raise
 
     async def _process_message(self, message: AbstractIncomingMessage) -> None:
         """

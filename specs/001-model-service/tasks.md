@@ -170,18 +170,18 @@
 
 **Purpose**: Improvements that affect multiple user stories
 
-- [ ] T069 [P] Update README.md in model-service/ with complete setup, usage, and API documentation (fix queue name: order-manager.order_events instead of order-manager.execution_events)
-- [ ] T070 [P] Synchronize quickstart.md in specs/001-model-service/ with actual implementation (fix queue name: order-manager.order_events instead of order-manager.execution_events)
-- [ ] T088 [P] Fix queue name references in documentation: update data-model.md in specs/001-model-service/ to use correct queue name order-manager.order_events instead of order-manager.execution_events
-- [ ] T071 [P] Add error handling and retry logic for RabbitMQ operations in model-service/src/publishers/ and model-service/src/consumers/
-- [ ] T072 [P] Add error handling and retry logic for database operations in model-service/src/database/
-- [ ] T073 [P] Implement graceful shutdown handling in model-service/src/main.py (close connections, finish in-progress operations)
-- [ ] T074 [P] Add request/response logging middleware in model-service/src/api/middleware.py (log all API requests and responses with trace IDs)
-- [ ] T075 [P] Add comprehensive error responses with proper HTTP status codes in model-service/src/api/
-- [ ] T076 [P] Implement model file health checks in model-service/src/services/storage.py (verify file existence, permissions, disk space)
-- [ ] T077 [P] Add configuration validation on startup in model-service/src/config/settings.py (validate all required settings, check file paths, verify database connectivity)
-- [ ] T078 [P] Update docker-compose.yml to ensure proper service dependencies and health checks
-- [ ] T079 [P] Add trace ID propagation across all services (consumers, publishers, API endpoints)
+- [X] T069 [P] Update README.md in model-service/ with complete setup, usage, and API documentation (fix queue name: order-manager.order_events instead of order-manager.execution_events)
+- [X] T070 [P] Synchronize quickstart.md in specs/001-model-service/ with actual implementation (fix queue name: order-manager.order_events instead of order-manager.execution_events)
+- [X] T088 [P] Fix queue name references in documentation: update data-model.md in specs/001-model-service/ to use correct queue name order-manager.order_events instead of order-manager.execution_events
+- [X] T071 [P] Add error handling and retry logic for RabbitMQ operations in model-service/src/publishers/ and model-service/src/consumers/
+- [X] T072 [P] Add error handling and retry logic for database operations in model-service/src/database/
+- [X] T073 [P] Implement graceful shutdown handling in model-service/src/main.py (close connections, finish in-progress operations)
+- [X] T074 [P] Add request/response logging middleware in model-service/src/api/middleware.py (log all API requests and responses with trace IDs)
+- [X] T075 [P] Add comprehensive error responses with proper HTTP status codes in model-service/src/api/
+- [X] T076 [P] Implement model file health checks in model-service/src/services/storage.py (verify file existence, permissions, disk space)
+- [X] T077 [P] Add configuration validation on startup in model-service/src/config/settings.py (validate all required settings, check file paths, verify database connectivity)
+- [X] T078 [P] Update docker-compose.yml to ensure proper service dependencies and health checks
+- [X] T079 [P] Add trace ID propagation across all services (consumers, publishers, API endpoints)
 - [ ] T080 Run quickstart.md validation to ensure all examples work correctly
 - [ ] T081 Code cleanup and refactoring (remove unused code, improve code organization)
 - [ ] T082 Performance optimization (connection pooling, model caching, efficient data processing)

@@ -302,7 +302,7 @@ from datetime import datetime
 
 connection = pika.BlockingConnection(pika.ConnectionParameters('localhost', 5672))
 channel = connection.channel()
-channel.queue_declare(queue='order-manager.execution_events')
+channel.queue_declare(queue='order-manager.order_events')
 
 event = {
     'event_id': 'test-event-001',
@@ -330,7 +330,7 @@ event = {
     }
 }
 
-channel.basic_publish(exchange='', routing_key='order-manager.execution_events', body=json.dumps(event))
+channel.basic_publish(exchange='', routing_key='order-manager.order_events', body=json.dumps(event))
 print('Published execution event')
 connection.close()
 "
