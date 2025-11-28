@@ -17,6 +17,7 @@ from aio_pika.abc import AbstractIncomingMessage
 from ..config.rabbitmq import rabbitmq_manager
 from ..config.logging import get_logger
 from ..config.exceptions import MessageQueueError
+from ..database.connection import db_pool
 from ..models.execution_event import OrderExecutionEvent
 from ..database.repositories.execution_event_repo import ExecutionEventRepository
 
@@ -186,8 +187,14 @@ class ExecutionEventConsumer:
             body = message.body.decode("utf-8")
             data = json.loads(body)
 
+            # Transform order-manager format to expected format
+            transformed_data = await self._transform_order_manager_event(data)
+            if not transformed_data:
+                logger.warning("Failed to transform order-manager event", event_data_keys=list(data.keys()))
+                return
+
             # Validate and parse the execution event
-            execution_event = self._validate_and_parse_event(data)
+            execution_event = self._validate_and_parse_event(transformed_data)
 
             if execution_event:
                 # Persist execution event to database
@@ -341,6 +348,161 @@ class ExecutionEventConsumer:
             return None
         except Exception as e:
             logger.error("Error validating execution event", error=str(e), exc_info=True)
+            return None
+
+    async def _transform_order_manager_event(self, data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        Transform order-manager event format to expected execution event format.
+
+        Args:
+            data: Raw event data from order-manager
+
+        Returns:
+            Transformed event data or None if transformation fails
+        """
+        try:
+            # Check if this is order-manager format (has 'order' key)
+            if "order" not in data:
+                # Already in expected format or unknown format
+                return data
+
+            order_data = data.get("order", {})
+            signal_id = order_data.get("signal_id")
+            if not signal_id:
+                logger.warning("Order event missing signal_id", event_data_keys=list(data.keys()))
+                return None
+
+            # Get signal information from database
+            signal_info = await self._get_signal_info(signal_id)
+            if not signal_info:
+                logger.warning("Signal not found in database", signal_id=signal_id)
+                return None
+
+            # Extract order execution details
+            order_id = order_data.get("order_id")
+            asset = order_data.get("asset")
+            side = order_data.get("side", "").lower()
+            filled_quantity = float(order_data.get("filled_quantity", "0"))
+            average_price = float(order_data.get("average_price", "0")) if order_data.get("average_price") else None
+            fees = float(order_data.get("fees", "0")) if order_data.get("fees") else 0.0
+            executed_at_str = order_data.get("executed_at")
+
+            if not average_price or average_price <= 0:
+                logger.warning("Order event missing or invalid average_price", order_id=order_id)
+                return None
+
+            if filled_quantity <= 0:
+                logger.warning("Order event has zero or negative filled_quantity", order_id=order_id)
+                return None
+
+            # Parse executed_at
+            executed_at = None
+            if executed_at_str:
+                try:
+                    executed_at = datetime.fromisoformat(executed_at_str.replace("Z", "+00:00"))
+                except (ValueError, AttributeError):
+                    executed_at = datetime.utcnow()
+            else:
+                executed_at = datetime.utcnow()
+
+            # Get signal price and timestamp
+            signal_price = float(signal_info.get("price", "0"))
+            signal_timestamp_str = signal_info.get("timestamp")
+            signal_timestamp = None
+            if signal_timestamp_str:
+                try:
+                    signal_timestamp = datetime.fromisoformat(signal_timestamp_str.replace("Z", "+00:00"))
+                except (ValueError, AttributeError):
+                    signal_timestamp = executed_at  # Fallback to executed_at
+            else:
+                signal_timestamp = executed_at
+
+            if signal_price <= 0:
+                logger.warning("Signal has invalid price", signal_id=signal_id, price=signal_price)
+                return None
+
+            # Calculate slippage
+            slippage = average_price - signal_price
+            slippage_percent = (slippage / signal_price * 100) if signal_price > 0 else 0.0
+
+            # Get market conditions from event or use defaults
+            market_conditions = data.get("market_conditions", {})
+            if not market_conditions or not all(k in market_conditions for k in ["spread", "volume_24h", "volatility"]):
+                # Use defaults if not provided
+                market_conditions = {
+                    "spread": 0.0015,  # Default 0.15%
+                    "volume_24h": 1000000.0,  # Default volume
+                    "volatility": 0.02,  # Default 2%
+                }
+                logger.debug("Using default market conditions", order_id=order_id)
+
+            # Build transformed event
+            transformed = {
+                "order_id": order_id,
+                "signal_id": signal_id,
+                "strategy_id": signal_info.get("strategy_id", "unknown"),
+                "asset": asset,
+                "side": side,
+                "execution_price": average_price,
+                "execution_quantity": filled_quantity,
+                "execution_fees": fees,
+                "executed_at": executed_at.isoformat() + "Z",
+                "signal_price": signal_price,
+                "signal_timestamp": signal_timestamp.isoformat() + "Z",
+                "market_conditions": {
+                    "spread": float(market_conditions.get("spread", 0.0015)),
+                    "volume_24h": float(market_conditions.get("volume_24h", 1000000.0)),
+                    "volatility": float(market_conditions.get("volatility", 0.02)),
+                },
+                "performance": {
+                    "slippage": slippage,
+                    "slippage_percent": slippage_percent,
+                    "realized_pnl": None,  # Will be calculated later when position is closed
+                    "return_percent": None,  # Will be calculated later when position is closed
+                },
+                "trace_id": data.get("trace_id"),
+            }
+
+            logger.debug("Transformed order-manager event", order_id=order_id, signal_id=signal_id)
+            return transformed
+
+        except Exception as e:
+            logger.error("Error transforming order-manager event", error=str(e), exc_info=True)
+            return None
+
+    async def _get_signal_info(self, signal_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get signal information from database.
+
+        Args:
+            signal_id: Signal identifier
+
+        Returns:
+            Signal information dictionary or None if not found
+        """
+        try:
+            pool = await db_pool.get_pool()
+            query = """
+                SELECT signal_id, strategy_id, price, timestamp
+                FROM trading_signals
+                WHERE signal_id = $1
+                LIMIT 1
+            """
+            from uuid import UUID
+            signal_uuid = UUID(signal_id) if isinstance(signal_id, str) else signal_id
+            row = await pool.fetchrow(query, signal_uuid)
+
+            if row:
+                return {
+                    "signal_id": str(row["signal_id"]),
+                    "strategy_id": row["strategy_id"],
+                    "price": str(row["price"]),
+                    "timestamp": row["timestamp"].isoformat() + "Z" if row["timestamp"] else None,
+                }
+            return None
+
+        except Exception as e:
+            logger.error("Error querying signal info", signal_id=signal_id, error=str(e), exc_info=True)
             return None
 
     async def _persist_execution_event(self, execution_event: OrderExecutionEvent) -> None:
