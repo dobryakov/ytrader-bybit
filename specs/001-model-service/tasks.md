@@ -79,6 +79,7 @@
 - [X] T028 [US1] Integrate warm-up mode into main application in model-service/src/main.py (start warm-up signal generation loop on service startup when no trained model exists)
 - [X] T029 [US1] Add structured logging for warm-up mode operations in model-service/src/services/warmup_signal_generator.py (signal generation, rate limiting events, publishing status)
 - [X] T030 [US1] Add configuration for warm-up mode parameters in model-service/src/config/settings.py (WARMUP_MODE_ENABLED, WARMUP_SIGNAL_FREQUENCY, minimum order parameters, randomness level)
+- [ ] T030a [US1] Add configuration for open orders check behavior in model-service/src/config/settings.py (SIGNAL_GENERATION_SKIP_IF_OPEN_ORDER=true/false to enable/disable skipping signal generation when open order exists, SIGNAL_GENERATION_CHECK_OPPOSITE_ORDERS_ONLY=true/false to check only opposite direction orders or all orders, default: skip if any open order exists)
 
 **Checkpoint**: At this point, User Story 1 should be fully functional and testable independently. The system can generate and publish warm-up trading signals without any trained models.
 
@@ -99,8 +100,10 @@
 - [X] T035 [US2] Implement order execution event consumer in model-service/src/consumers/execution_event_consumer.py (subscribe to RabbitMQ queue order-manager.order_events, parse and validate events, handle corrupted/invalid events with logging and graceful continuation)
 - [X] T036 [US2] Document order execution event validation rules in model-service/docs/validation-rules.md (specify required fields, value ranges, format constraints, corruption detection criteria, error handling procedures per FR-025)
 - [X] T037 [US2] Implement feature engineering service in model-service/src/services/feature_engineer.py (process execution events and market data into features: MUST use market_data_snapshot from trading signals for features describing market state at decision time, use execution event market_conditions only for performance metrics, generate price features, volume features, technical indicators, market context, execution features)
+- [ ] T037a [US2] Extend feature engineering service to include open orders features in model-service/src/services/feature_engineer.py (add order_position_state parameter to engineer_features method, include open_orders_count, pending_buy_orders, pending_sell_orders features in training dataset, ensure these features are available at both training and inference time for model consistency)
 - [X] T038 [US2] Implement label generation service in model-service/src/services/label_generator.py (extract labels from execution events: binary classification, multi-class, regression targets)
 - [X] T039 [US2] Implement training dataset builder in model-service/src/services/dataset_builder.py (aggregate execution events, match execution events with corresponding trading signals by signal_id, use signal market_data_snapshot for feature engineering, apply feature engineering, generate labels from execution event performance, validate dataset quality)
+- [ ] T039a [US2] Extend training dataset builder to include order position state in model-service/src/services/dataset_builder.py (retrieve order_position_state from database for each execution event timestamp, pass order_position_state to feature_engineer.engineer_features to include open orders features in training data, ensure historical order state is reconstructed accurately for training dataset)
 - [X] T040 [US2] Implement ML model trainer service in model-service/src/services/model_trainer.py (train XGBoost and scikit-learn models, support batch retraining, handle model serialization using joblib for scikit-learn and XGBoost native JSON format)
 - [X] T041 [US2] Implement model quality evaluator in model-service/src/services/quality_evaluator.py (calculate accuracy, precision, recall, f1_score, sharpe_ratio, profit_factor, and other metrics)
 - [X] T042 [US2] Implement model version manager in model-service/src/services/model_version_manager.py (create model versions, store model files in /models/v{version}/, update database metadata, handle version activation)
@@ -127,6 +130,7 @@
 - [X] T050 [US3] Implement model loader service in model-service/src/services/model_loader.py (load trained models from file system, validate model files, cache active models)
 - [X] T051 [US3] Implement model inference service in model-service/src/services/model_inference.py (prepare features from order/position state and market data, run model prediction, generate confidence scores, MUST capture market data snapshot at inference time for inclusion in generated signals)
 - [X] T052 [US3] Implement intelligent signal generator in model-service/src/services/intelligent_signal_generator.py (use model inference to generate trading signals with confidence scores, apply quality thresholds)
+- [ ] T052a [US3] Add open orders check in intelligent signal generator in model-service/src/services/intelligent_signal_generator.py (before generating signal, check if there are existing open orders with status 'pending' or 'partially_filled' for the same asset and strategy_id, skip signal generation if open order exists, log reason for skipping with structured logging including asset, strategy_id, existing_order_id, order_status)
 - [X] T053 [US3] Implement mode transition service in model-service/src/services/mode_transition.py (automatically transition from warm-up mode to model-based generation when model quality reaches configured threshold)
 - [X] T054 [US3] Integrate intelligent signal generation into main application in model-service/src/main.py (replace warm-up mode with model-based generation when active model is available)
 - [X] T055 [US3] Add structured logging for model-based signal generation in model-service/src/services/intelligent_signal_generator.py (signal generation, model inference results, confidence scores, mode transitions)
@@ -187,6 +191,8 @@
 - [ ] T080 Run quickstart.md validation to ensure all examples work correctly
 - [ ] T081 Code cleanup and refactoring (remove unused code, improve code organization)
 - [ ] T082 Performance optimization (connection pooling, model caching, efficient data processing)
+- [ ] T091 [P] Add metrics for signal generation skipping in model-service/src/services/intelligent_signal_generator.py (track count of signals skipped due to open orders, log metrics with asset, strategy_id, reason, expose via monitoring endpoint for observability)
+- [ ] T092 [P] Update documentation in model-service/README.md to describe open orders check behavior and configuration options (explain how signal generation prevents duplicate orders, document configuration parameters SIGNAL_GENERATION_SKIP_IF_OPEN_ORDER and SIGNAL_GENERATION_CHECK_OPPOSITE_ORDERS_ONLY, provide examples of behavior)
 
 ---
 
@@ -237,6 +243,15 @@
 
 - **T089** (trading_signals table): Can be done independently, must complete before T090
 - **T090** (persist trading signals): Depends on T089 (table exists) and T026 (signal publisher exists). Extends T026 to add database persistence for Grafana monitoring dashboard visibility
+
+### Task Dependencies for Open Orders Check and Duplicate Prevention (T030a, T037a, T039a, T052a, T091-T092)
+
+- **T030a** (configuration): Can be done independently, must complete before T052a (needs configuration values)
+- **T037a** (feature engineering): Depends on T037 (feature_engineer exists), must complete before T039a (dataset builder needs extended feature engineer)
+- **T039a** (dataset builder): Depends on T037a (extended feature engineer) and T039 (dataset_builder exists), must complete before model training can use open orders features
+- **T052a** (open orders check): Depends on T030a (configuration), T049 (position_state_repo exists), and T052 (intelligent_signal_generator exists). Extends T052 to add duplicate prevention logic
+- **T091** (metrics): Depends on T052a (open orders check exists) to track skipped signals
+- **T092** (documentation): Can be done independently, but should complete after T030a and T052a to document implemented behavior
 
 ---
 
@@ -344,14 +359,14 @@ With multiple developers:
 
 ## Task Summary
 
-- **Total Tasks**: 92 tasks
+- **Total Tasks**: 98 tasks
 - **Phase 1 (Setup)**: 9 tasks
 - **Phase 2 (Foundational)**: 12 tasks
-- **Phase 3 (User Story 1 - MVP)**: 11 tasks
-- **Phase 4 (User Story 2)**: 17 tasks
-- **Phase 5 (User Story 3)**: 9 tasks
+- **Phase 3 (User Story 1 - MVP)**: 12 tasks (added T030a)
+- **Phase 4 (User Story 2)**: 19 tasks (added T037a, T039a)
+- **Phase 5 (User Story 3)**: 10 tasks (added T052a)
 - **Phase 6 (User Story 4)**: 17 tasks
-- **Phase 7 (Polish)**: 17 tasks
+- **Phase 7 (Polish)**: 19 tasks (added T091, T092)
 
 ### Task Count per User Story
 
