@@ -1,13 +1,18 @@
 -- Migration: Extend account_balances table with additional fields
 -- Reversible: Yes (see rollback section at bottom)
 -- Purpose: Store additional coin-level information needed for margin calculations
+-- 
+-- This migration adds fields from Bybit wallet messages that are used for:
+-- - Determining which coins can be used as margin collateral
+-- - Calculating available margin for trading
+-- - Tracking locked margin in orders and positions
 
 ALTER TABLE account_balances
-ADD COLUMN IF NOT EXISTS equity DECIMAL(20, 8),
-ADD COLUMN IF NOT EXISTS usd_value DECIMAL(20, 8),
+ADD COLUMN IF NOT EXISTS equity DECIMAL(20, 8),  -- Coin equity value
+ADD COLUMN IF NOT EXISTS usd_value DECIMAL(20, 8),  -- USD value of the coin
 ADD COLUMN IF NOT EXISTS margin_collateral BOOLEAN DEFAULT false,  -- Can be used as margin collateral
-ADD COLUMN IF NOT EXISTS total_order_im DECIMAL(20, 8) DEFAULT 0,  -- Locked in orders for this coin
-ADD COLUMN IF NOT EXISTS total_position_im DECIMAL(20, 8) DEFAULT 0;  -- Margin in positions for this coin
+ADD COLUMN IF NOT EXISTS total_order_im DECIMAL(20, 8) DEFAULT 0,  -- Initial margin locked in orders for this coin
+ADD COLUMN IF NOT EXISTS total_position_im DECIMAL(20, 8) DEFAULT 0;  -- Initial margin locked in positions for this coin
 
 -- Add constraints (use DO block to handle IF NOT EXISTS)
 DO $$

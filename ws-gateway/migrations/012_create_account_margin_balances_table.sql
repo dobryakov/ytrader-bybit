@@ -2,6 +2,9 @@
 -- Reversible: Yes (see rollback section at bottom)
 -- Purpose: Store account-level margin and balance information for unified accounts
 -- This allows order-manager to check available margin without calling Bybit API
+-- 
+-- Note: total_available_balance can be negative when margin is used for open positions.
+-- This is normal for unified accounts with active positions and is allowed by design.
 
 CREATE TABLE IF NOT EXISTS account_margin_balances (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -9,10 +12,10 @@ CREATE TABLE IF NOT EXISTS account_margin_balances (
     total_equity DECIMAL(20, 8) NOT NULL,
     total_wallet_balance DECIMAL(20, 8) NOT NULL,
     total_margin_balance DECIMAL(20, 8) NOT NULL,
-    total_available_balance DECIMAL(20, 8) NOT NULL,  -- Available margin for trading
+    total_available_balance DECIMAL(20, 8) NOT NULL,  -- Available margin for trading (can be negative)
     total_initial_margin DECIMAL(20, 8) NOT NULL DEFAULT 0,  -- Locked in positions
-    total_maintenance_margin DECIMAL(20, 8) NOT NULL DEFAULT 0,
-    total_order_im DECIMAL(20, 8) NOT NULL DEFAULT 0,  -- Locked in orders
+    total_maintenance_margin DECIMAL(20, 8) NOT NULL DEFAULT 0,  -- Maintenance margin for positions
+    total_order_im DECIMAL(20, 8) NOT NULL DEFAULT 0,  -- Locked in pending orders
     base_currency VARCHAR(10) NOT NULL,  -- Base currency for margin (USDT, USD, etc.)
     event_timestamp TIMESTAMP NOT NULL,
     received_at TIMESTAMP NOT NULL DEFAULT NOW(),
