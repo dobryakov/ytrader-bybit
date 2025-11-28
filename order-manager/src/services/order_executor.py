@@ -928,13 +928,122 @@ class OrderExecutor:
             )
             return None
 
+    async def _get_balance_from_bybit_api(self, coin: str, trace_id: Optional[str] = None) -> Optional[Decimal]:
+        """Get available balance for a coin directly from Bybit API.
+        
+        This method is used as a fallback when database balance data is unavailable.
+        
+        Args:
+            coin: Coin symbol (e.g., 'USDT', 'BTC', 'ETH')
+            trace_id: Optional trace ID for logging
+            
+        Returns:
+            Available balance as Decimal, or None if not found or API error
+        """
+        try:
+            bybit_client = get_bybit_client()
+            endpoint = "/v5/account/wallet-balance"
+            params = {"accountType": "UNIFIED"}
+            
+            response = await bybit_client.get(endpoint, params=params, authenticated=True)
+            
+            ret_code = response.get("retCode", 0)
+            ret_msg = response.get("retMsg", "")
+            
+            if ret_code != 0:
+                logger.warning(
+                    "balance_api_fetch_failed",
+                    coin=coin,
+                    ret_code=ret_code,
+                    ret_msg=ret_msg,
+                    trace_id=trace_id,
+                )
+                return None
+            
+            result = response.get("result", {})
+            list_data = result.get("list", []) if result else []
+            
+            if not list_data:
+                logger.warning(
+                    "balance_api_no_account_data",
+                    coin=coin,
+                    trace_id=trace_id,
+                )
+                return None
+            
+            account = list_data[0]
+            account_type = account.get("accountType", "")
+            
+            # For unified accounts, check if coin is USDT (use totalAvailableBalance)
+            if account_type == "UNIFIED" and coin == "USDT":
+                total_available = account.get("totalAvailableBalance", "0")
+                if total_available and total_available != "":
+                    try:
+                        balance = Decimal(str(total_available))
+                        logger.info(
+                            "balance_retrieved_from_api_total",
+                            coin=coin,
+                            balance=float(balance),
+                            trace_id=trace_id,
+                        )
+                        return balance
+                    except (ValueError, TypeError):
+                        pass
+            
+            # Get coin-specific balance
+            coins = account.get("coin", [])
+            for coin_data in coins:
+                if coin_data.get("coin") == coin:
+                    # Try availableToWithdraw first, then walletBalance
+                    available_value = coin_data.get("availableToWithdraw", "")
+                    if not available_value or available_value == "":
+                        available_value = coin_data.get("walletBalance", "0")
+                    
+                    if available_value and available_value != "":
+                        try:
+                            balance = Decimal(str(available_value))
+                            logger.info(
+                                "balance_retrieved_from_api",
+                                coin=coin,
+                                balance=float(balance),
+                                source="availableToWithdraw" if coin_data.get("availableToWithdraw") else "walletBalance",
+                                trace_id=trace_id,
+                            )
+                            return balance
+                        except (ValueError, TypeError) as e:
+                            logger.warning(
+                                "balance_api_invalid_value",
+                                coin=coin,
+                                value=available_value,
+                                error=str(e),
+                                trace_id=trace_id,
+                            )
+                    break
+            
+            logger.warning(
+                "balance_api_coin_not_found",
+                coin=coin,
+                trace_id=trace_id,
+            )
+            return None
+            
+        except Exception as e:
+            logger.error(
+                "balance_api_fetch_exception",
+                coin=coin,
+                error=str(e),
+                trace_id=trace_id,
+                exc_info=True,
+            )
+            return None
+
     def _calculate_max_affordable_quantity(
         self,
         available_balance: Decimal,
         order_price: Optional[Decimal],
         signal_type: str,
         trading_pair: str,
-        safety_margin: Decimal = Decimal("0.98"),  # 2% safety margin
+        safety_margin: Decimal = Decimal("0.95"),  # 5% safety margin (more conservative when balance check is disabled)
     ) -> Decimal:
         """Calculate maximum affordable quantity based on available balance.
         
@@ -943,7 +1052,7 @@ class OrderExecutor:
             order_price: Order price (needed for buy orders to calculate quantity)
             signal_type: Signal type ('buy' or 'sell')
             trading_pair: Trading pair symbol (e.g., 'BTCUSDT')
-            safety_margin: Safety margin to leave (default: 0.98 = 2% buffer)
+            safety_margin: Safety margin to leave (default: 0.95 = 5% buffer, more conservative when balance check is disabled)
             
         Returns:
             Maximum affordable quantity in base currency
@@ -1033,16 +1142,37 @@ class OrderExecutor:
         # Get available balance from database for the required currency
         available_balance = await self._get_available_balance_from_db(coin=required_currency, trace_id=trace_id)
         
+        # Fallback: get balance from Bybit API if database data is unavailable
         if available_balance is None:
-            logger.warning(
-                "order_reduction_skipped_no_balance_data",
+            logger.info(
+                "order_reduction_balance_not_in_db",
                 signal_id=str(signal_id),
                 asset=asset,
                 required_currency=required_currency,
-                reason=f"Balance data for {required_currency} not available in database",
+                reason="Balance data not available in database, fetching from Bybit API",
                 trace_id=trace_id,
             )
-            return None
+            available_balance = await self._get_balance_from_bybit_api(required_currency, trace_id)
+            
+            if available_balance is None:
+                logger.warning(
+                    "order_reduction_skipped_no_balance_data",
+                    signal_id=str(signal_id),
+                    asset=asset,
+                    required_currency=required_currency,
+                    reason=f"Balance data for {required_currency} not available in database or API",
+                    trace_id=trace_id,
+                )
+                return None
+            
+            logger.info(
+                "order_reduction_balance_fetched_from_api",
+                signal_id=str(signal_id),
+                asset=asset,
+                required_currency=required_currency,
+                available_balance=float(available_balance),
+                trace_id=trace_id,
+            )
         
         # Get current price if needed (for buy orders)
         order_price = price
@@ -1104,181 +1234,238 @@ class OrderExecutor:
             )
             return None
         
-        # Check if reduction makes sense (at least 10% of original)
-        min_meaningful_quantity = original_quantity * Decimal("0.1")
-        if max_quantity < min_meaningful_quantity:
-            logger.info(
-                "order_reduction_impossible_too_small",
-                signal_id=str(signal_id),
-                asset=asset,
-                required_currency=required_currency,
-                available_balance=float(available_balance),
-                max_quantity=float(max_quantity),
-                original_quantity=float(original_quantity),
-                min_meaningful_quantity=float(min_meaningful_quantity),
-                trace_id=trace_id,
-            )
-            return None
-        
-        # Use the minimum of max_quantity and original_quantity (with safety margin)
-        reduced_quantity = min(max_quantity, original_quantity * Decimal("0.95"))  # Max 5% reduction
-        
-        # Ensure reduced quantity is at least 1% of original
-        min_quantity = original_quantity * Decimal("0.01")
-        if reduced_quantity < min_quantity:
-            reduced_quantity = min_quantity
-        
-        # Round to valid precision using symbol info (tick_size and lot_size)
-        # Import QuantityCalculator to get symbol info and apply proper rounding
+        # Get symbol info to check minimum order quantity
         from ..services.quantity_calculator import QuantityCalculator
         quantity_calculator = QuantityCalculator()
         
         try:
-            # Get symbol info to apply proper rounding
             symbol_info = await quantity_calculator._get_symbol_info(asset, trace_id)
-            # Apply precision rounding using QuantityCalculator's method
-            reduced_quantity = quantity_calculator._apply_precision(reduced_quantity, symbol_info, trace_id)
-            
-            # Validate minimum quantity after rounding
             min_order_qty = Decimal(str(symbol_info.get("min_order_qty", "0")))
-            if reduced_quantity < min_order_qty:
-                logger.warning(
-                    "order_reduction_below_min_after_rounding",
-                    signal_id=str(signal_id),
-                    asset=asset,
-                    reduced_quantity=float(reduced_quantity),
-                    min_order_qty=float(min_order_qty),
-                    trace_id=trace_id,
-                )
-                # If reduced quantity is below minimum, try using minimum quantity if it's within balance
-                if min_order_qty <= max_quantity:
-                    reduced_quantity = min_order_qty
-                else:
-                    # Cannot create order - reduced quantity below minimum and minimum exceeds balance
-                    logger.info(
-                        "order_reduction_impossible_below_min",
-                        signal_id=str(signal_id),
-                        asset=asset,
-                        min_order_qty=float(min_order_qty),
-                        max_quantity=float(max_quantity),
-                        trace_id=trace_id,
-                    )
-                    return None
         except Exception as e:
             logger.warning(
-                "order_reduction_symbol_info_error",
+                "order_reduction_min_qty_check_failed",
                 signal_id=str(signal_id),
                 asset=asset,
                 error=str(e),
                 trace_id=trace_id,
             )
-            # Fallback to simple rounding if symbol info fetch fails
-            reduced_quantity = reduced_quantity.quantize(Decimal("0.000001"), rounding="ROUND_DOWN")
+            # Fallback: use 1% of original as minimum
+            min_order_qty = original_quantity * Decimal("0.01")
         
-        logger.info(
-            "order_reduction_calculated",
-            signal_id=str(signal_id),
-            asset=asset,
-            required_currency=required_currency,
+        # Check if reduction is possible - need at least minimum order quantity
+        if max_quantity < min_order_qty:
+            logger.info(
+                "order_reduction_impossible_below_minimum",
+                signal_id=str(signal_id),
+                asset=asset,
+                required_currency=required_currency,
+                available_balance=float(available_balance),
+                max_quantity=float(max_quantity),
+                min_order_qty=float(min_order_qty),
+                original_quantity=float(original_quantity),
+                trace_id=trace_id,
+            )
+            return None
+        
+        # Try iterative reduction with multiple attempts
+        max_reduction_attempts = 3
+        reduction_factors = [Decimal("0.8"), Decimal("0.6"), Decimal("0.4")]  # 80%, 60%, 40% of max_quantity
+        
+        for attempt in range(max_reduction_attempts):
+            # Calculate reduced quantity for this attempt
+            if attempt == 0:
+                # First attempt: use max_quantity or 95% of original (whichever is smaller)
+                reduced_quantity = min(max_quantity, original_quantity * Decimal("0.95"))
+            else:
+                # Subsequent attempts: reduce based on factor
+                reduction_factor = reduction_factors[min(attempt - 1, len(reduction_factors) - 1)]
+                reduced_quantity = max_quantity * reduction_factor
+            
+            # Ensure reduced quantity is at least minimum order quantity
+            if reduced_quantity < min_order_qty:
+                # If we can't even meet minimum, we can't create order
+                if attempt == 0:
+                    logger.info(
+                        "order_reduction_impossible_below_minimum_after_calculation",
+                        signal_id=str(signal_id),
+                        asset=asset,
+                        calculated_quantity=float(reduced_quantity),
+                        min_order_qty=float(min_order_qty),
+                        trace_id=trace_id,
+                    )
+                    return None
+                else:
+                    # Try minimum quantity as last resort
+                    reduced_quantity = min_order_qty
+            
+            # Apply proper rounding using symbol info
+            try:
+                # Apply precision rounding using QuantityCalculator's method
+                reduced_quantity = quantity_calculator._apply_precision(reduced_quantity, symbol_info, trace_id)
+                
+                # Double-check minimum after rounding
+                if reduced_quantity < min_order_qty:
+                    # If below minimum after rounding, try minimum if it's within balance
+                    if min_order_qty <= max_quantity:
+                        reduced_quantity = min_order_qty
+                    else:
+                        logger.info(
+                            "order_reduction_attempt_failed_below_min_after_rounding",
+                            signal_id=str(signal_id),
+                            asset=asset,
+                            attempt=attempt + 1,
+                            reduced_quantity_after_rounding=float(reduced_quantity),
+                            min_order_qty=float(min_order_qty),
+                            max_quantity=float(max_quantity),
+                            trace_id=trace_id,
+                        )
+                        # Try next attempt if available
+                        if attempt < max_reduction_attempts - 1:
+                            continue
+                        return None
+            except Exception as e:
+                logger.warning(
+                    "order_reduction_precision_error",
+                    signal_id=str(signal_id),
+                    asset=asset,
+                    attempt=attempt + 1,
+                    error=str(e),
+                    trace_id=trace_id,
+                )
+                # Fallback to simple rounding
+                reduced_quantity = reduced_quantity.quantize(Decimal("0.000001"), rounding="ROUND_DOWN")
+            
+            logger.info(
+                "order_reduction_attempt",
+                signal_id=str(signal_id),
+                asset=asset,
+                attempt=attempt + 1,
+                max_attempts=max_reduction_attempts,
                 original_quantity=float(original_quantity),
                 reduced_quantity=float(reduced_quantity),
+                max_quantity=float(max_quantity),
                 available_balance=float(available_balance),
                 order_price=float(order_price) if order_price else None,
                 reduction_percentage=float((1 - reduced_quantity / original_quantity) * 100) if original_quantity > 0 else 0,
                 trace_id=trace_id,
             )
-        
-        # Try to create order with reduced quantity
-        try:
-            bybit_client = get_bybit_client()
-            endpoint = "/v5/order/create"
             
-            # Prepare order parameters with reduced quantity
-            bybit_params = self._prepare_bybit_order_params(
-                signal=signal,
-                order_type=order_type,
-                quantity=reduced_quantity,
-                price=price,
-            )
-            
-            logger.info(
-                "order_reduction_retry_attempt",
-                signal_id=str(signal_id),
-                asset=asset,
-                reduced_quantity=float(reduced_quantity),
-                trace_id=trace_id,
-            )
-            
-            # Retry order creation with reduced quantity
-            response = await bybit_client.post(endpoint, json_data=bybit_params, authenticated=True)
-            
-            ret_code = response.get("retCode", 0)
-            ret_msg = response.get("retMsg", "")
-            
-            if ret_code == 0:
-                # Success!
-                result = response.get("result", {})
-                bybit_order_id = result.get("orderId")
+            # Try to create order with reduced quantity
+            try:
+                bybit_client = get_bybit_client()
+                endpoint = "/v5/order/create"
                 
-                if bybit_order_id:
-                    # Save order to database
-                    order = await self._save_order_to_database(
-                        signal=signal,
-                        bybit_order_id=bybit_order_id,
-                        order_type=order_type,
-                        quantity=reduced_quantity,
-                        price=price,
-                        trace_id=trace_id,
-                    )
-                    
-                    logger.info(
-                        "order_reduction_success",
-                        signal_id=str(signal_id),
-                        asset=asset,
-                        original_quantity=float(original_quantity),
-                        reduced_quantity=float(reduced_quantity),
-                        order_id=str(order.id),
-                        bybit_order_id=bybit_order_id,
-                        trace_id=trace_id,
-                    )
-                    
-                    return order
-            
-            # If retry also failed with 110007, don't try again
-            if ret_code == 110007:
-                logger.warning(
-                    "order_reduction_retry_failed_insufficient_balance",
+                # Prepare order parameters with reduced quantity
+                bybit_params = self._prepare_bybit_order_params(
+                    signal=signal,
+                    order_type=order_type,
+                    quantity=reduced_quantity,
+                    price=price,
+                )
+                
+                logger.info(
+                    "order_reduction_retry_attempt",
                     signal_id=str(signal_id),
                     asset=asset,
+                    attempt=attempt + 1,
+                    reduced_quantity=float(reduced_quantity),
+                    trace_id=trace_id,
+                )
+                
+                # Retry order creation with reduced quantity
+                response = await bybit_client.post(endpoint, json_data=bybit_params, authenticated=True)
+                
+                ret_code = response.get("retCode", 0)
+                ret_msg = response.get("retMsg", "")
+                
+                if ret_code == 0:
+                    # Success!
+                    result = response.get("result", {})
+                    bybit_order_id = result.get("orderId")
+                    
+                    if bybit_order_id:
+                        # Save order to database
+                        order = await self._save_order_to_database(
+                            signal=signal,
+                            bybit_order_id=bybit_order_id,
+                            order_type=order_type,
+                            quantity=reduced_quantity,
+                            price=price,
+                            trace_id=trace_id,
+                        )
+                        
+                        logger.info(
+                            "order_reduction_success",
+                            signal_id=str(signal_id),
+                            asset=asset,
+                            attempt=attempt + 1,
+                            original_quantity=float(original_quantity),
+                            reduced_quantity=float(reduced_quantity),
+                            order_id=str(order.id),
+                            bybit_order_id=bybit_order_id,
+                            trace_id=trace_id,
+                        )
+                        
+                        return order
+                
+                # If retry also failed with 110007, try next reduction if available
+                if ret_code == 110007:
+                    logger.info(
+                        "order_reduction_attempt_failed_insufficient_balance",
+                        signal_id=str(signal_id),
+                        asset=asset,
+                        attempt=attempt + 1,
+                        reduced_quantity=float(reduced_quantity),
+                        ret_code=ret_code,
+                        ret_msg=ret_msg,
+                        has_more_attempts=(attempt < max_reduction_attempts - 1),
+                        trace_id=trace_id,
+                    )
+                    # Continue to next attempt if available
+                    if attempt < max_reduction_attempts - 1:
+                        continue
+                    # Last attempt failed, return None
+                    return None
+                
+                # Other errors - log and return None
+                logger.warning(
+                    "order_reduction_retry_failed_other_error",
+                    signal_id=str(signal_id),
+                    asset=asset,
+                    attempt=attempt + 1,
                     reduced_quantity=float(reduced_quantity),
                     ret_code=ret_code,
                     ret_msg=ret_msg,
                     trace_id=trace_id,
                 )
                 return None
-            
-            # Other errors - log and return None
-            logger.warning(
-                "order_reduction_retry_failed_other_error",
-                signal_id=str(signal_id),
-                asset=asset,
-                reduced_quantity=float(reduced_quantity),
-                ret_code=ret_code,
-                ret_msg=ret_msg,
-                trace_id=trace_id,
-            )
-            return None
-            
-        except Exception as e:
-            logger.error(
-                "order_reduction_retry_exception",
-                signal_id=str(signal_id),
-                asset=asset,
-                error=str(e),
-                trace_id=trace_id,
-                exc_info=True,
-            )
-            return None
+                
+            except Exception as e:
+                logger.error(
+                    "order_reduction_retry_exception",
+                    signal_id=str(signal_id),
+                    asset=asset,
+                    attempt=attempt + 1,
+                    error=str(e),
+                    trace_id=trace_id,
+                    exc_info=True,
+                )
+                # Continue to next attempt if available
+                if attempt < max_reduction_attempts - 1:
+                    continue
+                return None
+        
+        # All attempts exhausted
+        logger.info(
+            "order_reduction_all_attempts_exhausted",
+            signal_id=str(signal_id),
+            asset=asset,
+            max_attempts=max_reduction_attempts,
+            original_quantity=float(original_quantity),
+            max_quantity=float(max_quantity),
+            trace_id=trace_id,
+        )
+        return None
 
     async def _save_rejected_order(
         self,
