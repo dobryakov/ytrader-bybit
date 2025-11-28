@@ -170,12 +170,21 @@ class MarketDataConsumer:
 
         # Cancel all consumer tasks
         for queue_name, task in self._consumers.items():
-            task.cancel()
             try:
-                await task
-            except asyncio.CancelledError:
-                pass
-            logger.info("Stopped consumer for queue", queue=queue_name)
+                task.cancel()
+                try:
+                    await asyncio.wait_for(task, timeout=2.0)
+                except asyncio.TimeoutError:
+                    logger.warning("Task cancellation timeout", queue=queue_name)
+                except asyncio.CancelledError:
+                    pass
+                except Exception as e:
+                    # Ignore errors during shutdown (channel may already be closed)
+                    logger.debug("Error during task cancellation", queue=queue_name, error=str(e))
+                logger.info("Stopped consumer for queue", queue=queue_name)
+            except Exception as e:
+                # Ignore errors if task is already done or channel is closed
+                logger.debug("Error stopping consumer", queue=queue_name, error=str(e))
 
         self._consumers.clear()
 
@@ -190,10 +199,24 @@ class MarketDataConsumer:
             channel = await rabbitmq_manager.get_channel()
             # Use existing queue without redeclaring (queues are created by ws-gateway with TTL)
             # Just bind to the existing queue
-            queue = await channel.declare_queue(queue_name, durable=True, passive=True)
+            try:
+                queue = await channel.declare_queue(queue_name, durable=True, passive=True)
+            except Exception as e:
+                # Queue might not exist yet or was deleted, log and retry later
+                logger.warning(
+                    "Queue not available, will retry",
+                    queue=queue_name,
+                    error=str(e),
+                    error_type=type(e).__name__,
+                )
+                # Wait a bit and retry
+                await asyncio.sleep(1)
+                queue = await channel.declare_queue(queue_name, durable=True, passive=True)
 
             async with queue.iterator() as queue_iter:
                 async for message in queue_iter:
+                    if not self._running:
+                        break
                     try:
                         async with message.process():
                             await self._process_message(queue_name, message)
@@ -209,7 +232,11 @@ class MarketDataConsumer:
             logger.info("Consumer cancelled", queue=queue_name)
             raise
         except Exception as e:
-            logger.error("Consumer error", queue=queue_name, error=str(e), exc_info=True)
+            # During shutdown, channel may be closed - this is expected
+            if self._running:
+                logger.error("Consumer error", queue=queue_name, error=str(e), exc_info=True)
+            else:
+                logger.debug("Consumer stopped during shutdown", queue=queue_name, error=str(e))
             raise
 
     async def _process_message(self, queue_name: str, message: AbstractIncomingMessage) -> None:
