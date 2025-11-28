@@ -119,11 +119,32 @@ Operators can monitor the WebSocket connection status and metrics for the connec
 
 ---
 
+### User Story 7 - View Recent Key Events History (Priority: P2)
+
+Operators can view a chronological history of recent key system events, including trading signals received, orders created/executed/closed, model training/retraining events, WebSocket subscription changes, and other significant system state changes, to understand system activity and trace the sequence of events leading to current system state.
+
+**Why this priority**: This provides a unified timeline view of system activity, making it easier to correlate events across different components (model, orders, WebSocket subscriptions). Operators can quickly understand what happened in the system recently and trace issues back to specific events. This complements the individual dashboards by providing a holistic view.
+
+**Independent Test**: Can be fully tested by accessing the Grafana dashboard and verifying that recent key events are displayed in chronological order with event type, timestamp, and relevant details. The dashboard delivers immediate visibility into system activity without requiring any system modifications.
+
+**Acceptance Scenarios**:
+
+1. **Given** key events have occurred in the system, **When** a user accesses the Grafana dashboard, **Then** they see a chronological list of recent events (e.g., last 200 events or last 24 hours) including: trading signals received, orders created/executed/closed, model training/retraining started/completed, WebSocket subscription created/cancelled, WebSocket connection state changes
+2. **Given** events are occurring continuously, **When** a user views the events history dashboard, **Then** the list updates automatically or can be refreshed to show the most recent events
+3. **Given** multiple event types are displayed, **When** a user views the events history, **Then** they can filter events by type (signal, order, model training, subscription, connection) or by service
+4. **Given** a user wants to investigate a specific event, **When** they view the events history, **Then** they can see enough detail (event type, timestamp, event ID, related entity IDs, status) to trace the event through the system
+5. **Given** model training or retraining events occur, **When** a user views the events history, **Then** they can see training start/completion events with model version information
+6. **Given** WebSocket subscription changes occur, **When** a user views the events history, **Then** they can see subscription created/cancelled events with channel type, symbol, and requesting service information
+
+---
+
 ### Edge Cases
 
 - What happens when a data source (database, REST API, RabbitMQ) is temporarily unavailable? The dashboard should handle connection failures gracefully, show connection status, and continue displaying cached data if available
 - How does the dashboard handle services that don't have health check endpoints? The dashboard should indicate "unknown" or "not available" status rather than failing
 - What happens when there are no recent signals or orders to display? The dashboard should show an empty state message rather than an error
+- What happens when there are no recent events to display in the event history? The dashboard should show an empty state message rather than an error
+- How does the dashboard handle events from different time zones or clock synchronization issues? Events should be displayed in a consistent timezone (UTC recommended) with clear timestamp formatting
 - How does the dashboard handle very high message rates or large datasets? The dashboard should display aggregated or sampled data to maintain performance
 - What happens when authentication fails? Users should see a clear authentication error message and be prompted to re-authenticate
 - What happens when the WebSocket connection state is not available? The dashboard should indicate "unknown" or "not available" status rather than failing
@@ -151,6 +172,9 @@ Operators can monitor the WebSocket connection status and metrics for the connec
 - **FR-016**: System MUST handle data source connection failures gracefully without crashing the dashboard
 - **FR-017**: System MUST update dashboard data automatically or provide manual refresh capability
 - **FR-018**: System MUST prioritize displaying data from existing sources without requiring major system modifications
+- **FR-019**: System MUST display a chronological history of recent key system events (e.g., last 200 events or last 24 hours) including: trading signals received (signal ID, asset, side, price, confidence, timestamp, strategy ID), orders created/executed/closed (order ID, signal ID, asset, side, status, timestamp), model training/retraining events (model version ID, training status, start/completion timestamp), WebSocket subscription created/cancelled (subscription ID, channel type, symbol, requesting service, timestamp), and WebSocket connection state changes (connection status, timestamp)
+- **FR-020**: System MUST allow filtering of event history by event type (signal, order, model training, subscription, connection) and by service (model-service, order-manager, ws-gateway)
+- **FR-021**: System MUST update event history automatically or provide manual refresh capability
 
 ### Key Entities *(include if feature involves data)*
 
@@ -161,6 +185,7 @@ Operators can monitor the WebSocket connection status and metrics for the connec
 - **Queue Metrics**: Represents RabbitMQ queue health including queue name, message count (queue length), message publishing rate, message consumption rate, consumer count. Source: RabbitMQ management API. All queues in RabbitMQ are monitored, including system queues
 - **Service Health Status**: Represents health state of a service including service name, overall status (healthy/unhealthy), component statuses (database, queue, websocket), error information. Source: Service health check REST API endpoints
 - **WebSocket Connection State**: Represents WebSocket connection to Bybit exchange including connection ID, environment (mainnet/testnet), status (connected/disconnected/connecting/reconnecting), connected timestamp, last heartbeat timestamp, reconnection count, last error message, and active subscriptions count. Source: ws-gateway service health endpoint (`/health`) or WebSocket state API
+- **Event History**: Represents a chronological log of key system events including event type (trading_signal_received, order_created, order_executed, order_closed, model_training_started, model_training_completed, model_retrained, subscription_created, subscription_cancelled, websocket_connected, websocket_disconnected, websocket_reconnected), event timestamp, event ID, related entity IDs (signal ID, order ID, model version ID, subscription ID), event details (asset, side, price, status, channel type, symbol, requesting service), and service name. Source: Aggregated from multiple sources: trading signals from RabbitMQ queue or database, order events from PostgreSQL `execution_events` table, model training events from model service REST API or database, subscription events from ws-gateway service REST API or database, connection events from ws-gateway service health endpoint
 
 ## Success Criteria *(mandatory)*
 
@@ -175,6 +200,8 @@ Operators can monitor the WebSocket connection status and metrics for the connec
 - **SC-007**: Dashboard remains accessible and functional even when one data source (database, REST API, or RabbitMQ) is temporarily unavailable
 - **SC-008**: Authentication protects dashboard access, preventing unauthorized users from viewing trading system data
 - **SC-009**: Dashboard updates data automatically at least once per minute or provides manual refresh that completes within 5 seconds
+- **SC-010**: Operators can view recent key events history (last 200 events or last 24 hours) within 3 seconds of accessing the dashboard
+- **SC-011**: Operators can filter event history by event type or service within 2 seconds of applying filters
 
 ## Assumptions
 
@@ -183,6 +210,9 @@ Operators can monitor the WebSocket connection status and metrics for the connec
 - Services (ws-gateway, model-service, order-manager) expose `/health` REST API endpoints that return health status
 - ws-gateway service `/health` endpoint returns WebSocket connection state including status, reconnection count, last heartbeat, and active subscriptions
 - Model service exposes REST API endpoints for model state and statistics (or this information can be derived from database)
+- Model training/retraining events are available via model service REST API or can be derived from database (model_versions table with training status and timestamps)
+- WebSocket subscription events (created/cancelled) are available via ws-gateway service REST API (`/api/v1/subscriptions`) or can be derived from database (subscriptions table with created_at, updated_at, is_active status)
+- Event history can be aggregated from multiple data sources (database tables, REST API endpoints) without requiring a dedicated event log table
 - RabbitMQ management API is accessible for queue monitoring (standard RabbitMQ management plugin). Grafana connects to the Management API using credentials configured via `.env` file
 - Grafana can connect to PostgreSQL as a data source using a read-only database user with credentials configured via `.env` file
 - Grafana can query REST APIs using HTTP data source or similar plugin. Authentication uses existing service API keys from `.env` file where endpoints require authentication
