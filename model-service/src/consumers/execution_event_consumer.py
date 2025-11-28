@@ -84,9 +84,9 @@ class ExecutionEventConsumer:
             try:
                 async def _connect_and_consume():
                     channel = await rabbitmq_manager.get_channel()
-                    # Use existing queue without redeclaring (queues are created by order-manager)
-                    # Just bind to the existing queue
-                    queue = await channel.declare_queue(self._queue_name, durable=True, passive=True)
+                    # Declare queue - create if it doesn't exist (will be created by order-manager publisher later)
+                    # We declare it here so consumer can start even if no events have been published yet
+                    queue = await channel.declare_queue(self._queue_name, durable=True, passive=False)
                     return queue
 
                 queue = await retry_async(
@@ -122,6 +122,28 @@ class ExecutionEventConsumer:
                 if not self._running:
                     break
 
+                # Check if error is due to missing queue (expected when order-manager not started)
+                error_str = str(e)
+                error_type_name = type(e).__name__
+                is_queue_not_found = (
+                    "no queue" in error_str.lower()
+                    or "NOT_FOUND" in error_str.upper()
+                    or "ChannelNotFoundEntity" in error_type_name
+                    or "ChannelNotFoundEntity" in error_str
+                )
+
+                if is_queue_not_found:
+                    # Queue doesn't exist yet - this is expected when order-manager isn't running
+                    # Log as warning instead of error, with less frequent logging
+                    logger.warning(
+                        "Execution events queue not found (order-manager may not be started yet), will retry",
+                        queue=self._queue_name,
+                    )
+                    # Wait longer before retrying for missing queue
+                    await asyncio.sleep(reconnect_delay * 5)  # Wait 10 seconds before retrying
+                    continue  # Continue loop to retry connection
+
+                # For other errors, log as error and retry with exponential backoff
                 logger.error(
                     "Execution event consumer error, attempting reconnection",
                     queue=self._queue_name,

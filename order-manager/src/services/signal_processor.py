@@ -451,7 +451,7 @@ class SignalProcessor:
                 order_side = row["side"].lower()
                 should_cancel = False
 
-                if cancel_opposite_orders_only:
+                if cancel_opposite_only:
                     # Only cancel opposite direction orders
                     if (signal_side == "buy" and order_side == "sell") or (
                         signal_side == "sell" and order_side == "buy"

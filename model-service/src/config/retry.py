@@ -92,13 +92,29 @@ async def retry_async(
                     exc_info=True,
                 )
         except Exception as e:
-            # Non-retryable exception - don't retry
-            logger.error(
-                f"Non-retryable error in {op_name}",
-                error=str(e),
-                error_type=type(e).__name__,
-                exc_info=True,
+            # Check if this is a "queue not found" error (expected when publisher not started)
+            error_str = str(e)
+            is_queue_not_found = (
+                "no queue" in error_str.lower()
+                or "not_found" in error_str.upper()
+                or "ChannelNotFoundEntity" in error_str
             )
+
+            if is_queue_not_found:
+                # Queue not found is expected when publisher service isn't running
+                # Don't log as error, just pass through
+                logger.debug(
+                    f"Queue not found in {op_name} (expected if publisher not started)",
+                    error_type=type(e).__name__,
+                )
+            else:
+                # Non-retryable exception - log as error
+                logger.error(
+                    f"Non-retryable error in {op_name}",
+                    error=str(e),
+                    error_type=type(e).__name__,
+                    exc_info=True,
+                )
             raise
 
     # If we get here, all retries were exhausted
