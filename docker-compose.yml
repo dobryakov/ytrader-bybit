@@ -69,6 +69,21 @@ services:
       timeout: 5s
       retries: 5
 
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    networks:
+      - ytrader-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   model-service:
     build:
       context: ./model-service
@@ -172,10 +187,18 @@ services:
       - ORDERMANAGER_CANCEL_STALE_ORDER_TIMEOUT=${ORDERMANAGER_CANCEL_STALE_ORDER_TIMEOUT:-3600}
       - ORDERMANAGER_UNREALIZED_LOSS_WARNING_THRESHOLD=${ORDERMANAGER_UNREALIZED_LOSS_WARNING_THRESHOLD:-10.0}
       - ORDERMANAGER_ENABLE_BALANCE_CHECK=${ORDERMANAGER_ENABLE_BALANCE_CHECK:-true}
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
     depends_on:
-      - postgres
-      - rabbitmq
-      - ws-gateway
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ws-gateway:
+        condition: service_started
     networks:
       - ytrader-network
     restart: unless-stopped
@@ -243,4 +266,5 @@ volumes:
   rabbitmq_data:
   model_storage:
   grafana_data:
+  redis_data:
 

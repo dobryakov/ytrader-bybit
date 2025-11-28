@@ -41,7 +41,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n    signal_id,\n    asset,\n    side,\n    price,\n    confidence,\n    timestamp,\n    strategy_id,\n    model_version,\n    is_warmup,\n    market_data_snapshot\nFROM trading_signals\nORDER BY timestamp DESC\nLIMIT 100;",
+          "rawSql": "SELECT\n    signal_id,\n    asset,\n    side,\n    price,\n    confidence,\n    timestamp,\n    strategy_id,\n    model_version,\n    is_warmup,\n    market_data_snapshot\nFROM trading_signals\nWHERE $__timeFilter(timestamp)\nORDER BY timestamp DESC\nLIMIT 100;",
           "refId": "A"
         }
       ],
@@ -444,7 +444,7 @@
     "list": []
   },
   "time": {
-    "from": "now-1h",
+    "from": "now-24h",
     "to": "now"
   },
   "timepicker": {

@@ -43,6 +43,11 @@ class Settings(BaseSettings):
     rabbitmq_user: str = Field(default="guest", alias="RABBITMQ_USER")
     rabbitmq_password: str = Field(default="guest", alias="RABBITMQ_PASSWORD")
 
+    # Redis Configuration
+    redis_host: str = Field(default="redis", alias="REDIS_HOST")
+    redis_port: int = Field(default=6379, alias="REDIS_PORT")
+    redis_password: Optional[str] = Field(default=None, alias="REDIS_PASSWORD")
+
     # WebSocket Gateway Configuration
     ws_gateway_host: str = Field(default="ws-gateway", alias="WS_GATEWAY_HOST")
     ws_gateway_port: int = Field(default=4400, alias="WS_GATEWAY_PORT")
