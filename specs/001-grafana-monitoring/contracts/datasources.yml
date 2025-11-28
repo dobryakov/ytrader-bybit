@@ -1,0 +1,94 @@
+# Grafana Data Source Provisioning Configuration
+# This file defines data sources that will be automatically configured when Grafana starts
+# Location: grafana/provisioning/datasources/datasources.yml
+
+apiVersion: 1
+
+datasources:
+  # PostgreSQL Data Source for trading signals, orders, and model metrics
+  - name: PostgreSQL
+    type: postgres
+    access: proxy
+    url: ${POSTGRES_HOST}:${POSTGRES_PORT}
+    database: ${POSTGRES_DB}
+    user: ${GRAFANA_POSTGRES_USER}
+    secureJsonData:
+      password: ${GRAFANA_POSTGRES_PASSWORD}
+    jsonData:
+      sslmode: disable
+      maxOpenConns: 100
+      maxIdleConns: 100
+      connMaxLifetime: 14400
+      postgresVersion: 1500
+      timescaledb: false
+
+  # RabbitMQ Management API Data Source
+  - name: RabbitMQ Management API
+    type: prometheus
+    access: proxy
+    url: http://rabbitmq:15672
+    basicAuth: true
+    basicAuthUser: ${RABBITMQ_USER}
+    secureJsonData:
+      basicAuthPassword: ${RABBITMQ_PASSWORD}
+    jsonData:
+      httpMethod: GET
+      queryTimeout: 30s
+      timeInterval: 60s
+    # Note: RabbitMQ Management API returns JSON, not Prometheus format
+    # We'll use HTTP data source instead for better JSON support
+    isDefault: false
+
+  # HTTP Data Source for RabbitMQ Management API (JSON format)
+  - name: RabbitMQ HTTP API
+    type: influxdb
+    access: proxy
+    url: http://rabbitmq:15672
+    basicAuth: true
+    basicAuthUser: ${RABBITMQ_USER}
+    secureJsonData:
+      basicAuthPassword: ${RABBITMQ_PASSWORD}
+    jsonData:
+      httpMode: GET
+      defaultBucket: queues
+      organization: default
+    # Note: Using InfluxDB type as proxy for HTTP/JSON data source
+    # Alternative: Use Grafana's JSON API data source plugin if available
+    isDefault: false
+
+  # HTTP Data Source for ws-gateway Service
+  - name: ws-gateway Health
+    type: prometheus
+    access: proxy
+    url: http://ws-gateway:4400
+    basicAuth: false
+    jsonData:
+      httpMethod: GET
+      queryTimeout: 10s
+      timeInterval: 60s
+    isDefault: false
+
+  # HTTP Data Source for model-service Service
+  - name: model-service Health
+    type: prometheus
+    access: proxy
+    url: http://model-service:4500
+    basicAuth: false
+    jsonData:
+      httpMethod: GET
+      queryTimeout: 10s
+      timeInterval: 60s
+    isDefault: false
+
+  # HTTP Data Source for order-manager Service
+  - name: order-manager Health
+    type: prometheus
+    access: proxy
+    url: http://order-manager:4600
+    basicAuth: false
+    jsonData:
+      httpMethod: GET
+      queryTimeout: 10s
+      timeInterval: 60s
+    isDefault: false
+
