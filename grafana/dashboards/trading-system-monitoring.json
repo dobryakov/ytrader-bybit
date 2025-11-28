@@ -174,7 +174,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n    o.order_id,\n    o.signal_id,\n    o.asset,\n    o.side,\n    e.execution_price,\n    e.execution_quantity,\n    e.execution_fees,\n    COALESCE(e.executed_at, o.created_at) as executed_at,\n    o.status as closure_status,\n    o.rejection_reason\nFROM orders o\nLEFT JOIN execution_events e ON e.signal_id = o.signal_id\nORDER BY COALESCE(e.executed_at, o.created_at) DESC\nLIMIT 100;",
+          "rawSql": "SELECT\n    o.order_id,\n    o.signal_id,\n    o.asset,\n    o.side,\n    e.execution_price,\n    e.execution_quantity,\n    e.execution_fees,\n    COALESCE(e.executed_at, o.created_at) as executed_at,\n    o.status as closure_status,\n    o.rejection_reason,\n    COALESCE(\n        p.unrealized_pnl / NULLIF(p.size, 0) * e.execution_quantity,\n        CASE \n            WHEN e.execution_price IS NOT NULL AND e.side = 'buy' THEN\n                ROUND((COALESCE(p.average_entry_price, e.execution_price) - e.execution_price) * e.execution_quantity - e.execution_fees, 8)\n            WHEN e.execution_price IS NOT NULL AND e.side = 'sell' THEN\n                ROUND((e.execution_price - COALESCE(p.average_entry_price, e.execution_price)) * e.execution_quantity - e.execution_fees, 8)\n            ELSE NULL\n        END\n    ) as unrealized_pnl,\n    CASE \n        WHEN e.execution_price IS NOT NULL AND p.unrealized_pnl IS NOT NULL AND p.size > 0 THEN\n            ROUND((p.unrealized_pnl / NULLIF(p.size * p.average_entry_price, 0) * 100)::numeric, 4)\n        WHEN e.execution_price IS NOT NULL AND e.side = 'buy' AND p.average_entry_price IS NOT NULL THEN\n            ROUND(((p.average_entry_price - e.execution_price) / e.execution_price * 100)::numeric, 4)\n        WHEN e.execution_price IS NOT NULL AND e.side = 'sell' AND p.average_entry_price IS NOT NULL THEN\n            ROUND(((e.execution_price - p.average_entry_price) / e.execution_price * 100)::numeric, 4)\n        ELSE NULL\n    END as pnl_percent,\n    COALESCE(p.average_entry_price, e.execution_price) as current_price\nFROM orders o\nLEFT JOIN execution_events e ON e.signal_id = o.signal_id\nLEFT JOIN LATERAL (\n    SELECT unrealized_pnl, size, average_entry_price\n    FROM positions\n    WHERE asset = o.asset\n    ORDER BY last_updated DESC\n    LIMIT 1\n) p ON true\nORDER BY \n    CASE WHEN e.execution_price IS NOT NULL THEN 0 ELSE 1 END,\n    COALESCE(e.executed_at, o.created_at) DESC\nLIMIT 100;",
           "refId": "A"
         }
       ],
@@ -350,6 +350,82 @@
                 "value": {
                   "type": "auto",
                   "wrapText": true
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "unrealized_pnl"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              },
+              {
+                "id": "decimals",
+                "value": 4
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "green",
+                      "value": 0
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "pnl_percent"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "green",
+                      "value": 0
+                    }
+                  ]
                 }
               }
             ]
