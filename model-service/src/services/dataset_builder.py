@@ -13,6 +13,7 @@ import numpy as np
 from ..models.execution_event import OrderExecutionEvent
 from ..models.training_dataset import TrainingDataset
 from ..models.signal import MarketDataSnapshot
+from ..models.position_state import OrderPositionState
 from ..services.feature_engineer import feature_engineer
 from ..services.label_generator import label_generator
 from ..config.logging import get_logger
@@ -31,6 +32,7 @@ class DatasetBuilder:
         self,
         execution_events: List[OrderExecutionEvent],
         signal_market_data: Optional[Dict[str, MarketDataSnapshot]] = None,
+        order_position_state: Optional[OrderPositionState] = None,
         strategy_id: Optional[str] = None,
         label_type: str = "binary",
         min_quality_score: float = 0.5,
@@ -42,6 +44,11 @@ class DatasetBuilder:
             execution_events: List of order execution events
             signal_market_data: Optional dictionary mapping signal_id to MarketDataSnapshot
                                (for market state at decision time)
+            order_position_state: Optional order position state at event time
+                                 (for open orders features in training data)
+                                 Note: For accurate historical reconstruction, retrieve state
+                                 for each execution event timestamp. Current implementation
+                                 uses a single state for all events if provided.
             strategy_id: Trading strategy identifier (if None, inferred from events)
             label_type: Type of labels to generate ('binary', 'multi_class', 'regression')
             min_quality_score: Minimum data quality score to accept dataset
@@ -62,9 +69,13 @@ class DatasetBuilder:
 
         logger.info("Building training dataset", strategy_id=strategy_id, event_count=len(execution_events))
 
-        # Apply feature engineering
+        # Apply feature engineering (includes open orders features if order_position_state provided)
         try:
-            features_df = feature_engineer.engineer_features(execution_events, signal_market_data)
+            features_df = feature_engineer.engineer_features(
+                execution_events,
+                signal_market_data,
+                order_position_state=order_position_state,
+            )
             if features_df.empty:
                 logger.error("Feature engineering produced empty DataFrame")
                 return None

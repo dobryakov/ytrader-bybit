@@ -6,7 +6,7 @@ A microservice that trains ML models from order execution feedback, generates tr
 
 - **Warm-up Mode**: Generate trading signals using simple heuristics when no trained model exists
 - **Model Training**: Train ML models from order execution feedback using scikit-learn and XGBoost
-- **Signal Generation**: Generate intelligent trading signals using trained models
+- **Signal Generation**: Generate intelligent trading signals using trained models with duplicate order prevention
 - **Model Versioning**: Track model versions, quality metrics, and manage model lifecycle
 - **Real-time Processing**: Async message queue processing with RabbitMQ
 - **Observability**: Structured logging with trace IDs for request flow tracking
@@ -77,6 +77,16 @@ MODEL_RETRAINING_SCHEDULE=
 # Signal Generation Configuration
 SIGNAL_GENERATION_RATE_LIMIT=60
 SIGNAL_GENERATION_BURST_ALLOWANCE=10
+
+# Open Orders Check Configuration
+# Skip signal generation if open order exists for same asset and strategy
+# Set to 'true' to prevent duplicate orders, 'false' to allow multiple signals
+SIGNAL_GENERATION_SKIP_IF_OPEN_ORDER=true
+
+# Check only opposite direction orders when skipping (e.g., skip buy signal if sell order exists)
+# Set to 'true' to check only opposite direction orders, 'false' to check all orders
+# Only used when SIGNAL_GENERATION_SKIP_IF_OPEN_ORDER=true
+SIGNAL_GENERATION_CHECK_OPPOSITE_ORDERS_ONLY=false
 
 # Warm-up Mode Configuration
 WARMUP_MODE_ENABLED=true
@@ -149,6 +159,52 @@ pytest
 ```bash
 uvicorn src.main:app --host 0.0.0.0 --port 4500 --reload
 ```
+
+## Signal Generation and Duplicate Order Prevention
+
+The model service includes a duplicate order prevention mechanism to avoid generating multiple signals for the same asset when an open order already exists. This prevents duplicate orders and helps manage risk.
+
+### Configuration
+
+The open orders check behavior is controlled by two configuration parameters:
+
+- **`SIGNAL_GENERATION_SKIP_IF_OPEN_ORDER`** (default: `true`): 
+  - When `true`, the service skips signal generation if there are existing open orders (status: `pending` or `partially_filled`) for the same asset and strategy.
+  - When `false`, the service generates signals regardless of existing orders (may result in duplicate orders).
+
+- **`SIGNAL_GENERATION_CHECK_OPPOSITE_ORDERS_ONLY`** (default: `false`):
+  - When `true`, the service only checks for opposite direction orders (e.g., skips a buy signal if a sell order exists, or vice versa).
+  - When `false`, the service checks for any open order regardless of direction (more conservative approach).
+  - Only used when `SIGNAL_GENERATION_SKIP_IF_OPEN_ORDER=true`.
+
+### Behavior Examples
+
+1. **Default Behavior** (`SIGNAL_GENERATION_SKIP_IF_OPEN_ORDER=true`, `SIGNAL_GENERATION_CHECK_OPPOSITE_ORDERS_ONLY=false`):
+   - If any open order exists for an asset, signal generation is skipped.
+   - Example: A buy signal for BTCUSDT is skipped if there's already a pending buy or sell order for BTCUSDT.
+
+2. **Opposite Orders Only** (`SIGNAL_GENERATION_SKIP_IF_OPEN_ORDER=true`, `SIGNAL_GENERATION_CHECK_OPPOSITE_ORDERS_ONLY=true`):
+   - Only opposite direction orders prevent signal generation.
+   - Example: A buy signal for BTCUSDT is skipped only if there's a pending sell order for BTCUSDT (buy orders don't block buy signals).
+
+3. **Disabled** (`SIGNAL_GENERATION_SKIP_IF_OPEN_ORDER=false`):
+   - Signal generation proceeds regardless of existing orders (may result in multiple orders for the same asset).
+
+### Monitoring
+
+Signal skip events are tracked and can be viewed via the monitoring API:
+
+```bash
+GET /api/v1/monitoring/signals/skip-metrics?asset=BTCUSDT&strategy_id=momentum_v1
+```
+
+This endpoint provides:
+- Total count of skipped signals
+- Breakdown by asset and strategy
+- Breakdown by skip reason
+- Timestamp of last metrics reset
+
+Skip events are also logged with structured logging including asset, strategy_id, existing_order_id, order_status, and reason.
 
 ## API Endpoints
 
@@ -434,6 +490,41 @@ Get detailed system health information.
   "model_storage_accessible": true,
   "active_models": 2,
   "warmup_mode_enabled": false
+}
+```
+
+#### Get Signal Skip Metrics
+
+```bash
+GET /api/v1/monitoring/signals/skip-metrics?asset={asset}&strategy_id={strategy_id}
+```
+
+Get metrics for signal generation skipping due to open orders.
+
+**Query Parameters:**
+- `asset` (optional): Filter by trading pair symbol (e.g., 'BTCUSDT')
+- `strategy_id` (optional): Filter by trading strategy identifier
+
+**Response:**
+```json
+{
+  "total_skips": 42,
+  "by_asset_strategy": {
+    "momentum_v1:BTCUSDT": {
+      "strategy_id": "momentum_v1",
+      "asset": "BTCUSDT",
+      "total_skips": 25,
+      "by_reason": {
+        "Open order exists for asset BTCUSDT": 20,
+        "Open sell order exists for asset BTCUSDT": 5
+      }
+    }
+  },
+  "by_reason": {
+    "Open order exists for asset BTCUSDT": 30,
+    "Open sell order exists for asset BTCUSDT": 12
+  },
+  "last_reset": "2025-01-27T10:00:00Z"
 }
 ```
 

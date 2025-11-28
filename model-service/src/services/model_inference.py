@@ -175,11 +175,15 @@ class ModelInference:
                 features["entry_price"] = market_snapshot.price
                 features["price_vs_entry"] = 0.0
 
-            # Order features
-            open_orders = order_position_state.get_orders_for_asset(asset) if hasattr(order_position_state, "get_orders_for_asset") else []
-            features["open_orders_count"] = len(open_orders)
-            features["pending_buy_orders"] = len([o for o in open_orders if o.side == "BUY" and o.status == "pending"])
-            features["pending_sell_orders"] = len([o for o in open_orders if o.side == "SELL" and o.status == "pending"])
+            # Open orders features (must match feature_engineer logic for consistency)
+            asset_orders = [
+                order
+                for order in order_position_state.orders
+                if order.asset == asset and order.status in ("pending", "partially_filled")
+            ]
+            features["open_orders_count"] = len(asset_orders)
+            features["pending_buy_orders"] = len([o for o in asset_orders if o.side.upper() == "BUY"])
+            features["pending_sell_orders"] = len([o for o in asset_orders if o.side.upper() == "SELL"])
 
             # Total exposure
             total_exposure = order_position_state.get_total_exposure(asset)

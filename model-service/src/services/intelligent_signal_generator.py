@@ -19,6 +19,7 @@ from ..database.repositories.position_state_repo import PositionStateRepository
 from ..config.settings import settings
 from ..config.logging import get_logger, bind_context
 from ..config.exceptions import ModelInferenceError, SignalValidationError
+from ..services.signal_skip_metrics import signal_skip_metrics
 
 logger = get_logger(__name__)
 
@@ -74,6 +75,39 @@ class IntelligentSignalGenerator:
             logger.warning("Signal generation rate limited", asset=asset, strategy_id=strategy_id, reason=reason)
             return None
 
+        # Get order/position state early (needed for both open order check and feature engineering)
+        order_position_state = await self.position_state_repo.get_order_position_state(
+            strategy_id=strategy_id,
+            asset=asset,
+        )
+
+        # Check for open orders if configured (before inference)
+        # If check_opposite_orders_only is true, we'll check again after determining signal_type
+        if settings.signal_generation_skip_if_open_order and not settings.signal_generation_check_opposite_orders_only:
+            open_order_check = await self._check_open_orders_for_state(
+                order_position_state=order_position_state,
+                asset=asset,
+                strategy_id=strategy_id,
+            )
+            if open_order_check["should_skip"]:
+                reason = open_order_check.get("reason", "open_order_exists")
+                # Record skip metrics
+                signal_skip_metrics.record_skip(
+                    asset=asset,
+                    strategy_id=strategy_id,
+                    reason=reason,
+                )
+                logger.info(
+                    "Skipping signal generation due to open order",
+                    asset=asset,
+                    strategy_id=strategy_id,
+                    existing_order_id=open_order_check.get("existing_order_id"),
+                    order_status=open_order_check.get("order_status"),
+                    reason=reason,
+                    trace_id=trace_id,
+                )
+                return None
+
         try:
             # Load model
             if model_version:
@@ -84,12 +118,6 @@ class IntelligentSignalGenerator:
             if not model:
                 logger.warning("No active model available", asset=asset, strategy_id=strategy_id, model_version=model_version)
                 return None
-
-            # Get order/position state
-            order_position_state = await self.position_state_repo.get_order_position_state(
-                strategy_id=strategy_id,
-                asset=asset,
-            )
 
             # Get market data snapshot at inference time
             market_data_snapshot = model_inference.get_market_data_snapshot(asset)
@@ -121,6 +149,34 @@ class IntelligentSignalGenerator:
 
             # Determine signal type from prediction
             signal_type = self._determine_signal_type(prediction_result)
+
+            # Check for opposite orders if configured (after determining signal_type)
+            if settings.signal_generation_skip_if_open_order and settings.signal_generation_check_opposite_orders_only:
+                open_order_check = await self._check_open_orders_for_state(
+                    order_position_state=order_position_state,
+                    asset=asset,
+                    strategy_id=strategy_id,
+                    signal_type=signal_type,
+                )
+                if open_order_check["should_skip"]:
+                    reason = open_order_check.get("reason", "opposite_order_exists")
+                    # Record skip metrics
+                    signal_skip_metrics.record_skip(
+                        asset=asset,
+                        strategy_id=strategy_id,
+                        reason=reason,
+                    )
+                    logger.info(
+                        "Skipping signal generation due to opposite open order",
+                        asset=asset,
+                        strategy_id=strategy_id,
+                        signal_type=signal_type,
+                        existing_order_id=open_order_check.get("existing_order_id"),
+                        order_status=open_order_check.get("order_status"),
+                        reason=reason,
+                        trace_id=trace_id,
+                    )
+                    return None
 
             # Calculate order amount
             amount = self._calculate_amount(asset, order_position_state, market_data_snapshot, confidence)
@@ -186,6 +242,63 @@ class IntelligentSignalGenerator:
         except Exception as e:
             logger.error("Error generating intelligent signal", asset=asset, strategy_id=strategy_id, error=str(e), exc_info=True)
             return None
+
+    async def _check_open_orders_for_state(
+        self,
+        order_position_state: OrderPositionState,
+        asset: str,
+        strategy_id: str,
+        signal_type: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Check if there are open orders that should prevent signal generation.
+
+        Args:
+            order_position_state: Order position state (already fetched)
+            asset: Trading pair symbol
+            strategy_id: Trading strategy identifier
+            signal_type: Signal type ('buy' or 'sell') - None means check all orders
+
+        Returns:
+            Dictionary with:
+                - should_skip: bool - whether to skip signal generation
+                - reason: str - reason for skipping (if should_skip is True)
+                - existing_order_id: str - ID of existing order (if found)
+                - order_status: str - status of existing order (if found)
+        """
+        # Filter open orders (pending or partially filled) for the asset
+        open_orders = [
+            order
+            for order in order_position_state.orders
+            if order.status in ("pending", "partially_filled") and order.asset == asset
+        ]
+
+        if not open_orders:
+            return {"should_skip": False}
+
+        # If checking opposite orders only, filter by signal direction
+        if settings.signal_generation_check_opposite_orders_only and signal_type:
+            opposite_side = "SELL" if signal_type.lower() == "buy" else "BUY"
+            matching_orders = [order for order in open_orders if order.side.upper() == opposite_side]
+            if not matching_orders:
+                return {"should_skip": False}
+            # Use the first matching order for logging
+            existing_order = matching_orders[0]
+            return {
+                "should_skip": True,
+                "reason": f"Open {opposite_side.lower()} order exists for asset {asset}",
+                "existing_order_id": existing_order.order_id,
+                "order_status": existing_order.status,
+            }
+
+        # Check all orders (default behavior)
+        existing_order = open_orders[0]
+        return {
+            "should_skip": True,
+            "reason": f"Open order exists for asset {asset}",
+            "existing_order_id": existing_order.order_id,
+            "order_status": existing_order.status,
+        }
 
     def _determine_signal_type(self, prediction_result: Dict[str, Any]) -> str:
         """

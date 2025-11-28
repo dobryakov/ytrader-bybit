@@ -13,6 +13,7 @@ import numpy as np
 
 from ..models.execution_event import OrderExecutionEvent
 from ..models.signal import MarketDataSnapshot
+from ..models.position_state import OrderPositionState
 from ..config.logging import get_logger
 
 logger = get_logger(__name__)
@@ -29,6 +30,7 @@ class FeatureEngineer:
         self,
         execution_events: List[OrderExecutionEvent],
         signal_market_data: Optional[Dict[str, MarketDataSnapshot]] = None,
+        order_position_state: Optional[OrderPositionState] = None,
     ) -> pd.DataFrame:
         """
         Engineer features from execution events and market data.
@@ -37,6 +39,8 @@ class FeatureEngineer:
             execution_events: List of order execution events
             signal_market_data: Optional dictionary mapping signal_id to MarketDataSnapshot
                                (for market state at decision time)
+            order_position_state: Optional order position state at event time
+                                 (for open orders features)
 
         Returns:
             DataFrame with engineered features (one row per execution event)
@@ -70,7 +74,7 @@ class FeatureEngineer:
                 )
 
             # Engineer features for this event
-            features = self._engineer_event_features(event, market_snapshot)
+            features = self._engineer_event_features(event, market_snapshot, order_position_state)
             features_list.append(features)
 
         # Convert to DataFrame
@@ -79,7 +83,10 @@ class FeatureEngineer:
         return features_df
 
     def _engineer_event_features(
-        self, event: OrderExecutionEvent, market_snapshot: MarketDataSnapshot
+        self,
+        event: OrderExecutionEvent,
+        market_snapshot: MarketDataSnapshot,
+        order_position_state: Optional[OrderPositionState] = None,
     ) -> Dict[str, Any]:
         """
         Engineer features for a single execution event.
@@ -87,6 +94,7 @@ class FeatureEngineer:
         Args:
             event: Order execution event
             market_snapshot: Market data snapshot at decision time
+            order_position_state: Optional order position state at event time
 
         Returns:
             Dictionary of feature names to values
@@ -194,6 +202,23 @@ class FeatureEngineer:
         features["volume_change"] = event.market_conditions.volume_24h - market_snapshot.volume_24h
         features["volatility_change"] = event.market_conditions.volatility - market_snapshot.volatility
 
+        # Open orders features (from order position state)
+        if order_position_state:
+            # Filter open orders for the event's asset
+            asset_orders = [
+                order
+                for order in order_position_state.orders
+                if order.asset == event.asset and order.status in ("pending", "partially_filled")
+            ]
+            features["open_orders_count"] = len(asset_orders)
+            features["pending_buy_orders"] = len([o for o in asset_orders if o.side.upper() == "BUY"])
+            features["pending_sell_orders"] = len([o for o in asset_orders if o.side.upper() == "SELL"])
+        else:
+            # Default values when order position state not available
+            features["open_orders_count"] = 0
+            features["pending_buy_orders"] = 0
+            features["pending_sell_orders"] = 0
+
         return features
 
     def get_feature_names(self) -> List[str]:
@@ -244,6 +269,9 @@ class FeatureEngineer:
             "spread_change",
             "volume_change",
             "volatility_change",
+            "open_orders_count",
+            "pending_buy_orders",
+            "pending_sell_orders",
         ]
 
 

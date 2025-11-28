@@ -55,6 +55,8 @@ class Settings(BaseSettings):
     # Signal Generation Configuration
     signal_generation_rate_limit: int = Field(default=60, alias="SIGNAL_GENERATION_RATE_LIMIT")
     signal_generation_burst_allowance: int = Field(default=10, alias="SIGNAL_GENERATION_BURST_ALLOWANCE")
+    signal_generation_skip_if_open_order: bool = Field(default=True, alias="SIGNAL_GENERATION_SKIP_IF_OPEN_ORDER")
+    signal_generation_check_opposite_orders_only: bool = Field(default=False, alias="SIGNAL_GENERATION_CHECK_OPPOSITE_ORDERS_ONLY")
 
     # Warm-up Mode Configuration
     warmup_mode_enabled: bool = Field(default=True, alias="WARMUP_MODE_ENABLED")

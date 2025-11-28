@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from ..database.repositories.model_version_repo import ModelVersionRepository
 from ..database.connection import db_pool
 from ..config.logging import get_logger
+from ..services.signal_skip_metrics import signal_skip_metrics
 
 logger = get_logger(__name__)
 
@@ -60,6 +61,15 @@ class StrategyPerformanceTimeSeries(BaseModel):
     start_time: str
     end_time: str
     data_points: List[StrategyPerformanceDataPoint]
+
+
+class SignalSkipMetricsResponse(BaseModel):
+    """Signal skip metrics response."""
+
+    total_skips: int
+    by_asset_strategy: dict
+    by_reason: dict
+    last_reset: str
 
 
 @router.get("/monitoring/models/performance", response_model=ModelPerformanceMetrics)
@@ -303,5 +313,34 @@ async def get_strategy_performance_time_series(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid time format: {str(e)}")
     except Exception as e:
         logger.error("Failed to get strategy performance time-series", strategy_id=strategy_id, error=str(e), exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+
+@router.get("/monitoring/signals/skip-metrics", response_model=SignalSkipMetricsResponse)
+async def get_signal_skip_metrics(
+    asset: Optional[str] = Query(None, description="Filter by asset"),
+    strategy_id: Optional[str] = Query(None, description="Filter by strategy ID"),
+) -> SignalSkipMetricsResponse:
+    """
+    Get metrics for signal generation skipping.
+
+    Args:
+        asset: Optional asset filter
+        strategy_id: Optional strategy filter
+
+    Returns:
+        Signal skip metrics including counts by asset/strategy and reason
+    """
+    try:
+        metrics = signal_skip_metrics.get_metrics(asset=asset, strategy_id=strategy_id)
+        logger.info(
+            "Retrieved signal skip metrics",
+            total_skips=metrics["total_skips"],
+            asset=asset,
+            strategy_id=strategy_id,
+        )
+        return SignalSkipMetricsResponse(**metrics)
+    except Exception as e:
+        logger.error("Failed to get signal skip metrics", error=str(e), exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
