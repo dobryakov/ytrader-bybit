@@ -18,6 +18,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY src/ ./src/
 COPY migrations/ ./migrations/
 COPY tests/ ./tests/
+COPY compare_balances.py ./
 
 # Expose port (non-standard, configured via env)
 EXPOSE 4400
