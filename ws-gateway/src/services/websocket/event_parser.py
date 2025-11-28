@@ -107,16 +107,27 @@ def parse_events_from_message(
         return events
 
     received_at = dt.datetime.utcnow()
-    ts = _parse_timestamp(message.get("ts")) or received_at
+    # Wallet messages use "creationTime" instead of "ts"
+    ts = _parse_timestamp(message.get("ts") or message.get("creationTime")) or received_at
 
     # Normalise to list
     data_items = data if isinstance(data, list) else [data]
 
-    for item in data_items:
-        payload = dict(item)
-        # Common payload enrichment
-        payload.setdefault("topic", topic)
-
+    # For wallet/balance messages, preserve the full data structure in payload
+    # so balance_service can parse the coin array correctly
+    if subscription.channel_type == "balance":
+        # For balance events, wrap the entire data array in the payload
+        # This allows balance_service to access data[0].coin[] structure
+        payload = {
+            "data": data_items,
+            "topic": topic,
+        }
+        # Also include top-level message fields that might be useful
+        if "id" in message:
+            payload["id"] = message["id"]
+        if "creationTime" in message:
+            payload["creationTime"] = message["creationTime"]
+        
         event = Event.create(
             event_type=subscription.channel_type,
             topic=topic,
@@ -125,6 +136,21 @@ def parse_events_from_message(
             trace_id=trace_id,
         )
         events.append(event)
+    else:
+        # For other event types, create one event per data item
+        for item in data_items:
+            payload = dict(item)
+            # Common payload enrichment
+            payload.setdefault("topic", topic)
+
+            event = Event.create(
+                event_type=subscription.channel_type,
+                topic=topic,
+                timestamp=ts,
+                payload=payload,
+                trace_id=trace_id,
+            )
+            events.append(event)
 
     logger.info(
         "events_parsed",

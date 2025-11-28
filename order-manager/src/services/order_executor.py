@@ -50,7 +50,7 @@ class OrderExecutor:
         trace_id = trace_id or signal.trace_id
         signal_id = signal.signal_id
         asset = signal.asset
-        side = "Buy" if signal.signal_type.lower() == "buy" else "SELL"
+        side = "Buy" if signal.signal_type.lower() == "buy" else "Sell"
 
         logger.info(
             "order_creation_started",
@@ -195,7 +195,6 @@ class OrderExecutor:
                             event_type="rejected",
                             trace_id=trace_id,
                             rejection_reason=f"Bybit API error 110007: {ret_msg}",
-                            error_type="insufficient_balance",
                         )
                     
                     raise OrderExecutionError(error_msg)
@@ -598,7 +597,7 @@ class OrderExecutor:
 
         selector = OrderTypeSelector()
         asset = signal.asset
-        side = "Buy" if signal.signal_type.lower() == "buy" else "SELL"
+        side = "Buy" if signal.signal_type.lower() == "buy" else "Sell"
 
         params = {
             "category": "linear",
@@ -699,7 +698,7 @@ class OrderExecutor:
         """
         try:
             pool = await DatabaseConnection.get_pool()
-            side = "Buy" if signal.signal_type.lower() == "buy" else "SELL"
+            side = "Buy" if signal.signal_type.lower() == "buy" else "Sell"
             status = "dry_run" if is_dry_run else "pending"
 
             query = """
@@ -1132,11 +1131,11 @@ class OrderExecutor:
         # Round to reasonable precision (6 decimal places for most cryptocurrencies)
         reduced_quantity = reduced_quantity.quantize(Decimal("0.000001"), rounding="ROUND_DOWN")
         
-            logger.info(
-                "order_reduction_calculated",
-                signal_id=str(signal_id),
-                asset=asset,
-                required_currency=required_currency,
+        logger.info(
+            "order_reduction_calculated",
+            signal_id=str(signal_id),
+            asset=asset,
+            required_currency=required_currency,
                 original_quantity=float(original_quantity),
                 reduced_quantity=float(reduced_quantity),
                 available_balance=float(available_balance),
@@ -1261,7 +1260,7 @@ class OrderExecutor:
         """
         try:
             pool = await DatabaseConnection.get_pool()
-            side = "Buy" if signal.signal_type.lower() == "buy" else "SELL"
+            side = "Buy" if signal.signal_type.lower() == "buy" else "Sell"
             
             # Validate rejection_reason is not empty
             if not rejection_reason or not rejection_reason.strip():
