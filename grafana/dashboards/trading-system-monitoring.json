@@ -154,6 +154,187 @@
           }
         ]
       }
+    },
+    {
+      "id": 2,
+      "title": "Order Execution",
+      "type": "table",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "PostgreSQL"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT\n    o.order_id,\n    e.signal_id,\n    e.asset,\n    e.side,\n    e.execution_price,\n    e.execution_quantity,\n    e.execution_fees,\n    e.executed_at,\n    o.status as closure_status\nFROM execution_events e\nLEFT JOIN orders o ON e.signal_id = o.signal_id\nORDER BY e.executed_at DESC\nLIMIT 100;",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "executed_at"
+          }
+        ]
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "displayMode": "auto"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "execution_price"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "execution_quantity"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "decimals",
+                "value": 4
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "execution_fees"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              },
+              {
+                "id": "decimals",
+                "value": 4
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "executed_at"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeFromNow"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "closure_status"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "filled": {
+                        "color": "green",
+                        "index": 0,
+                        "text": "Filled"
+                      },
+                      "cancelled": {
+                        "color": "yellow",
+                        "index": 1,
+                        "text": "Cancelled"
+                      },
+                      "rejected": {
+                        "color": "red",
+                        "index": 2,
+                        "text": "Rejected"
+                      },
+                      "pending": {
+                        "color": "blue",
+                        "index": 3,
+                        "text": "Pending"
+                      }
+                    },
+                    "type": "value"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "side"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "buy": {
+                        "color": "green",
+                        "index": 0,
+                        "text": "Buy"
+                      },
+                      "sell": {
+                        "color": "red",
+                        "index": 1,
+                        "text": "Sell"
+                      }
+                    },
+                    "type": "value"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "maxDataPoints": 100,
+      "interval": "60s"
     }
   ],
   "refresh": "60s",
