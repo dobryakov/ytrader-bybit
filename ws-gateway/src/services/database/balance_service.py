@@ -8,7 +8,9 @@ from typing import Any, Dict, Optional
 from ...config.logging import get_logger
 from ...exceptions import DatabaseError
 from ...models.account_balance import AccountBalance
+from ...models.account_margin_balance import AccountMarginBalance
 from ...models.event import Event
+from .account_margin_balance_repository import AccountMarginBalanceRepository
 from .balance_repository import BalanceRepository
 
 logger = get_logger(__name__)
@@ -202,6 +204,13 @@ class BalanceService:
                         # If calculation fails, default to 0
                         available_balance = Decimal(0)
                 
+                # Parse additional fields
+                equity = coin_data.get("equity")
+                usd_value = coin_data.get("usdValue")
+                margin_collateral = coin_data.get("marginCollateral", False)
+                total_order_im = coin_data.get("totalOrderIM", 0)
+                total_position_im = coin_data.get("totalPositionIM", 0)
+                
                 # Parse decimal values
                 try:
                     wallet_balance_decimal = Decimal(str(wallet_balance)) if wallet_balance else Decimal(0)
@@ -211,6 +220,10 @@ class BalanceService:
                     else:
                         available_balance_decimal = Decimal(str(available_balance)) if available_balance else Decimal(0)
                     frozen_decimal = Decimal(str(frozen)) if frozen else Decimal(0)
+                    equity_decimal = Decimal(str(equity)) if equity and equity != "" else None
+                    usd_value_decimal = Decimal(str(usd_value)) if usd_value and usd_value != "" else None
+                    total_order_im_decimal = Decimal(str(total_order_im)) if total_order_im and total_order_im != "" else Decimal(0)
+                    total_position_im_decimal = Decimal(str(total_position_im)) if total_position_im and total_position_im != "" else Decimal(0)
                 except (InvalidOperation, ValueError, TypeError) as e:
                     logger.warning(
                         "balance_parse_invalid_decimal",
@@ -224,7 +237,7 @@ class BalanceService:
                     )
                     continue
                 
-                # Create AccountBalance instance
+                # Create AccountBalance instance with additional fields
                 balance = AccountBalance.create(
                     coin=str(coin),  # Ensure it's a string
                     wallet_balance=wallet_balance_decimal,
@@ -232,10 +245,100 @@ class BalanceService:
                     frozen=frozen_decimal,
                     event_timestamp=event.timestamp,
                     trace_id=event.trace_id,
+                    equity=equity_decimal,
+                    usd_value=usd_value_decimal,
+                    margin_collateral=bool(margin_collateral) if margin_collateral is not None else False,
+                    total_order_im=total_order_im_decimal,
+                    total_position_im=total_position_im_decimal,
                 )
                 balances.append(balance)
         
         return balances
+
+    @staticmethod
+    def _parse_account_margin_balance_from_event(event: Event) -> Optional[AccountMarginBalance]:
+        """Parse AccountMarginBalance from an Event payload.
+        
+        Extracts account-level margin and balance information from Bybit wallet message.
+        
+        Args:
+            event: Event with event_type='balance' and balance data in payload
+            
+        Returns:
+            AccountMarginBalance instance if parsing succeeds, None otherwise
+        """
+        payload = event.payload
+        data = payload.get("data")
+        
+        if not isinstance(data, list) or len(data) == 0:
+            return None
+        
+        # Get account-level data from first entry
+        account_data = data[0]
+        
+        account_type = account_data.get("accountType", "")
+        total_equity = account_data.get("totalEquity", 0)
+        total_wallet_balance = account_data.get("totalWalletBalance", 0)
+        total_margin_balance = account_data.get("totalMarginBalance", 0)
+        total_available_balance = account_data.get("totalAvailableBalance", 0)
+        total_initial_margin = account_data.get("totalInitialMargin", 0)
+        total_maintenance_margin = account_data.get("totalMaintenanceMargin", 0)
+        total_order_im = account_data.get("totalOrderIM", 0) or account_data.get("totalOrderIMByMp", 0) or 0
+        
+        # Determine base currency for margin
+        # For unified accounts, find the coin with highest usdValue and marginCollateral=true
+        base_currency = "USDT"  # Default
+        if account_type == "UNIFIED":
+            coins = account_data.get("coin", [])
+            if isinstance(coins, list) and len(coins) > 0:
+                max_usd_value = Decimal(0)
+                for coin_data in coins:
+                    if isinstance(coin_data, dict):
+                        margin_collateral = coin_data.get("marginCollateral", False)
+                        usd_value_str = coin_data.get("usdValue", "0")
+                        if margin_collateral and usd_value_str:
+                            try:
+                                usd_value = Decimal(str(usd_value_str))
+                                if usd_value > max_usd_value:
+                                    max_usd_value = usd_value
+                                    base_currency = str(coin_data.get("coin", "USDT"))
+                            except (InvalidOperation, ValueError, TypeError):
+                                pass
+        
+        # Parse decimal values
+        try:
+            total_equity_decimal = Decimal(str(total_equity)) if total_equity else Decimal(0)
+            total_wallet_balance_decimal = Decimal(str(total_wallet_balance)) if total_wallet_balance else Decimal(0)
+            total_margin_balance_decimal = Decimal(str(total_margin_balance)) if total_margin_balance else Decimal(0)
+            total_available_balance_decimal = Decimal(str(total_available_balance)) if total_available_balance else Decimal(0)
+            total_initial_margin_decimal = Decimal(str(total_initial_margin)) if total_initial_margin else Decimal(0)
+            total_maintenance_margin_decimal = Decimal(str(total_maintenance_margin)) if total_maintenance_margin else Decimal(0)
+            total_order_im_decimal = Decimal(str(total_order_im)) if total_order_im else Decimal(0)
+        except (InvalidOperation, ValueError, TypeError) as e:
+            logger.warning(
+                "margin_balance_parse_invalid_decimal",
+                event_id=str(event.event_id),
+                trace_id=event.trace_id,
+                error=str(e),
+            )
+            return None
+        
+        # Create AccountMarginBalance instance
+        margin_balance = AccountMarginBalance.create(
+            account_type=str(account_type),
+            total_equity=total_equity_decimal,
+            total_wallet_balance=total_wallet_balance_decimal,
+            total_margin_balance=total_margin_balance_decimal,
+            total_available_balance=total_available_balance_decimal,
+            total_initial_margin=total_initial_margin_decimal,
+            total_maintenance_margin=total_maintenance_margin_decimal,
+            total_order_im=total_order_im_decimal,
+            base_currency=base_currency,
+            event_timestamp=event.timestamp,
+            trace_id=event.trace_id,
+        )
+        
+        return margin_balance
 
     @staticmethod
     async def persist_balance_from_event(event: Event) -> bool:
@@ -268,6 +371,37 @@ class BalanceService:
             return False
 
         try:
+            # Parse account-level margin balance first
+            margin_balance = BalanceService._parse_account_margin_balance_from_event(event)
+            if margin_balance:
+                try:
+                    if margin_balance.validate():
+                        await AccountMarginBalanceRepository.create_margin_balance(margin_balance)
+                        logger.info(
+                            "account_margin_balance_persisted",
+                            event_id=str(event.event_id),
+                            balance_id=str(margin_balance.id),
+                            account_type=margin_balance.account_type,
+                            base_currency=margin_balance.base_currency,
+                            total_available_balance=str(margin_balance.total_available_balance),
+                            trace_id=event.trace_id,
+                        )
+                    else:
+                        logger.warning(
+                            "account_margin_balance_validation_failed",
+                            event_id=str(event.event_id),
+                            trace_id=event.trace_id,
+                        )
+                except Exception as e:
+                    logger.error(
+                        "account_margin_balance_persist_error",
+                        event_id=str(event.event_id),
+                        trace_id=event.trace_id,
+                        error=str(e),
+                        error_type=type(e).__name__,
+                    )
+                    # Continue with coin balances even if margin balance fails
+            
             # Parse all balances from event (wallet messages contain multiple coins)
             balances = BalanceService._parse_all_balances_from_event(event)
             if not balances:

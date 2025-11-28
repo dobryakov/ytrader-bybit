@@ -4,9 +4,11 @@ from decimal import Decimal
 from typing import Optional
 
 from ..config.settings import settings
+from ..config.database import DatabaseConnection
 from ..config.logging import get_logger
 from ..models.trading_signal import TradingSignal
 from ..models.position import Position
+from ..services.position_manager import PositionManager
 from ..utils.bybit_client import get_bybit_client
 from ..exceptions import RiskLimitError, OrderExecutionError
 
@@ -21,6 +23,7 @@ class RiskManager:
         self.max_position_size = Decimal(str(settings.order_manager_max_position_size))
         self.max_exposure = Decimal(str(settings.order_manager_max_exposure))
         self.max_order_size_ratio = Decimal(str(settings.order_manager_max_order_size_ratio))
+        self.position_manager = PositionManager()
 
     async def check_balance(self, signal: TradingSignal, order_quantity: Decimal, order_price: Decimal) -> bool:
         """Check if sufficient balance is available for order.
@@ -219,39 +222,155 @@ class RiskManager:
                     )
                     raise RiskLimitError(error_msg)
             else:
-                # Sell orders need base currency (e.g., BTC)
-                # Extract base currency from trading pair (e.g., BTCUSDT -> BTC)
-                base_currency = self._extract_base_currency(signal.asset)
-                required_balance = order_quantity  # For sell, required balance is quantity in base currency
+                # Sell orders: check position first
+                position = await self.position_manager.get_position(signal.asset)
+                has_position = position is not None
+                position_size = position.size if position else Decimal("0")
+                has_long_position = has_position and position_size > 0
                 
-                # Get base currency balance from account
-                base_currency_balance = self._get_coin_balance(account, base_currency)
-                available_balance = base_currency_balance
-                currency = base_currency
-                
-                if required_balance > available_balance:
-                    shortfall = required_balance - available_balance
-                    shortfall_percentage = (shortfall / required_balance) * 100 if required_balance > 0 else 0
-                    error_msg = (
-                        f"Insufficient balance: required={required_balance} {currency}, "
-                        f"available={available_balance} {currency}, shortfall={shortfall} {currency} ({shortfall_percentage:.2f}%)"
-                    )
-                    logger.error(
-                        "balance_check_failed",
+                if has_long_position:
+                    # Have long position - can use reduce_only (no margin needed)
+                    logger.info(
+                        "balance_check_passed_sell_with_long_position",
                         signal_id=str(signal.signal_id),
                         asset=signal.asset,
-                        signal_type=signal.signal_type,
-                        required=float(required_balance),
-                        available=float(available_balance),
-                        shortfall=float(shortfall),
-                        shortfall_percentage=float(shortfall_percentage),
-                        order_quantity=float(order_quantity),
-                        order_price=float(order_price),
-                        currency=currency,
-                        error_type="RiskLimitError",
+                        position_size=float(position_size),
+                        reason="Long position exists, can use reduce_only, margin not required",
                         trace_id=trace_id,
                     )
-                    raise RiskLimitError(error_msg)
+                    return True
+                
+                # No long position - need margin in base currency (usually USDT)
+                # Get margin from database
+                try:
+                    pool = await DatabaseConnection.get_pool()
+                    query = """
+                        SELECT total_available_balance, base_currency, received_at
+                        FROM account_margin_balances
+                        ORDER BY received_at DESC
+                        LIMIT 1
+                    """
+                    row = await pool.fetchrow(query)
+                    
+                    if row is None:
+                        logger.warning(
+                            "balance_check_no_margin_data_fallback_to_api",
+                            signal_id=str(signal.signal_id),
+                            asset=signal.asset,
+                            reason="Margin data not in database, using API response",
+                            trace_id=trace_id,
+                        )
+                        # Fallback to using totalAvailableBalance from API
+                        # Note: This assumes USDT, but may need adjustment for other currencies
+                        available_margin = usdt_balance
+                        base_currency_margin = "USDT"
+                        # Try to determine actual base currency from account data
+                        account = list_data[0] if list_data else None
+                        if account:
+                            coins = account.get("coin", [])
+                            if isinstance(coins, list):
+                                for coin_data in coins:
+                                    if isinstance(coin_data, dict):
+                                        margin_collateral = coin_data.get("marginCollateral", False)
+                                        usd_value = coin_data.get("usdValue", 0)
+                                        if margin_collateral and usd_value:
+                                            try:
+                                                usd_val = Decimal(str(usd_value))
+                                                if usd_val > 0:
+                                                    base_currency_margin = str(coin_data.get("coin", "USDT"))
+                                                    # Try to get balance for this currency
+                                                    available_value = coin_data.get("availableToWithdraw", "")
+                                                    if not available_value or available_value == "":
+                                                        available_value = coin_data.get("walletBalance", "0")
+                                                    if available_value and available_value != "":
+                                                        try:
+                                                            available_margin = Decimal(str(available_value))
+                                                            break
+                                                        except (ValueError, TypeError):
+                                                            pass
+                                            except (ValueError, TypeError):
+                                                pass
+                    else:
+                        available_margin = Decimal(str(row["total_available_balance"]))
+                        base_currency_margin = str(row["base_currency"]) or "USDT"
+                    
+                    # Calculate required margin: order value in base currency
+                    required_margin = order_quantity * order_price
+                    
+                    if required_margin > available_margin:
+                        shortfall = required_margin - available_margin
+                        shortfall_percentage = (shortfall / required_margin) * 100 if required_margin > 0 else 0
+                        error_msg = (
+                            f"Insufficient margin: required={required_margin} {base_currency_margin}, "
+                            f"available={available_margin} {base_currency_margin}, "
+                            f"shortfall={shortfall} {base_currency_margin} ({shortfall_percentage:.2f}%)"
+                        )
+                        logger.error(
+                            "balance_check_failed",
+                            signal_id=str(signal.signal_id),
+                            asset=signal.asset,
+                            signal_type=signal.signal_type,
+                            required=float(required_margin),
+                            available=float(available_margin),
+                            shortfall=float(shortfall),
+                            shortfall_percentage=float(shortfall_percentage),
+                            order_quantity=float(order_quantity),
+                            order_price=float(order_price),
+                            currency=base_currency_margin,
+                            error_type="RiskLimitError",
+                            trace_id=trace_id,
+                        )
+                        raise RiskLimitError(error_msg)
+                    
+                    logger.info(
+                        "balance_check_passed",
+                        signal_id=str(signal.signal_id),
+                        required=float(required_margin),
+                        available=float(available_margin),
+                        currency=base_currency_margin,
+                        trace_id=trace_id,
+                    )
+                    return True
+                    
+                except Exception as e:
+                    logger.error(
+                        "balance_check_margin_retrieval_failed",
+                        signal_id=str(signal.signal_id),
+                        asset=signal.asset,
+                        error=str(e),
+                        trace_id=trace_id,
+                        exc_info=True,
+                    )
+                    # Fallback to original logic
+                    base_currency = self._extract_base_currency(signal.asset)
+                    required_balance = order_quantity
+                    base_currency_balance = self._get_coin_balance(account, base_currency)
+                    available_balance = base_currency_balance
+                    currency = base_currency
+                    
+                    if required_balance > available_balance:
+                        shortfall = required_balance - available_balance
+                        shortfall_percentage = (shortfall / required_balance) * 100 if required_balance > 0 else 0
+                        error_msg = (
+                            f"Insufficient balance: required={required_balance} {currency}, "
+                            f"available={available_balance} {currency}, shortfall={shortfall} {currency} ({shortfall_percentage:.2f}%)"
+                        )
+                        logger.error(
+                            "balance_check_failed",
+                            signal_id=str(signal.signal_id),
+                            asset=signal.asset,
+                            signal_type=signal.signal_type,
+                            required=float(required_balance),
+                            available=float(available_balance),
+                            shortfall=float(shortfall),
+                            shortfall_percentage=float(shortfall_percentage),
+                            order_quantity=float(order_quantity),
+                            order_price=float(order_price),
+                            currency=currency,
+                            error_type="RiskLimitError",
+                            trace_id=trace_id,
+                        )
+                        raise RiskLimitError(error_msg)
 
             logger.info(
                 "balance_check_passed",

@@ -32,9 +32,10 @@ class BalanceRepository:
         query = """
             INSERT INTO account_balances (
                 id, coin, wallet_balance, available_balance, frozen,
-                event_timestamp, received_at, trace_id
+                event_timestamp, received_at, trace_id,
+                equity, usd_value, margin_collateral, total_order_im, total_position_im
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
         """
         await DatabaseConnection.execute(
             query,
@@ -46,6 +47,11 @@ class BalanceRepository:
             balance.event_timestamp,
             balance.received_at,
             balance.trace_id,
+            balance.equity,
+            balance.usd_value,
+            balance.margin_collateral,
+            balance.total_order_im,
+            balance.total_position_im,
         )
         logger.debug(
             "balance_created",
@@ -68,7 +74,8 @@ class BalanceRepository:
         """
         query = """
             SELECT id, coin, wallet_balance, available_balance, frozen,
-                   event_timestamp, received_at, trace_id
+                   event_timestamp, received_at, trace_id,
+                   equity, usd_value, margin_collateral, total_order_im, total_position_im
             FROM account_balances
             WHERE coin = $1
             ORDER BY received_at DESC
@@ -88,6 +95,11 @@ class BalanceRepository:
             event_timestamp=row["event_timestamp"],
             received_at=row["received_at"],
             trace_id=row["trace_id"],
+            equity=Decimal(str(row["equity"])) if row["equity"] is not None else None,
+            usd_value=Decimal(str(row["usd_value"])) if row["usd_value"] is not None else None,
+            margin_collateral=row["margin_collateral"] if row["margin_collateral"] is not None else False,
+            total_order_im=Decimal(str(row["total_order_im"])) if row["total_order_im"] is not None else Decimal("0"),
+            total_position_im=Decimal(str(row["total_position_im"])) if row["total_position_im"] is not None else Decimal("0"),
         )
 
     @staticmethod
@@ -125,7 +137,8 @@ class BalanceRepository:
 
         query = f"""
             SELECT id, coin, wallet_balance, available_balance, frozen,
-                   event_timestamp, received_at, trace_id
+                   event_timestamp, received_at, trace_id,
+                   equity, usd_value, margin_collateral, total_order_im, total_position_im
             FROM account_balances
             {where_clause}
             ORDER BY received_at DESC
@@ -146,6 +159,11 @@ class BalanceRepository:
                     event_timestamp=row["event_timestamp"],
                     received_at=row["received_at"],
                     trace_id=row["trace_id"],
+                    equity=Decimal(str(row["equity"])) if row["equity"] is not None else None,
+                    usd_value=Decimal(str(row["usd_value"])) if row["usd_value"] is not None else None,
+                    margin_collateral=row["margin_collateral"] if row["margin_collateral"] is not None else False,
+                    total_order_im=Decimal(str(row["total_order_im"])) if row["total_order_im"] is not None else Decimal("0"),
+                    total_position_im=Decimal(str(row["total_position_im"])) if row["total_position_im"] is not None else Decimal("0"),
                 )
             )
         return balances
@@ -162,7 +180,8 @@ class BalanceRepository:
         """
         query = """
             SELECT id, coin, wallet_balance, available_balance, frozen,
-                   event_timestamp, received_at, trace_id
+                   event_timestamp, received_at, trace_id,
+                   equity, usd_value, margin_collateral, total_order_im, total_position_im
             FROM account_balances
             WHERE id = $1
             LIMIT 1
@@ -180,5 +199,10 @@ class BalanceRepository:
             event_timestamp=row["event_timestamp"],
             received_at=row["received_at"],
             trace_id=row["trace_id"],
+            equity=Decimal(str(row["equity"])) if row["equity"] is not None else None,
+            usd_value=Decimal(str(row["usd_value"])) if row["usd_value"] is not None else None,
+            margin_collateral=row["margin_collateral"] if row["margin_collateral"] is not None else False,
+            total_order_im=Decimal(str(row["total_order_im"])) if row["total_order_im"] is not None else Decimal("0"),
+            total_position_im=Decimal(str(row["total_position_im"])) if row["total_position_im"] is not None else Decimal("0"),
         )
 

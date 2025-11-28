@@ -25,6 +25,12 @@ class AccountBalance:
     event_timestamp: datetime
     received_at: datetime
     trace_id: Optional[str] = None
+    # Additional fields for margin calculations
+    equity: Optional[Decimal] = None
+    usd_value: Optional[Decimal] = None
+    margin_collateral: bool = False
+    total_order_im: Decimal = Decimal("0")
+    total_position_im: Decimal = Decimal("0")
 
     @classmethod
     def create(
@@ -35,6 +41,11 @@ class AccountBalance:
         frozen: Decimal,
         event_timestamp: datetime,
         trace_id: Optional[str] = None,
+        equity: Optional[Decimal] = None,
+        usd_value: Optional[Decimal] = None,
+        margin_collateral: bool = False,
+        total_order_im: Decimal = Decimal("0"),
+        total_position_im: Decimal = Decimal("0"),
     ) -> "AccountBalance":
         """Factory for creating a new AccountBalance instance."""
         return cls(
@@ -46,6 +57,11 @@ class AccountBalance:
             event_timestamp=event_timestamp,
             received_at=datetime.utcnow(),
             trace_id=trace_id,
+            equity=equity,
+            usd_value=usd_value,
+            margin_collateral=margin_collateral,
+            total_order_im=total_order_im,
+            total_position_im=total_position_im,
         )
 
     def validate(self) -> bool:

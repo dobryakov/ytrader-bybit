@@ -11,6 +11,7 @@ from ..config.logging import get_logger
 from ..models.trading_signal import TradingSignal
 from ..models.order import Order
 from ..publishers.order_event_publisher import OrderEventPublisher
+from ..services.position_manager import PositionManager
 from ..utils.bybit_client import get_bybit_client
 from ..exceptions import OrderExecutionError, BybitAPIError
 
@@ -23,6 +24,7 @@ class OrderExecutor:
     def __init__(self):
         """Initialize order executor."""
         self.event_publisher = OrderEventPublisher()
+        self.position_manager = PositionManager()
 
     async def create_order(
         self,
@@ -620,9 +622,37 @@ class OrderExecutor:
         if selector.should_use_post_only(order_type):
             params["postOnly"] = True
 
-        # Note: reduce_only flag is not set here as it requires position context
-        # and should be determined by the calling service based on current position state
-        # This allows for more flexible position management strategies
+        # Set reduce_only flag based on current position
+        # For sell orders: reduce_only if we have a long position (positive size)
+        # For buy orders: reduce_only if we have a short position (negative size)
+        try:
+            position = await self.position_manager.get_position(asset)
+            if position:
+                if side == "Sell" and position.size > 0:
+                    params["reduceOnly"] = True
+                    logger.debug(
+                        "reduce_only_set_for_sell",
+                        asset=asset,
+                        position_size=float(position.size),
+                        reason="Long position exists, setting reduce_only for sell order",
+                    )
+                elif side == "Buy" and position.size < 0:
+                    params["reduceOnly"] = True
+                    logger.debug(
+                        "reduce_only_set_for_buy",
+                        asset=asset,
+                        position_size=float(position.size),
+                        reason="Short position exists, setting reduce_only for buy order",
+                    )
+        except Exception as e:
+            logger.warning(
+                "reduce_only_check_failed",
+                asset=asset,
+                side=side,
+                error=str(e),
+                reason="Failed to check position for reduce_only, continuing without it",
+            )
+            # Continue without reduce_only if position check fails
 
         return params
 
@@ -928,6 +958,230 @@ class OrderExecutor:
             )
             return None
 
+    async def _get_available_margin_from_db(
+        self, base_currency: str = "USDT", trace_id: Optional[str] = None
+    ) -> Optional[Decimal]:
+        """Get available margin from database for account-level trading.
+        
+        Args:
+            base_currency: Base currency for margin (USDT, USD, etc.)
+            trace_id: Optional trace ID for logging
+            
+        Returns:
+            Available margin in base currency, or None if not found
+        """
+        try:
+            pool = await DatabaseConnection.get_pool()
+            query = """
+                SELECT total_available_balance, base_currency, received_at
+                FROM account_margin_balances
+                ORDER BY received_at DESC
+                LIMIT 1
+            """
+            row = await pool.fetchrow(query)
+            
+            if row is None:
+                logger.debug(
+                    "margin_balance_not_found_in_db",
+                    base_currency=base_currency,
+                    trace_id=trace_id,
+                )
+                return None
+            
+            # Check if base currency matches (or use any if base_currency is provided)
+            stored_base = row.get("base_currency", "")
+            available_margin = Decimal(str(row["total_available_balance"]))
+            
+            logger.info(
+                "margin_balance_retrieved_from_db",
+                base_currency=stored_base,
+                available_margin=float(available_margin),
+                received_at=str(row["received_at"]),
+                trace_id=trace_id,
+            )
+            
+            return available_margin
+            
+        except Exception as e:
+            logger.error(
+                "margin_balance_retrieval_from_db_failed",
+                base_currency=base_currency,
+                error=str(e),
+                trace_id=trace_id,
+                exc_info=True,
+            )
+            return None
+
+    async def _get_margin_from_bybit_api(
+        self, base_currency: str = "USDT", trace_id: Optional[str] = None
+    ) -> Optional[Decimal]:
+        """Get available margin directly from Bybit API.
+        
+        This method is used as a fallback when database margin data is unavailable.
+        
+        Args:
+            base_currency: Base currency for margin (USDT, USD, etc.)
+            trace_id: Optional trace ID for logging
+            
+        Returns:
+            Available margin in base currency, or None if not found or API error
+        """
+        try:
+            bybit_client = get_bybit_client()
+            endpoint = "/v5/account/wallet-balance"
+            params = {"accountType": "UNIFIED"}
+            
+            response = await bybit_client.get(endpoint, params=params, authenticated=True)
+            
+            ret_code = response.get("retCode", 0)
+            ret_msg = response.get("retMsg", "")
+            
+            if ret_code != 0:
+                logger.warning(
+                    "margin_api_fetch_failed",
+                    base_currency=base_currency,
+                    ret_code=ret_code,
+                    ret_msg=ret_msg,
+                    trace_id=trace_id,
+                )
+                return None
+            
+            result = response.get("result", {})
+            list_data = result.get("list", []) if result else []
+            
+            if not list_data:
+                logger.warning(
+                    "margin_api_no_account_data",
+                    base_currency=base_currency,
+                    trace_id=trace_id,
+                )
+                return None
+            
+            account = list_data[0]
+            account_type = account.get("accountType", "")
+            
+            # For unified accounts, try to get margin in the requested base currency
+            if account_type == "UNIFIED":
+                # First, try to get balance for the specific base currency from coin array
+                coins = account.get("coin", [])
+                for coin_data in coins:
+                    if isinstance(coin_data, dict) and coin_data.get("coin") == base_currency:
+                        # Check if this coin can be used for margin (marginCollateral = true)
+                        margin_collateral = coin_data.get("marginCollateral", False)
+                        if margin_collateral:
+                            # Try to get available balance for this coin
+                            available_value = coin_data.get("availableToWithdraw", "")
+                            if not available_value or available_value == "":
+                                available_value = coin_data.get("walletBalance", "0")
+                            
+                            if available_value and available_value != "":
+                                try:
+                                    margin = Decimal(str(available_value))
+                                    logger.info(
+                                        "margin_retrieved_from_api_coin",
+                                        base_currency=base_currency,
+                                        margin=float(margin),
+                                        source=f"coin.{base_currency}",
+                                        trace_id=trace_id,
+                                    )
+                                    return margin
+                                except (ValueError, TypeError) as e:
+                                    logger.warning(
+                                        "margin_api_invalid_coin_value",
+                                        base_currency=base_currency,
+                                        value=available_value,
+                                        error=str(e),
+                                        trace_id=trace_id,
+                                    )
+                        break
+                
+                # Fallback: use totalAvailableBalance (this is usually in USDT, but may be in other currencies)
+                # Note: totalAvailableBalance is the total available margin across all currencies in unified account
+                total_available = account.get("totalAvailableBalance", "0")
+                if total_available and total_available != "":
+                    try:
+                        margin = Decimal(str(total_available))
+                        logger.info(
+                            "margin_retrieved_from_api_total",
+                            base_currency=base_currency,
+                            margin=float(margin),
+                            source="totalAvailableBalance",
+                            note="totalAvailableBalance may be in different currency than requested",
+                            trace_id=trace_id,
+                        )
+                        return margin
+                    except (ValueError, TypeError) as e:
+                        logger.warning(
+                            "margin_api_invalid_value",
+                            base_currency=base_currency,
+                            value=total_available,
+                            error=str(e),
+                            trace_id=trace_id,
+                        )
+            
+            logger.warning(
+                "margin_api_not_found",
+                base_currency=base_currency,
+                account_type=account_type,
+                trace_id=trace_id,
+            )
+            return None
+            
+        except Exception as e:
+            logger.error(
+                "margin_api_fetch_exception",
+                base_currency=base_currency,
+                error=str(e),
+                trace_id=trace_id,
+                exc_info=True,
+            )
+            return None
+
+    async def _get_base_currency_for_margin(self, trace_id: Optional[str] = None) -> str:
+        """Determine base currency for margin from database.
+        
+        For unified accounts this is usually USDT, but can be another currency.
+        
+        Args:
+            trace_id: Optional trace ID for logging
+            
+        Returns:
+            Base currency for margin (default: "USDT")
+        """
+        try:
+            pool = await DatabaseConnection.get_pool()
+            query = """
+                SELECT base_currency, received_at
+                FROM account_margin_balances
+                ORDER BY received_at DESC
+                LIMIT 1
+            """
+            row = await pool.fetchrow(query)
+            
+            if row and row.get("base_currency"):
+                base_currency = str(row["base_currency"])
+                logger.debug(
+                    "base_currency_retrieved_from_db",
+                    base_currency=base_currency,
+                    trace_id=trace_id,
+                )
+                return base_currency
+            
+            # Fallback to USDT if not found
+            logger.debug(
+                "base_currency_not_found_defaulting_to_usdt",
+                trace_id=trace_id,
+            )
+            return "USDT"
+            
+        except Exception as e:
+            logger.warning(
+                "base_currency_retrieval_failed_defaulting_to_usdt",
+                error=str(e),
+                trace_id=trace_id,
+            )
+            return "USDT"
+
     async def _get_balance_from_bybit_api(self, coin: str, trace_id: Optional[str] = None) -> Optional[Decimal]:
         """Get available balance for a coin directly from Bybit API.
         
@@ -1044,20 +1298,28 @@ class OrderExecutor:
         signal_type: str,
         trading_pair: str,
         safety_margin: Decimal = Decimal("0.95"),  # 5% safety margin (more conservative when balance check is disabled)
+        has_position: bool = False,
+        position_size: Decimal = Decimal("0"),
+        available_margin: Optional[Decimal] = None,
+        base_currency: str = "USDT",
     ) -> Decimal:
-        """Calculate maximum affordable quantity based on available balance.
+        """Calculate maximum affordable quantity based on available balance or margin.
         
         Args:
             available_balance: Available balance in the required currency
             order_price: Order price (needed for buy orders to calculate quantity)
             signal_type: Signal type ('buy' or 'sell')
             trading_pair: Trading pair symbol (e.g., 'BTCUSDT')
-            safety_margin: Safety margin to leave (default: 0.95 = 5% buffer, more conservative when balance check is disabled)
+            safety_margin: Safety margin to leave (default: 0.95 = 5% buffer)
+            has_position: Whether there is a current position
+            position_size: Current position size (positive = long, negative = short)
+            available_margin: Available margin in base currency for trading (for sell orders without position)
+            base_currency: Base currency for margin (USDT, USD, etc.)
             
         Returns:
             Maximum affordable quantity in base currency
         """
-        base_currency, quote_currency = self._extract_currencies_from_pair(trading_pair)
+        base_currency_pair, quote_currency_pair = self._extract_currencies_from_pair(trading_pair)
         
         if signal_type.lower() == "buy":
             # Buy orders: balance is in quote currency (e.g., USDT)
@@ -1083,13 +1345,54 @@ class OrderExecutor:
             return max_quantity
         
         elif signal_type.lower() == "sell":
-            # Sell orders: balance is in base currency (e.g., BTC)
-            # We can sell as much as we have (with safety margin)
-            max_quantity = available_balance * safety_margin
+            # Sell orders: check if we have a long position
+            if has_position and position_size > 0:
+                # Have long position - can use reduce_only (no margin needed)
+                # Return a very large number (practically unlimited)
+                logger.debug(
+                    "order_reduction_sell_with_long_position",
+                    trading_pair=trading_pair,
+                    position_size=float(position_size),
+                    reason="Can use reduce_only, margin not required",
+                )
+                return Decimal("999999999")  # Practically unlimited
+            
+            # No position or short position - need margin in base currency
+            if available_margin is None or available_margin <= 0:
+                logger.warning(
+                    "order_reduction_no_margin_available_for_sell",
+                    trading_pair=trading_pair,
+                    available_margin=float(available_margin) if available_margin else None,
+                    reason="No margin available for opening short position",
+                )
+                return Decimal("0")
+            
+            if not order_price or order_price <= 0:
+                logger.warning(
+                    "order_reduction_price_required_for_sell",
+                    trading_pair=trading_pair,
+                    reason="Order price required to calculate quantity for sell orders without position",
+                )
+                return Decimal("0")
+            
+            # Calculate maximum order value with safety margin
+            max_order_value = available_margin * safety_margin
+            
+            # Calculate maximum quantity in base currency
+            max_quantity = max_order_value / order_price
             
             # Ensure quantity is positive
             if max_quantity <= 0:
                 return Decimal("0")
+            
+            logger.debug(
+                "order_reduction_sell_calculated_from_margin",
+                trading_pair=trading_pair,
+                available_margin=float(available_margin),
+                order_price=float(order_price),
+                max_quantity=float(max_quantity),
+                base_currency=base_currency,
+            )
             
             return max_quantity
         
@@ -1126,57 +1429,138 @@ class OrderExecutor:
         trace_id = trace_id or signal.trace_id
         signal_id = signal.signal_id
         asset = signal.asset
+        signal_type = signal.signal_type.lower()
         
-        # Determine which currency is required for this order
-        required_currency = self._get_required_currency_for_order(asset, signal.signal_type)
+        # Get current position from database
+        position = await self.position_manager.get_position(asset)
+        has_position = position is not None
+        position_size = position.size if position else Decimal("0")
+        has_long_position = has_position and position_size > 0
+        has_short_position = has_position and position_size < 0
         
         logger.info(
-            "order_reduction_determining_currency",
+            "order_reduction_checking_position",
             signal_id=str(signal_id),
             asset=asset,
-            signal_type=signal.signal_type,
-            required_currency=required_currency,
+            signal_type=signal_type,
+            has_position=has_position,
+            position_size=float(position_size) if position else 0,
             trace_id=trace_id,
         )
         
-        # Get available balance from database for the required currency
-        available_balance = await self._get_available_balance_from_db(coin=required_currency, trace_id=trace_id)
-        
-        # Fallback: get balance from Bybit API if database data is unavailable
-        if available_balance is None:
+        # For sell orders with long position, we can use reduce_only (no margin needed)
+        if signal_type == "sell" and has_long_position:
             logger.info(
-                "order_reduction_balance_not_in_db",
+                "order_reduction_sell_with_long_position_reduce_only",
                 signal_id=str(signal_id),
                 asset=asset,
-                required_currency=required_currency,
-                reason="Balance data not available in database, fetching from Bybit API",
+                position_size=float(position_size),
+                reason="Can use reduce_only flag, margin not required",
                 trace_id=trace_id,
             )
-            available_balance = await self._get_balance_from_bybit_api(required_currency, trace_id)
-            
-            if available_balance is None:
-                logger.warning(
-                    "order_reduction_skipped_no_balance_data",
-                    signal_id=str(signal_id),
-                    asset=asset,
-                    required_currency=required_currency,
-                    reason=f"Balance data for {required_currency} not available in database or API",
-                    trace_id=trace_id,
-                )
-                return None
+            # Will try to create order with reduce_only=True, don't reduce size
+            # The order creation will be retried with reduce_only flag set
+            # For now, continue with original quantity (will be handled in _prepare_bybit_order_params)
+            max_quantity = Decimal("999999999")  # Practically unlimited
+            available_balance = Decimal("0")  # Not used for reduce_only
+        else:
+            # Determine which currency is required for this order
+            required_currency = self._get_required_currency_for_order(asset, signal.signal_type)
             
             logger.info(
-                "order_reduction_balance_fetched_from_api",
+                "order_reduction_determining_currency",
                 signal_id=str(signal_id),
                 asset=asset,
+                signal_type=signal.signal_type,
                 required_currency=required_currency,
-                available_balance=float(available_balance),
                 trace_id=trace_id,
             )
+            
+            # For sell orders without position, need margin (not coin balance)
+            if signal_type == "sell":
+                # Get base currency for margin and available margin from DB
+                base_currency = await self._get_base_currency_for_margin(trace_id)
+                available_balance = await self._get_available_margin_from_db(base_currency, trace_id)
+                
+                # Fallback: get margin from Bybit API if database data is unavailable
+                if available_balance is None:
+                    logger.info(
+                        "order_reduction_margin_not_in_db",
+                        signal_id=str(signal_id),
+                        asset=asset,
+                        base_currency=base_currency,
+                        reason="Margin data not available in database, fetching from Bybit API",
+                        trace_id=trace_id,
+                    )
+                    available_balance = await self._get_margin_from_bybit_api(base_currency, trace_id)
+                    
+                    if available_balance is None:
+                        logger.warning(
+                            "order_reduction_skipped_no_margin_data",
+                            signal_id=str(signal_id),
+                            asset=asset,
+                            base_currency=base_currency,
+                            reason=f"Margin data for {base_currency} not available in database or API",
+                            trace_id=trace_id,
+                        )
+                        return None
+                    
+                    logger.info(
+                        "order_reduction_margin_fetched_from_api",
+                        signal_id=str(signal_id),
+                        asset=asset,
+                        base_currency=base_currency,
+                        available_margin=float(available_balance),
+                        trace_id=trace_id,
+                    )
+                else:
+                    logger.info(
+                        "order_reduction_margin_retrieved_from_db",
+                        signal_id=str(signal_id),
+                        asset=asset,
+                        base_currency=base_currency,
+                        available_margin=float(available_balance),
+                        trace_id=trace_id,
+                    )
+            else:
+                # For buy orders, get coin balance from database
+                available_balance = await self._get_available_balance_from_db(coin=required_currency, trace_id=trace_id)
+                
+                # Fallback: get balance from Bybit API if database data is unavailable
+                if available_balance is None:
+                    logger.info(
+                        "order_reduction_balance_not_in_db",
+                        signal_id=str(signal_id),
+                        asset=asset,
+                        required_currency=required_currency,
+                        reason="Balance data not available in database, fetching from Bybit API",
+                        trace_id=trace_id,
+                    )
+                    available_balance = await self._get_balance_from_bybit_api(required_currency, trace_id)
+                    
+                    if available_balance is None:
+                        logger.warning(
+                            "order_reduction_skipped_no_balance_data",
+                            signal_id=str(signal_id),
+                            asset=asset,
+                            required_currency=required_currency,
+                            reason=f"Balance data for {required_currency} not available in database or API",
+                            trace_id=trace_id,
+                        )
+                        return None
+                    
+                    logger.info(
+                        "order_reduction_balance_fetched_from_api",
+                        signal_id=str(signal_id),
+                        asset=asset,
+                        required_currency=required_currency,
+                        available_balance=float(available_balance),
+                        trace_id=trace_id,
+                    )
         
-        # Get current price if needed (for buy orders)
+        # Get current price if needed
         order_price = price
-        is_buy_order = signal.signal_type.lower() == "buy"
+        is_buy_order = signal_type == "buy"
         
         if is_buy_order and not order_price:
             # For buy orders, we need price to calculate quantity
@@ -1215,11 +1599,23 @@ class OrderExecutor:
                 return None
         
         # Calculate maximum affordable quantity
+        # For sell orders, get base currency and margin
+        base_currency_margin = "USDT"
+        available_margin = None
+        if signal_type == "sell" and not has_long_position:
+            base_currency_margin = await self._get_base_currency_for_margin(trace_id)
+            available_margin = available_balance  # Already fetched above
+            available_balance = Decimal("0")  # Not used for sell without position
+        
         max_quantity = self._calculate_max_affordable_quantity(
             available_balance=available_balance,
-            order_price=order_price if signal.signal_type.lower() == "buy" else None,
+            order_price=order_price if is_buy_order else order_price,  # Need price for sell without position
             signal_type=signal.signal_type,
             trading_pair=asset,
+            has_position=has_position,
+            position_size=position_size,
+            available_margin=available_margin,
+            base_currency=base_currency_margin,
         )
         
         # Check if reduction is possible and meaningful
