@@ -1,7 +1,8 @@
 """
 Trading signal publisher.
 
-Publishes trading signals to RabbitMQ queue for order manager consumption.
+Publishes trading signals to RabbitMQ queue for order manager consumption
+and persists them to PostgreSQL database for Grafana monitoring dashboard visibility.
 """
 
 import json
@@ -13,6 +14,7 @@ from ..models.signal import TradingSignal
 from ..config.rabbitmq import rabbitmq_manager
 from ..config.logging import get_logger, bind_context
 from ..config.exceptions import MessageQueueError
+from ..database.repositories.trading_signal_repo import TradingSignalRepository
 
 logger = get_logger(__name__)
 
@@ -29,6 +31,7 @@ class SignalPublisher:
         """
         self.queue_name = queue_name
         self._queue: Optional[aio_pika.Queue] = None
+        self.trading_signal_repo = TradingSignalRepository()
 
     async def initialize(self) -> None:
         """Initialize publisher (declare queue)."""
@@ -100,6 +103,18 @@ class SignalPublisher:
                 queue=self.queue_name,
             )
 
+            # Persist trading signal to database after successful RabbitMQ publish
+            try:
+                await self._persist_signal(signal)
+            except Exception as e:
+                # Log error but don't raise - continue processing on persistence failures
+                # This ensures signals are still published to RabbitMQ even if database persistence fails
+                logger.warning(
+                    "Failed to persist trading signal to database (continuing)",
+                    signal_id=signal.signal_id,
+                    error=str(e),
+                )
+
         except Exception as e:
             logger.error(
                 "Failed to publish trading signal after retries",
@@ -150,6 +165,62 @@ class SignalPublisher:
             )
 
         return published_count
+
+    async def _persist_signal(self, signal: TradingSignal) -> None:
+        """
+        Persist trading signal to PostgreSQL database.
+
+        Args:
+            signal: TradingSignal to persist
+
+        Note:
+            This method handles database errors gracefully and continues processing
+            even if persistence fails, as per T090 requirements. Signals are persisted
+            for Grafana monitoring dashboard visibility.
+        """
+        try:
+            # Extract price from market_data_snapshot (required field)
+            price = signal.market_data_snapshot.price
+
+            # Convert market_data_snapshot to dict for JSONB storage
+            market_data_dict = {
+                "price": signal.market_data_snapshot.price,
+                "spread": signal.market_data_snapshot.spread,
+                "volume_24h": signal.market_data_snapshot.volume_24h,
+                "volatility": signal.market_data_snapshot.volatility,
+            }
+            if signal.market_data_snapshot.orderbook_depth:
+                market_data_dict["orderbook_depth"] = signal.market_data_snapshot.orderbook_depth
+            if signal.market_data_snapshot.technical_indicators:
+                market_data_dict["technical_indicators"] = signal.market_data_snapshot.technical_indicators
+
+            await self.trading_signal_repo.create(
+                signal_id=signal.signal_id,
+                strategy_id=signal.strategy_id,
+                asset=signal.asset,
+                side=signal.signal_type,  # signal_type is 'buy' or 'sell'
+                price=price,
+                confidence=signal.confidence,
+                timestamp=signal.timestamp,
+                model_version=signal.model_version,
+                is_warmup=signal.is_warmup,
+                market_data_snapshot=market_data_dict,
+                metadata=signal.metadata,
+                trace_id=signal.trace_id,
+            )
+            logger.debug(
+                "Trading signal persisted to database",
+                signal_id=signal.signal_id,
+                strategy_id=signal.strategy_id,
+                asset=signal.asset,
+            )
+        except Exception as e:
+            # Log error but don't raise - continue processing on persistence failures
+            logger.warning(
+                "Failed to persist trading signal (continuing)",
+                signal_id=signal.signal_id,
+                error=str(e),
+            )
 
 
 # Global signal publisher instance
