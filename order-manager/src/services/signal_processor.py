@@ -598,6 +598,15 @@ class SignalProcessor:
             from uuid import uuid4
             from decimal import Decimal
 
+            # Validate rejection_reason is not empty
+            if not rejection_reason or not rejection_reason.strip():
+                logger.warning(
+                    "empty_rejection_reason",
+                    signal_id=str(signal.signal_id),
+                    trace_id=trace_id,
+                )
+                rejection_reason = "Unknown rejection reason"
+
             pool = await DatabaseConnection.get_pool()
             # Database constraint requires 'Buy' or 'SELL' (not 'Sell')
             side = "Buy" if signal.signal_type.lower() == "buy" else "SELL"
@@ -616,14 +625,25 @@ class SignalProcessor:
             order_uuid = uuid4()
             bybit_order_id = f"REJECTED-{signal.signal_id}"
             
-            # First try to insert, if conflict then update rejection_reason
+            # Log before insert for debugging
+            logger.debug(
+                "saving_rejected_order",
+                order_id=bybit_order_id,
+                signal_id=str(signal.signal_id),
+                side=side,
+                rejection_reason=rejection_reason,
+                trace_id=trace_id,
+            )
+            
+            # Insert or update rejected order
+            # Always update rejection_reason on conflict (don't preserve old value)
             query = """
                 INSERT INTO orders
                 (id, order_id, signal_id, asset, side, order_type, quantity, price,
                  status, filled_quantity, created_at, updated_at, trace_id, is_dry_run, rejection_reason)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW(), $11, $12, $13)
                 ON CONFLICT (order_id) DO UPDATE SET
-                    rejection_reason = COALESCE(EXCLUDED.rejection_reason, orders.rejection_reason),
+                    rejection_reason = EXCLUDED.rejection_reason,
                     updated_at = NOW()
                 RETURNING id, order_id, signal_id, asset, side, order_type, quantity, price,
                           status, filled_quantity, average_price, fees, created_at, updated_at,
@@ -646,15 +666,16 @@ class SignalProcessor:
                 rejection_reason,
             )
             
-            # If row is None, order already exists (duplicate) - ON CONFLICT should have updated it
+            # ON CONFLICT should always return a row (either inserted or updated)
             if row is None:
-                logger.debug(
-                    "rejected_order_already_exists",
+                logger.error(
+                    "rejected_order_insert_returned_none",
                     order_id=bybit_order_id,
                     signal_id=str(signal.signal_id),
+                    rejection_reason=rejection_reason,
                     trace_id=trace_id,
                 )
-                # Try to fetch existing order and update rejection_reason if needed
+                # Fallback: try to update existing order
                 query_update_existing = """
                     UPDATE orders
                     SET rejection_reason = $1, updated_at = NOW()
@@ -664,29 +685,53 @@ class SignalProcessor:
                               executed_at, trace_id, is_dry_run, rejection_reason
                 """
                 row = await pool.fetchrow(query_update_existing, rejection_reason, bybit_order_id)
-                if row:
-                    order_data = dict(row)
-                    return Order.from_dict(order_data)
-                # If still not found, try without update
-                query_existing = "SELECT * FROM orders WHERE order_id = $1"
-                row = await pool.fetchrow(query_existing, bybit_order_id)
-                if row:
-                    order_data = dict(row)
-                    return Order.from_dict(order_data)
-                return None
+                if row is None:
+                    logger.error(
+                        "rejected_order_update_failed",
+                        order_id=bybit_order_id,
+                        signal_id=str(signal.signal_id),
+                        trace_id=trace_id,
+                    )
+                    return None
 
             order_data = dict(row)
-            # Debug: Check if rejection_reason is in row
+            # Verify rejection_reason was saved
             db_rejection_reason = order_data.get("rejection_reason")
             if not db_rejection_reason:
-                logger.warning(
-                    "rejection_reason_not_saved",
+                logger.error(
+                    "rejection_reason_not_saved_in_db",
                     order_id=bybit_order_id,
                     signal_id=str(signal.signal_id),
                     rejection_reason_param=rejection_reason,
                     db_rejection_reason=db_rejection_reason,
+                    side=side,
+                    order_type=order_type,
                     trace_id=trace_id,
                 )
+                # Try direct update as last resort
+                query_direct_update = """
+                    UPDATE orders
+                    SET rejection_reason = $1, updated_at = NOW()
+                    WHERE order_id = $2
+                    RETURNING rejection_reason
+                """
+                update_row = await pool.fetchrow(query_direct_update, rejection_reason, bybit_order_id)
+                if update_row:
+                    order_data["rejection_reason"] = update_row["rejection_reason"]
+                    logger.info(
+                        "rejection_reason_updated_via_fallback",
+                        order_id=bybit_order_id,
+                        signal_id=str(signal.signal_id),
+                        trace_id=trace_id,
+                    )
+                else:
+                    logger.error(
+                        "rejection_reason_fallback_update_failed",
+                        order_id=bybit_order_id,
+                        signal_id=str(signal.signal_id),
+                        trace_id=trace_id,
+                    )
+            
             order = Order.from_dict(order_data)
 
             logger.info(
