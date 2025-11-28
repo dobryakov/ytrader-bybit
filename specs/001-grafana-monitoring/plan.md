@@ -9,7 +9,7 @@
 
 A Grafana monitoring dashboard service running in a separate Docker container that provides visual monitoring of the trading system. The dashboard displays recent trading signals, order execution status, model state and quality metrics, RabbitMQ queue health, system health status, WebSocket connection metrics, and event history. Grafana connects to PostgreSQL (read-only user), RabbitMQ Management API, and service REST APIs to collect monitoring data. Authentication is handled via basic auth (username/password) configurable via `.env` file. The service runs on a non-standard port (4700) and is accessible from external networks.
 
-**Note on Trading Signals**: Phase 1 uses RabbitMQ Management API to monitor queue metrics as a proxy for trading signal activity. Phase 2 (future) will migrate to querying trading signals directly from PostgreSQL database once model-service implements signal persistence (tasks T089-T090 in model-service).
+**Note on Trading Signals**: Trading signals are queried directly from PostgreSQL `trading_signals` table. Model-service persists all trading signals to the database (migration `010_create_trading_signals_table.sql` in ws-gateway, tasks T089-T090 in model-service completed). This provides full signal details including signal_id, asset, side, price, confidence, timestamp, strategy_id, model_version, is_warmup, and market_data_snapshot.
 
 ## Technical Context
 
@@ -21,7 +21,7 @@ A Grafana monitoring dashboard service running in a separate Docker container th
 - Basic authentication (built-in Grafana auth, configurable via environment variables)
 
 **Storage**: 
-- PostgreSQL (read-only connection for querying trading signals, orders, execution_events, model_versions, model_quality_metrics tables)
+- PostgreSQL (read-only connection for querying trading_signals, orders, execution_events, model_versions, model_quality_metrics, subscriptions tables)
 - No local storage required (Grafana uses mounted volumes for dashboards/configs)
 
 **Testing**: 
@@ -148,36 +148,19 @@ tests/
 
 ## Future Phases
 
-### Phase 2: Enhanced Trading Signals Dashboard (Post-Database Migration)
+### Phase 2: Enhanced Trading Signals Dashboard ✅ COMPLETED
 
-**Prerequisites**: 
-- Model-service tasks T089-T090 completed (trading_signals table created, signal publisher persists to database)
-- Database migration `010_create_trading_signals_table.sql` applied
+**Status**: This phase is now part of Phase 1 implementation. Model-service tasks T089-T090 have been completed:
+- ✅ Database migration `010_create_trading_signals_table.sql` created in ws-gateway/migrations/
+- ✅ Signal publisher extended to persist trading signals to PostgreSQL database
+- ✅ Trading signals table includes all required fields: signal_id, asset, side, price, confidence, timestamp, strategy_id, model_version, is_warmup, market_data_snapshot
+- ✅ Indexes created for efficient Grafana dashboard queries (timestamp DESC, signal_id, strategy_id, asset)
 
-**Goal**: Migrate trading signals dashboard panel from RabbitMQ Management API (queue metrics proxy) to direct PostgreSQL queries for detailed signal visualization.
-
-**Implementation Tasks**:
-1. Update Grafana dashboard SQL query for trading signals panel to query `trading_signals` table instead of using RabbitMQ queue metrics
-2. Add detailed signal fields: signal_id, asset, side, price, confidence, timestamp, strategy_id, model_version, is_warmup, market_data_snapshot
-3. Implement time-range filtering with proper indexes (timestamp DESC index)
-4. Add signal filtering capabilities (by strategy_id, asset, model_version, is_warmup)
-5. Update dashboard queries to use PostgreSQL data source for signals (remove RabbitMQ dependency for signals)
-6. Maintain RabbitMQ Management API monitoring for queue health (separate panel, not replaced)
-
-**Benefits**:
-- Detailed signal information with all attributes (confidence, model_version, market_data_snapshot)
-- Better query performance with indexed database queries
-- Historical signal analysis capabilities
-- Filtering and searching signals by various criteria
-- Consistent data source pattern (PostgreSQL) for all trading data
-
-**Dependencies**:
-- Model-service must complete T089 (create trading_signals table migration)
-- Model-service must complete T090 (extend signal publisher to persist signals)
-- Database migration must be applied to production database
-
-**Out of Scope for Phase 1**: 
-- This phase is deferred until model-service implements signal persistence per research.md decision (Option B: persist signals to database)
+**Phase 1 Implementation**:
+- Grafana dashboard queries `trading_signals` table directly via PostgreSQL data source
+- All signal details available: signal_id, asset, side, price, confidence, timestamp, strategy_id, model_version, is_warmup, market_data_snapshot
+- Time-range filtering uses indexed timestamp column
+- RabbitMQ Management API remains for queue health monitoring (separate panel, not for signal details)
 
 ## Complexity Tracking
 
