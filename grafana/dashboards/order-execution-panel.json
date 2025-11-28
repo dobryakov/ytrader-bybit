@@ -199,12 +199,13 @@
         "properties": [
           {
             "id": "custom.width",
-            "value": 300
+            "value": 400
           },
           {
             "id": "custom.cellOptions",
             "value": {
-              "type": "auto"
+              "type": "auto",
+              "wrapText": true
             }
           }
         ]

@@ -125,210 +125,248 @@ class SignalProcessor:
         quantity = None
         limit_price = None
 
-        try:
-            # Step 0: Check for duplicate signal
-            duplicate_check = await self._check_duplicate_signal(signal_id, trace_id)
-            if duplicate_check is not None:
-                # Duplicate signal detected
-                if duplicate_check["status"] == "succeeded":
-                    logger.warning(
-                        "duplicate_signal_rejected",
-                        signal_id=str(signal_id),
-                        asset=asset,
-                        reason="Signal already processed successfully",
-                        existing_order_id=str(duplicate_check["order_id"]),
-                        trace_id=trace_id,
-                    )
-                    # Return the existing order instead of creating a new one
-                    from ..config.database import DatabaseConnection
-                    pool = await DatabaseConnection.get_pool()
-                    query = "SELECT * FROM orders WHERE id = $1"
-                    row = await pool.fetchrow(query, duplicate_check["order_id"])
-                    if row:
-                        from ..models.order import Order
-                        return Order.from_dict(dict(row))
-                    return None
-                elif duplicate_check["status"] == "failed":
-                    logger.info(
-                        "duplicate_signal_retry_allowed",
-                        signal_id=str(signal_id),
-                        asset=asset,
-                        reason="Previous processing failed, allowing retry",
-                        trace_id=trace_id,
-                    )
-                    # Allow retry for failed signals
-
-            # Step 1: Cancel existing orders for this asset if needed
-            await self._cancel_existing_orders(asset, signal)
-
-            # Step 2: Calculate order quantity
-            quantity = await self.quantity_calculator.calculate_quantity(signal)
-
-            # Step 3: Select order type and price
-            order_type, limit_price = self.order_type_selector.select_order_type(signal)
-            order_price = limit_price or signal.market_data_snapshot.price
-
-            # Step 4: Get current position
-            current_position = await self.position_manager.get_position(asset)
-
-            # Step 5: Risk checks
-            # 5a: Balance check (skip in dry-run mode or if disabled)
-            # Note: Balance check is optional - Bybit API will reject orders with insufficient balance anyway.
-            # This check provides early rejection and better logging, but adds an extra API call.
-            if not settings.order_manager_enable_dry_run and settings.order_manager_enable_balance_check:
-                await self.risk_manager.check_balance(signal, quantity, order_price)
-            else:
-                skip_reason = "dry_run" if settings.order_manager_enable_dry_run else "balance_check_disabled"
-                logger.info(
-                    "balance_check_skipped",
+        # Use advisory lock to prevent race condition when processing the same signal concurrently
+        # Generate lock key from signal_id (using hash to convert UUID string to int64)
+        lock_key = abs(hash(str(signal_id))) % (2**63)  # PostgreSQL advisory lock uses int64
+        
+        from ..config.database import DatabaseConnection
+        pool = await DatabaseConnection.get_pool()
+        
+        # Acquire advisory lock for this signal_id
+        async with pool.acquire() as conn:
+            try:
+                # Lock will be automatically released when connection is returned to pool
+                # But we explicitly unlock in finally to be safe
+                await conn.execute("SELECT pg_advisory_lock($1)", lock_key)
+                
+                logger.debug(
+                    "signal_processing_lock_acquired",
                     signal_id=str(signal_id),
-                    reason=skip_reason,
+                    lock_key=lock_key,
                     trace_id=trace_id,
                 )
+                
+                try:
+                    # Step 0: Check for duplicate signal (now protected by lock)
+                    duplicate_check = await self._check_duplicate_signal(signal_id, trace_id)
+                    if duplicate_check is not None:
+                        # Duplicate signal detected
+                        if duplicate_check["status"] == "succeeded":
+                            logger.warning(
+                                "duplicate_signal_rejected",
+                                signal_id=str(signal_id),
+                                asset=asset,
+                                reason="Signal already processed successfully",
+                                existing_order_id=str(duplicate_check["order_id"]),
+                                trace_id=trace_id,
+                            )
+                            # Return the existing order instead of creating a new one
+                            query = "SELECT * FROM orders WHERE id = $1"
+                            row = await conn.fetchrow(query, duplicate_check["order_id"])
+                            if row:
+                                from ..models.order import Order
+                                return Order.from_dict(dict(row))
+                            return None
+                        elif duplicate_check["status"] == "failed":
+                            logger.info(
+                                "duplicate_signal_retry_allowed",
+                                signal_id=str(signal_id),
+                                asset=asset,
+                                reason="Previous processing failed, allowing retry",
+                                trace_id=trace_id,
+                            )
+                            # Allow retry for failed signals
 
-            # 5b: Order size check
-            self.risk_manager.check_order_size(signal, quantity, order_price)
+                    # Step 1: Cancel existing orders for this asset if needed
+                    await self._cancel_existing_orders(asset, signal)
 
-            # 5c: Position size check
-            order_side = "Buy" if signal.signal_type.lower() == "buy" else "SELL"
-            self.risk_manager.check_position_size(asset, current_position, quantity, order_side, trace_id=trace_id)
+                    # Step 2: Calculate order quantity
+                    quantity = await self.quantity_calculator.calculate_quantity(signal)
 
-            # Step 6: Create order via executor
-            from ..services.order_executor import OrderExecutor
-            if self._order_executor is None:
-                self._order_executor = OrderExecutor()
-            order = await self._order_executor.create_order(
-                signal=signal,
-                order_type=order_type,
-                quantity=quantity,
-                price=limit_price,
-                trace_id=trace_id,
-            )
+                    # Step 3: Select order type and price
+                    order_type, limit_price = self.order_type_selector.select_order_type(signal)
+                    order_price = limit_price or signal.market_data_snapshot.price
 
-            # Step 7: Create signal-order relationship
-            if order:
-                await self._create_signal_order_relationship(signal_id, order.id, trace_id)
-                # Mark signal as succeeded in tracking
-                await self._mark_signal_processing_status(signal_id, "succeeded", None, trace_id, order.id)
+                    # Step 4: Get current position
+                    current_position = await self.position_manager.get_position(asset)
 
-            logger.info(
-                "signal_processing_complete",
-                signal_id=str(signal_id),
-                asset=asset,
-                order_id=str(order.id) if order else None,
-                trace_id=trace_id,
-            )
+                    # Step 5: Risk checks
+                    # 5a: Balance check (skip in dry-run mode or if disabled)
+                    # Note: Balance check is optional - Bybit API will reject orders with insufficient balance anyway.
+                    # This check provides early rejection and better logging, but adds an extra API call.
+                    if not settings.order_manager_enable_dry_run and settings.order_manager_enable_balance_check:
+                        await self.risk_manager.check_balance(signal, quantity, order_price)
+                    else:
+                        skip_reason = "dry_run" if settings.order_manager_enable_dry_run else "balance_check_disabled"
+                        logger.info(
+                            "balance_check_skipped",
+                            signal_id=str(signal_id),
+                            reason=skip_reason,
+                            trace_id=trace_id,
+                        )
 
-            return order
+                    # 5b: Order size check
+                    self.risk_manager.check_order_size(signal, quantity, order_price)
 
-        except RiskLimitError as e:
-            error_msg = f"Risk limit exceeded: {str(e)}"
-            logger.warning(
-                "signal_rejected_risk_limit",
-                signal_id=str(signal_id),
-                asset=asset,
-                signal_type=signal.signal_type,
-                amount=float(signal.amount),
-                error=str(e),
-                error_type="RiskLimitError",
-                trace_id=trace_id,
-            )
-            # Mark signal as failed in tracking
-            await self._mark_signal_processing_status(signal_id, "failed", error_msg, trace_id)
-            # Publish rejection event with signal information
-            await self._publish_signal_rejection_event(
-                signal=signal,
-                rejection_reason=error_msg,
-                trace_id=trace_id,
-            )
-            return None
-        except OrderExecutionError as e:
-            error_msg = f"Order execution failed: {str(e)}"
-            logger.error(
-                "signal_processing_failed",
-                signal_id=str(signal_id),
-                asset=asset,
-                signal_type=signal.signal_type,
-                amount=float(signal.amount),
-                error=str(e),
-                error_type="OrderExecutionError",
-                trace_id=trace_id,
-                exc_info=True,
-            )
-            
-            # Save rejected order to database before publishing event
-            # Use calculated values if available, otherwise use defaults
-            rejected_order = await self._save_rejected_order(
-                signal=signal,
-                order_type=order_type or "Market",
-                quantity=quantity,
-                price=limit_price,
-                rejection_reason=error_msg,
-                trace_id=trace_id,
-            )
-            
-            # Mark signal as failed in tracking
-            await self._mark_signal_processing_status(signal_id, "failed", error_msg, trace_id)
-            
-            # Create signal-order relationship if order was saved
-            if rejected_order:
-                await self._create_signal_order_relationship(signal_id, rejected_order.id, trace_id)
-                # Publish rejection event with saved order
-                await self._publish_signal_rejection_event(
-                    signal=signal,
-                    rejected_order=rejected_order,
-                    rejection_reason=error_msg,
-                    trace_id=trace_id,
-                )
-            else:
-                # Fallback: try to publish event without saved order
-                await self._publish_signal_rejection_event(
-                    signal=signal,
-                    rejection_reason=error_msg,
-                    trace_id=trace_id,
-                )
-            raise
-        except ValueError as e:
-            # Validation errors
-            error_msg = f"Signal validation failed: {str(e)}"
-            logger.error(
-                "signal_validation_failed",
-                signal_id=str(signal_id),
-                asset=asset,
-                error=str(e),
-                error_type="ValueError",
-                trace_id=trace_id,
-            )
-            # Mark signal as failed in tracking
-            await self._mark_signal_processing_status(signal_id, "failed", error_msg, trace_id)
-            # Publish rejection event
-            await self._publish_signal_rejection_event(
-                signal=signal,
-                rejection_reason=error_msg,
-                trace_id=trace_id,
-            )
-            raise OrderExecutionError(error_msg) from e
-        except Exception as e:
-            # Unexpected errors
-            error_msg = f"Unexpected error during signal processing: {str(e)}"
-            logger.error(
-                "signal_processing_unexpected_error",
-                signal_id=str(signal_id),
-                asset=asset,
-                error=str(e),
-                error_type=type(e).__name__,
-                trace_id=trace_id,
-                exc_info=True,
-            )
-            # Mark signal as failed in tracking
-            await self._mark_signal_processing_status(signal_id, "failed", error_msg, trace_id)
-            # Publish rejection event
-            await self._publish_signal_rejection_event(
-                signal=signal,
-                rejection_reason=error_msg,
-                trace_id=trace_id,
-            )
-            raise OrderExecutionError(error_msg) from e
+                    # 5c: Position size check
+                    order_side = "Buy" if signal.signal_type.lower() == "buy" else "SELL"
+                    self.risk_manager.check_position_size(asset, current_position, quantity, order_side, trace_id=trace_id)
+
+                    # Step 6: Create order via executor
+                    from ..services.order_executor import OrderExecutor
+                    if self._order_executor is None:
+                        self._order_executor = OrderExecutor()
+                    order = await self._order_executor.create_order(
+                        signal=signal,
+                        order_type=order_type,
+                        quantity=quantity,
+                        price=limit_price,
+                        trace_id=trace_id,
+                    )
+
+                    # Step 7: Create signal-order relationship
+                    if order:
+                        await self._create_signal_order_relationship(signal_id, order.id, trace_id)
+                        # Mark signal as succeeded in tracking
+                        await self._mark_signal_processing_status(signal_id, "succeeded", None, trace_id, order.id)
+
+                    logger.info(
+                        "signal_processing_complete",
+                        signal_id=str(signal_id),
+                        asset=asset,
+                        order_id=str(order.id) if order else None,
+                        trace_id=trace_id,
+                    )
+
+                    return order
+
+                except RiskLimitError as e:
+                    error_msg = f"Risk limit exceeded: {str(e)}"
+                    logger.warning(
+                        "signal_rejected_risk_limit",
+                        signal_id=str(signal_id),
+                        asset=asset,
+                        signal_type=signal.signal_type,
+                        amount=float(signal.amount),
+                        error=str(e),
+                        error_type="RiskLimitError",
+                        trace_id=trace_id,
+                    )
+                    # Mark signal as failed in tracking
+                    await self._mark_signal_processing_status(signal_id, "failed", error_msg, trace_id)
+                    # Publish rejection event with signal information
+                    await self._publish_signal_rejection_event(
+                        signal=signal,
+                        rejection_reason=error_msg,
+                        trace_id=trace_id,
+                    )
+                    return None
+                except OrderExecutionError as e:
+                    error_msg = f"Order execution failed: {str(e)}"
+                    logger.error(
+                        "signal_processing_failed",
+                        signal_id=str(signal_id),
+                        asset=asset,
+                        signal_type=signal.signal_type,
+                        amount=float(signal.amount),
+                        error=str(e),
+                        error_type="OrderExecutionError",
+                        trace_id=trace_id,
+                        exc_info=True,
+                    )
+                    
+                    # Save rejected order to database before publishing event
+                    # Use calculated values if available, otherwise use defaults
+                    rejected_order = await self._save_rejected_order(
+                        signal=signal,
+                        order_type=order_type or "Market",
+                        quantity=quantity,
+                        price=limit_price,
+                        rejection_reason=error_msg,
+                        trace_id=trace_id,
+                    )
+                    
+                    # Mark signal as failed in tracking
+                    await self._mark_signal_processing_status(signal_id, "failed", error_msg, trace_id)
+                    
+                    # Create signal-order relationship if order was saved
+                    if rejected_order:
+                        await self._create_signal_order_relationship(signal_id, rejected_order.id, trace_id)
+                        # Publish rejection event with saved order
+                        await self._publish_signal_rejection_event(
+                            signal=signal,
+                            rejected_order=rejected_order,
+                            rejection_reason=error_msg,
+                            trace_id=trace_id,
+                        )
+                    else:
+                        # Fallback: try to publish event without saved order
+                        await self._publish_signal_rejection_event(
+                            signal=signal,
+                            rejection_reason=error_msg,
+                            trace_id=trace_id,
+                        )
+                    raise
+                except ValueError as e:
+                    # Validation errors
+                    error_msg = f"Signal validation failed: {str(e)}"
+                    logger.error(
+                        "signal_validation_failed",
+                        signal_id=str(signal_id),
+                        asset=asset,
+                        error=str(e),
+                        error_type="ValueError",
+                        trace_id=trace_id,
+                    )
+                    # Mark signal as failed in tracking
+                    await self._mark_signal_processing_status(signal_id, "failed", error_msg, trace_id)
+                    # Publish rejection event
+                    await self._publish_signal_rejection_event(
+                        signal=signal,
+                        rejection_reason=error_msg,
+                        trace_id=trace_id,
+                    )
+                    raise OrderExecutionError(error_msg) from e
+                except Exception as e:
+                    # Unexpected errors
+                    error_msg = f"Unexpected error during signal processing: {str(e)}"
+                    logger.error(
+                        "signal_processing_unexpected_error",
+                        signal_id=str(signal_id),
+                        asset=asset,
+                        error=str(e),
+                        error_type=type(e).__name__,
+                        trace_id=trace_id,
+                        exc_info=True,
+                    )
+                    # Mark signal as failed in tracking
+                    await self._mark_signal_processing_status(signal_id, "failed", error_msg, trace_id)
+                    # Publish rejection event
+                    await self._publish_signal_rejection_event(
+                        signal=signal,
+                        rejection_reason=error_msg,
+                        trace_id=trace_id,
+                    )
+                    raise OrderExecutionError(error_msg) from e
+                finally:
+                    # Release advisory lock
+                    try:
+                        await conn.execute("SELECT pg_advisory_unlock($1)", lock_key)
+                        logger.debug(
+                            "signal_processing_lock_released",
+                            signal_id=str(signal_id),
+                            lock_key=lock_key,
+                            trace_id=trace_id,
+                        )
+                    except Exception as unlock_error:
+                        # Log but don't fail if unlock fails (lock will be released when connection closes)
+                        logger.warning(
+                            "signal_processing_lock_release_failed",
+                            signal_id=str(signal_id),
+                            lock_key=lock_key,
+                            error=str(unlock_error),
+                            trace_id=trace_id,
+                        )
 
     async def _process_asset_queue(self, asset: str) -> None:
         """Process signals from queue for a specific asset (FIFO).

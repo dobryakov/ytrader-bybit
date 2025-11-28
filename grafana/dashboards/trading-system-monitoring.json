@@ -339,12 +339,17 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 300
+                "value": 500
+              },
+              {
+                "id": "custom.displayMode",
+                "value": "color-text"
               },
               {
                 "id": "custom.cellOptions",
                 "value": {
-                  "type": "auto"
+                  "type": "auto",
+                  "wrapText": true
                 }
               }
             ]
