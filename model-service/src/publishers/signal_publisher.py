@@ -105,7 +105,9 @@ class SignalPublisher:
 
             # Persist trading signal to database after successful RabbitMQ publish
             try:
+                logger.info("Attempting to persist trading signal to database", signal_id=signal.signal_id)
                 await self._persist_signal(signal)
+                logger.info("Successfully persisted trading signal to database", signal_id=signal.signal_id)
             except Exception as e:
                 # Log error but don't raise - continue processing on persistence failures
                 # This ensures signals are still published to RabbitMQ even if database persistence fails
@@ -113,6 +115,7 @@ class SignalPublisher:
                     "Failed to persist trading signal to database (continuing)",
                     signal_id=signal.signal_id,
                     error=str(e),
+                    exc_info=True,
                 )
 
         except Exception as e:
@@ -208,7 +211,7 @@ class SignalPublisher:
                 metadata=signal.metadata,
                 trace_id=signal.trace_id,
             )
-            logger.debug(
+            logger.info(
                 "Trading signal persisted to database",
                 signal_id=signal.signal_id,
                 strategy_id=signal.strategy_id,

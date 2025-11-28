@@ -1,0 +1,46 @@
+---
+alwaysApply: true
+---
+
+# Docker Quick Reference Rules
+
+## Critical Dockerfile Rules
+
+1. **File operations BEFORE USER switch**: All COPY, chmod, chown, mkdir operations MUST be done BEFORE `USER nonroot` directive.
+
+2. **Use UID/GID for chown**: When user doesn't exist in base image, use numeric UID/GID: `chown 472:472` not `chown grafana:grafana`.
+
+3. **Set directory permissions**: If entrypoint modifies files, set permissions during build: `RUN chmod -R 777 /path || true` or `RUN chown -R 472:472 /path`.
+
+4. **Process files as root in entrypoint**: If entrypoint needs to modify files, keep container as root, process files first, then execute original entrypoint which switches user.
+
+5. **Verify plugin names**: Always check official docs for correct plugin names (e.g., `yesoreyeram-infinity-datasource` not `grafana-infinity-datasource`).
+
+6. **Mount directories, not files**: For writable configs, mount parent directory, not individual files.
+
+7. **Test after changes**: Always test container startup after Dockerfile/entrypoint changes.
+
+## Common Patterns
+
+**Dockerfile with custom entrypoint**:
+```dockerfile
+USER root
+RUN apk add --no-cache gettext
+RUN chmod -R 777 /etc/config || true
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+# Keep as root if entrypoint needs root
+ENTRYPOINT ["/entrypoint.sh"]
+```
+
+**Entrypoint processing files**:
+```sh
+#!/bin/sh
+# Process files as root
+envsubst < /etc/config/file.yml > /tmp/file.yml
+mv /tmp/file.yml /etc/config/file.yml
+chown 472:472 /etc/config/file.yml 2>/dev/null || true
+# Execute original entrypoint
+exec /original-entrypoint.sh "$@"
+```
+

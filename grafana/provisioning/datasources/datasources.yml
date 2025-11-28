@@ -12,10 +12,10 @@ datasources:
     type: postgres
     access: proxy
     url: postgres:5432
-    database: ${POSTGRES_DB}
-    user: ${GRAFANA_POSTGRES_USER}
+    database: ytrader
+    user: grafana_monitor
     secureJsonData:
-      password: ${GRAFANA_POSTGRES_PASSWORD}
+      password: 456ejdkg
     jsonData:
       sslmode: disable
       maxOpenConns: 100
@@ -32,9 +32,9 @@ datasources:
     access: proxy
     url: http://rabbitmq:15672
     basicAuth: true
-    basicAuthUser: ${RABBITMQ_USER}
+    basicAuthUser: guest
     secureJsonData:
-      basicAuthPassword: ${RABBITMQ_PASSWORD}
+      basicAuthPassword: guest
     jsonData:
       auth_type: basic
       allowed_hosts:

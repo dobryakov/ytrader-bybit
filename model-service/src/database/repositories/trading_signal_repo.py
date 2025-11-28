@@ -9,6 +9,7 @@ from datetime import datetime
 from uuid import UUID
 import asyncpg
 from decimal import Decimal
+import json
 
 from ..base import BaseRepository
 from ...config.logging import get_logger
@@ -72,6 +73,10 @@ class TradingSignalRepository(BaseRepository[Dict[str, Any]]):
             RETURNING *
         """
         try:
+            # Convert dict to JSON string for JSONB columns
+            market_data_json = json.dumps(market_data_snapshot) if market_data_snapshot else None
+            metadata_json = json.dumps(metadata) if metadata else None
+            
             record = await self._fetchrow(
                 query,
                 UUID(signal_id) if isinstance(signal_id, str) else signal_id,
@@ -83,8 +88,8 @@ class TradingSignalRepository(BaseRepository[Dict[str, Any]]):
                 timestamp,
                 model_version,
                 is_warmup,
-                market_data_snapshot,
-                metadata,
+                market_data_json,
+                metadata_json,
                 trace_id,
             )
             if not record:
