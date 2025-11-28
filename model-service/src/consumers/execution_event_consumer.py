@@ -18,6 +18,7 @@ from ..config.rabbitmq import rabbitmq_manager
 from ..config.logging import get_logger
 from ..config.exceptions import MessageQueueError
 from ..models.execution_event import OrderExecutionEvent
+from ..database.repositories.execution_event_repo import ExecutionEventRepository
 
 logger = get_logger(__name__)
 
@@ -37,6 +38,7 @@ class ExecutionEventConsumer:
         self._consumer_task: Optional[asyncio.Task] = None
         self._running = False
         self._queue_name = "order-manager.order_events"
+        self.execution_event_repo = ExecutionEventRepository()
 
     async def start(self) -> None:
         """Start consuming execution events from RabbitMQ queue."""
@@ -114,6 +116,18 @@ class ExecutionEventConsumer:
             execution_event = self._validate_and_parse_event(data)
 
             if execution_event:
+                # Persist execution event to database
+                try:
+                    await self._persist_execution_event(execution_event)
+                except Exception as e:
+                    logger.error(
+                        "Failed to persist execution event to database",
+                        event_id=execution_event.event_id,
+                        error=str(e),
+                        exc_info=True,
+                    )
+                    # Continue processing even if persistence fails
+
                 # Process the event via callback if provided
                 if self.event_callback:
                     try:
@@ -254,4 +268,43 @@ class ExecutionEventConsumer:
         except Exception as e:
             logger.error("Error validating execution event", error=str(e), exc_info=True)
             return None
+
+    async def _persist_execution_event(self, execution_event: OrderExecutionEvent) -> None:
+        """
+        Persist execution event to PostgreSQL database.
+
+        Args:
+            execution_event: Validated execution event to persist
+
+        Note:
+            This method handles database errors gracefully and continues processing
+            even if persistence fails, as per T084 requirements.
+        """
+        try:
+            await self.execution_event_repo.create(
+                signal_id=execution_event.signal_id,
+                strategy_id=execution_event.strategy_id,
+                asset=execution_event.asset,
+                side=execution_event.side,
+                execution_price=execution_event.execution_price,
+                execution_quantity=execution_event.execution_quantity,
+                execution_fees=execution_event.execution_fees,
+                executed_at=execution_event.executed_at,
+                signal_price=execution_event.signal_price,
+                signal_timestamp=execution_event.signal_timestamp,
+                performance={
+                    "slippage": execution_event.performance.slippage,
+                    "slippage_percent": execution_event.performance.slippage_percent,
+                    "realized_pnl": execution_event.performance.realized_pnl,
+                    "return_percent": execution_event.performance.return_percent,
+                },
+            )
+            logger.debug("Execution event persisted to database", event_id=execution_event.event_id, signal_id=execution_event.signal_id)
+        except Exception as e:
+            # Log error but don't raise - continue processing on persistence failures
+            logger.warning(
+                "Failed to persist execution event (continuing)",
+                event_id=execution_event.event_id,
+                error=str(e),
+            )
 

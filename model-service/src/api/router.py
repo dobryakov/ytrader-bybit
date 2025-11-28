@@ -22,6 +22,14 @@ api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 # Main API router
 api_router = APIRouter(prefix="/api/v1")
 
+# Import and register API routers
+from . import models, metrics, training, monitoring
+
+api_router.include_router(models.router)
+api_router.include_router(metrics.router)
+api_router.include_router(training.router)
+api_router.include_router(monitoring.router)
+
 
 class APIKeyMiddleware(BaseHTTPMiddleware):
     """Middleware for API key authentication."""

@@ -24,6 +24,7 @@ from .services.warmup_orchestrator import warmup_orchestrator
 from .services.intelligent_orchestrator import intelligent_orchestrator
 from .services.training_orchestrator import training_orchestrator
 from .services.mode_transition import mode_transition
+from .services.quality_monitor import quality_monitor
 from .database.repositories.model_version_repo import ModelVersionRepository
 
 # Configure logging
@@ -153,6 +154,14 @@ async def lifespan(app: FastAPI):
             logger.error("Failed to start execution event consumer", error=str(e), exc_info=True)
             # Continue anyway - training can be triggered manually
 
+        # Start quality monitor for periodic quality evaluation
+        try:
+            await quality_monitor.start()
+            logger.info("Quality monitor started")
+        except Exception as e:
+            logger.error("Failed to start quality monitor", error=str(e), exc_info=True)
+            # Continue anyway - quality evaluation can be triggered manually
+
         logger.info("Model service started successfully")
     except Exception as e:
         logger.error("Failed to start model service", error=str(e), exc_info=True)
@@ -167,6 +176,10 @@ async def lifespan(app: FastAPI):
         # Cancel any ongoing training
         await training_orchestrator._cancel_current_training()
         logger.info("Training cancelled")
+
+        # Stop quality monitor
+        await quality_monitor.stop()
+        logger.info("Quality monitor stopped")
 
         # Stop execution event consumer
         if hasattr(app.state, "execution_event_consumer"):
