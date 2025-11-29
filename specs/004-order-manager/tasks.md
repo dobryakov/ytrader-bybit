@@ -136,6 +136,8 @@
 - [X] T049 [US4] Add conflict resolution for simultaneous signals in order-manager/src/services/signal_processor.py (queue handling for same asset)
 - [X] T050 [US4] Add error handling and rejection logging with clear error messages in order-manager/src/services/signal_processor.py
 - [X] T051 [US4] Add safety mechanism logging for all rejections in order-manager/src/services/risk_manager.py
+- [ ] T072 [US4] Implement instruments-info persistence in database (create instrument_info table, fetch and cache Bybit instruments-info data, periodic refresh logic) in order-manager/src/services/instrument_info_manager.py
+- [ ] T073 [US4] Add order quota MVL validation (check order quota maximum volume limits from instruments-info before order creation) in order-manager/src/services/order_validator.py
 
 **Checkpoint**: At this point, all user stories should work together - orders are created safely with proper validation and risk protection
 
@@ -288,13 +290,13 @@ With multiple developers:
 
 ## Task Summary
 
-- **Total Tasks**: 71
+- **Total Tasks**: 73
 - **Setup Phase**: 7 tasks
 - **Foundational Phase**: 9 tasks
 - **User Story 1 (P1)**: 15 tasks
 - **User Story 2 (P1)**: 7 tasks
 - **User Story 3 (P2)**: 6 tasks
-- **User Story 4 (P1)**: 7 tasks
+- **User Story 4 (P1)**: 9 tasks
 - **REST API Phase**: 6 tasks
 - **Position Management Phase**: 6 tasks
 - **Polish Phase**: 8 tasks
