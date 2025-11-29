@@ -118,8 +118,7 @@ class QuantityCalculator:
             price_filter = symbol_data.get("priceFilter", {})
             
             symbol_info = {
-                "tick_size": Decimal(str(lot_size_filter.get("qtyStep", "0.001"))),
-                "lot_size": Decimal(str(lot_size_filter.get("minQty", "0.001"))),
+                "lot_size": Decimal(str(lot_size_filter.get("qtyStep", "0.001"))),  # qtyStep is the step size for quantity
                 "min_order_qty": Decimal(str(lot_size_filter.get("minQty", "0.001"))),
                 "max_order_qty": Decimal(str(lot_size_filter.get("maxQty", "999999999"))),
                 "min_order_value": Decimal(str(symbol_data.get("minOrderValue", "5"))),  # Default 5 USDT
@@ -135,7 +134,6 @@ class QuantityCalculator:
             logger.info(
                 "symbol_info_fetched",
                 asset=asset,
-                tick_size=float(symbol_info["tick_size"]),
                 lot_size=float(symbol_info["lot_size"]),
                 min_order_qty=float(symbol_info["min_order_qty"]),
                 trace_id=trace_id,
@@ -154,33 +152,35 @@ class QuantityCalculator:
             return default_info
 
     def _apply_precision(self, quantity: Decimal, symbol_info: dict, trace_id: str | None = None) -> Decimal:
-        """Apply tick size and lot size precision to quantity.
+        """Apply lot size precision to quantity.
+
+        Note: tick_size is for price precision, not quantity. Only lot_size (qtyStep) is used for quantity.
 
         Args:
             quantity: Raw quantity value
-            symbol_info: Symbol information with tick_size and lot_size
+            symbol_info: Symbol information with lot_size (qtyStep)
             trace_id: Trace ID for logging
 
         Returns:
             Rounded quantity
         """
-        tick_size = symbol_info.get("tick_size", Decimal("0.001"))
+        # Use lot_size (qtyStep) for quantity precision - this is the step size for order quantity
         lot_size = symbol_info.get("lot_size", Decimal("0.001"))
-
-        # Round down to nearest tick size
-        if tick_size > 0:
-            quantity = (quantity / tick_size).quantize(Decimal("1"), rounding=ROUND_DOWN) * tick_size
-
-        # Round down to nearest lot size multiple
-        if lot_size > 0:
-            quantity = (quantity / lot_size).quantize(Decimal("1"), rounding=ROUND_DOWN) * lot_size
+        min_order_qty = symbol_info.get("min_order_qty", Decimal("0.001"))
+        
+        # Use the smaller of qtyStep and minQty to avoid rounding small quantities to zero
+        # If qtyStep is larger than minQty, we'll use minQty to ensure we can place small orders
+        effective_step = min(lot_size, min_order_qty) if lot_size > 0 and min_order_qty > 0 else (lot_size or min_order_qty)
+        
+        # Round down to nearest effective step multiple
+        if effective_step > 0:
+            quantity = (quantity / effective_step).quantize(Decimal("1"), rounding=ROUND_DOWN) * effective_step
 
         logger.debug(
             "quantity_precision_applied",
-            before=float(quantity),
-            tick_size=float(tick_size),
+            before_rounding=float(quantity),
             lot_size=float(lot_size),
-            after=float(quantity),
+            after_rounding=float(quantity),
             trace_id=trace_id,
         )
 
