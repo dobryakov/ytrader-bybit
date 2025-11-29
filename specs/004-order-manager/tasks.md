@@ -189,6 +189,7 @@
 - [X] T069 Security hardening (API key rotation, secure credential storage, input sanitization)
 - [ ] T070 Run quickstart.md validation (verify all steps work end-to-end)
 - [X] T071 Add database migration files in ws-gateway/migrations/ (XXX_create_orders_table.sql, XXX_create_signal_order_relationships_table.sql, XXX_create_positions_table.sql, XXX_create_position_snapshots_table.sql per constitution requirement)
+- [ ] T074 [P] [Grafana] Extend health check endpoint to include dependency status for Grafana monitoring: Update GET /health endpoint in order-manager/src/api/routes/health.py to include dependency status fields (database_connected: boolean from _check_database() result, queue_connected: boolean from _check_rabbitmq() result) in addition to existing status and timestamp fields. This enables Grafana System Health dashboard panel to display service health with component-level status. The endpoint should return: {"status": "healthy"|"unhealthy", "service": "order-manager", "database_connected": boolean, "queue_connected": boolean, "timestamp": string}. Required for Grafana dashboard User Story 5 compliance.
 
 ---
 
@@ -290,7 +291,7 @@ With multiple developers:
 
 ## Task Summary
 
-- **Total Tasks**: 73
+- **Total Tasks**: 74
 - **Setup Phase**: 7 tasks
 - **Foundational Phase**: 9 tasks
 - **User Story 1 (P1)**: 15 tasks
@@ -299,7 +300,7 @@ With multiple developers:
 - **User Story 4 (P1)**: 9 tasks
 - **REST API Phase**: 6 tasks
 - **Position Management Phase**: 6 tasks
-- **Polish Phase**: 8 tasks
+- **Polish Phase**: 9 tasks
 
 ### Parallel Opportunities Identified
 

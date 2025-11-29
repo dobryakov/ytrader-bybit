@@ -197,6 +197,7 @@
 - [ ] T082 Performance optimization (connection pooling, model caching, efficient data processing)
 - [X] T091 [P] Add metrics for signal generation skipping in model-service/src/services/intelligent_signal_generator.py (track count of signals skipped due to open orders, log metrics with asset, strategy_id, reason, expose via monitoring endpoint for observability)
 - [X] T092 [P] Update documentation in model-service/README.md to describe open orders check behavior and configuration options (explain how signal generation prevents duplicate orders, document configuration parameters SIGNAL_GENERATION_SKIP_IF_OPEN_ORDER and SIGNAL_GENERATION_CHECK_OPPOSITE_ORDERS_ONLY, provide examples of behavior)
+- [ ] T093 [P] [Grafana] Standardize health check endpoint response format for Grafana monitoring: Update HealthResponse in model-service/src/api/health.py to include flat fields database_connected (boolean from checks.database.connected) and queue_connected (boolean from checks.message_queue.connected) in addition to existing checks object. This enables Grafana System Health dashboard panel to extract dependency status directly without nested JSON parsing. Alternatively, update health endpoint to return both formats (flat fields for backward compatibility and checks object for detailed status). Required for Grafana dashboard User Story 5 compliance.
 
 ---
 
@@ -370,14 +371,14 @@ With multiple developers:
 
 ## Task Summary
 
-- **Total Tasks**: 102 tasks
+- **Total Tasks**: 103 tasks
 - **Phase 1 (Setup)**: 9 tasks
 - **Phase 2 (Foundational)**: 12 tasks
 - **Phase 3 (User Story 1 - MVP)**: 15 tasks (added T030a, T030b, T030c, T030d)
 - **Phase 4 (User Story 2)**: 19 tasks (added T037a, T039a)
 - **Phase 5 (User Story 3)**: 11 tasks (added T052a, T052b)
 - **Phase 6 (User Story 4)**: 17 tasks
-- **Phase 7 (Polish)**: 19 tasks (added T091, T092)
+- **Phase 7 (Polish)**: 20 tasks (added T091, T092, T093)
 
 ### Task Count per User Story
 
