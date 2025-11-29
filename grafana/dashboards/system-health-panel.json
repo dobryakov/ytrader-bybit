@@ -1,0 +1,258 @@
+{
+  "id": 6,
+  "title": "System Health",
+  "type": "table",
+  "gridPos": {
+    "h": 6,
+    "w": 24,
+    "x": 0,
+    "y": 28
+  },
+  "targets": [
+    {
+      "datasource": {
+        "type": "infinity",
+        "uid": "ws-gateway Health"
+      },
+      "format": "table",
+      "type": "json",
+      "parser": "json",
+      "url": "/health",
+      "root_selector": "$",
+      "columns": [
+        {
+          "text": "service_name",
+          "selector": "$.service",
+          "type": "string"
+        },
+        {
+          "text": "overall_status",
+          "selector": "$.status",
+          "type": "string"
+        },
+        {
+          "text": "database_connected",
+          "selector": "$.database_connected",
+          "type": "boolean"
+        },
+        {
+          "text": "queue_connected",
+          "selector": "$.queue_connected",
+          "type": "boolean"
+        },
+        {
+          "text": "websocket_connected",
+          "selector": "$.websocket_connected",
+          "type": "boolean"
+        }
+      ],
+      "refId": "A"
+    },
+    {
+      "datasource": {
+        "type": "infinity",
+        "uid": "model-service Health"
+      },
+      "format": "table",
+      "type": "json",
+      "parser": "json",
+      "url": "/health",
+      "root_selector": "$",
+      "columns": [
+        {
+          "text": "service_name",
+          "selector": "$.service",
+          "type": "string"
+        },
+        {
+          "text": "overall_status",
+          "selector": "$.status",
+          "type": "string"
+        },
+        {
+          "text": "database_connected",
+          "selector": "$.database_connected",
+          "type": "boolean"
+        },
+        {
+          "text": "queue_connected",
+          "selector": "$.queue_connected",
+          "type": "boolean"
+        }
+      ],
+      "refId": "B"
+    },
+    {
+      "datasource": {
+        "type": "infinity",
+        "uid": "order-manager Health"
+      },
+      "format": "table",
+      "type": "json",
+      "parser": "json",
+      "url": "/health",
+      "root_selector": "$",
+      "columns": [
+        {
+          "text": "service_name",
+          "selector": "$.service",
+          "type": "string"
+        },
+        {
+          "text": "overall_status",
+          "selector": "$.status",
+          "type": "string"
+        },
+        {
+          "text": "database_connected",
+          "selector": "$.database_connected",
+          "type": "boolean"
+        },
+        {
+          "text": "queue_connected",
+          "selector": "$.queue_connected",
+          "type": "boolean"
+        }
+      ],
+      "refId": "C"
+    }
+  ],
+  "options": {
+    "showHeader": true
+  },
+  "fieldConfig": {
+    "defaults": {
+      "custom": {
+        "align": "auto",
+        "displayMode": "auto"
+      },
+      "mappings": [],
+      "thresholds": {
+        "mode": "absolute",
+        "steps": [
+          {
+            "color": "green",
+            "value": null
+          }
+        ]
+      }
+    },
+    "overrides": [
+      {
+        "matcher": {
+          "id": "byName",
+          "options": "overall_status"
+        },
+        "properties": [
+          {
+            "id": "mappings",
+            "value": [
+              {
+                "options": {
+                  "healthy": {
+                    "color": "green",
+                    "index": 0,
+                    "text": "Healthy"
+                  },
+                  "unhealthy": {
+                    "color": "red",
+                    "index": 1,
+                    "text": "Unhealthy"
+                  }
+                },
+                "type": "value"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "matcher": {
+          "id": "byName",
+          "options": "database_connected"
+        },
+        "properties": [
+          {
+            "id": "mappings",
+            "value": [
+              {
+                "options": {
+                  "true": {
+                    "color": "green",
+                    "index": 0,
+                    "text": "Connected"
+                  },
+                  "false": {
+                    "color": "red",
+                    "index": 1,
+                    "text": "Disconnected"
+                  }
+                },
+                "type": "value"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "matcher": {
+          "id": "byName",
+          "options": "queue_connected"
+        },
+        "properties": [
+          {
+            "id": "mappings",
+            "value": [
+              {
+                "options": {
+                  "true": {
+                    "color": "green",
+                    "index": 0,
+                    "text": "Connected"
+                  },
+                  "false": {
+                    "color": "red",
+                    "index": 1,
+                    "text": "Disconnected"
+                  }
+                },
+                "type": "value"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "matcher": {
+          "id": "byName",
+          "options": "websocket_connected"
+        },
+        "properties": [
+          {
+            "id": "mappings",
+            "value": [
+              {
+                "options": {
+                  "true": {
+                    "color": "green",
+                    "index": 0,
+                    "text": "Connected"
+                  },
+                  "false": {
+                    "color": "red",
+                    "index": 1,
+                    "text": "Disconnected"
+                  }
+                },
+                "type": "value"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "maxDataPoints": 100,
+  "interval": "60s"
+}
+

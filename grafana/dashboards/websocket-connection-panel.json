@@ -1,0 +1,150 @@
+{
+  "id": 7,
+  "title": "WebSocket Connection",
+  "type": "table",
+  "gridPos": {
+    "h": 6,
+    "w": 24,
+    "x": 0,
+    "y": 34
+  },
+  "targets": [
+    {
+      "datasource": {
+        "type": "infinity",
+        "uid": "ws-gateway Health"
+      },
+      "format": "table",
+      "type": "json",
+      "parser": "json",
+      "url": "/health",
+      "root_selector": "$.websocket_state",
+      "columns": [
+        {
+          "text": "connection_status",
+          "selector": "$.connection_status",
+          "type": "string"
+        },
+        {
+          "text": "environment",
+          "selector": "$.environment",
+          "type": "string"
+        },
+        {
+          "text": "connection_duration",
+          "selector": "$.connection_duration_seconds",
+          "type": "number"
+        },
+        {
+          "text": "last_heartbeat_timestamp",
+          "selector": "$.last_heartbeat_at",
+          "type": "time"
+        },
+        {
+          "text": "reconnection_count",
+          "selector": "$.reconnection_count",
+          "type": "number"
+        },
+        {
+          "text": "last_error_message",
+          "selector": "$.last_error",
+          "type": "string"
+        },
+        {
+          "text": "active_subscriptions_count",
+          "selector": "$.active_subscriptions",
+          "type": "number"
+        }
+      ],
+      "refId": "A"
+    }
+  ],
+  "options": {
+    "showHeader": true
+  },
+  "fieldConfig": {
+    "defaults": {
+      "custom": {
+        "align": "auto",
+        "displayMode": "auto"
+      },
+      "mappings": [],
+      "thresholds": {
+        "mode": "absolute",
+        "steps": [
+          {
+            "color": "green",
+            "value": null
+          }
+        ]
+      }
+    },
+    "overrides": [
+      {
+        "matcher": {
+          "id": "byName",
+          "options": "connection_status"
+        },
+        "properties": [
+          {
+            "id": "mappings",
+            "value": [
+              {
+                "options": {
+                  "connected": {
+                    "color": "green",
+                    "index": 0,
+                    "text": "Connected"
+                  },
+                  "disconnected": {
+                    "color": "red",
+                    "index": 1,
+                    "text": "Disconnected"
+                  },
+                  "connecting": {
+                    "color": "yellow",
+                    "index": 2,
+                    "text": "Connecting"
+                  },
+                  "reconnecting": {
+                    "color": "yellow",
+                    "index": 3,
+                    "text": "Reconnecting"
+                  }
+                },
+                "type": "value"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "matcher": {
+          "id": "byName",
+          "options": "connection_duration"
+        },
+        "properties": [
+          {
+            "id": "unit",
+            "value": "s"
+          }
+        ]
+      },
+      {
+        "matcher": {
+          "id": "byName",
+          "options": "last_heartbeat_timestamp"
+        },
+        "properties": [
+          {
+            "id": "unit",
+            "value": "dateTimeFromNow"
+          }
+        ]
+      }
+    ]
+  },
+  "maxDataPoints": 100,
+  "interval": "60s"
+}
+

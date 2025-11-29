@@ -1,0 +1,100 @@
+{
+  "id": 8,
+  "title": "Event History",
+  "type": "table",
+  "gridPos": {
+    "h": 8,
+    "w": 24,
+    "x": 0,
+    "y": 40
+  },
+  "targets": [
+    {
+      "datasource": {
+        "type": "postgres",
+        "uid": "PostgreSQL"
+      },
+      "editorMode": "code",
+      "format": "table",
+      "rawQuery": true,
+      "rawSql": "-- Trading signal events\nSELECT \n    'trading_signal_received' as event_type,\n    timestamp as event_timestamp,\n    id::text as event_id,\n    jsonb_build_object('signal_id', signal_id) as related_entity_ids,\n    jsonb_build_object('asset', asset, 'side', side, 'price', price, 'strategy_id', strategy_id, 'confidence', confidence, 'model_version', model_version, 'is_warmup', is_warmup) as event_details,\n    'model-service' as service_name\nFROM trading_signals\n\nUNION ALL\n\n-- Order events\nSELECT \n    CASE \n        WHEN status = 'filled' THEN 'order_executed'\n        WHEN status IN ('cancelled', 'rejected') THEN 'order_closed'\n        ELSE 'order_created'\n    END as event_type,\n    COALESCE(executed_at, created_at) as event_timestamp,\n    id::text as event_id,\n    jsonb_build_object('order_id', order_id, 'signal_id', signal_id) as related_entity_ids,\n    jsonb_build_object('asset', asset, 'side', side, 'status', status) as event_details,\n    'order-manager' as service_name\nFROM orders\n\nUNION ALL\n\n-- Model training events\nSELECT \n    CASE \n        WHEN is_active = true THEN 'model_training_completed'\n        ELSE NULL\n    END as event_type,\n    trained_at as event_timestamp,\n    id::text as event_id,\n    jsonb_build_object('model_version_id', id, 'version', version) as related_entity_ids,\n    jsonb_build_object('strategy_id', strategy_id, 'model_type', model_type) as event_details,\n    'model-service' as service_name\nFROM model_versions\nWHERE is_active = true AND trained_at IS NOT NULL\n\nUNION ALL\n\n-- Subscription events\nSELECT \n    CASE \n        WHEN is_active = true THEN 'subscription_created'\n        ELSE 'subscription_cancelled'\n    END as event_type,\n    COALESCE(updated_at, created_at) as event_timestamp,\n    id::text as event_id,\n    jsonb_build_object('subscription_id', id) as related_entity_ids,\n    jsonb_build_object('channel_type', channel_type, 'symbol', symbol, 'requesting_service', requesting_service) as event_details,\n    'ws-gateway' as service_name\nFROM subscriptions\n\nORDER BY event_timestamp DESC\nLIMIT 200;",
+      "refId": "A"
+    }
+  ],
+  "options": {
+    "showHeader": true,
+    "sortBy": [
+      {
+        "desc": true,
+        "displayName": "event_timestamp"
+      }
+    ]
+  },
+  "fieldConfig": {
+    "defaults": {
+      "custom": {
+        "align": "auto",
+        "displayMode": "auto"
+      },
+      "mappings": [],
+      "thresholds": {
+        "mode": "absolute",
+        "steps": [
+          {
+            "color": "green",
+            "value": null
+          }
+        ]
+      }
+    },
+    "overrides": [
+      {
+        "matcher": {
+          "id": "byName",
+          "options": "event_timestamp"
+        },
+        "properties": [
+          {
+            "id": "unit",
+            "value": "dateTimeFromNow"
+          }
+        ]
+      },
+      {
+        "matcher": {
+          "id": "byName",
+          "options": "event_details"
+        },
+        "properties": [
+          {
+            "id": "custom.width",
+            "value": 400
+          },
+          {
+            "id": "custom.displayMode",
+            "value": "json-view"
+          }
+        ]
+      },
+      {
+        "matcher": {
+          "id": "byName",
+          "options": "related_entity_ids"
+        },
+        "properties": [
+          {
+            "id": "custom.width",
+            "value": 300
+          },
+          {
+            "id": "custom.displayMode",
+            "value": "json-view"
+          }
+        ]
+      }
+    ]
+  },
+  "maxDataPoints": 200,
+  "interval": "60s"
+}
+

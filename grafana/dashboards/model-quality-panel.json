@@ -1,0 +1,154 @@
+{
+  "id": 4,
+  "title": "Model Quality Metrics",
+  "type": "table",
+  "gridPos": {
+    "h": 6,
+    "w": 12,
+    "x": 12,
+    "y": 16
+  },
+  "targets": [
+    {
+      "datasource": {
+        "type": "postgres",
+        "uid": "PostgreSQL"
+      },
+      "editorMode": "code",
+      "format": "table",
+      "rawQuery": true,
+      "rawSql": "SELECT \n    COUNT(*) as total_orders_count,\n    SUM(CASE WHEN (performance->>'realized_pnl')::DECIMAL > 0 THEN 1 ELSE 0 END) as successful_orders_count,\n    ROUND(\n        SUM(CASE WHEN (performance->>'realized_pnl')::DECIMAL > 0 THEN 1 ELSE 0 END)::DECIMAL / \n        NULLIF(COUNT(*), 0) * 100, \n        2\n    ) as win_rate,\n    SUM((performance->>'realized_pnl')::DECIMAL) as total_pnl\nFROM execution_events\nWHERE executed_at >= NOW() - INTERVAL '7 days'\nGROUP BY strategy_id;",
+      "refId": "A"
+    }
+  ],
+  "options": {
+    "showHeader": true,
+    "sortBy": [
+      {
+        "desc": true,
+        "displayName": "total_pnl"
+      }
+    ]
+  },
+  "fieldConfig": {
+    "defaults": {
+      "custom": {
+        "align": "auto",
+        "displayMode": "auto"
+      },
+      "mappings": [],
+      "thresholds": {
+        "mode": "absolute",
+        "steps": [
+          {
+            "color": "green",
+            "value": null
+          }
+        ]
+      }
+    },
+    "overrides": [
+      {
+        "matcher": {
+          "id": "byName",
+          "options": "win_rate"
+        },
+        "properties": [
+          {
+            "id": "unit",
+            "value": "percent"
+          },
+          {
+            "id": "decimals",
+            "value": 2
+          },
+          {
+            "id": "thresholds",
+            "value": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "color": "red",
+                  "value": null
+                },
+                {
+                  "color": "yellow",
+                  "value": 50
+                },
+                {
+                  "color": "green",
+                  "value": 60
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "matcher": {
+          "id": "byName",
+          "options": "total_pnl"
+        },
+        "properties": [
+          {
+            "id": "unit",
+            "value": "currencyUSD"
+          },
+          {
+            "id": "decimals",
+            "value": 2
+          },
+          {
+            "id": "custom.cellOptions",
+            "value": {
+              "type": "color-text"
+            }
+          },
+          {
+            "id": "thresholds",
+            "value": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "color": "red",
+                  "value": null
+                },
+                {
+                  "color": "green",
+                  "value": 0
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "matcher": {
+          "id": "byName",
+          "options": "total_orders_count"
+        },
+        "properties": [
+          {
+            "id": "unit",
+            "value": "short"
+          }
+        ]
+      },
+      {
+        "matcher": {
+          "id": "byName",
+          "options": "successful_orders_count"
+        },
+        "properties": [
+          {
+            "id": "unit",
+            "value": "short"
+          }
+        ]
+      }
+    ]
+  },
+  "maxDataPoints": 100,
+  "interval": "60s"
+}
+

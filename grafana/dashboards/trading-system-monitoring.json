@@ -434,6 +434,934 @@
       },
       "maxDataPoints": 100,
       "interval": "60s"
+    },
+    {
+      "id": 3,
+      "title": "Model State",
+      "type": "table",
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "PostgreSQL"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT\n    version as active_model_version,\n    strategy_id,\n    is_warmup_mode as warmup_mode_status,\n    trained_at,\n    CASE \n        WHEN is_active = true THEN 'active'\n        ELSE 'inactive'\n    END as training_status\nFROM model_versions\nWHERE is_active = true\nORDER BY trained_at DESC;",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "trained_at"
+          }
+        ]
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "displayMode": "auto"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "training_status"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "active": {
+                        "color": "green",
+                        "index": 0,
+                        "text": "Active"
+                      },
+                      "inactive": {
+                        "color": "gray",
+                        "index": 1,
+                        "text": "Inactive"
+                      }
+                    },
+                    "type": "value"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "warmup_mode_status"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "false": {
+                        "color": "green",
+                        "index": 0,
+                        "text": "No"
+                      },
+                      "true": {
+                        "color": "yellow",
+                        "index": 1,
+                        "text": "Yes"
+                      }
+                    },
+                    "type": "value"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "trained_at"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeFromNow"
+              }
+            ]
+          }
+        ]
+      },
+      "maxDataPoints": 100,
+      "interval": "60s"
+    },
+    {
+      "id": 4,
+      "title": "Model Quality Metrics",
+      "type": "table",
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 12,
+        "y": 16
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "PostgreSQL"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT \n    COUNT(*) as total_orders_count,\n    SUM(CASE WHEN (performance->>'realized_pnl')::DECIMAL > 0 THEN 1 ELSE 0 END) as successful_orders_count,\n    ROUND(\n        SUM(CASE WHEN (performance->>'realized_pnl')::DECIMAL > 0 THEN 1 ELSE 0 END)::DECIMAL / \n        NULLIF(COUNT(*), 0) * 100, \n        2\n    ) as win_rate,\n    SUM((performance->>'realized_pnl')::DECIMAL) as total_pnl\nFROM execution_events\nWHERE executed_at >= NOW() - INTERVAL '7 days'\nGROUP BY strategy_id;",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "total_pnl"
+          }
+        ]
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "displayMode": "auto"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "win_rate"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 50
+                    },
+                    {
+                      "color": "green",
+                      "value": 60
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "total_pnl"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "green",
+                      "value": 0
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "total_orders_count"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "successful_orders_count"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              }
+            ]
+          }
+        ]
+      },
+      "maxDataPoints": 100,
+      "interval": "60s"
+    },
+    {
+      "id": 5,
+      "title": "Queue Metrics",
+      "type": "table",
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 22
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "infinity",
+            "uid": "RabbitMQ HTTP API"
+          },
+          "format": "table",
+          "type": "json",
+          "parser": "json",
+          "url": "/api/queues",
+          "root_selector": "$",
+          "columns": [
+            {
+              "text": "queue_name",
+              "selector": "$.name",
+              "type": "string"
+            },
+            {
+              "text": "queue_length",
+              "selector": "$.messages",
+              "type": "number"
+            },
+            {
+              "text": "message_publish_rate",
+              "selector": "$.message_stats.publish_details.rate",
+              "type": "number"
+            },
+            {
+              "text": "message_consume_rate",
+              "selector": "$.message_stats.ack_details.rate",
+              "type": "number"
+            },
+            {
+              "text": "consumer_count",
+              "selector": "$.consumers",
+              "type": "number"
+            }
+          ],
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "queue_length"
+          }
+        ]
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "displayMode": "auto"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "queue_length"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 100
+                    },
+                    {
+                      "color": "red",
+                      "value": 1000
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "message_publish_rate"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ops"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "message_consume_rate"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ops"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          }
+        ]
+      },
+      "maxDataPoints": 100,
+      "interval": "60s"
+    },
+    {
+      "id": 6,
+      "title": "System Health",
+      "type": "table",
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 28
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "infinity",
+            "uid": "ws-gateway Health"
+          },
+          "format": "table",
+          "type": "json",
+          "parser": "json",
+          "url": "/health",
+          "root_selector": "$",
+          "columns": [
+            {
+              "text": "service_name",
+              "selector": "$.service",
+              "type": "string"
+            },
+            {
+              "text": "overall_status",
+              "selector": "$.status",
+              "type": "string"
+            },
+            {
+              "text": "database_connected",
+              "selector": "$.database_connected",
+              "type": "boolean"
+            },
+            {
+              "text": "queue_connected",
+              "selector": "$.queue_connected",
+              "type": "boolean"
+            },
+            {
+              "text": "websocket_connected",
+              "selector": "$.websocket_connected",
+              "type": "boolean"
+            }
+          ],
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "infinity",
+            "uid": "model-service Health"
+          },
+          "format": "table",
+          "type": "json",
+          "parser": "json",
+          "url": "/health",
+          "root_selector": "$",
+          "columns": [
+            {
+              "text": "service_name",
+              "selector": "$.service",
+              "type": "string"
+            },
+            {
+              "text": "overall_status",
+              "selector": "$.status",
+              "type": "string"
+            },
+            {
+              "text": "database_connected",
+              "selector": "$.database_connected",
+              "type": "boolean"
+            },
+            {
+              "text": "queue_connected",
+              "selector": "$.queue_connected",
+              "type": "boolean"
+            }
+          ],
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "infinity",
+            "uid": "order-manager Health"
+          },
+          "format": "table",
+          "type": "json",
+          "parser": "json",
+          "url": "/health",
+          "root_selector": "$",
+          "columns": [
+            {
+              "text": "service_name",
+              "selector": "$.service",
+              "type": "string"
+            },
+            {
+              "text": "overall_status",
+              "selector": "$.status",
+              "type": "string"
+            },
+            {
+              "text": "database_connected",
+              "selector": "$.database_connected",
+              "type": "boolean"
+            },
+            {
+              "text": "queue_connected",
+              "selector": "$.queue_connected",
+              "type": "boolean"
+            }
+          ],
+          "refId": "C"
+        }
+      ],
+      "options": {
+        "showHeader": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "displayMode": "auto"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "overall_status"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "healthy": {
+                        "color": "green",
+                        "index": 0,
+                        "text": "Healthy"
+                      },
+                      "unhealthy": {
+                        "color": "red",
+                        "index": 1,
+                        "text": "Unhealthy"
+                      }
+                    },
+                    "type": "value"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "database_connected"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "true": {
+                        "color": "green",
+                        "index": 0,
+                        "text": "Connected"
+                      },
+                      "false": {
+                        "color": "red",
+                        "index": 1,
+                        "text": "Disconnected"
+                      }
+                    },
+                    "type": "value"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "queue_connected"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "true": {
+                        "color": "green",
+                        "index": 0,
+                        "text": "Connected"
+                      },
+                      "false": {
+                        "color": "red",
+                        "index": 1,
+                        "text": "Disconnected"
+                      }
+                    },
+                    "type": "value"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "websocket_connected"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "true": {
+                        "color": "green",
+                        "index": 0,
+                        "text": "Connected"
+                      },
+                      "false": {
+                        "color": "red",
+                        "index": 1,
+                        "text": "Disconnected"
+                      }
+                    },
+                    "type": "value"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "maxDataPoints": 100,
+      "interval": "60s"
+    },
+    {
+      "id": 7,
+      "title": "WebSocket Connection",
+      "type": "table",
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 34
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "infinity",
+            "uid": "ws-gateway Health"
+          },
+          "format": "table",
+          "type": "json",
+          "parser": "json",
+          "url": "/health",
+          "root_selector": "$.websocket_state",
+          "columns": [
+            {
+              "text": "connection_status",
+              "selector": "$.connection_status",
+              "type": "string"
+            },
+            {
+              "text": "environment",
+              "selector": "$.environment",
+              "type": "string"
+            },
+            {
+              "text": "connection_duration",
+              "selector": "$.connection_duration_seconds",
+              "type": "number"
+            },
+            {
+              "text": "last_heartbeat_timestamp",
+              "selector": "$.last_heartbeat_at",
+              "type": "time"
+            },
+            {
+              "text": "reconnection_count",
+              "selector": "$.reconnection_count",
+              "type": "number"
+            },
+            {
+              "text": "last_error_message",
+              "selector": "$.last_error",
+              "type": "string"
+            },
+            {
+              "text": "active_subscriptions_count",
+              "selector": "$.active_subscriptions",
+              "type": "number"
+            }
+          ],
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "showHeader": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "displayMode": "auto"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "connection_status"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "connected": {
+                        "color": "green",
+                        "index": 0,
+                        "text": "Connected"
+                      },
+                      "disconnected": {
+                        "color": "red",
+                        "index": 1,
+                        "text": "Disconnected"
+                      },
+                      "connecting": {
+                        "color": "yellow",
+                        "index": 2,
+                        "text": "Connecting"
+                      },
+                      "reconnecting": {
+                        "color": "yellow",
+                        "index": 3,
+                        "text": "Reconnecting"
+                      }
+                    },
+                    "type": "value"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "connection_duration"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "last_heartbeat_timestamp"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeFromNow"
+              }
+            ]
+          }
+        ]
+      },
+      "maxDataPoints": 100,
+      "interval": "60s"
+    },
+    {
+      "id": 8,
+      "title": "Event History",
+      "type": "table",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 40
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "PostgreSQL"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "-- Trading signal events\nSELECT \n    'trading_signal_received' as event_type,\n    timestamp as event_timestamp,\n    id::text as event_id,\n    jsonb_build_object('signal_id', signal_id) as related_entity_ids,\n    jsonb_build_object('asset', asset, 'side', side, 'price', price, 'strategy_id', strategy_id, 'confidence', confidence, 'model_version', model_version, 'is_warmup', is_warmup) as event_details,\n    'model-service' as service_name\nFROM trading_signals\n\nUNION ALL\n\n-- Order events\nSELECT \n    CASE \n        WHEN status = 'filled' THEN 'order_executed'\n        WHEN status IN ('cancelled', 'rejected') THEN 'order_closed'\n        ELSE 'order_created'\n    END as event_type,\n    COALESCE(executed_at, created_at) as event_timestamp,\n    id::text as event_id,\n    jsonb_build_object('order_id', order_id, 'signal_id', signal_id) as related_entity_ids,\n    jsonb_build_object('asset', asset, 'side', side, 'status', status) as event_details,\n    'order-manager' as service_name\nFROM orders\n\nUNION ALL\n\n-- Model training events\nSELECT \n    CASE \n        WHEN is_active = true THEN 'model_training_completed'\n        ELSE NULL\n    END as event_type,\n    trained_at as event_timestamp,\n    id::text as event_id,\n    jsonb_build_object('model_version_id', id, 'version', version) as related_entity_ids,\n    jsonb_build_object('strategy_id', strategy_id, 'model_type', model_type) as event_details,\n    'model-service' as service_name\nFROM model_versions\nWHERE is_active = true AND trained_at IS NOT NULL\n\nUNION ALL\n\n-- Subscription events\nSELECT \n    CASE \n        WHEN is_active = true THEN 'subscription_created'\n        ELSE 'subscription_cancelled'\n    END as event_type,\n    COALESCE(updated_at, created_at) as event_timestamp,\n    id::text as event_id,\n    jsonb_build_object('subscription_id', id) as related_entity_ids,\n    jsonb_build_object('channel_type', channel_type, 'symbol', symbol, 'requesting_service', requesting_service) as event_details,\n    'ws-gateway' as service_name\nFROM subscriptions\n\nORDER BY event_timestamp DESC\nLIMIT 200;",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "event_timestamp"
+          }
+        ]
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "displayMode": "auto"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "event_timestamp"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeFromNow"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "event_details"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 400
+              },
+              {
+                "id": "custom.displayMode",
+                "value": "json-view"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "related_entity_ids"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 300
+              },
+              {
+                "id": "custom.displayMode",
+                "value": "json-view"
+              }
+            ]
+          }
+        ]
+      },
+      "maxDataPoints": 200,
+      "interval": "60s"
     }
   ],
   "refresh": "60s",
