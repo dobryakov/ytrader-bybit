@@ -410,6 +410,7 @@ class OrderExecutor:
                         ret_code=ret_code,
                         ret_msg=ret_msg,
                         quantity=float(quantity),
+                        price=float(price) if price else None,
                         reason="Quantity below minimum limit, will try to increase quantity to meet minOrderValue",
                         trace_id=trace_id,
                     )
@@ -421,15 +422,66 @@ class OrderExecutor:
                         min_order_value = symbol_info.get("min_order_value", Decimal("5"))
                         
                         # Get current price if not provided
-                        if not price:
-                            ticker_response = await bybit_client.get(
-                                "/v5/market/tickers",
-                                params={"category": "linear", "symbol": asset},
-                                authenticated=False,
+                        # Try multiple sources: signal snapshot -> ticker API
+                        if not price or price == 0:
+                            logger.info(
+                                "order_creation_fetching_price_for_10001_retry",
+                                signal_id=str(signal_id),
+                                asset=asset,
+                                price_from_signal=float(signal.market_data_snapshot.price) if signal.market_data_snapshot and signal.market_data_snapshot.price else None,
+                                trace_id=trace_id,
                             )
-                            ticker_data = ticker_response.get("result", {}).get("list", [])
-                            if ticker_data:
-                                price = Decimal(str(ticker_data[0].get("lastPrice", "0")))
+                            # First, try signal's market data snapshot
+                            if signal.market_data_snapshot and signal.market_data_snapshot.price:
+                                price = signal.market_data_snapshot.price
+                                logger.info(
+                                    "order_creation_using_signal_price_for_10001",
+                                    signal_id=str(signal_id),
+                                    asset=asset,
+                                    price=float(price),
+                                    trace_id=trace_id,
+                                )
+                            else:
+                                # Fallback: fetch from Bybit ticker API
+                                logger.info(
+                                    "order_creation_fetching_ticker_price_for_10001",
+                                    signal_id=str(signal_id),
+                                    asset=asset,
+                                    trace_id=trace_id,
+                                )
+                                ticker_response = await bybit_client.get(
+                                    "/v5/market/tickers",
+                                    params={"category": "linear", "symbol": asset},
+                                    authenticated=False,
+                                )
+                                ticker_data = ticker_response.get("result", {}).get("list", [])
+                                if ticker_data and len(ticker_data) > 0:
+                                    last_price_str = ticker_data[0].get("lastPrice")
+                                    if last_price_str:
+                                        price = Decimal(str(last_price_str))
+                                        logger.info(
+                                            "order_creation_fetched_ticker_price_for_10001",
+                                            signal_id=str(signal_id),
+                                            asset=asset,
+                                            price=float(price),
+                                            trace_id=trace_id,
+                                        )
+                                    else:
+                                        logger.warning(
+                                            "order_creation_no_last_price_in_ticker",
+                                            signal_id=str(signal_id),
+                                            asset=asset,
+                                            ticker_data=ticker_data[0],
+                                            trace_id=trace_id,
+                                        )
+                                else:
+                                    logger.warning(
+                                        "order_creation_no_ticker_data",
+                                        signal_id=str(signal_id),
+                                        asset=asset,
+                                        ticker_response=ticker_response,
+                                        trace_id=trace_id,
+                                    )
                         
                         if price and price > 0:
                             # Calculate minimum quantity based on minOrderValue
@@ -445,6 +497,7 @@ class OrderExecutor:
                                 min_quantity_by_value = ((min_quantity_by_value / effective_step).quantize(Decimal("1"), rounding=ROUND_UP) * effective_step)
                             
                             # Use the larger of current quantity and minimum by value
+                            # If they're equal but order was still rejected, increase by one step
                             if min_quantity_by_value > quantity:
                                 logger.info(
                                     "order_creation_increasing_quantity_for_min_order_value",
@@ -457,6 +510,28 @@ class OrderExecutor:
                                     trace_id=trace_id,
                                 )
                                 quantity = min_quantity_by_value
+                            elif min_quantity_by_value == quantity and effective_step > 0:
+                                # If min_quantity_by_value equals current quantity but order was rejected,
+                                # increase by one step to ensure we exceed the minimum
+                                new_quantity = quantity + effective_step
+                                
+                                # Round to lot_size to ensure it's valid for Bybit
+                                if lot_size > 0:
+                                    from decimal import ROUND_UP
+                                    new_quantity = ((new_quantity / lot_size).quantize(Decimal("1"), rounding=ROUND_UP) * lot_size)
+                                
+                                logger.info(
+                                    "order_creation_increasing_quantity_by_one_step",
+                                    signal_id=str(signal_id),
+                                    asset=asset,
+                                    original_quantity=float(quantity),
+                                    min_quantity_by_value=float(min_quantity_by_value),
+                                    effective_step=float(effective_step),
+                                    lot_size=float(lot_size),
+                                    new_quantity=float(new_quantity),
+                                    trace_id=trace_id,
+                                )
+                                quantity = new_quantity
                                 
                                 # Update bybit_params with new quantity
                                 bybit_params["qty"] = str(quantity)
@@ -503,6 +578,42 @@ class OrderExecutor:
                                             trace_id=trace_id,
                                         )
                                         return order
+                                else:
+                                    # Retry with increased quantity failed
+                                    logger.warning(
+                                        "order_creation_retry_with_increased_quantity_failed",
+                                        signal_id=str(signal_id),
+                                        asset=asset,
+                                        new_quantity=float(quantity),
+                                        ret_code=ret_code,
+                                        ret_msg=ret_msg,
+                                        trace_id=trace_id,
+                                    )
+                            else:
+                                # min_quantity_by_value <= quantity, but order still rejected
+                                # This suggests the issue might be something else
+                                logger.warning(
+                                    "order_creation_quantity_already_above_min",
+                                    signal_id=str(signal_id),
+                                    asset=asset,
+                                    current_quantity=float(quantity),
+                                    min_quantity_by_value=float(min_quantity_by_value),
+                                    min_order_value=float(min_order_value),
+                                    price=float(price),
+                                    trace_id=trace_id,
+                                )
+                        else:
+                            # Price not available, cannot calculate min quantity
+                            logger.error(
+                                "order_creation_cannot_get_price_for_10001_retry",
+                                signal_id=str(signal_id),
+                                asset=asset,
+                                quantity=float(quantity),
+                                price=float(price) if price else None,
+                                has_signal_snapshot=signal.market_data_snapshot is not None,
+                                snapshot_price=float(signal.market_data_snapshot.price) if signal.market_data_snapshot and signal.market_data_snapshot.price else None,
+                                trace_id=trace_id,
+                            )
                     except Exception as e:
                         logger.error(
                             "order_creation_10001_retry_failed",
