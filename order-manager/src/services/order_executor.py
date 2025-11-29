@@ -81,6 +81,17 @@ class OrderExecutor:
             return await self._create_dry_run_order(signal, order_type, quantity, price, trace_id)
 
         try:
+            # Validate order parameters against instruments-info before creating order
+            from ..services.order_validator import OrderValidator
+            validator = OrderValidator()
+            await validator.validate_order_against_instruments_info(
+                signal=signal,
+                order_type=order_type,
+                quantity=quantity,
+                price=price,
+                trace_id=trace_id,
+            )
+            
             # Prepare order parameters for Bybit API
             bybit_params = await self._prepare_bybit_order_params(
                 signal=signal,
@@ -387,6 +398,83 @@ class OrderExecutor:
                                 error=str(e),
                                 trace_id=trace_id,
                             )
+                
+                # Error 110017: "current position is zero, cannot fix reduce-only order qty"
+                # This happens when reduceOnly=True but position was closed between check and order creation
+                # Solution: retry without reduceOnly flag
+                if ret_code == 110017:
+                    logger.warning(
+                        "order_creation_reduce_only_position_zero",
+                        signal_id=str(signal_id),
+                        asset=asset,
+                        ret_code=ret_code,
+                        ret_msg=ret_msg,
+                        reason="Position became zero after reduceOnly was set, retrying without reduceOnly",
+                        trace_id=trace_id,
+                    )
+                    # Remove reduceOnly from params and retry
+                    if "reduceOnly" in bybit_params:
+                        del bybit_params["reduceOnly"]
+                        logger.info(
+                            "order_creation_retrying_without_reduce_only",
+                            signal_id=str(signal_id),
+                            asset=asset,
+                            trace_id=trace_id,
+                        )
+                        try:
+                            response = await bybit_client.post(endpoint, json_data=bybit_params, authenticated=True)
+                            ret_code = response.get("retCode", 0)
+                            ret_msg = response.get("retMsg", "")
+                            if ret_code == 0:
+                                # Success after removing reduceOnly
+                                result = response.get("result", {})
+                                bybit_order_id = result.get("orderId")
+                                if bybit_order_id:
+                                    logger.info(
+                                        "order_creation_success_after_removing_reduce_only",
+                                        signal_id=str(signal_id),
+                                        asset=asset,
+                                        bybit_order_id=bybit_order_id,
+                                        trace_id=trace_id,
+                                    )
+                                    # Continue with order creation flow
+                                    order = await self._save_order_to_database(
+                                        signal=signal,
+                                        bybit_order_id=bybit_order_id,
+                                        order_type=order_type,
+                                        quantity=quantity,
+                                        price=price,
+                                        trace_id=trace_id,
+                                    )
+                                    logger.info(
+                                        "order_creation_complete",
+                                        signal_id=str(signal_id),
+                                        asset=asset,
+                                        order_id=str(order.id),
+                                        bybit_order_id=bybit_order_id,
+                                        trace_id=trace_id,
+                                    )
+                                    return order
+                        except Exception as e:
+                            logger.error(
+                                "order_creation_retry_without_reduce_only_failed",
+                                signal_id=str(signal_id),
+                                asset=asset,
+                                error=str(e),
+                                trace_id=trace_id,
+                            )
+                    
+                    # If retry failed or reduceOnly was not in params, continue to error handling
+                    error_msg = f"Bybit API error: {ret_msg} (code: {ret_code})"
+                    logger.error(
+                        "order_creation_api_error_after_110017_retry",
+                        signal_id=str(signal_id),
+                        asset=asset,
+                        ret_code=ret_code,
+                        ret_msg=ret_msg,
+                        trace_id=trace_id,
+                    )
+                    raise OrderExecutionError(error_msg)
                 
                 error_msg = f"Bybit API error: {ret_msg} (code: {ret_code})"
                 logger.error(
@@ -1353,7 +1441,7 @@ class OrderExecutor:
             return max_quantity
         
         elif signal_type.lower() == "sell":
-            # Sell orders: check if we have a long position
+            # Sell orders: check if we have a long position (can use reduce_only)
             if has_position and position_size > 0:
                 # Have long position - can use reduce_only (no margin needed)
                 # Return a very large number (practically unlimited)
@@ -1365,7 +1453,8 @@ class OrderExecutor:
                 )
                 return Decimal("999999999")  # Practically unlimited
             
-            # No position or short position - need margin in base currency
+            # No position or short position - need margin in base currency to open/increase short position
+            # Note: SELL with short position would INCREASE the short (negative) position, not reduce it
             if available_margin is None or available_margin <= 0:
                 logger.warning(
                     "order_reduction_no_margin_available_for_sell",
@@ -1453,17 +1542,21 @@ class OrderExecutor:
             signal_type=signal_type,
             has_position=has_position,
             position_size=float(position_size) if position else 0,
+            has_long_position=has_long_position,
+            has_short_position=has_short_position,
             trace_id=trace_id,
         )
         
         # For sell orders with long position, we can use reduce_only (no margin needed)
+        # For sell orders with short position, we should NOT use reduce_only (it would increase position)
+        # Instead, we need margin to open a new short position
         if signal_type == "sell" and has_long_position:
             logger.info(
                 "order_reduction_sell_with_long_position_reduce_only",
                 signal_id=str(signal_id),
                 asset=asset,
                 position_size=float(position_size),
-                reason="Can use reduce_only flag, margin not required",
+                reason="Can use reduce_only flag to close long position, margin not required",
                 trace_id=trace_id,
             )
             # Will try to create order with reduce_only=True, don't reduce size
@@ -1471,6 +1564,69 @@ class OrderExecutor:
             # For now, continue with original quantity (will be handled in _prepare_bybit_order_params)
             max_quantity = Decimal("999999999")  # Practically unlimited
             available_balance = Decimal("0")  # Not used for reduce_only
+        elif signal_type == "sell" and has_short_position:
+            # SELL order with SHORT position: This would OPEN a new short or increase existing short
+            # We don't want to use reduce_only here (it's for closing positions)
+            # Need margin to open/increase short position (same as sell without position)
+            logger.info(
+                "order_reduction_sell_with_short_position",
+                signal_id=str(signal_id),
+                asset=asset,
+                position_size=float(position_size),
+                reason="SELL with short position would increase position, need margin, not using reduce_only",
+                trace_id=trace_id,
+            )
+            # Use margin logic (same as sell without position)
+            # Get base currency for margin and available margin from DB
+            base_currency = await self._get_base_currency_for_margin(trace_id)
+            available_balance = await self._get_available_margin_from_db(base_currency, trace_id)
+            
+            # Fallback: get margin from Bybit API if database data is unavailable
+            if available_balance is None:
+                logger.info(
+                    "order_reduction_margin_not_in_db",
+                    signal_id=str(signal_id),
+                    asset=asset,
+                    base_currency=base_currency,
+                    reason="Margin data not available in database, fetching from Bybit API",
+                    trace_id=trace_id,
+                )
+                available_balance = await self._get_margin_from_bybit_api(base_currency, trace_id)
+                
+                if available_balance is None:
+                    logger.warning(
+                        "order_reduction_skipped_no_margin_data",
+                        signal_id=str(signal_id),
+                        asset=asset,
+                        base_currency=base_currency,
+                        reason=f"Margin data for {base_currency} not available in database or API",
+                        trace_id=trace_id,
+                    )
+                    return None
+                
+                logger.info(
+                    "order_reduction_margin_fetched_from_api",
+                    signal_id=str(signal_id),
+                    asset=asset,
+                    base_currency=base_currency,
+                    available_margin=float(available_balance),
+                    trace_id=trace_id,
+                )
+            else:
+                    logger.info(
+                        "order_reduction_margin_retrieved_from_db",
+                        signal_id=str(signal_id),
+                        asset=asset,
+                        base_currency=base_currency,
+                        available_margin=float(available_balance),
+                        trace_id=trace_id,
+                    )
+            # Will calculate max_quantity from margin below (using _calculate_max_affordable_quantity)
+            # Set required_currency for logging
+            required_currency = base_currency
+            # max_quantity will be calculated later from margin using _calculate_max_affordable_quantity
+            # Skip the else block below - we already handled SELL with short position
+            pass
         else:
             # Determine which currency is required for this order
             required_currency = self._get_required_currency_for_order(asset, signal.signal_type)
@@ -1566,11 +1722,13 @@ class OrderExecutor:
                         trace_id=trace_id,
                     )
         
-        # Get current price if needed
+        # Get current price if needed (for Market orders or when price is None)
         order_price = price
         is_buy_order = signal_type == "buy"
         
-        if is_buy_order and not order_price:
+        # For sell orders with short position (need margin calculation), we need price
+        # For buy orders, we also need price for quantity calculation
+        if (signal_type == "sell" and (not has_long_position)) or (is_buy_order and not order_price):
             # For buy orders, we need price to calculate quantity
             if signal.market_data_snapshot and signal.market_data_snapshot.price:
                 order_price = signal.market_data_snapshot.price

@@ -112,10 +112,21 @@ class QuantityCalculator:
                 raise OrderExecutionError(f"Symbol {asset} not found in Bybit API")
 
             symbol_data = list_data[0]
+            
+            # Extract all required fields from instruments-info
+            lot_size_filter = symbol_data.get("lotSizeFilter", {})
+            price_filter = symbol_data.get("priceFilter", {})
+            
             symbol_info = {
-                "tick_size": Decimal(str(symbol_data.get("lotSizeFilter", {}).get("qtyStep", "0.001"))),
-                "lot_size": Decimal(str(symbol_data.get("lotSizeFilter", {}).get("minQty", "0.001"))),
-                "min_order_qty": Decimal(str(symbol_data.get("lotSizeFilter", {}).get("minQty", "0.001"))),
+                "tick_size": Decimal(str(lot_size_filter.get("qtyStep", "0.001"))),
+                "lot_size": Decimal(str(lot_size_filter.get("minQty", "0.001"))),
+                "min_order_qty": Decimal(str(lot_size_filter.get("minQty", "0.001"))),
+                "max_order_qty": Decimal(str(lot_size_filter.get("maxQty", "999999999"))),
+                "min_order_value": Decimal(str(symbol_data.get("minOrderValue", "5"))),  # Default 5 USDT
+                "price_tick_size": Decimal(str(price_filter.get("tickSize", "0.01"))),
+                "price_limit_ratio_x": Decimal(str(price_filter.get("priceLimitRatioX", "0.1"))),  # Default 10% deviation
+                "price_limit_ratio_y": Decimal(str(price_filter.get("priceLimitRatioY", "0.1"))),
+                "raw_data": symbol_data,  # Store full response for future use
             }
 
             # Cache the result

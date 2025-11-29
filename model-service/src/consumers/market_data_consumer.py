@@ -195,49 +195,91 @@ class MarketDataConsumer:
         Args:
             queue_name: Name of the queue to consume from
         """
-        try:
-            channel = await rabbitmq_manager.get_channel()
-            # Use existing queue without redeclaring (queues are created by ws-gateway with TTL)
-            # Just bind to the existing queue
+        reconnect_delay = 5.0  # Wait 5 seconds between retries for missing queue
+        
+        while self._running:
             try:
-                queue = await channel.declare_queue(queue_name, durable=True, passive=True)
-            except Exception as e:
-                # Queue might not exist yet or was deleted, log and retry later
-                logger.warning(
-                    "Queue not available, will retry",
-                    queue=queue_name,
-                    error=str(e),
-                    error_type=type(e).__name__,
-                )
-                # Wait a bit and retry
-                await asyncio.sleep(1)
-                queue = await channel.declare_queue(queue_name, durable=True, passive=True)
-
-            async with queue.iterator() as queue_iter:
-                async for message in queue_iter:
-                    if not self._running:
-                        break
-                    try:
-                        async with message.process():
-                            await self._process_message(queue_name, message)
-                    except Exception as e:
-                        logger.error(
-                            "Error processing message",
+                channel = await rabbitmq_manager.get_channel()
+                # Use existing queue without redeclaring (queues are created by ws-gateway with TTL)
+                # Just bind to the existing queue
+                try:
+                    queue = await channel.declare_queue(queue_name, durable=True, passive=True)
+                except Exception as e:
+                    # Check if error is due to missing queue (expected when ws-gateway not started)
+                    error_str = str(e)
+                    error_type_name = type(e).__name__
+                    is_queue_not_found = (
+                        "no queue" in error_str.lower()
+                        or "NOT_FOUND" in error_str.upper()
+                        or "ChannelNotFoundEntity" in error_type_name
+                        or "ChannelNotFoundEntity" in error_str
+                    )
+                    
+                    if is_queue_not_found:
+                        # Queue doesn't exist yet - this is expected when ws-gateway isn't running
+                        # Log as warning and retry after delay
+                        logger.warning(
+                            "Queue not found (ws-gateway may not be started yet), will retry",
+                            queue=queue_name,
+                        )
+                        await asyncio.sleep(reconnect_delay)
+                        continue  # Continue loop to retry connection
+                    else:
+                        # Other connection errors - log and retry
+                        logger.warning(
+                            "Queue connection error, retrying...",
                             queue=queue_name,
                             error=str(e),
-                            exc_info=True,
+                            error_type=error_type_name,
                         )
-                        # Continue processing other messages
-        except asyncio.CancelledError:
-            logger.info("Consumer cancelled", queue=queue_name)
-            raise
-        except Exception as e:
-            # During shutdown, channel may be closed - this is expected
-            if self._running:
-                logger.error("Consumer error", queue=queue_name, error=str(e), exc_info=True)
-            else:
-                logger.debug("Consumer stopped during shutdown", queue=queue_name, error=str(e))
-            raise
+                        await asyncio.sleep(reconnect_delay)
+                        continue
+
+                logger.info("Connected to market data queue", queue=queue_name)
+                
+                async with queue.iterator() as queue_iter:
+                    async for message in queue_iter:
+                        if not self._running:
+                            break
+                        try:
+                            async with message.process():
+                                await self._process_message(queue_name, message)
+                        except Exception as e:
+                            logger.error(
+                                "Error processing message",
+                                queue=queue_name,
+                                error=str(e),
+                                exc_info=True,
+                            )
+                            # Continue processing other messages
+                
+                # If we exit the iterator loop normally (connection lost), retry
+                logger.info("Consumer disconnected, retrying...", queue=queue_name)
+                await asyncio.sleep(reconnect_delay)
+                
+            except asyncio.CancelledError:
+                logger.info("Consumer cancelled", queue=queue_name)
+                break  # Exit loop if cancelled
+            except (aio_pika.exceptions.ChannelNotFoundEntity, aio_pika.exceptions.ConnectionClosed) as e:
+                # Channel or connection error - retry after delay
+                if self._running:
+                    logger.warning(
+                        "Queue or connection error, retrying...",
+                        queue=queue_name,
+                        error=str(e),
+                        error_type=type(e).__name__,
+                    )
+                    await asyncio.sleep(reconnect_delay)
+                else:
+                    break  # Exit loop if not running
+            except Exception as e:
+                # Other errors - log and retry
+                if self._running:
+                    logger.error("Consumer error, retrying...", queue=queue_name, error=str(e), exc_info=True)
+                    await asyncio.sleep(reconnect_delay)
+                else:
+                    logger.debug("Consumer stopped during shutdown", queue=queue_name, error=str(e))
+                    break  # Exit loop if not running
 
     async def _process_message(self, queue_name: str, message: AbstractIncomingMessage) -> None:
         """

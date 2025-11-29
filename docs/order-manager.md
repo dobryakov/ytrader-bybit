@@ -142,3 +142,70 @@ await pool.execute(query, side_db, ...)
 - `order-manager/src/services/signal_processor.py`: метод `_save_rejected_order()`
 
 **См. также**: Спецификация в `specs/004-order-manager/data-model.md`, раздел "Data Format Conventions"
+
+## Уточнения перед постановкой ордера на биржу bybit
+
+1. Обязательные параметры для Bybit API /v5/order/create (category=spot):
+   - symbol (верхний регистр, например BTCUSDT)
+   - side: "Buy" 
+   - orderType: "Market" или "Limit"
+   - qty (string): для Market buy — количество базовой монеты (BTC) или quoteCoin (USDT) через marketUnit="quoteCoin"
+
+2. Полная предпроверка спецификации пары через GET /v5/market/instruments-info?category=spot&symbol=BTCUSDT:
+   - minOrderValue (например минимум 5 USDT для API trading)
+   - maxOrderQty (например максимум 71.73 BTC для BTCUSDT)
+   - qtyStep и priceFilter для точности округления
+   - priceLimitRatioX/Y для market order (отклонение от текущей цены)
+   - order quota MVL (например 300,000 USDT) - проверка доступных buy/sell квот
+
+instruments-info — это спецификация торговых пар (instrument specification), критически важный эндпоинт для валидации ордеров перед размещением.​ Назначение: возвращает все торговые ограничения и параметры для конкретной пары (symbol) и категории (spot/linear/option), которые обязательны для проверки перед созданием ордера. Перед постановкой ордера нужно получить спецификацию пары из instruments-info, затем для buy проверить минимальную сумму до максимального количества по цене ask, а для sell — по цене bid с учетом шага и лимитов цены. Ответ API instruments-info нужно сохранять в БД так же, как сохраняется баланс.
+
+Почему instruments-info обязателен перед ордером:
+- Валидация qty/price — без точного знания qtyStep ордер отклонят;
+- Динамические лимиты — minOrderValue, maxOrderQty меняются по парам;
+- Market slippage protection — priceLimitRatioX/Y предотвращает плохие исполнения;
+- API ошибки — orderQtyExceedMaxLimit, invalid_quantity_precision без него неизбежны.
+
+3. Проверка баланса аккаунта через GET /v5/account/wallet-balance?accountType=UNIFIED&coin=USDT:
+   - walletBalance (USDT) - locked - spotBorrow >= qty * currentPrice (достаточно USDT для покупки)
+   - totalAvailableBalance в USD эквиваленте для оценки общей ликвидности
+   - Для margin trading (isLeverage=1): totalInitialMargin, totalMaintenanceMargin
+   - Ошибка при insufficient_balance (недостаточно USDT)
+
+4. Проверка рыночной ликвидности:
+   - Текущая цена и 24h volume из /v5/market/tickers?category=spot
+   - Глубина orderbook (/v5/market/orderbook) для оценки slippage на ask-стороне (продавцы)
+   - Market order в пределах priceLimitRatio от mark/best цены
+
+5. Поддержка дополнительных параметров:
+   - price (обязательно для Limit)
+   - timeInForce: "GTC", "IOC", "FOK", "PostOnly"
+   - takeProfit, stopLoss, tpLimitPrice, slLimitPrice, tpOrderType, slOrderType
+   - marketUnit: "baseCoin" (BTC) или "quoteCoin" (USDT) для Market buy
+   - isLeverage=1 для margin trading (требует включенной маржи)
+
+6. Соблюдение Rate Limits:
+   - /v5/order/create: 600 req/5s (IP), 50 req/s (UID)
+   - Batch orders: 10/s (IP), 20/s (UID)
+   - instruments-info, wallet-balance: в пределах общих лимитов
+
+7. Обработка ошибок Bybit:
+   - insufficient_balance, orderQtyExceedMaxLimit, priceNotInRange
+   - order quota exceeded, invalid qty/price precision
+   - Логирование с причинами отказа и рекомендациями
+
+8. Валидация входных сигналов от Model Service:
+   - qty в пределах разумных лимитов с запасом (учитывая slippage)
+   - symbol существует и активен
+   - confidence score выше порога для размещения
+
+9. Структурированное логирование всех проверок:
+   - Результаты баланс/ликвидность/валидация (USDT → BTC расчет)
+   - Параметры отправленного ордера
+   - Ответ Bybit с orderId или ошибкой
+   - Trace ID propagation
+
+10. Graceful degradation:
+    - При недостатке USDT: логировать, не размещать
+    - При превышении лимитов: скорректировать qty/price или пропустить
+    - Retry logic для временных ошибок (rate limit, network)

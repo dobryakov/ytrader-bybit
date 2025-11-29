@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 
 import aio_pika
 from aio_pika.abc import AbstractIncomingMessage
+import aio_pika.exceptions
 
 from ..config.rabbitmq import rabbitmq_manager
 from ..config.logging import get_logger
@@ -83,20 +84,34 @@ class ExecutionEventConsumer:
 
         while self._running:
             try:
-                async def _connect_and_consume():
-                    channel = await rabbitmq_manager.get_channel()
-                    # Declare queue - create if it doesn't exist (will be created by order-manager publisher later)
-                    # We declare it here so consumer can start even if no events have been published yet
+                channel = await rabbitmq_manager.get_channel()
+                # Declare queue - create if it doesn't exist (will be created by order-manager publisher later)
+                # We declare it here so consumer can start even if no events have been published yet
+                try:
                     queue = await channel.declare_queue(self._queue_name, durable=True, passive=False)
-                    return queue
-
-                queue = await retry_async(
-                    _connect_and_consume,
-                    max_retries=3,
-                    initial_delay=1.0,
-                    max_delay=5.0,
-                    operation_name="connect_to_queue",
-                )
+                except Exception as e:
+                    # Check if error is due to connection issue (not missing queue)
+                    error_str = str(e)
+                    error_type_name = type(e).__name__
+                    is_queue_not_found = (
+                        "no queue" in error_str.lower()
+                        or "NOT_FOUND" in error_str.upper()
+                        or "ChannelNotFoundEntity" in error_type_name
+                        or "ChannelNotFoundEntity" in error_str
+                    )
+                    
+                    if is_queue_not_found:
+                        # Queue doesn't exist yet - this is expected when order-manager isn't running
+                        # Log as warning and retry after delay
+                        logger.warning(
+                            "Execution events queue not found (order-manager may not be started yet), will retry",
+                            queue=self._queue_name,
+                        )
+                        await asyncio.sleep(reconnect_delay * 5)  # Wait 10 seconds before retrying
+                        continue  # Continue loop to retry connection
+                    else:
+                        # Other connection errors - retry with exponential backoff
+                        raise
 
                 logger.info("Connected to execution events queue", queue=self._queue_name)
 
@@ -123,7 +138,7 @@ class ExecutionEventConsumer:
                 if not self._running:
                     break
 
-                # Check if error is due to missing queue (expected when order-manager not started)
+                # Check if error is due to missing queue or connection issue
                 error_str = str(e)
                 error_type_name = type(e).__name__
                 is_queue_not_found = (
@@ -132,15 +147,26 @@ class ExecutionEventConsumer:
                     or "ChannelNotFoundEntity" in error_type_name
                     or "ChannelNotFoundEntity" in error_str
                 )
+                is_connection_error = (
+                    "ConnectionClosed" in error_type_name
+                    or "ConnectionClosed" in error_str
+                    or isinstance(e, (aio_pika.exceptions.ChannelNotFoundEntity, aio_pika.exceptions.ConnectionClosed))
+                )
 
-                if is_queue_not_found:
-                    # Queue doesn't exist yet - this is expected when order-manager isn't running
-                    # Log as warning instead of error, with less frequent logging
-                    logger.warning(
-                        "Execution events queue not found (order-manager may not be started yet), will retry",
-                        queue=self._queue_name,
-                    )
-                    # Wait longer before retrying for missing queue
+                if is_queue_not_found or is_connection_error:
+                    # Queue doesn't exist yet or connection lost - this is expected when order-manager isn't running
+                    # Log as warning and retry after delay
+                    if is_queue_not_found:
+                        logger.warning(
+                            "Execution events queue not found (order-manager may not be started yet), will retry",
+                            queue=self._queue_name,
+                        )
+                    else:
+                        logger.warning(
+                            "Connection lost, will retry",
+                            queue=self._queue_name,
+                            error_type=error_type_name,
+                        )
                     await asyncio.sleep(reconnect_delay * 5)  # Wait 10 seconds before retrying
                     continue  # Continue loop to retry connection
 
@@ -149,6 +175,7 @@ class ExecutionEventConsumer:
                     "Execution event consumer error, attempting reconnection",
                     queue=self._queue_name,
                     error=str(e),
+                    error_type=error_type_name,
                     exc_info=True,
                 )
 
@@ -174,7 +201,8 @@ class ExecutionEventConsumer:
                         queue=self._queue_name,
                         max_attempts=max_reconnect_attempts,
                     )
-                    raise
+                    await asyncio.sleep(reconnect_delay * 5)  # Wait before next retry cycle
+                    continue  # Continue loop instead of raising
 
     async def _process_message(self, message: AbstractIncomingMessage) -> None:
         """
