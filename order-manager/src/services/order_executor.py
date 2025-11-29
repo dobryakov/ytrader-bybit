@@ -714,15 +714,25 @@ class OrderExecutor:
                                             trace_id=trace_id,
                                         )
                                         
-                                        # Prepare Limit order parameters (without reduceOnly)
+                                        # Prepare Limit order parameters
+                                        # Note: We're creating Limit order as fallback after 110017 error,
+                                        # which means position might have become zero, so we should NOT use reduceOnly
                                         limit_params = await self._prepare_bybit_order_params(
                                             signal=signal,
                                             order_type="Limit",
                                             quantity=quantity,
                                             price=limit_price,
                                         )
-                                        # Remove reduceOnly if it's still there (shouldn't be, but just in case)
+                                        # Force remove reduceOnly for Limit fallback after 110017
+                                        # Position may have closed between Market order attempt and Limit fallback
                                         if "reduceOnly" in limit_params:
+                                            logger.info(
+                                                "order_creation_removing_reduce_only_for_limit_fallback",
+                                                signal_id=str(signal_id),
+                                                asset=asset,
+                                                reason="Removing reduceOnly for Limit fallback after 110017, position may be zero",
+                                                trace_id=trace_id,
+                                            )
                                             del limit_params["reduceOnly"]
                                         
                                         # Try creating Limit order
