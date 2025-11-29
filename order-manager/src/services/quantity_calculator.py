@@ -1,6 +1,6 @@
 """Quantity calculator service for converting amount to quantity with precision."""
 
-from decimal import Decimal, ROUND_DOWN
+from decimal import Decimal, ROUND_DOWN, ROUND_UP
 
 from ..config.logging import get_logger
 from ..models.trading_signal import TradingSignal
@@ -57,7 +57,35 @@ class QuantityCalculator:
         # Step 3: Apply precision rounding
         quantity = self._apply_precision(quantity, symbol_info, trace_id)
 
-        # Step 4: Validate minimum quantity
+        # Step 4: Ensure quantity meets minOrderValue requirement
+        # Bybit requires order value (quantity * price) to be >= minOrderValue
+        min_order_value = symbol_info.get("min_order_value", Decimal("5"))
+        order_value = quantity * snapshot_price
+        
+        if order_value < min_order_value:
+            # Increase quantity to meet minOrderValue requirement
+            min_quantity_by_value = min_order_value / snapshot_price
+            # Round up to next effective step
+            effective_step = symbol_info.get("lot_size", Decimal("0.001"))
+            min_order_qty = symbol_info.get("min_order_qty", Decimal("0.001"))
+            effective_step = min(effective_step, min_order_qty) if effective_step > 0 and min_order_qty > 0 else (effective_step or min_order_qty)
+            
+            if effective_step > 0:
+                min_quantity_by_value = ((min_quantity_by_value / effective_step).quantize(Decimal("1"), rounding=ROUND_UP) * effective_step)
+            
+            quantity = max(quantity, min_quantity_by_value)
+            
+            logger.info(
+                "quantity_adjusted_for_min_order_value",
+                signal_id=str(signal.signal_id),
+                original_quantity=float(quantity),
+                min_order_value=float(min_order_value),
+                order_value=float(order_value),
+                adjusted_quantity=float(quantity),
+                trace_id=trace_id,
+            )
+
+        # Step 5: Validate minimum quantity (after minOrderValue adjustment)
         min_quantity = Decimal(str(symbol_info.get("min_order_qty", "0")))
         if quantity < min_quantity:
             error_msg = f"Calculated quantity {quantity} is below minimum {min_quantity} for {asset}"

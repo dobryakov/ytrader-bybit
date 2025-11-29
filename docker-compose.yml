@@ -190,6 +190,8 @@ services:
       - REDIS_HOST=${REDIS_HOST:-redis}
       - REDIS_PORT=${REDIS_PORT:-6379}
       - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+    volumes:
+      - ./order-manager/scripts:/app/scripts
     depends_on:
       postgres:
         condition: service_healthy

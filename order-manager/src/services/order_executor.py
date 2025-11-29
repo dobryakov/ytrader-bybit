@@ -399,6 +399,123 @@ class OrderExecutor:
                                 trace_id=trace_id,
                             )
                 
+                # Error 10001: "The number of contracts exceeds minimum limit allowed"
+                # This happens when quantity is below Bybit's minimum order size (minOrderValue)
+                # Solution: increase quantity to meet minOrderValue and retry
+                if ret_code == 10001:
+                    logger.warning(
+                        "order_creation_min_quantity_exceeded",
+                        signal_id=str(signal_id),
+                        asset=asset,
+                        ret_code=ret_code,
+                        ret_msg=ret_msg,
+                        quantity=float(quantity),
+                        reason="Quantity below minimum limit, will try to increase quantity to meet minOrderValue",
+                        trace_id=trace_id,
+                    )
+                    # Get symbol info to calculate minimum quantity based on minOrderValue
+                    try:
+                        from ..services.quantity_calculator import QuantityCalculator
+                        calculator = QuantityCalculator()
+                        symbol_info = await calculator._get_symbol_info(asset, trace_id)
+                        min_order_value = symbol_info.get("min_order_value", Decimal("5"))
+                        
+                        # Get current price if not provided
+                        if not price:
+                            ticker_response = await bybit_client.get(
+                                "/v5/market/tickers",
+                                params={"category": "linear", "symbol": asset},
+                                authenticated=False,
+                            )
+                            ticker_data = ticker_response.get("result", {}).get("list", [])
+                            if ticker_data:
+                                price = Decimal(str(ticker_data[0].get("lastPrice", "0")))
+                        
+                        if price and price > 0:
+                            # Calculate minimum quantity based on minOrderValue
+                            min_quantity_by_value = min_order_value / price
+                            
+                            # Apply precision rounding
+                            lot_size = symbol_info.get("lot_size", Decimal("0.001"))
+                            min_order_qty = symbol_info.get("min_order_qty", Decimal("0.001"))
+                            effective_step = min(lot_size, min_order_qty) if lot_size > 0 and min_order_qty > 0 else (lot_size or min_order_qty)
+                            
+                            if effective_step > 0:
+                                from decimal import ROUND_UP
+                                min_quantity_by_value = ((min_quantity_by_value / effective_step).quantize(Decimal("1"), rounding=ROUND_UP) * effective_step)
+                            
+                            # Use the larger of current quantity and minimum by value
+                            if min_quantity_by_value > quantity:
+                                logger.info(
+                                    "order_creation_increasing_quantity_for_min_order_value",
+                                    signal_id=str(signal_id),
+                                    asset=asset,
+                                    original_quantity=float(quantity),
+                                    min_order_value=float(min_order_value),
+                                    min_quantity_by_value=float(min_quantity_by_value),
+                                    new_quantity=float(min_quantity_by_value),
+                                    trace_id=trace_id,
+                                )
+                                quantity = min_quantity_by_value
+                                
+                                # Update bybit_params with new quantity
+                                bybit_params["qty"] = str(quantity)
+                                
+                                # Retry order creation with increased quantity
+                                logger.info(
+                                    "order_creation_retrying_with_increased_quantity",
+                                    signal_id=str(signal_id),
+                                    asset=asset,
+                                    new_quantity=float(quantity),
+                                    trace_id=trace_id,
+                                )
+                                response = await bybit_client.post(endpoint, json_data=bybit_params, authenticated=True)
+                                ret_code = response.get("retCode", 0)
+                                ret_msg = response.get("retMsg", "")
+                                if ret_code == 0:
+                                    # Success after increasing quantity
+                                    result = response.get("result", {})
+                                    bybit_order_id = result.get("orderId")
+                                    if bybit_order_id:
+                                        logger.info(
+                                            "order_creation_success_after_increasing_quantity",
+                                            signal_id=str(signal_id),
+                                            asset=asset,
+                                            bybit_order_id=bybit_order_id,
+                                            final_quantity=float(quantity),
+                                            trace_id=trace_id,
+                                        )
+                                        # Save order to database
+                                        order = await self._save_order_to_database(
+                                            signal=signal,
+                                            bybit_order_id=bybit_order_id,
+                                            order_type=order_type,
+                                            quantity=quantity,
+                                            price=price,
+                                            trace_id=trace_id,
+                                        )
+                                        logger.info(
+                                            "order_creation_complete",
+                                            signal_id=str(signal_id),
+                                            asset=asset,
+                                            order_id=str(order.id),
+                                            bybit_order_id=bybit_order_id,
+                                            trace_id=trace_id,
+                                        )
+                                        return order
+                    except Exception as e:
+                        logger.error(
+                            "order_creation_10001_retry_failed",
+                            signal_id=str(signal_id),
+                            asset=asset,
+                            error=str(e),
+                            trace_id=trace_id,
+                            exc_info=True,
+                        )
+                    # If retry failed or didn't help, skip further error handling for 10001
+                    # and continue to next error code checks
+                    # (110017, etc.) - but if none match, we'll reach the general error handler
+                
                 # Error 110017: "current position is zero, cannot fix reduce-only order qty"
                 # This happens when reduceOnly=True but position was closed between check and order creation
                 # Solution: retry without reduceOnly flag
