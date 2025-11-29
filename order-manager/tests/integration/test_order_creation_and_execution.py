@@ -489,6 +489,97 @@ class OrderCreationTest:
         
         return results
 
+    async def run_test_ethusdt_10001_scenario(
+        self,
+    ) -> Dict[str, Any]:
+        """
+        Test scenario that reproduces the a1bc52e9 order issue:
+        - ETHUSDT BUY with amount ~771.89 USDT
+        - Quantity may not be properly rounded to lot_size, causing 10001 error
+        - Should handle retry with properly rounded quantity
+        
+        Returns:
+            Test results dictionary
+        """
+        results = {
+            "signal_sent": False,
+            "order_created": False,
+            "order": None,
+            "order_executed": False,
+            "execution_details": None,
+            "errors": [],
+        }
+        
+        try:
+            # Initialize database connection
+            await DatabaseConnection.get_pool()
+            
+            # Get current ETHUSDT price for accurate test
+            from src.utils.bybit_client import get_bybit_client
+            bybit_client = get_bybit_client()
+            ticker_response = await bybit_client.get(
+                "/v5/market/tickers",
+                params={"category": "linear", "symbol": "ETHUSDT"},
+                authenticated=False,
+            )
+            ticker_data = ticker_response.get("result", {}).get("list", [])
+            if ticker_data:
+                current_price = Decimal(str(ticker_data[0].get("lastPrice", "3000")))
+            else:
+                current_price = Decimal("3000.0")
+            
+            # Send BUY signal similar to a1bc52e9 scenario
+            logger.info("test_starting_ethusdt_10001_scenario")
+            signal_id = await self.send_test_signal(
+                signal_type="buy",
+                asset="ETHUSDT",
+                amount=Decimal("771.89"),  # Same amount as a1bc52e9
+                price=current_price,
+            )
+            results["signal_sent"] = True
+            
+            # Wait for signal processing
+            await asyncio.sleep(3)
+            
+            # Check if order was created
+            order = await self.check_order_created(signal_id, timeout_seconds=30)
+            if order:
+                results["order_created"] = True
+                results["order"] = {
+                    "id": str(order.id),
+                    "bybit_order_id": order.order_id,
+                    "status": order.status,
+                    "asset": order.asset,
+                    "side": order.side,
+                    "order_type": order.order_type,
+                    "quantity": float(order.quantity),
+                    "price": float(order.price) if order.price else None,
+                }
+                
+                # Verify order is not rejected
+                if order.status == "rejected":
+                    error_msg = (
+                        f"Order was rejected: {order.rejection_reason or 'Unknown reason'}. "
+                        f"Order ID: {order.order_id}, Signal ID: {signal_id}"
+                    )
+                    logger.error("test_order_rejected", error=error_msg)
+                    results["errors"].append(error_msg)
+                else:
+                    # Check execution
+                    execution_details = await self.check_order_execution(
+                        order,
+                        timeout_seconds=30,
+                    )
+                    results["order_executed"] = execution_details["executed"]
+                    results["execution_details"] = execution_details
+                    
+        except Exception as e:
+            error_msg = f"Test failed with error: {str(e)}"
+            logger.error("test_ethusdt_10001_failed", error=error_msg, exc_info=True)
+            results["errors"].append(error_msg)
+        
+        return results
+
     async def run_test(
         self,
         buy_asset: str = "ETHUSDT",
@@ -812,8 +903,66 @@ async def main():
         action="store_true",
         help="Run specific test for BTCUSDT 30208 error scenario (reproduces 09952ac9 issue)",
     )
+    parser.add_argument(
+        "--test-ethusdt-10001",
+        action="store_true",
+        help="Run specific test for ETHUSDT 10001 error scenario (reproduces a1bc52e9 issue)",
+    )
 
     args = parser.parse_args()
+
+    # If --test-ethusdt-10001 flag is set, run only that test
+    if args.test_ethusdt_10001:
+        test = OrderCreationTest(
+            wait_for_execution=not args.no_execution_check,
+            execution_timeout_seconds=args.execution_timeout,
+        )
+        
+        results = await test.run_test_ethusdt_10001_scenario()
+        
+        # Print results for ETHUSDT test
+        print("\n" + "=" * 80)
+        print("ETHUSDT 10001 SCENARIO TEST RESULTS")
+        print("=" * 80)
+        print(f"\nSignal sent: {'✅' if results['signal_sent'] else '❌'}")
+        print(f"Order created: {'✅' if results['order_created'] else '❌'}")
+        if results["order"]:
+            order = results["order"]
+            print(f"\nOrder Details:")
+            print(f"  - Order ID: {order['id']}")
+            print(f"  - Bybit Order ID: {order['bybit_order_id']}")
+            print(f"  - Status: {order['status']}")
+            print(f"  - Asset: {order['asset']}")
+            print(f"  - Side: {order['side']}")
+            print(f"  - Type: {order['order_type']}")
+            print(f"  - Quantity: {order['quantity']}")
+            print(f"  - Price: {order['price'] if order['price'] else 'N/A (Market)'}")
+            
+            if order['status'] == "rejected":
+                print(f"\n❌ Order was rejected")
+            elif order['status'] in ("filled", "partially_filled", "pending"):
+                print(f"✅ Order created successfully")
+                
+        if results.get("execution_details"):
+            details = results["execution_details"]
+            print(f"\nExecution Status:")
+            print(f"  - Executed: {'✅' if details.get('executed') else '⏳'}")
+            print(f"  - Status: {details.get('status', 'N/A')}")
+            print(f"  - Filled: {details.get('filled_quantity', 0)}")
+            print(f"  - Avg Price: {details.get('average_price') or 'N/A'}")
+            
+        if results["errors"]:
+            print("\n❌ ERRORS:")
+            for error in results["errors"]:
+                print(f"  - {error}")
+        
+        print("\n" + "=" * 80)
+        
+        # Exit with error code if test failed
+        if not results["order_created"] or results.get("order", {}).get("status") == "rejected" or results["errors"]:
+            sys.exit(1)
+        
+        return
 
     # If --test-btcusdt-30208 flag is set, run only that test
     if args.test_btcusdt_30208:

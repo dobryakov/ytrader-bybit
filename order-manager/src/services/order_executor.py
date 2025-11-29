@@ -591,17 +591,115 @@ class OrderExecutor:
                                     )
                             else:
                                 # min_quantity_by_value <= quantity, but order still rejected
-                                # This suggests the issue might be something else
-                                logger.warning(
-                                    "order_creation_quantity_already_above_min",
-                                    signal_id=str(signal_id),
-                                    asset=asset,
-                                    current_quantity=float(quantity),
-                                    min_quantity_by_value=float(min_quantity_by_value),
-                                    min_order_value=float(min_order_value),
-                                    price=float(price),
-                                    trace_id=trace_id,
-                                )
+                                # This might be due to quantity not being rounded to lot_size/qtyStep correctly
+                                # Try rounding quantity to lot_size and retry
+                                if lot_size > 0:
+                                    from decimal import ROUND_UP
+                                    # Round quantity up to next lot_size step
+                                    rounded_quantity = ((quantity / lot_size).quantize(Decimal("1"), rounding=ROUND_UP) * lot_size)
+                                    
+                                    if rounded_quantity != quantity:
+                                        logger.info(
+                                            "order_creation_rounding_quantity_to_lot_size",
+                                            signal_id=str(signal_id),
+                                            asset=asset,
+                                            original_quantity=float(quantity),
+                                            lot_size=float(lot_size),
+                                            rounded_quantity=float(rounded_quantity),
+                                            reason="Quantity not aligned to lot_size, rounding and retrying",
+                                            trace_id=trace_id,
+                                        )
+                                        quantity = rounded_quantity
+                                        bybit_params["qty"] = str(quantity)
+                                        
+                                        # Retry order creation with rounded quantity
+                                        logger.info(
+                                            "order_creation_retrying_with_rounded_quantity",
+                                            signal_id=str(signal_id),
+                                            asset=asset,
+                                            new_quantity=float(quantity),
+                                            trace_id=trace_id,
+                                        )
+                                        try:
+                                            response = await bybit_client.post(endpoint, json_data=bybit_params, authenticated=True)
+                                            ret_code = response.get("retCode", 0)
+                                            ret_msg = response.get("retMsg", "")
+                                            if ret_code == 0:
+                                                # Success after rounding quantity
+                                                result = response.get("result", {})
+                                                bybit_order_id = result.get("orderId")
+                                                if bybit_order_id:
+                                                    logger.info(
+                                                        "order_creation_success_after_rounding_quantity",
+                                                        signal_id=str(signal_id),
+                                                        asset=asset,
+                                                        bybit_order_id=bybit_order_id,
+                                                        final_quantity=float(quantity),
+                                                        trace_id=trace_id,
+                                                    )
+                                                    # Save order to database
+                                                    order = await self._save_order_to_database(
+                                                        signal=signal,
+                                                        bybit_order_id=bybit_order_id,
+                                                        order_type=order_type,
+                                                        quantity=quantity,
+                                                        price=price,
+                                                        trace_id=trace_id,
+                                                    )
+                                                    logger.info(
+                                                        "order_creation_complete",
+                                                        signal_id=str(signal_id),
+                                                        asset=asset,
+                                                        order_id=str(order.id),
+                                                        bybit_order_id=bybit_order_id,
+                                                        trace_id=trace_id,
+                                                    )
+                                                    return order
+                                            else:
+                                                logger.warning(
+                                                    "order_creation_retry_with_rounded_quantity_failed",
+                                                    signal_id=str(signal_id),
+                                                    asset=asset,
+                                                    rounded_quantity=float(quantity),
+                                                    ret_code=ret_code,
+                                                    ret_msg=ret_msg,
+                                                    trace_id=trace_id,
+                                                )
+                                        except Exception as e:
+                                            logger.error(
+                                                "order_creation_retry_with_rounded_quantity_exception",
+                                                signal_id=str(signal_id),
+                                                asset=asset,
+                                                error=str(e),
+                                                trace_id=trace_id,
+                                                exc_info=True,
+                                            )
+                                    else:
+                                        # Quantity is already rounded to lot_size
+                                        logger.warning(
+                                            "order_creation_quantity_already_above_min_and_rounded",
+                                            signal_id=str(signal_id),
+                                            asset=asset,
+                                            current_quantity=float(quantity),
+                                            min_quantity_by_value=float(min_quantity_by_value),
+                                            min_order_value=float(min_order_value),
+                                            price=float(price),
+                                            lot_size=float(lot_size),
+                                            reason="Quantity is above minimum and already rounded to lot_size, but order still rejected",
+                                            trace_id=trace_id,
+                                        )
+                                else:
+                                    logger.warning(
+                                        "order_creation_quantity_already_above_min",
+                                        signal_id=str(signal_id),
+                                        asset=asset,
+                                        current_quantity=float(quantity),
+                                        min_quantity_by_value=float(min_quantity_by_value),
+                                        min_order_value=float(min_order_value),
+                                        price=float(price),
+                                        reason="Quantity above minimum but lot_size not available for rounding",
+                                        trace_id=trace_id,
+                                    )
                         else:
                             # Price not available, cannot calculate min quantity
                             logger.error(
