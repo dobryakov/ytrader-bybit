@@ -683,6 +683,101 @@ class OrderExecutor:
                                         trace_id=trace_id,
                                     )
                                     return order
+                            # Handle 30208 error (price limit) after retry without reduceOnly
+                            elif ret_code == 30208 and order_type == "Market":
+                                logger.warning(
+                                    "order_creation_price_limit_error_after_110017_retry",
+                                    signal_id=str(signal_id),
+                                    asset=asset,
+                                    ret_code=ret_code,
+                                    ret_msg=ret_msg,
+                                    reason="Market order failed with 30208 after removing reduceOnly, trying Limit order as fallback",
+                                    trace_id=trace_id,
+                                )
+                                # Get current market price for Limit order
+                                try:
+                                    ticker_response = await bybit_client.get(
+                                        "/v5/market/tickers",
+                                        params={"category": "linear", "symbol": asset},
+                                        authenticated=False,
+                                    )
+                                    ticker_data = ticker_response.get("result", {}).get("list", [])
+                                    if ticker_data:
+                                        current_price = Decimal(str(ticker_data[0].get("lastPrice", signal.market_data_snapshot.price if signal.market_data_snapshot else "0")))
+                                        # Use current price for Limit order
+                                        limit_price = current_price
+                                        logger.info(
+                                            "order_creation_limit_price_from_ticker_after_110017",
+                                            signal_id=str(signal_id),
+                                            asset=asset,
+                                            limit_price=float(limit_price),
+                                            trace_id=trace_id,
+                                        )
+                                        
+                                        # Prepare Limit order parameters (without reduceOnly)
+                                        limit_params = await self._prepare_bybit_order_params(
+                                            signal=signal,
+                                            order_type="Limit",
+                                            quantity=quantity,
+                                            price=limit_price,
+                                        )
+                                        # Remove reduceOnly if it's still there (shouldn't be, but just in case)
+                                        if "reduceOnly" in limit_params:
+                                            del limit_params["reduceOnly"]
+                                        
+                                        # Try creating Limit order
+                                        limit_response = await bybit_client.post(endpoint, json_data=limit_params, authenticated=True)
+                                        limit_ret_code = limit_response.get("retCode", 0)
+                                        limit_ret_msg = limit_response.get("retMsg", "")
+                                        
+                                        if limit_ret_code == 0:
+                                            limit_result = limit_response.get("result", {})
+                                            limit_order_id = limit_result.get("orderId")
+                                            if limit_order_id:
+                                                logger.info(
+                                                    "order_creation_limit_fallback_success_after_110017",
+                                                    signal_id=str(signal_id),
+                                                    asset=asset,
+                                                    bybit_order_id=limit_order_id,
+                                                    limit_price=float(limit_price),
+                                                    trace_id=trace_id,
+                                                )
+                                                # Save Limit order to database
+                                                order = await self._save_order_to_database(
+                                                    signal=signal,
+                                                    bybit_order_id=limit_order_id,
+                                                    order_type="Limit",
+                                                    quantity=quantity,
+                                                    price=limit_price,
+                                                    trace_id=trace_id,
+                                                )
+                                                logger.info(
+                                                    "order_creation_complete",
+                                                    signal_id=str(signal_id),
+                                                    asset=asset,
+                                                    order_id=str(order.id),
+                                                    bybit_order_id=limit_order_id,
+                                                    trace_id=trace_id,
+                                                )
+                                                return order
+                                        else:
+                                            logger.warning(
+                                                "order_creation_limit_fallback_failed_after_110017",
+                                                signal_id=str(signal_id),
+                                                asset=asset,
+                                                ret_code=limit_ret_code,
+                                                ret_msg=limit_ret_msg,
+                                                trace_id=trace_id,
+                                            )
+                                except Exception as limit_fallback_error:
+                                    logger.error(
+                                        "order_creation_limit_fallback_exception_after_110017",
+                                        signal_id=str(signal_id),
+                                        asset=asset,
+                                        error=str(limit_fallback_error),
+                                        trace_id=trace_id,
+                                        exc_info=True,
+                                    )
                         except Exception as e:
                             logger.error(
                                 "order_creation_retry_without_reduce_only_failed",
@@ -690,6 +785,7 @@ class OrderExecutor:
                                 asset=asset,
                                 error=str(e),
                                 trace_id=trace_id,
+                                exc_info=True,
                             )
                     
                     # If retry failed or reduceOnly was not in params, continue to error handling
@@ -953,10 +1049,11 @@ class OrderExecutor:
                 
                 if is_reducing_long or is_reducing_short:
                     params["reduceOnly"] = True
-                    logger.debug(
+                    logger.info(
                         "reduce_only_set",
                         asset=asset,
                         side=side_api,
+                        order_type=order_type,
                         position_size=float(position.size),
                         reason=f"{'Reducing long' if is_reducing_long else 'Reducing short'} position, setting reduce_only",
                     )
@@ -968,11 +1065,19 @@ class OrderExecutor:
                         position_size=float(position.size),
                         reason="Order side does not reduce position, not setting reduce_only",
                     )
+            else:
+                logger.debug(
+                    "reduce_only_not_set_no_position",
+                    asset=asset,
+                    side=side_api,
+                    position_size=float(position.size) if position else 0.0,
+                    reason="No significant position exists, not setting reduce_only",
+                )
         except Exception as e:
             logger.warning(
                 "reduce_only_check_failed",
                 asset=asset,
-                side=side,
+                side=side_api,
                 error=str(e),
                 reason="Failed to check position for reduce_only, continuing without it",
             )
