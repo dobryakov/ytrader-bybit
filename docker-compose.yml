@@ -192,6 +192,7 @@ services:
       - REDIS_PASSWORD=${REDIS_PASSWORD:-}
     volumes:
       - ./order-manager/scripts:/app/scripts
+      - ./order-manager/tests:/app/tests
     depends_on:
       postgres:
         condition: service_healthy
