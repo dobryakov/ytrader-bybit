@@ -1608,12 +1608,23 @@ Service health check.
 
 **Integration Method**: RabbitMQ events (recommended) or REST API
 
+**Code to Remove from Order Manager**:
+- **Class**: `PositionManager` from `order-manager/src/services/position_manager.py`
+  - Remove entire class and all its methods: `get_position()`, `get_all_positions()`, `update_position_from_order_fill()`, `update_position_from_websocket()`, `validate_position()`, `create_position_snapshot()`
+- **REST API Routes**: `order-manager/src/api/routes/positions.py`
+  - Remove all position-related endpoints: `GET /api/v1/positions`, `GET /api/v1/positions/{asset}`, `POST /api/v1/positions/{asset}/validate`, `POST /api/v1/positions/{asset}/snapshot`, `GET /api/v1/positions/{asset}/snapshots`
+- **Background Tasks**: From `order-manager/src/main.py`
+  - Remove `PositionSnapshotTask` class
+  - Remove `PositionValidationTask` class
+- **Dependencies**: Remove imports and references to `PositionManager` throughout Order Manager codebase
+
 **Changes in Order Manager**:
 - Remove `PositionManager` class
 - Remove REST API endpoints for positions
 - Remove background tasks for positions
-- Replace `PositionManager` calls with REST API calls to Position Manager
-- Publish position update events to RabbitMQ
+- Replace `PositionManager` calls with REST API calls to Position Manager (for synchronous operations) or publish events to RabbitMQ (for asynchronous operations)
+- Publish position update events to RabbitMQ queue `order-manager.order_executed` (or new queue `order-manager.position_updated`)
+- Update Risk Manager to use Position Manager via REST API for portfolio-level checks
 
 **Integration Options**:
 - **Option A (Recommended)**: Order Manager publishes events to RabbitMQ, Position Manager processes them via consumers. Benefits: asynchrony, fault tolerance, scalability, loose coupling.
@@ -1708,10 +1719,21 @@ Position Manager provides data for implementing risk management rules in Model S
 
 **Source**: `order-manager/src/services/position_manager.py`
 
+**Methods to Extract**:
+- `get_position(asset, mode)` — Get position by asset and trading mode
+- `get_all_positions()` — Get all positions
+- `update_position_from_order_fill()` — Update position from order execution
+- `update_position_from_websocket()` — Update position from WebSocket event
+- `validate_position(asset, mode)` — Validate position against authoritative sources
+- `create_position_snapshot(position)` — Create position snapshot for historical tracking
+
 **Actions**:
 1. Copy `PositionManager` class to new service
 2. Adapt to new structure (change imports, paths)
-3. Add new methods for portfolio metrics
+3. Add new methods for portfolio metrics:
+   - `get_total_exposure()` — Get total portfolio exposure
+   - `get_portfolio_metrics()` — Get all portfolio metrics
+   - Methods for calculating ML features: `unrealized_pnl_pct`, `time_held_minutes`, `position_size_norm`
 4. **Update `update_position_from_websocket()` method**:
    - Add handling of `avgPrice` from WebSocket event
    - Implement logic to compare with saved `average_entry_price`
@@ -1720,15 +1742,30 @@ Position Manager provides data for implementing risk management rules in Model S
    - Add recalculation of ML features (`unrealized_pnl_pct`, `position_size_norm`) after update
    - Add logging of all updates with trace_id
    - Add handling of case when `avgPrice` is missing in event (use saved value)
+   - Save `markPrice` from WebSocket event to `current_price` field for portfolio metrics calculations
 5. Update Order Manager to use Position Manager via event stream (RabbitMQ)
+
+**Integration Options**:
+- **Option A (Recommended)**: Order Manager publishes events to RabbitMQ, Position Manager processes them via consumers. Benefits: asynchrony, fault tolerance, scalability, loose coupling.
+- **Option B**: Order Manager calls Position Manager via REST API. Use only for synchronous operations requiring immediate response (e.g., checking position before creating order).
 
 #### 2.2. Extract REST API Endpoints
 
 **Source**: `order-manager/src/api/routes/positions.py`
 
+**Endpoints to Extract**:
+- `GET /api/v1/positions` — Get list of all positions
+- `GET /api/v1/positions/{asset}` — Get position for specific asset
+- `POST /api/v1/positions/{asset}/validate` — Manually trigger position validation
+- `POST /api/v1/positions/{asset}/snapshot` — Manually create position snapshot
+- `GET /api/v1/positions/{asset}/snapshots` — Get position snapshot history
+
 **Actions**:
 1. Copy endpoints to new service
-2. Add new endpoints for portfolio
+2. Add new endpoints for portfolio:
+   - `GET /api/v1/portfolio` — Get aggregated portfolio metrics
+   - `GET /api/v1/portfolio/exposure` — Get only total portfolio exposure
+   - `GET /api/v1/portfolio/pnl` — Get only PnL metrics for portfolio
 3. Remove endpoints from Order Manager
 4. Update API documentation
 
@@ -1736,11 +1773,15 @@ Position Manager provides data for implementing risk management rules in Model S
 
 **Source**: `order-manager/src/main.py` (classes `PositionSnapshotTask`, `PositionValidationTask`)
 
+**Tasks to Extract**:
+- `PositionSnapshotTask` — Periodic creation of position snapshots (configurable interval via `POSITION_MANAGER_SNAPSHOT_INTERVAL`)
+- `PositionValidationTask` — Periodic validation of positions against authoritative sources (configurable interval via `POSITION_MANAGER_VALIDATION_INTERVAL`)
+
 **Actions**:
 1. Copy tasks to new service
-2. Adapt to new structure
+2. Adapt to new structure (change imports, paths, configuration)
 3. Remove from Order Manager
-4. Configure execution in new service
+4. Configure execution in new service (scheduled tasks or background workers)
 
 #### 2.4. Clean Up Order Manager tasks.md
 
