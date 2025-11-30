@@ -168,6 +168,33 @@ description: "Task list for WebSocket Gateway feature implementation"
 
 ---
 
+## Phase 7.5: Position Channel Support (Priority: P2)
+
+**Purpose**: Extend WebSocket Gateway to support position channel from Bybit, enabling real-time position updates via WebSocket events in addition to order execution-based updates.
+
+**Goal**: Support subscription to Bybit position channel, parse position events, persist them to database, and route them to RabbitMQ queues for order-manager consumption.
+
+**Independent Test**: Can be fully tested by subscribing to position channel, receiving position events from Bybit, verifying they are persisted to positions table, and confirming events are delivered to ws-gateway.position queue.
+
+### Implementation for Position Channel Support
+
+- [ ] T125 [P] [Position] Add "position" to EventType literal in ws-gateway/src/models/event.py
+- [ ] T126 [P] [Position] Add "position" to PRIVATE_CHANNELS in ws-gateway/src/services/websocket/channel_types.py
+- [ ] T127 [Position] Add "position" to SUPPORTED_EVENT_TYPES in ws-gateway/src/services/queue/setup.py
+- [ ] T128 [Position] Update subscriptions table migration to include 'position' in channel_type CHECK constraint in ws-gateway/migrations/001_create_subscriptions_table.sql (add migration script to update existing constraint)
+- [ ] T129 [P] [Position] Create PositionService for position persistence in ws-gateway/src/services/database/position_service.py (parse position events, validate data, persist to positions table with upsert logic)
+- [ ] T130 [Position] Implement position parsing from Bybit WebSocket payload in ws-gateway/src/services/database/position_service.py (extract symbol, size, side, avgPrice, unrealisedPnl, realisedPnl, mode, etc.)
+- [ ] T131 [Position] Implement position validation logic (non-negative size validation, mode validation, symbol format) in ws-gateway/src/services/database/position_service.py
+- [ ] T132 [Position] Implement position upsert logic (update existing position or create new) in ws-gateway/src/services/database/position_service.py (upsert by asset and mode)
+- [ ] T133 [Position] Integrate position persistence with event processing pipeline in ws-gateway/src/services/websocket/event_processor.py (call PositionService.persist_position_from_event() when event_type == "position")
+- [ ] T134 [Position] Handle database write failures gracefully (log and continue, per FR-017) in ws-gateway/src/services/database/position_service.py
+- [ ] T135 [Position] Add logging for position persistence operations in ws-gateway/src/services/database/position_service.py
+- [ ] T136 [Position] Update event_parser to handle position events (preserve full data structure in payload similar to balance events) in ws-gateway/src/services/websocket/event_parser.py
+
+**Checkpoint**: At this point, position channel should be fully supported - position events are received, parsed, persisted to database, and routed to queues.
+
+---
+
 ## Phase 8: User Story 6 - Log Activities for Monitoring and Debugging (Priority: P3)
 
 **Goal**: The system logs all significant activities including WebSocket connection events, incoming messages, REST API requests, and system state changes to enable monitoring and troubleshooting.
@@ -476,7 +503,7 @@ With multiple developers:
 
 ## Task Summary
 
-- **Total Tasks**: 124 (75 original + 13 new: T051a, EC1-EC8, T074a-T074f + 8 new: T076-T096 for dual connection support + 28 new: T097-T124 for multi-category public connection support)
+- **Total Tasks**: 136 (75 original + 13 new: T051a, EC1-EC8, T074a-T074f + 8 new: T076-T096 for dual connection support + 28 new: T097-T124 for multi-category public connection support + 12 new: T125-T136 for position channel support)
 - **Setup Phase**: 7 tasks
 - **Foundational Phase**: 10 tasks
 - **User Story 1 (P1)**: 8 tasks
@@ -484,6 +511,7 @@ With multiple developers:
 - **User Story 3 (P2)**: 10 tasks
 - **User Story 4 (P2)**: 9 tasks (added T051a for queue retention enforcement)
 - **User Story 5 (P3)**: 7 tasks
+- **Position Channel Support (Phase 7.5)**: 12 tasks (T125-T136 for position channel support)
 - **User Story 6 (P3)**: 6 tasks
 - **Edge Case Handling (Phase 8.5)**: 8 tasks (EC1-EC8, EC6 is verification note)
 - **Polish Phase**: 13 tasks (T074 expanded to T074a-T074f for monitoring)

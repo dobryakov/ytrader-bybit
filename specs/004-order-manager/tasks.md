@@ -102,6 +102,31 @@
 
 ---
 
+## Phase 4.5: Position Updates via WebSocket (Priority: P2)
+
+**Purpose**: Enable position updates from Bybit WebSocket position channel in addition to order execution-based updates, providing real-time position synchronization.
+
+**Goal**: Subscribe to position events from WebSocket gateway, process position updates from WebSocket events, and update positions table with real-time data from Bybit (including unrealized_pnl, realized_pnl).
+
+**Independent Test**: Can be fully tested by subscribing to position channel, receiving position events, verifying positions are updated in database with correct values (size, average_price, unrealized_pnl, realized_pnl), and confirming updates don't conflict with order execution-based updates.
+
+### Implementation for Position Updates via WebSocket
+
+- [ ] T075 [Position] Subscribe to position channel via WebSocket gateway REST API in order-manager/src/services/position_event_subscriber.py (create new service or extend event_subscriber.py, subscribe to "position" channel without symbol)
+- [ ] T076 [Position] Create consumer for ws-gateway.position RabbitMQ queue in order-manager/src/services/position_event_subscriber.py (consume position events from queue)
+- [ ] T077 [Position] Implement position event parsing from WebSocket payload in order-manager/src/services/position_event_subscriber.py (extract position data: symbol, size, side, avgPrice, unrealisedPnl, realisedPnl, mode, etc.)
+- [ ] T078 [Position] Create update_position_from_websocket() method in order-manager/src/services/position_manager.py (upsert position from WebSocket event data, update all fields including unrealized_pnl and realized_pnl)
+- [ ] T079 [Position] Implement conflict resolution strategy for position updates (WebSocket events vs order execution) in order-manager/src/services/position_manager.py (decide: WebSocket as source of truth for PnL, order execution for size/price, or WebSocket for all fields)
+- [ ] T080 [Position] Add position update logic when position events received in order-manager/src/services/position_event_subscriber.py (call PositionManager.update_position_from_websocket())
+- [ ] T081 [Position] Add validation for position data from WebSocket (size validation, mode validation, symbol format) in order-manager/src/services/position_manager.py
+- [ ] T082 [Position] Add logging for position updates from WebSocket in order-manager/src/services/position_event_subscriber.py and order-manager/src/services/position_manager.py
+- [ ] T083 [Position] Handle errors gracefully (log and continue processing other events) in order-manager/src/services/position_event_subscriber.py
+- [ ] T084 [Position] Integrate position event subscriber into service startup in order-manager/src/main.py (start consumer on service initialization)
+
+**Checkpoint**: At this point, positions should be updated from both order execution events and WebSocket position events, with proper conflict resolution.
+
+---
+
 ## Phase 5: User Story 3 - Publish Order Events (Priority: P2)
 
 **Goal**: Publish enriched order execution events to RabbitMQ queue for other microservices (especially the model service) so they can track order outcomes, learn from execution results, and adjust trading strategies accordingly.
@@ -291,11 +316,12 @@ With multiple developers:
 
 ## Task Summary
 
-- **Total Tasks**: 74
+- **Total Tasks**: 84 (74 original + 10 new: T075-T084 for position updates via WebSocket)
 - **Setup Phase**: 7 tasks
 - **Foundational Phase**: 9 tasks
 - **User Story 1 (P1)**: 15 tasks
 - **User Story 2 (P1)**: 7 tasks
+- **Position Updates via WebSocket (Phase 4.5)**: 10 tasks (T075-T084 for WebSocket position updates)
 - **User Story 3 (P2)**: 6 tasks
 - **User Story 4 (P1)**: 9 tasks
 - **REST API Phase**: 6 tasks
