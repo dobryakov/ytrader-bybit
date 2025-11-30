@@ -7,14 +7,14 @@
 
 ## Summary
 
-- **Total Tasks**: 120
+- **Total Tasks**: 121
 - **User Story 1 (P1)**: 31 tasks (T012-T015b, T016-T039)
 - **User Story 2 (P1)**: 25 tasks (T040-T064)
 - **User Story 3 (P2)**: 12 tasks (T065-T076)
 - **User Story 4 (P2)**: 12 tasks (T077-T077a, T078-T081, T082-T086)
 - **User Story 5 (P3)**: 10 tasks (T087-T087a, T088-T094)
 - **Setup & Foundational**: 11 tasks (T001-T011)
-- **Polish & Cross-Cutting**: 19 tasks (T095-T113)
+- **Polish & Cross-Cutting**: 20 tasks (T095-T104a, T104-T113)
 
 ## Implementation Strategy
 
@@ -432,8 +432,11 @@
 ### T103: Add troubleshooting guide
 - [ ] T103 Add troubleshooting guide: common issues, error messages, debugging steps, log analysis, performance tuning
 
+### T104a: Create database migration for current_price and version fields
+- [ ] T104a Create database migration file in ws-gateway/migrations/014_add_current_price_and_version_to_positions.sql: add current_price DECIMAL(20, 8) NULL column, add version INTEGER NOT NULL DEFAULT 1 column, create indexes idx_positions_current_price and idx_positions_version, update existing rows to set version=1, include rollback section (per constitution - PostgreSQL migration ownership in ws-gateway service)
+
 ### T104: Validate database migration requirements
-- [ ] T104 Validate database migration requirements: ensure ws-gateway service has migration for current_price and version fields, document migration execution steps
+- [ ] T104 Validate database migration requirements: verify migration file 014_add_current_price_and_version_to_positions.sql exists in ws-gateway/migrations/, ensure migration SQL matches data-model.md requirements, document migration execution steps in README.md, verify migration is reversible
 
 ### T105: Add service health monitoring
 - [ ] T105 Add service health monitoring: enhance /health endpoint with detailed status, add metrics endpoint for monitoring systems, implement health check alerts
