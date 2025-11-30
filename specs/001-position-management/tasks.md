@@ -7,14 +7,14 @@
 
 ## Summary
 
-- **Total Tasks**: 110
+- **Total Tasks**: 113
 - **User Story 1 (P1)**: 28 tasks (T012-T039)
 - **User Story 2 (P1)**: 25 tasks (T040-T064)
 - **User Story 3 (P2)**: 12 tasks (T065-T076)
 - **User Story 4 (P2)**: 10 tasks (T077-T086)
 - **User Story 5 (P3)**: 8 tasks (T087-T094)
 - **Setup & Foundational**: 11 tasks (T001-T011)
-- **Polish & Cross-Cutting**: 16 tasks (T095-T110)
+- **Polish & Cross-Cutting**: 19 tasks (T095-T113)
 
 ## Implementation Strategy
 
@@ -391,7 +391,7 @@
 
 ## Phase 8: Polish & Cross-Cutting Concerns
 
-**Goal**: Finalize implementation with error handling, observability, documentation, and deployment readiness.
+**Goal**: Finalize implementation with error handling, observability, documentation, deployment readiness, and integration tasks validation.
 
 ### T095: Add comprehensive error handling
 - [ ] T095 Add comprehensive error handling across all modules: database errors, RabbitMQ errors, external API errors, validation errors, with appropriate HTTP status codes and error messages
@@ -440,6 +440,15 @@
 
 ### T110: Update main docker-compose.yml
 - [ ] T110 Update main docker-compose.yml: ensure position-manager service is properly integrated, verify network configuration, test service startup
+
+### T111: Validate and update WebSocket Gateway tasks.md
+- [ ] T111 Validate and update WebSocket Gateway tasks.md in specs/001-websocket-gateway/tasks.md: check Phase 7.5 (Position Channel Support, tasks T125-T136), ensure tasks related to saving positions to database (T129-T135) account for Position Manager as main service, ensure event routing tasks (T133) reflect delivery to ws-gateway.position queue for Position Manager consumption, update task documentation to reflect integration with Position Manager instead of direct use in Order Manager
+
+### T112: Validate and update Order Manager tasks.md
+- [ ] T112 Validate and update Order Manager tasks.md in specs/004-order-manager/tasks.md: remove uncompleted tasks related to positions that will be implemented in Position Manager (Phase 4.5: Position Updates via WebSocket, tasks T075-T084), update descriptions of tasks partially related to positions to reflect use of Position Manager via API, update task counters in summary section, add notes that position management functionality has been moved to Position Manager service, update dependencies between phases if changed
+
+### T113: Validate and update Model Service tasks.md
+- [ ] T113 Validate and update Model Service tasks.md in specs/001-model-service/tasks.md: check and update unclosed tasks related to positions and portfolio, remove outdated tasks that will be implemented in Position Manager, update tasks related to reading positions to reflect use of Position Manager via REST API, add new tasks for integration with Position Manager (REST API client, caching, event handling), update dependencies between phases if changed, update task counters in summary section
 
 ---
 
