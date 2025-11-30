@@ -66,6 +66,12 @@ In the current architecture, position management functionality is scattered acro
 - Q: What is the source of current_price for portfolio calculations? → A: Use markPrice from WebSocket position events (store latest markPrice per asset)
 - Q: How to handle missing or stale markPrice? → A: Query external price API when markPrice missing/stale
 - Q: What rate limiting strategy should be used for REST API? → A: Per-API-Key rate limits with different tiers (e.g., 100 req/min for Model Service, 1000 req/min for UI)
+- Q: How should new database fields (current_price, version) be added to existing positions table? → A: Add via database migration before Position Manager deployment
+- Q: What are the details for external price API fallback when markPrice is missing/stale? → A: Use Bybit REST API `/v5/market/tickers` endpoint with 3 retries, exponential backoff (1s, 2s, 4s), 5s timeout, fallback to last known price if all retries fail
+- Q: What is the optimistic locking retry strategy when version conflicts occur? → A: Retry up to 3 times with exponential backoff (100ms, 200ms, 400ms), log conflicts, raise exception if all retries fail
+- Q: How should position snapshot cleanup be implemented for 1-year retention? → A: Automated job runs on service startup, deletes snapshots older than 1 year
+- Q: What happens when external price API fails completely and no last known price exists? → A: Use NULL for current_price, exclude position from portfolio exposure calculations, log warning, allow portfolio metrics to calculate with available prices
+- Q: How should new database fields (current_price, version) be added to existing positions table? → A: Add via database migration before Position Manager deployment
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -1032,7 +1038,7 @@ position-manager/tests/
 - **FR-011**: System MUST automatically correct position discrepancies when validation rules allow
 - **FR-012**: System MUST provide position data in a format suitable for risk management limit checking
 - **FR-013**: System MUST provide position data in a format suitable for machine learning model training, including pre-calculated ML features (unrealized_pnl_pct, time_held_minutes, position_size_norm)
-- **FR-014**: System MUST maintain data consistency when processing concurrent position updates using optimistic locking with version field (check version before update, retry on conflict)
+- **FR-014**: System MUST maintain data consistency when processing concurrent position updates using optimistic locking with version field (check version before update, retry up to 3 times with exponential backoff 100ms/200ms/400ms on conflict, log conflicts, raise exception if all retries fail)
 - **FR-021**: System MUST provide data for risk management rules in Model Service (Take Profit and Position Size Limit rules)
 - **FR-015**: System MUST log all position updates and validation results for audit purposes
 - **FR-016**: System MUST handle position updates that arrive out of chronological order
@@ -1061,15 +1067,18 @@ position-manager/tests/
   **Price Source for Calculations**: Use `markPrice` from WebSocket position events (field `markPrice` in event payload). When updating position from WebSocket event, save `markPrice` to position's `current_price` field for use in portfolio metrics calculations.
 
   **Handling Missing or Stale Prices**:
-  - If `markPrice` missing in WebSocket event: query current price via external API (Bybit REST API) and save to `current_price`
-  - If `current_price` is stale (time since last update > `POSITION_MANAGER_PRICE_STALENESS_THRESHOLD`): query current price via external API before calculating portfolio metrics
+  - If `markPrice` missing in WebSocket event: query current price via Bybit REST API `/v5/market/tickers` endpoint and save to `current_price`
+  - If `current_price` is stale (time since last update > `POSITION_MANAGER_PRICE_STALENESS_THRESHOLD`): query current price via Bybit REST API before calculating portfolio metrics
+  - External API query strategy: 3 retries with exponential backoff (1s, 2s, 4s), 5s timeout per request, fallback to last known `current_price` if all retries fail
+  - If external API fails completely and no last known `current_price` exists: set `current_price` to NULL, exclude position from portfolio exposure calculations (exposure=0 for that position), log warning, allow portfolio metrics to calculate with available prices
   - Log all cases of using external API for price retrieval (for monitoring)
+  - Configuration: `POSITION_MANAGER_PRICE_API_TIMEOUT=5` (seconds), `POSITION_MANAGER_PRICE_API_RETRIES=3`
 
   **Portfolio Metrics Formulas**:
-  - **Total Exposure (USDT)**: `SUM(ABS(position.size) * current_price)` for all positions, where `current_price` is latest `markPrice` from WebSocket event
-  - **Total Unrealized PnL (USDT)**: `SUM(position.unrealized_pnl)` for all positions
+  - **Total Exposure (USDT)**: `SUM(ABS(position.size) * current_price)` for all positions where `current_price IS NOT NULL`, where `current_price` is latest `markPrice` from WebSocket event (positions with NULL `current_price` are excluded from exposure calculations)
+  - **Total Unrealized PnL (USDT)**: `SUM(position.unrealized_pnl)` for all positions (includes positions with NULL `current_price`)
   - **Total Realized PnL (USDT)**: `SUM(position.realized_pnl)` for all positions
-  - **Portfolio Value (USDT)**: `SUM(position.size * current_price)` for all positions
+  - **Portfolio Value (USDT)**: `SUM(position.size * current_price)` for all positions where `current_price IS NOT NULL` (positions with NULL `current_price` are excluded)
   - **Open Positions Count**: Count of positions with `size != 0`
 
   **Metrics Caching**:
@@ -1103,7 +1112,7 @@ position-manager/tests/
 - Position size can be positive (long), negative (short), or zero (closed); closed positions are retained with size=0 and closed_at timestamp for historical tracking
 - Profit/loss calculations require current market prices which may be provided in update events
 - The system must support filtering and aggregation queries for analytics and reporting purposes
-- Historical snapshots are retained for 1 year, after which they are automatically deleted or archived
+- Historical snapshots are retained for 1 year, after which they are automatically deleted by a cleanup job that runs on service startup
 
 ## Dependencies
 
@@ -1172,6 +1181,7 @@ position-manager/
 │   │   └── position_event_publisher.py
 │   ├── tasks/
 │   │   ├── position_snapshot_task.py
+│   │   ├── position_snapshot_cleanup_task.py
 │   │   └── position_validation_task.py
 │   └── utils/
 │       └── tracing.py
@@ -1184,7 +1194,7 @@ position-manager/
 ### Database Schema
 
 **Existing Tables** (shared database):
-- `positions` - current positions (may need additional fields: `current_price` for latest markPrice, `version` for optimistic locking)
+- `positions` - current positions (requires migration to add `current_price` and `version` fields before Position Manager deployment)
 - `position_snapshots` - position snapshots
 
 **Optional Table** (for metrics caching):
@@ -1207,12 +1217,12 @@ CREATE INDEX idx_portfolio_metrics_expires_at ON portfolio_metrics_cache(expires
 - Index on `positions.asset`
 - Index on `positions.mode`
 - Composite index on `positions(asset, mode)` for position identity lookups
-- Index on `positions.current_price` for portfolio calculations (if `current_price` field is added)
-- Index on `positions.version` for optimistic locking (if `version` field is added)
+- Index on `positions.current_price` for portfolio calculations (required after migration)
+- Index on `positions.version` for optimistic locking (required after migration)
 
-**Position Table Additional Fields** (may need to be added to existing table):
-- `current_price`: Latest `markPrice` from WebSocket events, used for portfolio metrics calculations. Updated when position is updated from WebSocket event.
-- `version`: Version field for optimistic locking (increment on each update, check before update to handle concurrent modifications). Initial value: 1, increment on each successful update.
+**Position Table Additional Fields** (must be added via migration before service deployment):
+- `current_price`: Latest `markPrice` from WebSocket events, used for portfolio metrics calculations. Updated when position is updated from WebSocket event. Type: DECIMAL(20, 8), nullable (allows NULL for positions without recent price updates).
+- `version`: Version field for optimistic locking (increment on each update, check before update to handle concurrent modifications). Initial value: 1, increment on each successful update. Type: INTEGER, NOT NULL, DEFAULT 1. On version conflict: retry up to 3 times with exponential backoff (100ms, 200ms, 400ms), log conflict details, raise exception if all retries fail.
 
 ## Configuration
 
@@ -1240,6 +1250,7 @@ RABBITMQ_PASSWORD=guest
 
 # Position Management
 POSITION_MANAGER_SNAPSHOT_INTERVAL=3600  # seconds
+POSITION_MANAGER_SNAPSHOT_RETENTION_DAYS=365  # days - retention period for snapshots (cleanup job runs on startup)
 POSITION_MANAGER_VALIDATION_INTERVAL=1800  # seconds
 POSITION_MANAGER_METRICS_CACHE_TTL=10  # seconds
 
@@ -1248,6 +1259,10 @@ POSITION_MANAGER_USE_WS_AVG_PRICE=true  # Use avgPrice from WebSocket events for
 POSITION_MANAGER_AVG_PRICE_DIFF_THRESHOLD=0.001  # Threshold for updating average_entry_price (0.1% = 0.001)
 POSITION_MANAGER_SIZE_VALIDATION_THRESHOLD=0.0001  # Threshold for triggering position validation on size discrepancy
 POSITION_MANAGER_PRICE_STALENESS_THRESHOLD=300  # Seconds - threshold for considering current_price stale and querying external API
+POSITION_MANAGER_PRICE_API_TIMEOUT=5  # Seconds - timeout for external price API requests
+POSITION_MANAGER_PRICE_API_RETRIES=3  # Number of retries for external price API requests
+POSITION_MANAGER_OPTIMISTIC_LOCK_RETRIES=3  # Number of retries for optimistic locking conflicts
+POSITION_MANAGER_OPTIMISTIC_LOCK_BACKOFF_BASE=100  # Milliseconds - base delay for exponential backoff (100ms, 200ms, 400ms)
 
 # Rate Limiting
 POSITION_MANAGER_RATE_LIMIT_ENABLED=true  # Enable rate limiting for REST API
@@ -1810,6 +1825,7 @@ Position Manager provides data for implementing risk management rules in Model S
 **Tasks to Extract**:
 - `PositionSnapshotTask` — Periodic creation of position snapshots (configurable interval via `POSITION_MANAGER_SNAPSHOT_INTERVAL`)
 - `PositionValidationTask` — Periodic validation of positions against authoritative sources (configurable interval via `POSITION_MANAGER_VALIDATION_INTERVAL`)
+- `PositionSnapshotCleanupTask` — Cleanup job that runs on service startup, deletes snapshots older than 1 year (configurable via `POSITION_MANAGER_SNAPSHOT_RETENTION_DAYS=365`)
 
 **Actions**:
 1. Copy tasks to new service
