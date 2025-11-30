@@ -7,6 +7,52 @@
 **Status**: Draft  
 **Input**: User description: "Create Position Manager Service for centralized portfolio position management"
 
+## Overview
+
+### Project Goal
+
+Create a separate microservice **Position Manager Service** for centralized portfolio position management. The service will be responsible for:
+
+- Aggregating all positions in the portfolio
+- Calculating portfolio metrics (total exposure, total PnL, portfolio value)
+- Providing portfolio data through REST API
+- Integration with Risk Manager for portfolio-level limit checking
+- Managing position lifecycle (creation, update, validation, snapshots)
+
+### Current Architecture Problems
+
+In the current architecture, position management functionality is scattered across multiple services:
+
+1. **Order Manager** (`order-manager/src/services/position_manager.py`):
+   - Managing individual positions (CRUD operations)
+   - Updating positions on order execution
+   - Position validation
+   - Creating position snapshots
+   - **Missing**: portfolio aggregation, calculation of overall metrics
+
+2. **Risk Manager** (`order-manager/src/services/risk_manager.py`):
+   - Method `check_max_exposure()` exists but **is not used**
+   - Does not calculate `total_exposure` independently
+   - Checks limits only at individual position level
+
+3. **Model Service** (`model-service/src/models/position_state.py`):
+   - Model `OrderPositionState` with methods `get_total_exposure()`, `get_unrealized_pnl()`
+   - Used only for reading state during signal generation
+   - Does not manage portfolio, does not save aggregated metrics
+
+4. **REST API** (`order-manager/src/api/routes/positions.py`):
+   - Returns list of positions without aggregation
+   - No endpoints for portfolio metrics
+
+### Benefits of New Service
+
+- **Centralization**: single point of management for all positions
+- **Scalability**: independent scaling of position management service
+- **Separation of Concerns**: Order Manager focuses on orders, Position Manager focuses on positions
+- **Extensibility**: easier to add new functionality (analytics, reports, alerts)
+- **Performance**: optimized queries for portfolio metrics
+- **Consistency**: single source of truth for portfolio data
+
 ## Clarifications
 
 ### Session 2025-01-15
@@ -1026,6 +1072,12 @@ position-manager/tests/
   - **Portfolio Value (USDT)**: `SUM(position.size * current_price)` for all positions
   - **Open Positions Count**: Count of positions with `size != 0`
 
+  **Metrics Caching**:
+  - Cache aggregated metrics in memory (TTL: 5-10 seconds, configurable via `POSITION_MANAGER_METRICS_CACHE_TTL`)
+  - Invalidate cache on position updates
+  - Optional: save metrics to database for historical analysis
+  - Cache implementation: in-memory cache (dict) or optional Redis for distributed caching
+
 ## Success Criteria *(mandatory)*
 
 ### Measurable Outcomes
@@ -1196,6 +1248,13 @@ POSITION_MANAGER_USE_WS_AVG_PRICE=true  # Use avgPrice from WebSocket events for
 POSITION_MANAGER_AVG_PRICE_DIFF_THRESHOLD=0.001  # Threshold for updating average_entry_price (0.1% = 0.001)
 POSITION_MANAGER_SIZE_VALIDATION_THRESHOLD=0.0001  # Threshold for triggering position validation on size discrepancy
 POSITION_MANAGER_PRICE_STALENESS_THRESHOLD=300  # Seconds - threshold for considering current_price stale and querying external API
+
+# Rate Limiting
+POSITION_MANAGER_RATE_LIMIT_ENABLED=true  # Enable rate limiting for REST API
+POSITION_MANAGER_RATE_LIMIT_DEFAULT=100  # Default limit (requests/minute) for API Keys without explicit configuration
+# Configuration of limits for specific API Keys (format: API_KEY:limit, comma-separated)
+# Example: POSITION_MANAGER_RATE_LIMIT_OVERRIDES=model-service-key:100,risk-manager-key:200,ui-key:1000
+POSITION_MANAGER_RATE_LIMIT_OVERRIDES=  # Optional: Override limits for specific API Keys
 
 # Integration
 ORDER_MANAGER_URL=http://order-manager:4600
@@ -1864,6 +1923,50 @@ Use Grafana Infinity datasource for direct HTTP requests to Position Manager API
 6. Monitoring and debugging
 7. Update Grafana dashboard documentation
 
+### Implementation Timeline
+
+**Stage 1: Create New Service** (1-2 days)
+- Create project structure
+- Set up infrastructure
+- Create basic models
+
+**Stage 2: Extract Functionality from Order Manager** (3-5 days)
+- Extract PositionManager
+- Extract REST API endpoints
+- Extract background tasks
+- Adapt to new structure
+
+**Stage 3: New Functionality** (3-5 days)
+- Implement PortfolioManager
+- Implement portfolio metrics calculation
+- Implement new REST API endpoints
+- Implement metrics caching
+
+**Stage 4: Integrations** (2-3 days)
+- Integration with Order Manager
+- Integration with Risk Manager
+- Integration with Model Service
+- Configure RabbitMQ consumers
+
+**Stage 5: Testing and Validation** (2-3 days)
+- Unit tests
+- Integration tests
+- E2E tests
+- Bug fixes
+
+**Stage 6: Refactor Grafana Dashboards** (1-2 days)
+- Update existing dashboards
+- Create new dashboards
+- Test and validate
+
+**Stage 7: Documentation and Deployment** (1-2 days)
+- Update documentation
+- Deploy to test environment
+- Validate functionality
+- Deploy to production
+
+**Total Estimate**: 12-20 days of development
+
 ## Security & Error Handling
 
 ### API Authentication
@@ -1871,7 +1974,22 @@ Use Grafana Infinity datasource for direct HTTP requests to Position Manager API
 - API Key authentication for all REST API endpoints
 - API Key validation on each request
 - Logging of all requests with trace IDs
-- Rate limiting: Per-API-Key rate limits with different tiers (e.g., 100 req/min for Model Service, 1000 req/min for UI)
+
+### Rate Limiting
+
+- **Per-API-Key rate limits with different tiers**:
+  - Different API Keys can have different limits depending on consumer type
+  - Example tiers:
+    * Model Service: 100 requests/minute (high frequency signal generation)
+    * Risk Manager: 200 requests/minute (checks before order creation)
+    * UI / Monitoring: 1000 requests/minute (less frequent dashboard updates)
+  - Configuration via environment variables or configuration file
+  - On limit exceedance: return HTTP 429 Too Many Requests with `Retry-After` header
+  - Log all rate limit exceedances for monitoring
+  - Configuration variables:
+    * `POSITION_MANAGER_RATE_LIMIT_ENABLED=true` - Enable rate limiting
+    * `POSITION_MANAGER_RATE_LIMIT_DEFAULT=100` - Default limit (requests/minute) for API Keys without explicit configuration
+    * `POSITION_MANAGER_RATE_LIMIT_OVERRIDES=model-service-key:100,risk-manager-key:200,ui-key:1000` - Override limits for specific API Keys (format: API_KEY:limit, comma-separated)
 
 ### Data Validation
 
@@ -1945,3 +2063,31 @@ Use Grafana Infinity datasource for direct HTTP requests to Position Manager API
 - Ability to rollback to old architecture
 - Preserve old code until full validation
 - Gradual traffic switching
+
+## Future Development
+
+### Potential Improvements
+
+- Historical portfolio analysis
+- Analytics and reports
+- Alerts on limit exceedance
+- Portfolio optimization (rebalancing)
+- Integration with external analytics tools
+
+### Scaling
+
+- Horizontal scaling
+- Use Redis for caching
+- Database query optimization
+- Asynchronous event processing
+
+## Conclusion
+
+Creating a separate Position Manager microservice will provide:
+
+- Centralized position and portfolio management
+- Improved scalability and performance
+- Clear separation of concerns between services
+- Extensible architecture for future improvements
+
+Migration should be performed gradually with thorough testing at each stage.
