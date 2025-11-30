@@ -7,12 +7,12 @@
 
 ## Summary
 
-- **Total Tasks**: 113
-- **User Story 1 (P1)**: 28 tasks (T012-T039)
+- **Total Tasks**: 120
+- **User Story 1 (P1)**: 31 tasks (T012-T015b, T016-T039)
 - **User Story 2 (P1)**: 25 tasks (T040-T064)
 - **User Story 3 (P2)**: 12 tasks (T065-T076)
-- **User Story 4 (P2)**: 10 tasks (T077-T086)
-- **User Story 5 (P3)**: 8 tasks (T087-T094)
+- **User Story 4 (P2)**: 12 tasks (T077-T077a, T078-T081, T082-T086)
+- **User Story 5 (P3)**: 10 tasks (T087-T087a, T088-T094)
 - **Setup & Foundational**: 11 tasks (T001-T011)
 - **Polish & Cross-Cutting**: 19 tasks (T095-T113)
 
@@ -115,8 +115,14 @@
 ### T014: Create Portfolio model
 - [ ] T014 [P] [US1] Create Portfolio Pydantic model in src/models/portfolio.py with calculated fields (total_exposure_usdt, total_unrealized_pnl_usdt, total_realized_pnl_usdt, portfolio_value_usdt, open_positions_count, by_asset, calculated_at)
 
-### T015: Create PositionManager service
-- [ ] T015 [P] [US1] Create PositionManager service in src/services/position_manager.py with methods: get_position(asset, mode), get_all_positions(filters), calculate_ml_features(position, portfolio_metrics)
+### T015: Extract PositionManager from Order Manager
+- [ ] T015 [US1] Extract PositionManager class from order-manager/src/services/position_manager.py: copy class to src/services/position_manager.py, adapt imports and paths to new structure, extract methods get_position(asset, mode), get_all_positions(), update_position_from_order_fill(), update_position_from_websocket(), validate_position(asset, mode), create_position_snapshot(position)
+
+### T015a: Adapt PositionManager to new structure
+- [ ] T015a [US1] Adapt PositionManager class to new structure: update database connection imports to use src/config/database.py, update logging to use src/config/logging.py, update configuration to use src/config/settings.py, ensure all imports reference new module paths
+
+### T015b: Enhance PositionManager with portfolio metrics methods
+- [ ] T015b [US1] Add new methods to PositionManager in src/services/position_manager.py: get_total_exposure(), get_portfolio_metrics(), methods for calculating ML features (unrealized_pnl_pct, time_held_minutes, position_size_norm)
 
 ### T016: Create PortfolioManager service
 - [ ] T016 [P] [US1] Create PortfolioManager service in src/services/portfolio_manager.py with methods: get_portfolio_metrics(include_positions, asset_filter), get_total_exposure(), get_portfolio_pnl(), calculate_metrics_from_positions(positions)
@@ -124,11 +130,11 @@
 ### T017: Create portfolio metrics cache
 - [ ] T017 [P] [US1] Create in-memory cache for portfolio metrics in src/services/portfolio_manager.py with TTL support (POSITION_MANAGER_METRICS_CACHE_TTL), cache invalidation on position updates, and cache key management
 
-### T018: Create positions API route
-- [ ] T018 [P] [US1] Create GET /api/v1/positions endpoint in src/api/routes/positions.py with filtering by asset, mode, size_min, size_max, returning PositionList with calculated ML features
+### T018: Extract positions API routes from Order Manager
+- [ ] T018 [US1] Extract REST API endpoints from order-manager/src/api/routes/positions.py: copy GET /api/v1/positions, GET /api/v1/positions/{asset}, POST /api/v1/positions/{asset}/validate, POST /api/v1/positions/{asset}/snapshot, GET /api/v1/positions/{asset}/snapshots to src/api/routes/positions.py, adapt imports and service references to use PositionManager from new service
 
-### T019: Create position by asset API route
-- [ ] T019 [P] [US1] Create GET /api/v1/positions/{asset} endpoint in src/api/routes/positions.py with mode query parameter, returning Position with calculated ML features
+### T019: Adapt extracted API routes to new structure
+- [ ] T019 [US1] Adapt extracted API routes in src/api/routes/positions.py: update imports to use new PositionManager service, update authentication middleware references, update response serialization to include calculated ML features, ensure error handling uses new logging configuration
 
 ### T020: Create portfolio API route
 - [ ] T020 [P] [US1] Create GET /api/v1/portfolio endpoint in src/api/routes/portfolio.py with include_positions and asset query parameters, returning PortfolioMetrics with cached metrics
@@ -204,8 +210,8 @@
 ### T041: Create order execution event consumer
 - [ ] T041 [P] [US2] Create order execution event consumer in src/consumers/order_position_consumer.py: consume from order-manager.order_executed queue, parse event payload, call update_position_from_order_fill()
 
-### T042: Implement update_position_from_websocket method
-- [ ] T042 [US2] Implement update_position_from_websocket() in src/services/position_manager.py: update unrealized_pnl, realized_pnl from WebSocket, handle avgPrice with threshold comparison (POSITION_MANAGER_AVG_PRICE_DIFF_THRESHOLD), save markPrice to current_price, validate size without direct update, use optimistic locking
+### T042: Enhance update_position_from_websocket method from extracted code
+- [ ] T042 [US2] Enhance update_position_from_websocket() in src/services/position_manager.py (extracted from Order Manager): add handling of avgPrice from WebSocket event with threshold comparison (POSITION_MANAGER_AVG_PRICE_DIFF_THRESHOLD), add validation of size from WebSocket event (without direct update, only discrepancy checking), save markPrice to current_price field, add recalculation of ML features (unrealized_pnl_pct, position_size_norm) after update, add logging of all updates with trace_id, add handling of case when avgPrice is missing (use saved value), use optimistic locking
 
 ### T043: Implement update_position_from_order_fill method
 - [ ] T043 [US2] Implement update_position_from_order_fill() in src/services/position_manager.py: update position size, recalculate average_entry_price on order fill, update realized_pnl on position close, use optimistic locking with retry logic
@@ -325,8 +331,11 @@
 
 **Independent Test Criteria**: Create position snapshots and query historical snapshots to verify past states can be accurately reconstructed.
 
-### T077: Create position snapshot task
-- [ ] T077 [US4] Create position snapshot task in src/tasks/position_snapshot_task.py: periodic snapshot creation (POSITION_MANAGER_SNAPSHOT_INTERVAL), capture complete position state, save to position_snapshots table
+### T077: Extract position snapshot task from Order Manager
+- [ ] T077 [US4] Extract PositionSnapshotTask from order-manager/src/main.py: copy PositionSnapshotTask class to src/tasks/position_snapshot_task.py, adapt imports and paths to new structure, update configuration to use POSITION_MANAGER_SNAPSHOT_INTERVAL, ensure periodic snapshot creation works with new service structure
+
+### T077a: Adapt position snapshot task to new structure
+- [ ] T077a [US4] Adapt PositionSnapshotTask in src/tasks/position_snapshot_task.py: update imports to use new PositionManager service, update database connection to use src/config/database.py, update logging to use src/config/logging.py, configure execution in new service (scheduled tasks or background workers)
 
 ### T078: Implement create_position_snapshot method
 - [ ] T078 [US4] Implement create_position_snapshot() in src/services/position_manager.py: capture all position fields including ML features, save to position_snapshots table with JSONB snapshot_data, set created_at timestamp
@@ -337,8 +346,8 @@
 ### T080: Create snapshot history API endpoint
 - [ ] T080 [US4] Create GET /api/v1/positions/{asset}/snapshots endpoint in src/api/routes/positions.py: return historical snapshots with pagination (limit, offset), sorted by created_at DESC, return SnapshotList
 
-### T081: Create snapshot cleanup task
-- [ ] T081 [US4] Create snapshot cleanup task in src/tasks/position_snapshot_cleanup_task.py: run on service startup, delete snapshots older than POSITION_MANAGER_SNAPSHOT_RETENTION_DAYS (365 days), log cleanup results
+### T081: Extract and create snapshot cleanup task
+- [ ] T081 [US4] Create PositionSnapshotCleanupTask in src/tasks/position_snapshot_cleanup_task.py: create cleanup job that runs on service startup (if not exists in Order Manager, create new), delete snapshots older than POSITION_MANAGER_SNAPSHOT_RETENTION_DAYS (365 days), adapt to use new database connection and logging, log cleanup results
 
 ### T082: Create snapshot event publisher
 - [ ] T082 [US4] Create snapshot event publisher in src/publishers/position_event_publisher.py: publish position_snapshot_created events to position-manager.position_snapshot_created queue with complete snapshot data
@@ -363,11 +372,14 @@
 
 **Independent Test Criteria**: Introduce intentional discrepancies and verify validation process detects and corrects them.
 
-### T087: Create position validation task
-- [ ] T087 [US5] Create position validation task in src/tasks/position_validation_task.py: periodic validation (POSITION_MANAGER_VALIDATION_INTERVAL), validate all positions, detect discrepancies, log validation results
+### T087: Extract position validation task from Order Manager
+- [ ] T087 [US5] Extract PositionValidationTask from order-manager/src/main.py: copy PositionValidationTask class to src/tasks/position_validation_task.py, adapt imports and paths to new structure, update configuration to use POSITION_MANAGER_VALIDATION_INTERVAL, ensure periodic validation works with new service structure
 
-### T088: Implement validate_position method
-- [ ] T088 [US5] Implement validate_position() in src/services/position_manager.py: compare position data with external sources (WebSocket, Order Manager), detect discrepancies in size, average_entry_price, PnL, return validation result
+### T087a: Adapt position validation task to new structure
+- [ ] T087a [US5] Adapt PositionValidationTask in src/tasks/position_validation_task.py: update imports to use new PositionManager service, update database connection to use src/config/database.py, update logging to use src/config/logging.py, configure execution in new service (scheduled tasks or background workers)
+
+### T088: Enhance validate_position method from extracted code
+- [ ] T088 [US5] Enhance validate_position() in src/services/position_manager.py (extracted from Order Manager): ensure method compares position data with external sources (WebSocket, Order Manager), detect discrepancies in size, average_entry_price, PnL, return validation result, update to use new logging and configuration
 
 ### T089: Create validation API endpoint
 - [ ] T089 [US5] Create POST /api/v1/positions/{asset}/validate endpoint in src/api/routes/positions.py: manually trigger validation, return ValidationResult with is_valid, error_message, updated_position, support fix_discrepancies parameter
