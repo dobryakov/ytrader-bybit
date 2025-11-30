@@ -135,6 +135,9 @@
 - [X] T052 [US3] Implement intelligent signal generator in model-service/src/services/intelligent_signal_generator.py (use model inference to generate trading signals with confidence scores, apply quality thresholds)
 - [X] T052a [US3] Add open orders check in intelligent signal generator in model-service/src/services/intelligent_signal_generator.py (before generating signal, check if there are existing open orders with status 'pending' or 'partially_filled' for the same asset and strategy_id, skip signal generation if open order exists, log reason for skipping with structured logging including asset, strategy_id, existing_order_id, order_status)
 - [ ] T052b [US3] Extend intelligent signal generator to use balance calculator in model-service/src/services/intelligent_signal_generator.py (after model inference generates signal amount, check available balance using balance_calculator service, adapt signal amount to available balance if model-suggested amount exceeds balance, skip signal generation if balance is insufficient, log balance checks and amount adaptations with structured logging including original_model_amount and adapted_amount)
+- [ ] T052c [US3] [Risk Management] Implement take profit rule in intelligent signal generator in model-service/src/services/intelligent_signal_generator.py (before model inference, check position unrealized_pnl_pct from Position Manager via REST API GET /api/v1/positions/{asset}, if unrealized_pnl_pct > MODEL_SERVICE_TAKE_PROFIT_PCT config, force generate SELL signal to close position with confidence=1.0, amount=abs(position.size), reason="take_profit_triggered", log take profit trigger with structured logging including asset, unrealized_pnl_pct, take_profit_threshold)
+- [ ] T052d [US3] [Risk Management] Implement position size limit check in intelligent signal generator in model-service/src/services/intelligent_signal_generator.py (before generating BUY signal, check position_size_norm from Position Manager via REST API GET /api/v1/positions/{asset}, if position_size_norm > MODEL_SERVICE_MAX_POSITION_SIZE_RATIO config, skip BUY signal generation, record skip with signal_skip_metrics.record_skip with reason="position_size_limit", log skip with structured logging including asset, position_size_norm, max_ratio_threshold)
+- [ ] T052e [US3] [Risk Management] Add configuration for risk management rules in model-service/src/config/settings.py (MODEL_SERVICE_TAKE_PROFIT_PCT=3.0 for take profit threshold in percentage, MODEL_SERVICE_MAX_POSITION_SIZE_RATIO=0.8 for maximum position size ratio relative to total exposure, both configurable via environment variables)
 - [X] T053 [US3] Implement mode transition service in model-service/src/services/mode_transition.py (automatically transition from warm-up mode to model-based generation when model quality reaches configured threshold)
 - [X] T054 [US3] Integrate intelligent signal generation into main application in model-service/src/main.py (replace warm-up mode with model-based generation when active model is available)
 - [X] T055 [US3] Add structured logging for model-based signal generation in model-service/src/services/intelligent_signal_generator.py (signal generation, model inference results, confidence scores, mode transitions)
@@ -258,6 +261,13 @@
 - **T091** (metrics): Depends on T052a (open orders check exists) to track skipped signals
 - **T092** (documentation): Can be done independently, but should complete after T030a and T052a to document implemented behavior
 
+### Task Dependencies for Risk Management Rules (T052c-T052e)
+
+- **T052e** (risk management configuration): Can be done independently, must complete before T052c and T052d (needs configuration values)
+- **T052c** (take profit rule): Depends on T052e (configuration), T052 (intelligent_signal_generator exists), and Position Manager service availability (REST API endpoint GET /api/v1/positions/{asset}). Extends T052 to add take profit logic before model inference
+- **T052d** (position size limit check): Depends on T052e (configuration), T052 (intelligent_signal_generator exists), and Position Manager service availability (REST API endpoint GET /api/v1/positions/{asset}). Extends T052 to add position size limit check before BUY signal generation
+- **Note**: T052c and T052d can be implemented in parallel, both require Position Manager service to be deployed and accessible
+
 ### Task Dependencies for Balance-Aware Signal Generation (T030b, T030c, T030d, T052b)
 
 - **T030b** (account balance repository): Can be done independently, must complete before T030c (balance calculator needs repository to read balances from database)
@@ -371,12 +381,12 @@ With multiple developers:
 
 ## Task Summary
 
-- **Total Tasks**: 103 tasks
+- **Total Tasks**: 106 tasks (added T052c, T052d, T052e for risk management rules)
 - **Phase 1 (Setup)**: 9 tasks
 - **Phase 2 (Foundational)**: 12 tasks
 - **Phase 3 (User Story 1 - MVP)**: 15 tasks (added T030a, T030b, T030c, T030d)
 - **Phase 4 (User Story 2)**: 19 tasks (added T037a, T039a)
-- **Phase 5 (User Story 3)**: 11 tasks (added T052a, T052b)
+- **Phase 5 (User Story 3)**: 14 tasks (added T052a, T052b, T052c, T052d, T052e for risk management)
 - **Phase 6 (User Story 4)**: 17 tasks
 - **Phase 7 (Polish)**: 20 tasks (added T091, T092, T093)
 
@@ -384,7 +394,7 @@ With multiple developers:
 
 - **User Story 1 (P1 - MVP)**: 14 tasks (added T030b, T030c, T030d)
 - **User Story 2 (P2)**: 17 tasks
-- **User Story 3 (P3)**: 10 tasks (added T052b)
+- **User Story 3 (P3)**: 13 tasks (added T052b, T052c, T052d, T052e for risk management rules)
 - **User Story 4 (P4)**: 17 tasks
 
 ### Parallel Opportunities Identified
