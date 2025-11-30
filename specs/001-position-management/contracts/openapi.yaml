@@ -1,0 +1,712 @@
+openapi: 3.0.3
+info:
+  title: Position Management Service API
+  description: |
+    REST API for centralized portfolio position management.
+    Provides real-time position data, portfolio metrics, and position lifecycle management.
+  version: 1.0.0
+  contact:
+    name: YTrader Team
+
+servers:
+  - url: http://position-manager:4800
+    description: Position Manager Service (internal)
+  - url: http://localhost:4800
+    description: Local development
+
+tags:
+  - name: Positions
+    description: Individual position management
+  - name: Portfolio
+    description: Portfolio-level metrics and aggregation
+  - name: Health
+    description: Service health checks
+
+security:
+  - ApiKeyAuth: []
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: API Key for authentication
+
+  schemas:
+    Position:
+      type: object
+      required:
+        - id
+        - asset
+        - size
+        - unrealized_pnl
+        - realized_pnl
+        - mode
+        - last_updated
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique position identifier
+        asset:
+          type: string
+          example: BTCUSDT
+          description: Trading pair identifier
+        size:
+          type: string
+          pattern: '^-?\d+\.?\d*$'
+          example: "1.5"
+          description: Position size (positive=long, negative=short, zero=closed)
+        average_entry_price:
+          type: string
+          nullable: true
+          pattern: '^\d+\.?\d*$'
+          example: "50000.00"
+          description: Average entry price
+        current_price:
+          type: string
+          nullable: true
+          pattern: '^\d+\.?\d*$'
+          example: "50100.00"
+          description: Latest markPrice from WebSocket events
+        unrealized_pnl:
+          type: string
+          pattern: '^-?\d+\.?\d*$'
+          example: "150.00"
+          description: Current unrealized profit/loss
+        realized_pnl:
+          type: string
+          pattern: '^-?\d+\.?\d*$'
+          example: "50.00"
+          description: Cumulative realized profit/loss
+        mode:
+          type: string
+          enum: [one-way, hedge]
+          example: one-way
+          description: Trading mode
+        long_size:
+          type: string
+          nullable: true
+          pattern: '^\d+\.?\d*$'
+          example: null
+          description: Long position size (for hedge mode)
+        short_size:
+          type: string
+          nullable: true
+          pattern: '^-?\d+\.?\d*$'
+          example: null
+          description: Short position size (for hedge mode)
+        unrealized_pnl_pct:
+          type: string
+          pattern: '^-?\d+\.?\d*$'
+          example: "0.30"
+          description: Percentage of unrealized PnL (ML feature)
+        time_held_minutes:
+          type: integer
+          example: 120
+          description: Time position held in minutes (ML feature)
+        position_size_norm:
+          type: string
+          pattern: '^\d+\.?\d*$'
+          example: "0.15"
+          description: Normalized position size relative to portfolio (ML feature)
+        last_updated:
+          type: string
+          format: date-time
+          example: "2025-01-15T10:00:00Z"
+          description: Last update timestamp
+        last_snapshot_at:
+          type: string
+          format: date-time
+          nullable: true
+          example: "2025-01-15T09:00:00Z"
+          description: Last snapshot creation timestamp
+        closed_at:
+          type: string
+          format: date-time
+          nullable: true
+          example: null
+          description: Timestamp when position was closed (size=0)
+
+    PositionList:
+      type: object
+      required:
+        - positions
+        - count
+      properties:
+        positions:
+          type: array
+          items:
+            $ref: '#/components/schemas/Position'
+        count:
+          type: integer
+          example: 1
+          description: Total number of positions returned
+
+    PortfolioMetrics:
+      type: object
+      required:
+        - total_exposure_usdt
+        - total_unrealized_pnl_usdt
+        - total_realized_pnl_usdt
+        - portfolio_value_usdt
+        - open_positions_count
+        - calculated_at
+      properties:
+        total_exposure_usdt:
+          type: string
+          pattern: '^\d+\.?\d*$'
+          example: "10000.00"
+          description: Total portfolio exposure in USDT
+        total_unrealized_pnl_usdt:
+          type: string
+          pattern: '^-?\d+\.?\d*$'
+          example: "150.00"
+          description: Total unrealized profit/loss in USDT
+        total_realized_pnl_usdt:
+          type: string
+          pattern: '^-?\d+\.?\d*$'
+          example: "50.00"
+          description: Total realized profit/loss in USDT
+        portfolio_value_usdt:
+          type: string
+          pattern: '^-?\d+\.?\d*$'
+          example: "10200.00"
+          description: Total portfolio value in USDT
+        open_positions_count:
+          type: integer
+          example: 3
+          description: Number of open positions (size != 0)
+        long_positions_count:
+          type: integer
+          example: 2
+          description: Number of long positions (size > 0)
+        short_positions_count:
+          type: integer
+          example: 1
+          description: Number of short positions (size < 0)
+        net_exposure_usdt:
+          type: string
+          pattern: '^-?\d+\.?\d*$'
+          example: "5000.00"
+          description: Net exposure (long - short) in USDT
+        by_asset:
+          type: object
+          additionalProperties:
+            type: object
+            properties:
+              exposure_usdt:
+                type: string
+                example: "7500.00"
+              unrealized_pnl_usdt:
+                type: string
+                example: "100.00"
+              size:
+                type: string
+                example: "1.5"
+          example:
+            BTCUSDT:
+              exposure_usdt: "7500.00"
+              unrealized_pnl_usdt: "100.00"
+              size: "1.5"
+            ETHUSDT:
+              exposure_usdt: "2500.00"
+              unrealized_pnl_usdt: "50.00"
+              size: "10.0"
+          description: Breakdown by asset
+        positions:
+          type: array
+          items:
+            $ref: '#/components/schemas/Position'
+          description: List of positions (included if include_positions=true)
+        calculated_at:
+          type: string
+          format: date-time
+          example: "2025-01-15T10:00:00Z"
+          description: Timestamp when metrics were calculated
+
+    PortfolioExposure:
+      type: object
+      required:
+        - total_exposure_usdt
+        - calculated_at
+      properties:
+        total_exposure_usdt:
+          type: string
+          pattern: '^\d+\.?\d*$'
+          example: "10000.00"
+          description: Total portfolio exposure in USDT
+        calculated_at:
+          type: string
+          format: date-time
+          example: "2025-01-15T10:00:00Z"
+          description: Timestamp when exposure was calculated
+
+    PortfolioPnL:
+      type: object
+      required:
+        - total_unrealized_pnl_usdt
+        - total_realized_pnl_usdt
+        - total_pnl_usdt
+        - calculated_at
+      properties:
+        total_unrealized_pnl_usdt:
+          type: string
+          pattern: '^-?\d+\.?\d*$'
+          example: "150.00"
+          description: Total unrealized profit/loss in USDT
+        total_realized_pnl_usdt:
+          type: string
+          pattern: '^-?\d+\.?\d*$'
+          example: "50.00"
+          description: Total realized profit/loss in USDT
+        total_pnl_usdt:
+          type: string
+          pattern: '^-?\d+\.?\d*$'
+          example: "200.00"
+          description: Total profit/loss (unrealized + realized) in USDT
+        calculated_at:
+          type: string
+          format: date-time
+          example: "2025-01-15T10:00:00Z"
+          description: Timestamp when PnL was calculated
+
+    ValidationResult:
+      type: object
+      required:
+        - is_valid
+      properties:
+        is_valid:
+          type: boolean
+          example: true
+          description: Whether position is valid
+        error_message:
+          type: string
+          nullable: true
+          example: null
+          description: Error message if validation failed
+        updated_position:
+          $ref: '#/components/schemas/Position'
+          nullable: true
+          description: Updated position if discrepancies were fixed
+
+    PositionSnapshot:
+      type: object
+      required:
+        - id
+        - position_id
+        - asset
+        - snapshot_data
+        - created_at
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique snapshot identifier
+        position_id:
+          type: string
+          format: uuid
+          description: Reference to position
+        asset:
+          type: string
+          example: BTCUSDT
+          description: Trading pair (denormalized)
+        snapshot_data:
+          type: object
+          description: Complete position state at snapshot time
+          additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
+          example: "2025-01-15T10:00:00Z"
+          description: Snapshot creation timestamp
+
+    SnapshotList:
+      type: object
+      required:
+        - snapshots
+        - count
+      properties:
+        snapshots:
+          type: array
+          items:
+            $ref: '#/components/schemas/PositionSnapshot'
+        count:
+          type: integer
+          example: 10
+          description: Total number of snapshots
+
+    HealthStatus:
+      type: object
+      required:
+        - status
+        - service
+        - timestamp
+      properties:
+        status:
+          type: string
+          enum: [healthy, unhealthy]
+          example: healthy
+          description: Service health status
+        service:
+          type: string
+          example: position-manager
+          description: Service name
+        database_connected:
+          type: boolean
+          example: true
+          description: Database connection status
+        queue_connected:
+          type: boolean
+          example: true
+          description: RabbitMQ connection status
+        positions_count:
+          type: integer
+          example: 5
+          description: Number of positions in database
+        timestamp:
+          type: string
+          format: date-time
+          example: "2025-01-15T10:00:00Z"
+          description: Health check timestamp
+
+    Error:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: string
+          example: "Invalid API Key"
+        detail:
+          type: string
+          example: "The provided API key is invalid or missing"
+
+paths:
+  /health:
+    get:
+      tags:
+        - Health
+      summary: Health check
+      description: Service health status including database and queue connections
+      security: []
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+        '503':
+          description: Service is unhealthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+
+  /api/v1/positions:
+    get:
+      tags:
+        - Positions
+      summary: Get list of positions
+      description: |
+        Get list of all positions with optional filtering.
+        Returns positions with calculated ML features (unrealized_pnl_pct, time_held_minutes, position_size_norm).
+      parameters:
+        - name: asset
+          in: query
+          schema:
+            type: string
+          description: Filter by trading pair (e.g., BTCUSDT)
+        - name: mode
+          in: query
+          schema:
+            type: string
+            enum: [one-way, hedge]
+          description: Filter by trading mode
+        - name: size_min
+          in: query
+          schema:
+            type: number
+          description: Minimum position size
+        - name: size_max
+          in: query
+          schema:
+            type: number
+          description: Maximum position size
+      responses:
+        '200':
+          description: List of positions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PositionList'
+        '401':
+          description: Unauthorized - Invalid or missing API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: Too Many Requests - Rate limit exceeded
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+                description: Seconds to wait before retrying
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/positions/{asset}:
+    get:
+      tags:
+        - Positions
+      summary: Get position by asset
+      description: Get position for a specific asset and trading mode
+      parameters:
+        - name: asset
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Trading pair (e.g., BTCUSDT)
+        - name: mode
+          in: query
+          schema:
+            type: string
+            enum: [one-way, hedge]
+            default: one-way
+          description: Trading mode
+      responses:
+        '200':
+          description: Position data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Position'
+        '404':
+          description: Position not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: Too Many Requests
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    post:
+      tags:
+        - Positions
+      summary: Validate position
+      description: Manually trigger position validation against authoritative sources
+      parameters:
+        - name: asset
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Trading pair
+        - name: mode
+          in: query
+          schema:
+            type: string
+            enum: [one-way, hedge]
+            default: one-way
+          description: Trading mode
+        - name: fix_discrepancies
+          in: query
+          schema:
+            type: boolean
+            default: true
+          description: Automatically fix discrepancies if found
+      responses:
+        '200':
+          description: Validation result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationResult'
+        '404':
+          description: Position not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+        '500':
+          description: Internal server error
+
+  /api/v1/positions/{asset}/snapshot:
+    post:
+      tags:
+        - Positions
+      summary: Create position snapshot
+      description: Manually create a snapshot of current position state
+      parameters:
+        - name: asset
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Trading pair
+        - name: mode
+          in: query
+          schema:
+            type: string
+            enum: [one-way, hedge]
+            default: one-way
+          description: Trading mode
+      responses:
+        '201':
+          description: Snapshot created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PositionSnapshot'
+        '404':
+          description: Position not found
+        '401':
+          description: Unauthorized
+        '500':
+          description: Internal server error
+
+  /api/v1/positions/{asset}/snapshots:
+    get:
+      tags:
+        - Positions
+      summary: Get position snapshot history
+      description: Get historical snapshots for a position
+      parameters:
+        - name: asset
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Trading pair
+        - name: mode
+          in: query
+          schema:
+            type: string
+            enum: [one-way, hedge]
+            default: one-way
+          description: Trading mode
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+            minimum: 1
+            maximum: 1000
+          description: Maximum number of snapshots to return
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
+          description: Offset for pagination
+      responses:
+        '200':
+          description: List of snapshots
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SnapshotList'
+        '404':
+          description: Position not found
+        '401':
+          description: Unauthorized
+        '500':
+          description: Internal server error
+
+  /api/v1/portfolio:
+    get:
+      tags:
+        - Portfolio
+      summary: Get portfolio metrics
+      description: |
+        Get aggregated portfolio metrics including total exposure, PnL, and position counts.
+        Optionally include list of positions.
+      parameters:
+        - name: include_positions
+          in: query
+          schema:
+            type: boolean
+            default: false
+          description: Include list of positions in response
+        - name: asset
+          in: query
+          schema:
+            type: string
+          description: Calculate metrics only for specified asset
+      responses:
+        '200':
+          description: Portfolio metrics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortfolioMetrics'
+        '401':
+          description: Unauthorized
+        '429':
+          description: Too Many Requests
+        '500':
+          description: Internal server error
+
+  /api/v1/portfolio/exposure:
+    get:
+      tags:
+        - Portfolio
+      summary: Get portfolio exposure
+      description: Get only total portfolio exposure
+      responses:
+        '200':
+          description: Portfolio exposure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortfolioExposure'
+        '401':
+          description: Unauthorized
+        '429':
+          description: Too Many Requests
+        '500':
+          description: Internal server error
+
+  /api/v1/portfolio/pnl:
+    get:
+      tags:
+        - Portfolio
+      summary: Get portfolio PnL
+      description: Get only profit/loss metrics for portfolio
+      responses:
+        '200':
+          description: Portfolio PnL
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortfolioPnL'
+        '401':
+          description: Unauthorized
+        '429':
+          description: Too Many Requests
+        '500':
+          description: Internal server error
+
