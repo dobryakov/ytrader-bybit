@@ -788,7 +788,184 @@ Position Manager предоставляет данные для реализац
 4. Тесты производительности для портфолио-метрик
 5. Валидация миграции (сравнение результатов до/после)
 
-### 7.6. Этап 6: Документация и развертывание
+### 7.6. Этап 6: Переработка дашбордов Grafana
+
+После развертывания Position Manager необходимо обновить дашборды Grafana, чтобы они использовали данные из нового сервиса вместо прямых запросов к таблице `positions` в БД.
+
+#### 7.6.1. Дашборд "Trading Performance" (`trading-performance.json`)
+
+**Текущее состояние**: Дашборд использует прямые SQL запросы к таблице `positions` для получения метрик PnL.
+
+**Задачи**:
+
+1. **Панель "Total PnL"** (ID: 1):
+   - **Текущий запрос**: `SELECT COALESCE(SUM((e.performance->>'realized_pnl')::DECIMAL), 0) + COALESCE((SELECT SUM(unrealized_pnl) FROM positions WHERE size != 0), 0) as total_pnl FROM execution_events e`
+   - **Новый подход**: 
+     - Заменить `(SELECT SUM(unrealized_pnl) FROM positions WHERE size != 0)` на REST API запрос к Position Manager: `GET /api/v1/portfolio/pnl`
+     - Использовать Infinity datasource для HTTP запросов к Position Manager API
+     - Или создать PostgreSQL функцию/представление, которое читает из Position Manager через HTTP (если поддерживается)
+   - **Альтернатива**: Использовать PostgreSQL datasource с запросом к представлению `portfolio_metrics_view` (если создано), которое синхронизируется с Position Manager
+
+2. **Панель "Unrealized PnL"** (ID: 3):
+   - **Текущий запрос**: `SELECT COALESCE(SUM(unrealized_pnl), 0) as unrealized_pnl FROM positions WHERE size != 0`
+   - **Новый подход**: 
+     - Заменить на REST API запрос: `GET /api/v1/portfolio/pnl` → использовать поле `total_unrealized_pnl`
+     - Использовать Infinity datasource для HTTP запросов
+   - **Альтернатива**: Использовать PostgreSQL представление, синхронизированное с Position Manager
+
+3. **Панель "Cumulative PnL Over Time"** (ID: 9):
+   - **Текущий запрос**: Включает `(SELECT SUM(unrealized_pnl) FROM positions WHERE size != 0) as current_unrealized_pnl`
+   - **Новый подход**: 
+     - Заменить подзапрос на REST API запрос к Position Manager
+     - Или использовать исторические данные из снапшотов позиций (`position_snapshots`) для построения временного ряда unrealized PnL
+   - **Рекомендация**: Использовать снапшоты позиций для исторического графика, так как они содержат полную историю изменений
+
+4. **Панель "PnL by Asset"** (ID: 13):
+   - **Текущий запрос**: Агрегирует данные из `execution_events` по `asset`
+   - **Новый подход**: 
+     - Добавить панель с данными из Position Manager: `GET /api/v1/portfolio?include_positions=true`
+     - Использовать поле `by_asset` из ответа API для отображения PnL по активам
+     - Сохранить существующую панель для realized PnL из execution_events, добавить новую для unrealized PnL из Position Manager
+
+**Файл для обновления**: `grafana/dashboards/trading-performance.json`
+
+---
+
+#### 7.6.2. Дашборд "Trading System Monitoring" (`trading-system-monitoring.json`)
+
+**Текущее состояние**: Панель "Order Execution" использует JOIN с таблицей `positions` для получения данных о позициях.
+
+**Задачи**:
+
+1. **Панель "Order Execution"** (ID: 2):
+   - **Текущий запрос**: Использует `LEFT JOIN LATERAL (SELECT unrealized_pnl, size, average_entry_price FROM positions WHERE asset = o.asset) p`
+   - **Новый подход**: 
+     - **Вариант 1**: Использовать PostgreSQL представление `positions_view`, которое синхронизируется с Position Manager через триггеры или периодическое обновление
+     - **Вариант 2**: Разделить панель на две части:
+       - Основная таблица с данными ордеров (из `orders` и `execution_events`)
+       - Дополнительная таблица с данными позиций из Position Manager через REST API (Infinity datasource)
+     - **Вариант 3**: Использовать PostgreSQL функцию, которая делает HTTP запрос к Position Manager API (если PostgreSQL поддерживает HTTP расширения)
+   - **Рекомендация**: Использовать вариант 1 (представление) для сохранения производительности и совместимости с существующими запросами
+
+**Файл для обновления**: `grafana/dashboards/trading-system-monitoring.json`
+
+---
+
+#### 7.6.3. Дашборд "Order Execution Panel" (`order-execution-panel.json`)
+
+**Текущее состояние**: Использует JOIN с таблицей `positions` для расчета PnL.
+
+**Задачи**:
+
+1. **Панель "Order Execution Panel"**:
+   - **Текущий запрос**: Использует `LEFT JOIN LATERAL (SELECT unrealized_pnl, size, average_entry_price, current_price FROM positions WHERE asset = o.asset) p`
+   - **Новый подход**: 
+     - Аналогично панели в "Trading System Monitoring", использовать представление `positions_view`
+     - Или разделить на две панели: ордера + позиции из Position Manager API
+
+**Файл для обновления**: `grafana/dashboards/order-execution-panel.json`
+
+---
+
+#### 7.6.4. Новые дашборды и панели
+
+**Задачи**:
+
+1. **Создать новый дашборд "Portfolio Management"**:
+   - Панель "Total Exposure" с данными из `GET /api/v1/portfolio/exposure`
+   - Панель "Portfolio PnL Breakdown" с детализацией по активам из `GET /api/v1/portfolio?include_positions=true`
+   - Панель "Position Size Distribution" с использованием `position_size_norm` из Position Manager
+   - Панель "Unrealized PnL by Asset" с использованием `unrealized_pnl_pct` из Position Manager
+   - Панель "Time Held by Position" с использованием `time_held_minutes` из Position Manager
+   - Панель "Position Snapshots History" с данными из `GET /api/v1/positions/{asset}/snapshots`
+
+2. **Добавить панель "Position Manager Health"** в дашборд "System Health":
+   - Health check статус Position Manager: `GET /health`
+   - Метрики производительности: время ответа API, количество обновлений позиций
+   - Статистика валидаций: количество расхождений, успешных синхронизаций
+
+3. **Добавить панель "Risk Management Metrics"**:
+   - Отображение `total_exposure` для проверки лимитов Risk Manager
+   - Визуализация `position_size_norm` для каждого актива (для правила Position Size Limit)
+   - Визуализация `unrealized_pnl_pct` для каждого актива (для правила Take Profit)
+
+**Файлы для создания**:
+- `grafana/dashboards/portfolio-management.json` (новый дашборд)
+
+---
+
+#### 7.6.5. Технические детали реализации
+
+**Подход 1: PostgreSQL представления (рекомендуется)**
+
+Создать представления в БД, которые синхронизируются с Position Manager:
+
+```sql
+-- Представление для метрик портфолио
+CREATE VIEW portfolio_metrics_view AS
+SELECT 
+    'total_exposure' as metric_name,
+    (SELECT total_exposure::text FROM http_get('http://position-manager:4800/api/v1/portfolio/exposure')::json) as metric_value
+UNION ALL
+SELECT 
+    'total_unrealized_pnl' as metric_name,
+    (SELECT total_unrealized_pnl::text FROM http_get('http://position-manager:4800/api/v1/portfolio/pnl')::json) as metric_value;
+
+-- Представление для позиций (синхронизируется через триггеры или периодическое обновление)
+CREATE VIEW positions_view AS
+SELECT * FROM positions;  -- Если positions таблица синхронизируется с Position Manager
+```
+
+**Подход 2: Infinity datasource для REST API**
+
+Использовать Grafana Infinity datasource для прямых HTTP запросов к Position Manager API:
+
+- Настроить Infinity datasource с URL `http://position-manager:4800`
+- Использовать JSON parser для парсинга ответов API
+- Создать переменные для фильтрации по активам, стратегиям и т.д.
+
+**Подход 3: Гибридный подход**
+
+- Для реального времени: использовать Infinity datasource для прямых запросов к Position Manager API
+- Для исторических данных: использовать PostgreSQL с данными из снапшотов позиций (`position_snapshots`)
+
+---
+
+#### 7.6.6. Порядок выполнения задач
+
+1. **Подготовка**:
+   - Создать PostgreSQL представления или настроить Infinity datasource для Position Manager
+   - Протестировать доступность Position Manager API из Grafana контейнера
+   - Создать backup существующих дашбордов
+
+2. **Обновление существующих дашбордов**:
+   - Обновить `trading-performance.json` (панели Total PnL, Unrealized PnL, Cumulative PnL)
+   - Обновить `trading-system-monitoring.json` (панель Order Execution)
+   - Обновить `order-execution-panel.json`
+
+3. **Создание новых дашбордов**:
+   - Создать `portfolio-management.json` с новыми панелями
+   - Добавить панели в существующие дашборды (System Health, Risk Management)
+
+4. **Тестирование**:
+   - Проверить корректность отображения данных
+   - Сравнить результаты с данными из старой таблицы `positions` (до миграции)
+   - Проверить производительность запросов
+
+5. **Документация**:
+   - Обновить документацию дашбордов
+   - Добавить описание новых панелей и источников данных
+
+---
+
+#### 7.6.7. Зависимости
+
+- Position Manager должен быть развернут и доступен
+- REST API Position Manager должен быть протестирован
+- Grafana должна иметь доступ к Position Manager (сеть, порт 4800)
+- Если используется Infinity datasource, плагин должен быть установлен в Grafana
+
+### 7.7. Этап 7: Документация и развертывание
 
 1. Обновить README с инструкциями по развертыванию
 2. Обновить документацию API
@@ -796,6 +973,7 @@ Position Manager предоставляет данные для реализац
 4. Обновить env.example
 5. Развернуть в тестовой среде
 6. Мониторинг и отладка
+7. Обновить документацию дашбордов Grafana (после выполнения этапа 7.6)
 
 ## 8. Технические детали
 
