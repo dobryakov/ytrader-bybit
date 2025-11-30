@@ -116,6 +116,859 @@ The system must periodically validate position data against authoritative source
 - What happens when position validation detects discrepancies that cannot be automatically resolved?
 - How does the system handle requests for position data that doesn't exist?
 
+## Detailed Test Cases
+
+The following detailed test cases must be implemented as automated tests. Tests simulate real scenarios via RabbitMQ messages or REST API requests.
+
+### Test Cases: Position Updates from WebSocket Events
+
+#### TC-001: Create New Position from WebSocket Event
+
+**Prerequisites**:
+- Position for BTCUSDT does not exist in database
+- Position Manager is running and connected to RabbitMQ
+
+**Steps**:
+1. Send RabbitMQ message to queue `ws-gateway.position`:
+```json
+{
+  "event_type": "position",
+  "channel": "position",
+  "data": {
+    "symbol": "BTCUSDT",
+    "side": "Buy",
+    "size": "1.5",
+    "avgPrice": "50000.00",
+    "unrealisedPnl": "150.00",
+    "positionValue": "75000.00",
+    "mode": "one-way",
+    "timestamp": "2025-01-15T10:00:00Z"
+  },
+  "trace_id": "test-trace-001"
+}
+```
+
+**Expected Result**:
+- Position created in database with `asset="BTCUSDT"`, `size=1.5`, `average_entry_price=50000.00`
+- `unrealized_pnl=150.00`
+- Event `position-manager.position_updated` published to RabbitMQ
+- REST API `GET /api/v1/positions/BTCUSDT` returns created position
+- Portfolio metrics updated (`total_exposure` includes new position)
+
+**Verifications**:
+- HTTP 200 on `GET /api/v1/positions/BTCUSDT`
+- `position.size == "1.5"`
+- `position.average_entry_price == "50000.00"`
+- `position.unrealized_pnl == "150.00"`
+- `position.unrealized_pnl_pct` calculated correctly
+- `position.position_size_norm` calculated correctly
+
+---
+
+#### TC-002: Update Existing Position from WebSocket Event
+
+**Prerequisites**:
+- Position for BTCUSDT exists: `size=1.0`, `average_entry_price=48000.00`
+- Position Manager is running
+
+**Steps**:
+1. Send RabbitMQ message to queue `ws-gateway.position`:
+```json
+{
+  "event_type": "position",
+  "channel": "position",
+  "data": {
+    "symbol": "BTCUSDT",
+    "side": "Buy",
+    "size": "2.0",
+    "avgPrice": "49000.00",
+    "unrealisedPnl": "200.00",
+    "positionValue": "98000.00",
+    "mode": "one-way",
+    "timestamp": "2025-01-15T10:05:00Z"
+  },
+  "trace_id": "test-trace-002"
+}
+```
+
+**Expected Result**:
+- Position updated: `size=2.0`, `average_entry_price=49000.00` (uses `avgPrice` from WebSocket)
+- `unrealized_pnl=200.00`
+- Event `position-manager.position_updated` published
+- Portfolio metrics recalculated
+
+**Verifications**:
+- `position.size == "2.0"`
+- `position.average_entry_price == "49000.00"`
+- `position.last_updated` updated
+- `position.time_held_minutes` calculated correctly
+
+---
+
+#### TC-003: Update Position with Size Discrepancy Validation
+
+**Prerequisites**:
+- Position for BTCUSDT: `size=1.5`, `average_entry_price=50000.00`
+- `POSITION_MANAGER_SIZE_VALIDATION_THRESHOLD=0.0001`
+
+**Steps**:
+1. Send WebSocket event with `size=1.8` (discrepancy > 0.0001):
+```json
+{
+  "event_type": "position",
+  "data": {
+    "symbol": "BTCUSDT",
+    "size": "1.8",
+    "avgPrice": "50000.00",
+    "unrealisedPnl": "180.00"
+  },
+  "trace_id": "test-trace-003"
+}
+```
+
+**Expected Result**:
+- Position updated with new size
+- Warning log about size discrepancy
+- Validation event may be triggered (if configured)
+
+**Verifications**:
+- `position.size == "1.8"`
+- Warning about discrepancy present in logs
+
+---
+
+### Test Cases: Position Updates from Order Manager Events
+
+#### TC-004: Update Position on Order Execution (BUY)
+
+**Prerequisites**:
+- Position for BTCUSDT: `size=1.0`, `average_entry_price=48000.00`
+- Order Manager publishes order execution event
+
+**Steps**:
+1. Send RabbitMQ message to queue `order-manager.order_executed`:
+```json
+{
+  "event_type": "order_executed",
+  "order_id": "order-123",
+  "asset": "BTCUSDT",
+  "side": "BUY",
+  "execution_price": "50000.00",
+  "execution_quantity": "0.5",
+  "execution_fees": "25.00",
+  "executed_at": "2025-01-15T10:10:00Z",
+  "trace_id": "test-trace-004"
+}
+```
+
+**Expected Result**:
+- Position updated: `size=1.5` (1.0 + 0.5)
+- `average_entry_price` recalculated: `(1.0 * 48000.00 + 0.5 * 50000.00) / 1.5 = 48666.67`
+- `realized_pnl` unchanged (order opens position)
+- Event `position-manager.position_updated` published
+
+**Verifications**:
+- `position.size == "1.5"`
+- `position.average_entry_price == "48666.67"` (with 2 decimal precision)
+- `position.realized_pnl` unchanged
+
+---
+
+#### TC-005: Partial Position Close on SELL Order Execution
+
+**Prerequisites**:
+- Position for BTCUSDT: `size=2.0`, `average_entry_price=50000.00`, `unrealized_pnl=200.00`
+- Current price: 51000.00
+
+**Steps**:
+1. Send SELL order execution event:
+```json
+{
+  "event_type": "order_executed",
+  "order_id": "order-124",
+  "asset": "BTCUSDT",
+  "side": "SELL",
+  "execution_price": "51000.00",
+  "execution_quantity": "0.5",
+  "execution_fees": "25.50",
+  "executed_at": "2025-01-15T10:15:00Z",
+  "trace_id": "test-trace-005"
+}
+```
+
+**Expected Result**:
+- Position updated: `size=1.5` (2.0 - 0.5)
+- `realized_pnl` increased: `(51000.00 - 50000.00) * 0.5 - 25.50 = 474.50`
+- `unrealized_pnl` recalculated for remaining position
+- Update event published
+
+**Verifications**:
+- `position.size == "1.5"`
+- `position.realized_pnl` increased by ~474.50
+- `position.unrealized_pnl` recalculated
+
+---
+
+#### TC-006: Full Position Close on SELL Order Execution
+
+**Prerequisites**:
+- Position for BTCUSDT: `size=1.0`, `average_entry_price=50000.00`
+
+**Steps**:
+1. Send SELL order execution event with `execution_quantity=1.0`:
+```json
+{
+  "event_type": "order_executed",
+  "asset": "BTCUSDT",
+  "side": "SELL",
+  "execution_price": "51000.00",
+  "execution_quantity": "1.0",
+  "execution_fees": "51.00",
+  "trace_id": "test-trace-006"
+}
+```
+
+**Expected Result**:
+- Position closed: `size=0.0` or position deleted/marked as closed
+- `realized_pnl` finalized
+- Event `position-manager.position_closed` published (if implemented)
+- Portfolio metrics updated (position excluded from exposure)
+
+**Verifications**:
+- `GET /api/v1/positions/BTCUSDT` returns `size=0.0` or 404
+- Portfolio does not include closed position
+
+---
+
+### Test Cases: Conflict Resolution Between Sources
+
+#### TC-007: Position Size Conflict (WebSocket vs Order Manager)
+
+**Prerequisites**:
+- Position for BTCUSDT: `size=1.0`, `average_entry_price=50000.00`
+- `POSITION_MANAGER_USE_WS_AVG_PRICE=true`
+- `POSITION_MANAGER_AVG_PRICE_DIFF_THRESHOLD=0.001`
+
+**Steps**:
+1. Send WebSocket event: `size=1.2`, `avgPrice=50000.00`
+2. Immediately send Order Manager event: `execution_quantity=0.3` (expected size 1.3)
+
+**Expected Result**:
+- Position updated considering both sources
+- `average_entry_price` uses `avgPrice` from WebSocket (if discrepancy < 0.1%)
+- Size synchronized (Order Manager priority for size)
+- Logs contain conflict resolution information
+
+**Verifications**:
+- Final position size is correct
+- `average_entry_price` matches conflict resolution strategy
+- Conflict information present in logs
+
+---
+
+#### TC-008: Validate average_entry_price with Discrepancy Threshold
+
+**Prerequisites**:
+- Position: `size=1.0`, `average_entry_price=50000.00` (from Order Manager)
+- `POSITION_MANAGER_AVG_PRICE_DIFF_THRESHOLD=0.001` (0.1%)
+
+**Steps**:
+1. Send WebSocket event with `avgPrice=50050.00` (discrepancy 0.1% = 0.001):
+```json
+{
+  "event_type": "position",
+  "data": {
+    "symbol": "BTCUSDT",
+    "avgPrice": "50050.00",
+    "size": "1.0"
+  },
+  "trace_id": "test-trace-008"
+}
+```
+
+**Expected Result**:
+- If discrepancy <= 0.001: `average_entry_price` updated to 50050.00
+- If discrepancy > 0.001: `average_entry_price` not updated, warning logged
+
+**Verifications**:
+- `position.average_entry_price` matches expected behavior
+- Logs contain validation information
+
+---
+
+### Test Cases: Portfolio Metrics Calculation
+
+#### TC-009: Calculate total_exposure for Multiple Positions
+
+**Prerequisites**:
+- Position BTCUSDT: `size=1.0`, current price 50000.00
+- Position ETHUSDT: `size=10.0`, current price 3000.00
+
+**Steps**:
+1. Execute REST API request: `GET /api/v1/portfolio/exposure`
+
+**Expected Result**:
+- `total_exposure = 1.0 * 50000.00 + 10.0 * 3000.00 = 80000.00`
+- Response contains asset breakdown
+
+**Verifications**:
+- HTTP 200
+- `response.total_exposure == "80000.00"`
+- `response.by_asset` contains BTCUSDT and ETHUSDT
+
+---
+
+#### TC-010: Calculate total_unrealized_pnl for Portfolio
+
+**Prerequisites**:
+- Position BTCUSDT: `unrealized_pnl=150.00`
+- Position ETHUSDT: `unrealized_pnl=-50.00`
+
+**Steps**:
+1. Execute REST API request: `GET /api/v1/portfolio/pnl`
+
+**Expected Result**:
+- `total_unrealized_pnl = 150.00 + (-50.00) = 100.00`
+- `total_realized_pnl` summed from all positions
+
+**Verifications**:
+- HTTP 200
+- `response.total_unrealized_pnl == "100.00"`
+- `response.by_asset` contains breakdown
+
+---
+
+#### TC-011: Portfolio Metrics Caching
+
+**Prerequisites**:
+- `POSITION_MANAGER_METRICS_CACHE_TTL=10` seconds
+- Position BTCUSDT exists
+
+**Steps**:
+1. Execute `GET /api/v1/portfolio` (t=0s)
+2. Update position via WebSocket event (t=5s)
+3. Execute `GET /api/v1/portfolio` (t=5s)
+4. Execute `GET /api/v1/portfolio` (t=15s)
+
+**Expected Result**:
+- First request (t=0s): metrics from database
+- Second request (t=5s): metrics from cache (if TTL not expired) or updated
+- Third request (t=15s): metrics recalculated from database (cache expired)
+
+**Verifications**:
+- Second request response time is lower (if cache works)
+- Third request returns updated metrics
+
+---
+
+### Test Cases: REST API Endpoints
+
+#### TC-012: Get Position List with Filtering
+
+**Prerequisites**:
+- Positions: BTCUSDT (size=1.0), ETHUSDT (size=10.0), SOLUSDT (size=100.0)
+
+**Steps**:
+1. `GET /api/v1/positions`
+2. `GET /api/v1/positions?asset=BTCUSDT`
+3. `GET /api/v1/positions?size_min=5.0`
+
+**Expected Result**:
+- Request 1: all 3 positions
+- Request 2: only BTCUSDT
+- Request 3: ETHUSDT and SOLUSDT (size >= 5.0)
+
+**Verifications**:
+- HTTP 200 for all requests
+- Correct filtering of results
+- All positions contain calculated features (`unrealized_pnl_pct`, `time_held_minutes`, `position_size_norm`)
+
+---
+
+#### TC-013: Get Portfolio with Position Details
+
+**Prerequisites**:
+- Multiple positions exist
+
+**Steps**:
+1. `GET /api/v1/portfolio?include_positions=true`
+
+**Expected Result**:
+- Response contains `total_exposure`, `total_unrealized_pnl`, `total_realized_pnl`
+- Response contains `positions` array with details of all positions
+- Each position contains calculated features
+
+**Verifications**:
+- HTTP 200
+- `response.positions` is not empty
+- All metrics calculated correctly
+
+---
+
+#### TC-014: Validate Position via API
+
+**Prerequisites**:
+- Position BTCUSDT exists
+
+**Steps**:
+1. `POST /api/v1/positions/BTCUSDT/validate`
+
+**Expected Result**:
+- HTTP 200 or 202 (depends on implementation)
+- Validation executed (synchronization with external source if necessary)
+- Logs contain validation results
+
+**Verifications**:
+- Position validated
+- Discrepancies corrected or logged if present
+
+---
+
+#### TC-015: Create Position Snapshot via API
+
+**Prerequisites**:
+- Position BTCUSDT: `size=1.0`, `unrealized_pnl=150.00`
+
+**Steps**:
+1. `POST /api/v1/positions/BTCUSDT/snapshot`
+
+**Expected Result**:
+- HTTP 201 or 200
+- Snapshot created in database
+- Event `position-manager.position_snapshot_created` published to RabbitMQ
+- `GET /api/v1/positions/BTCUSDT/snapshots` returns created snapshot
+
+**Verifications**:
+- Snapshot saved in database
+- Event published to RabbitMQ
+- Snapshot contains all position fields at creation time
+
+---
+
+#### TC-016: Authentication via API Key
+
+**Prerequisites**:
+- Position Manager configured with API Key
+
+**Steps**:
+1. `GET /api/v1/positions` without API Key
+2. `GET /api/v1/positions` with incorrect API Key
+3. `GET /api/v1/positions` with correct API Key
+
+**Expected Result**:
+- Request 1: HTTP 401 Unauthorized
+- Request 2: HTTP 401 Unauthorized
+- Request 3: HTTP 200 OK
+
+**Verifications**:
+- Correct handling of missing/incorrect API Key
+- Logs contain information about failed authentication attempts
+
+---
+
+### Test Cases: Risk Management Rules (Model Service Integration)
+
+#### TC-017: Take Profit - Forced SELL on Profit Achievement
+
+**Prerequisites**:
+- Position BTCUSDT: `size=1.0`, `average_entry_price=50000.00`, current price 51500.00
+- `unrealized_pnl_pct = (51500.00 - 50000.00) / 50000.00 * 100 = 3.0%`
+- `MODEL_SERVICE_TAKE_PROFIT_PCT=3.0`
+
+**Steps**:
+1. Model Service requests position: `GET /api/v1/positions/BTCUSDT`
+2. Model Service checks `unrealized_pnl_pct >= 3.0%`
+3. Model Service generates forced SELL signal
+
+**Expected Result**:
+- REST API returns `unrealized_pnl_pct=3.0` (or higher)
+- Model Service receives data for decision making
+- Model Service generates SELL signal with `confidence=1.0`, `reason="take_profit_triggered"`
+
+**Verifications**:
+- `position.unrealized_pnl_pct` calculated correctly
+- Model Service can use this value for Take Profit rule
+
+---
+
+#### TC-018: Position Size Limit - Skip BUY on Large Position Size
+
+**Prerequisites**:
+- Position BTCUSDT: `size=1.0`, current price 50000.00
+- `total_exposure = 100000.00`
+- `position_size_norm = (1.0 * 50000.00) / 100000.00 = 0.5`
+- `MODEL_SERVICE_MAX_POSITION_SIZE_RATIO=0.8`
+
+**Steps**:
+1. Model Service requests position: `GET /api/v1/positions/BTCUSDT`
+2. Model Service checks `position_size_norm < 0.8`
+3. Model Service generates BUY signal (position size within limit)
+
+**Expected Result**:
+- REST API returns `position_size_norm=0.5`
+- Model Service generates BUY signal (0.5 < 0.8)
+
+**Verifications**:
+- `position.position_size_norm` calculated correctly
+- Model Service can use this value for Position Size Limit rule
+
+---
+
+#### TC-019: Position Size Limit - Skip BUY on Limit Exceedance
+
+**Prerequisites**:
+- Position BTCUSDT: `size=2.0`, current price 50000.00
+- `total_exposure = 100000.00`
+- `position_size_norm = (2.0 * 50000.00) / 100000.00 = 1.0`
+- `MODEL_SERVICE_MAX_POSITION_SIZE_RATIO=0.8`
+
+**Steps**:
+1. Model Service requests position: `GET /api/v1/positions/BTCUSDT`
+2. Model Service checks `position_size_norm > 0.8`
+3. Model Service skips BUY signal generation
+
+**Expected Result**:
+- REST API returns `position_size_norm=1.0`
+- Model Service skips BUY signal, logs reason `reason="position_size_limit"`
+
+**Verifications**:
+- `position.position_size_norm=1.0` (exceeds limit)
+- Model Service correctly handles limit exceedance
+
+---
+
+### Test Cases: Position Snapshot Creation
+
+#### TC-020: Automatic Snapshot Creation on Schedule
+
+**Prerequisites**:
+- `POSITION_MANAGER_SNAPSHOT_INTERVAL=3600` seconds (1 hour)
+- Position BTCUSDT exists
+
+**Steps**:
+1. Wait for interval expiration (or simulate via API)
+2. Check snapshot creation
+
+**Expected Result**:
+- Snapshot created automatically
+- Event `position-manager.position_snapshot_created` published to RabbitMQ
+- Snapshot contains position state at creation time
+
+**Verifications**:
+- Snapshot in database
+- Event in RabbitMQ
+- `snapshot.position_id` matches position
+- `snapshot.snapshot_data` contains all position fields
+
+---
+
+#### TC-021: Get Position Snapshot History
+
+**Prerequisites**:
+- Multiple snapshots created for BTCUSDT
+
+**Steps**:
+1. `GET /api/v1/positions/BTCUSDT/snapshots`
+
+**Expected Result**:
+- HTTP 200
+- Response contains array of snapshots, sorted by `created_at` (DESC)
+- Each snapshot contains complete position data at creation time
+
+**Verifications**:
+- All snapshots returned
+- Snapshots sorted by date
+- Snapshot data is correct
+
+---
+
+### Test Cases: RabbitMQ Integration
+
+#### TC-022: Publish Position Updated Event
+
+**Prerequisites**:
+- Position BTCUSDT updated via WebSocket event
+
+**Steps**:
+1. Send WebSocket position update event
+2. Check message in queue `position-manager.position_updated`
+
+**Expected Result**:
+- Event published to RabbitMQ
+- Event format matches specification (section 6.1)
+- Event contains all required fields, including calculated features
+
+**Verifications**:
+- Message in RabbitMQ queue
+- `event.position.unrealized_pnl_pct` present
+- `event.position.time_held_minutes` present
+- `event.position.position_size_norm` present
+
+---
+
+#### TC-023: Publish Portfolio Updated Event
+
+**Prerequisites**:
+- Position updated, portfolio metrics recalculated
+
+**Steps**:
+1. Update position
+2. Check message in queue `position-manager.portfolio_updated`
+
+**Expected Result**:
+- Event published to RabbitMQ
+- Event format matches specification (section 6.2)
+- Event contains `total_exposure`, `total_unrealized_pnl`, `total_realized_pnl`
+
+**Verifications**:
+- Message in RabbitMQ queue
+- All portfolio metrics present
+- Metrics calculated correctly
+
+---
+
+#### TC-024: Publish Position Snapshot Created Event
+
+**Prerequisites**:
+- Position snapshot created (automatically or via API)
+
+**Steps**:
+1. Create snapshot via API or wait for automatic creation
+2. Check message in queue `position-manager.position_snapshot_created`
+
+**Expected Result**:
+- Event published to RabbitMQ
+- Event format matches specification (section 6.3)
+- Event contains complete snapshot data
+
+**Verifications**:
+- Message in RabbitMQ queue
+- `event.snapshot.snapshot_data` contains all position fields
+- `event.snapshot.created_at` present
+
+---
+
+### Test Cases: Position Validation
+
+#### TC-025: Periodic Position Validation
+
+**Prerequisites**:
+- `POSITION_MANAGER_VALIDATION_INTERVAL=1800` seconds (30 minutes)
+- Positions exist in database
+
+**Steps**:
+1. Wait for interval expiration (or simulate via API)
+2. Check validation execution
+
+**Expected Result**:
+- Validation executed for all positions
+- Discrepancies detected and corrected (if present)
+- Logs contain validation results
+
+**Verifications**:
+- Validation executed
+- Discrepancies corrected or logged if present
+- Positions synchronized with external sources (if configured)
+
+---
+
+#### TC-026: Position Validation with Discrepancy Detection
+
+**Prerequisites**:
+- Position BTCUSDT in database: `size=1.0`, `average_entry_price=50000.00`
+- External source (WebSocket/API) reports: `size=1.2`, `avgPrice=51000.00`
+
+**Steps**:
+1. Execute validation: `POST /api/v1/positions/BTCUSDT/validate`
+2. Check synchronization with external source
+
+**Expected Result**:
+- Discrepancies detected
+- Position synchronized with external source (if configured)
+- Logs contain information about discrepancies and corrections
+
+**Verifications**:
+- Position updated considering external source
+- Logs contain discrepancy details
+
+---
+
+### Test Cases: Error Handling and Edge Cases
+
+#### TC-027: Handle Database Unavailability
+
+**Prerequisites**:
+- Position Manager is running
+- Database unavailable (simulate disconnection)
+
+**Steps**:
+1. Execute REST API request: `GET /api/v1/positions`
+
+**Expected Result**:
+- HTTP 503 Service Unavailable or HTTP 500
+- Health check `/health` returns `database_connected=false`
+- Logs contain database connection error information
+
+**Verifications**:
+- Correct database error handling
+- Health check reflects state
+
+---
+
+#### TC-028: Handle RabbitMQ Unavailability
+
+**Prerequisites**:
+- Position Manager is running
+- RabbitMQ unavailable (simulate disconnection)
+
+**Steps**:
+1. Attempt to update position via WebSocket event
+2. Check health check
+
+**Expected Result**:
+- Position updated in database (if possible)
+- Event publication to RabbitMQ skipped or delayed
+- Health check returns `queue_connected=false`
+- Logs contain RabbitMQ error information
+
+**Verifications**:
+- Position updated in database
+- Health check reflects RabbitMQ state
+
+---
+
+#### TC-029: Handle Invalid Data in Events
+
+**Prerequisites**:
+- Position Manager is running
+
+**Steps**:
+1. Send RabbitMQ message with invalid data:
+```json
+{
+  "event_type": "position",
+  "data": {
+    "symbol": "INVALID",
+    "size": "not-a-number",
+    "avgPrice": null
+  }
+}
+```
+
+**Expected Result**:
+- Message rejected (Pydantic validation)
+- Error logged
+- Position not updated
+- Event not published
+
+**Verifications**:
+- Data validation works
+- Invalid data not processed
+- Logs contain validation error information
+
+---
+
+#### TC-030: Handle Duplicate Events
+
+**Prerequisites**:
+- Position BTCUSDT exists
+- `trace_id` used for deduplication (if implemented)
+
+**Steps**:
+1. Send WebSocket event with `trace_id="dup-001"`
+2. Send same event again with same `trace_id`
+
+**Expected Result**:
+- First event processed
+- Second event skipped (deduplication) or processed (if deduplication not implemented)
+- Logs contain duplicate information (if applicable)
+
+**Verifications**:
+- Deduplication works (if implemented)
+- Position updated only once (if deduplication exists)
+
+---
+
+### Test Cases: Performance and Load Testing
+
+#### TC-031: Handle Multiple Concurrent Updates
+
+**Prerequisites**:
+- Positions for 10 different assets exist
+
+**Steps**:
+1. Send 100 WebSocket events simultaneously (10 for each asset)
+2. Measure processing time
+3. Verify final position state correctness
+
+**Expected Result**:
+- All events processed
+- Processing time acceptable (< 5 seconds for 100 events)
+- Final position state correct
+- No data loss
+
+**Verifications**:
+- All events processed
+- Performance within expectations
+- Data is consistent
+
+---
+
+#### TC-032: REST API Endpoint Load
+
+**Prerequisites**:
+- Multiple positions exist
+
+**Steps**:
+1. Execute 1000 sequential requests `GET /api/v1/portfolio`
+2. Measure response time and cache usage
+
+**Expected Result**:
+- All requests processed
+- Average response time < 100ms (with cache)
+- Cache efficiently used
+
+**Verifications**:
+- REST API performance within expectations
+- Cache works efficiently
+
+---
+
+### Test Tools and Infrastructure
+
+**Recommended Tools**:
+- **pytest** for Python tests
+- **pytest-asyncio** for async tests
+- **pytest-rabbitmq** or **aio-pika** for RabbitMQ testing
+- **httpx** or **requests** for HTTP requests
+- **testcontainers** for isolating database and RabbitMQ in tests
+- **faker** for generating test data
+
+**Test Structure**:
+```
+position-manager/tests/
+├── unit/           # Unit tests for individual components
+├── integration/     # Integration tests with database and RabbitMQ
+│   ├── test_rabbitmq_events.py
+│   ├── test_rest_api.py
+│   └── test_position_updates.py
+└── e2e/            # End-to-end tests for complete scenarios
+    ├── test_websocket_flow.py
+    ├── test_order_manager_flow.py
+    └── test_portfolio_metrics.py
+```
+
+**Running Tests**:
+- Unit tests: `pytest position-manager/tests/unit/`
+- Integration tests: `pytest position-manager/tests/integration/`
+- E2E tests: `pytest position-manager/tests/e2e/`
+- All tests: `pytest position-manager/tests/`
+
+**CI/CD Integration**:
+- Automatic test execution on each commit
+- Full test suite execution before deployment
+- Code coverage reports
+
 ## Requirements *(mandatory)*
 
 ### Functional Requirements
