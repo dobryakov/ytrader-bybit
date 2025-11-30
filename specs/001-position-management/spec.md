@@ -1697,7 +1697,10 @@ Position Manager provides data for implementing risk management rules in Model S
 2. Configure Docker, docker-compose
 3. Set up basic infrastructure (logging, database, RabbitMQ)
 4. Create data models (Position, PositionSnapshot, PortfolioMetrics)
-5. **Validate WebSocket Gateway tasks**: Check and update if necessary uncompleted tasks in `specs/001-websocket-gateway/tasks.md` (Phase 7.5: Position Channel Support, tasks T125-T136) to correlate with new Position Manager service architecture
+5. **Validate WebSocket Gateway tasks**: Check and update if necessary uncompleted tasks in `specs/001-websocket-gateway/tasks.md` (Phase 7.5: Position Channel Support, tasks T125-T136) to correlate with new Position Manager service architecture. Ensure that:
+   - Tasks related to saving positions to database (T129-T135) account for the fact that Position Manager will be the main service for position management
+   - Tasks related to event routing (T133) account for the fact that events should be delivered to queue `ws-gateway.position` for consumption by Position Manager
+   - Task documentation reflects integration with Position Manager instead of direct use in Order Manager
 
 ### Stage 2: Extract Functionality from Order Manager
 
@@ -1744,10 +1747,12 @@ Position Manager provides data for implementing risk management rules in Model S
 **Source**: `specs/004-order-manager/tasks.md`
 
 **Actions**:
-1. Remove uncompleted tasks related to positions that will be implemented in Position Manager
-2. Update task descriptions that are partially related to positions to reflect use of Position Manager via API
-3. Update task counters in summary section
-4. Add notes that position management functionality has been moved to Position Manager service
+1. Remove uncompleted tasks related to positions that will be implemented in Position Manager:
+   - **Phase 4.5: Position Updates via WebSocket** (tasks T075-T084) — position update functionality from WebSocket will be implemented in Position Manager
+   - Update descriptions of tasks that are partially related to positions to reflect use of Position Manager via API
+2. Update task counters in summary section
+3. Add notes that position management functionality has been moved to Position Manager service
+4. Update dependencies between phases if they have changed
 
 ### Stage 3: Integrate with Risk Manager
 
@@ -1763,7 +1768,12 @@ Position Manager provides data for implementing risk management rules in Model S
 ### Stage 4: Integrate with Model Service
 
 **Actions**:
-1. **Validate Model Service tasks.md**: Check and update unclosed tasks in `specs/001-model-service/tasks.md` related to positions and portfolio
+1. **Validate Model Service tasks.md**: Check and update unclosed tasks in `specs/001-model-service/tasks.md` related to positions and portfolio:
+   - Remove outdated tasks that will be implemented in Position Manager (e.g., tasks related to position management, if any)
+   - Update tasks related to reading positions to reflect use of Position Manager via REST API
+   - Add new tasks for integration with Position Manager (REST API client, caching, event handling)
+   - Update dependencies between phases if they have changed
+   - Update task counters in summary section
 2. Add REST API client in Model Service for calling Position Manager
 3. Replace `PositionStateRepository._get_open_positions()` with REST API request `GET /api/v1/positions`
 4. Replace local metric calculations with REST API requests
