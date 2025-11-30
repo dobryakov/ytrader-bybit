@@ -14,7 +14,7 @@
 - **User Story 4 (P2)**: 12 tasks (T077-T077a, T078-T081, T082-T086)
 - **User Story 5 (P3)**: 10 tasks (T087-T087a, T088-T094)
 - **Setup & Foundational**: 11 tasks (T001-T011)
-- **Polish & Cross-Cutting**: 20 tasks (T095-T104a, T104-T113)
+- **Polish & Cross-Cutting**: 20 tasks (T095-T114)
 
 ## Implementation Strategy
 
@@ -464,6 +464,9 @@
 
 ### T113: Validate and update Model Service tasks.md
 - [ ] T113 Validate and update Model Service tasks.md in specs/001-model-service/tasks.md: check and update unclosed tasks related to positions and portfolio, remove outdated tasks that will be implemented in Position Manager, update tasks related to reading positions to reflect use of Position Manager via REST API, add new tasks for integration with Position Manager (REST API client, caching, event handling), update dependencies between phases if changed, update task counters in summary section
+
+### T114: Validate and update Grafana Monitoring tasks.md
+- [ ] T114 Validate and update Grafana Monitoring tasks.md in specs/001-grafana-monitoring/tasks.md: add new tasks for Stage 6 (Refactor Grafana Dashboards) per spec.md Stage 6, add tasks for updating existing dashboards (trading-performance.json, trading-system-monitoring.json, order-execution-panel.json) to use Position Manager API instead of direct SQL queries to positions table, add tasks for creating new dashboard "Portfolio Management" with panels for total exposure, portfolio PnL breakdown, position size distribution, unrealized PnL by asset, time held by position, position snapshots history, add tasks for adding Position Manager Health panel to System Health dashboard, add tasks for adding Risk Management Metrics panel, add tasks for configuring Infinity datasource or PostgreSQL views for Position Manager API integration, update task counters in summary section, update dependencies between phases if changed
 
 ---
 
