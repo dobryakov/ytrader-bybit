@@ -51,6 +51,15 @@
 - **Производительность**: оптимизированные запросы для портфолио-метрик
 - **Консистентность**: единый источник истины для портфолио-данных
 
+## Clarifications
+
+### Session 2025-01-15
+
+- Q: How should concurrent updates to the same position be handled? → A: Optimistic locking with version field (check version before update, retry on conflict)
+- Q: What is the source of current_price for portfolio calculations? → A: Use markPrice from WebSocket position events (store latest markPrice per asset)
+- Q: How to handle missing or stale markPrice? → A: Query external price API when markPrice missing/stale
+- Q: What rate limiting strategy should be used for REST API? → A: Per-API-Key rate limits with different tiers (e.g., 100 req/min for Model Service, 1000 req/min for UI)
+
 ## 2. Архитектура
 
 ### 2.1. Общая архитектура
@@ -147,6 +156,10 @@
   * `average_entry_price` — вычисленное из ордеров (приоритет 2, если нет в WebSocket событии)
 
 **Логика обновления**:
+- **Обработка конкурентных обновлений**: Использовать optimistic locking с полем `version` в таблице `positions`
+  * При обновлении позиции: прочитать текущий `version`, выполнить обновление с условием `WHERE version = <read_version>`
+  * Если обновление не затронуло строки (version изменился), повторить попытку с новым значением version (retry с экспоненциальной задержкой, максимум 3 попытки)
+  * Логировать конфликты версий для мониторинга
 - При обновлении из WebSocket:
   * Всегда обновлять `unrealized_pnl`, `realized_pnl`
   * Если в событии присутствует `avgPrice`:
@@ -173,9 +186,16 @@
 
 #### 3.2.2. Расчет портфолио-метрик
 
+**Источник текущих цен**: Использовать `markPrice` из WebSocket position событий (поле `markPrice` в payload события). При обновлении позиции из WebSocket события сохранять `markPrice` в поле `current_price` позиции для использования в расчетах портфолио-метрик.
+
+**Обработка отсутствующих или устаревших цен**:
+- Если `markPrice` отсутствует в WebSocket событии: запросить текущую цену через внешний API (Bybit REST API) и сохранить в `current_price`
+- Если `current_price` устарела (время последнего обновления > `POSITION_MANAGER_PRICE_STALENESS_THRESHOLD`): запросить актуальную цену через внешний API перед расчетом портфолио-метрик
+- Логировать все случаи использования внешнего API для получения цен (для мониторинга)
+
 **Общий exposure (в USDT)**:
 - Сумма абсолютных значений позиций, конвертированных в USDT
-- Формула: `SUM(ABS(position.size) * current_price)` для всех позиций
+- Формула: `SUM(ABS(position.size) * current_price)` для всех позиций, где `current_price` — последний `markPrice` из WebSocket события
 - Учет текущих рыночных цен для конвертации
 
 **Общий нереализованный PnL (в USDT)**:
@@ -524,17 +544,20 @@ Position Manager предоставляет данные для реализац
 
 **Обработка**:
 - Парсить данные позиции из payload
-- Извлечь поля: `unrealisedPnl`, `realisedPnl`, `avgPrice` (если присутствует), `size` (для валидации)
+- Извлечь поля: `unrealisedPnl`, `realisedPnl`, `avgPrice` (если присутствует), `markPrice` (для сохранения как `current_price`), `size` (для валидации)
 - Вызвать `update_position_from_websocket()` с полными данными
 - Обновить позицию в БД:
   * Всегда обновлять `unrealized_pnl`, `realized_pnl`
+  * Обновлять `current_price`:
+    - Если `markPrice` присутствует в событии: использовать `markPrice`
+    - Если `markPrice` отсутствует: запросить текущую цену через внешний API (Bybit REST API) и сохранить в `current_price`
   * Если `avgPrice` присутствует в событии:
     - Сравнить с сохраненным `average_entry_price`
     - Если расхождение > порога (`POSITION_MANAGER_AVG_PRICE_DIFF_THRESHOLD`), обновить `average_entry_price`
     - Логировать обновление с trace_id
   * Использовать `size` из события для валидации (не обновлять напрямую, только проверять расхождения)
 - Инвалидировать кэш портфолио-метрик
-- Пересчитать готовые features (`unrealized_pnl_pct`, `position_size_norm`) с учетом обновленного `average_entry_price`
+- Пересчитать готовые features (`unrealized_pnl_pct`, `position_size_norm`) с учетом обновленного `average_entry_price` и `current_price`
 - Опубликовать событие обновления позиции (опционально)
 
 **Обработка ошибок**:
@@ -1060,6 +1083,13 @@ POSITION_MANAGER_METRICS_CACHE_TTL=10  # секунды
 POSITION_MANAGER_USE_WS_AVG_PRICE=true  # Использовать avgPrice из WebSocket событий для обновления average_entry_price
 POSITION_MANAGER_AVG_PRICE_DIFF_THRESHOLD=0.001  # Порог расхождения для обновления average_entry_price (0.1% = 0.001)
 POSITION_MANAGER_SIZE_VALIDATION_THRESHOLD=0.0001  # Порог расхождения size для запуска валидации позиции
+POSITION_MANAGER_PRICE_STALENESS_THRESHOLD=300  # Порог устаревания цены в секундах (5 минут) - если current_price старше этого значения, запросить актуальную цену через внешний API
+
+# Rate Limiting
+POSITION_MANAGER_RATE_LIMIT_ENABLED=true  # Включить rate limiting для REST API
+POSITION_MANAGER_RATE_LIMIT_DEFAULT=100  # Лимит по умолчанию (запросов/минуту) для API Keys без явной конфигурации
+# Конфигурация лимитов для конкретных API Keys (формат: API_KEY:limit, разделенные запятыми)
+# Пример: POSITION_MANAGER_RATE_LIMIT_OVERRIDES=model-service-key:100,risk-manager-key:200,ui-key:1000
 
 # Integration
 ORDER_MANAGER_URL=http://order-manager:4600
@@ -1070,6 +1100,9 @@ WS_GATEWAY_URL=http://ws-gateway:4400
 
 **Используемые таблицы** (уже существуют в общей БД):
 - `positions` - текущие позиции
+  - **Требуется добавить поле `version`** (INTEGER, DEFAULT 0) для optimistic locking при конкурентных обновлениях
+  - При каждом обновлении позиции поле `version` должно инкрементироваться
+  - **Требуется добавить поле `current_price`** (DECIMAL(20, 8)) для хранения последнего `markPrice` из WebSocket событий (используется в расчетах портфолио-метрик)
 - `position_snapshots` - снимки позиций
 
 **Новая таблица** (опционально, для кэширования метрик):
@@ -1166,13 +1199,25 @@ CREATE INDEX idx_portfolio_metrics_expires_at ON portfolio_metrics_cache(expires
 - Валидация API Key на каждом запросе
 - Логирование всех запросов с trace IDs
 
-### 10.2. Валидация данных
+### 10.2. Rate Limiting
+
+- **Per-API-Key rate limits с разными уровнями**:
+  - Разные API Keys могут иметь разные лимиты в зависимости от типа потребителя
+  - Примеры уровней:
+    * Model Service: 100 запросов/минуту (высокая частота генерации сигналов)
+    * Risk Manager: 200 запросов/минуту (проверки перед созданием ордеров)
+    * UI / Monitoring: 1000 запросов/минуту (более редкие обновления дашбордов)
+  - Конфигурация лимитов через переменные окружения или конфигурационный файл
+  - При превышении лимита возвращать HTTP 429 Too Many Requests с заголовком `Retry-After`
+  - Логировать все случаи превышения rate limit для мониторинга
+
+### 10.3. Валидация данных
 
 - Валидация всех входных данных (Pydantic models)
 - Проверка типов и диапазонов значений
 - Санитизация строковых параметров
 
-### 10.3. Обработка ошибок
+### 10.4. Обработка ошибок
 
 - Graceful degradation при недоступности зависимостей
 - Retry логика для внешних вызовов
