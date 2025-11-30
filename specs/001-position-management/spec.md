@@ -1446,6 +1446,40 @@ Service health check.
 
 ## Event-Driven Integration
 
+### Data Flow Changes
+
+**Before Migration**:
+- Order Manager directly manages positions (updates database, no events)
+- WebSocket Gateway publishes position events to `ws-gateway.position`, but Order Manager may not consume them consistently
+- Model Service reads positions directly from database
+- Risk Manager does not have portfolio-level exposure data
+- No centralized position update events
+
+**After Migration**:
+- **New Queues Created**:
+  - `position-manager.position_updated` — Position update events (published by Position Manager)
+  - `position-manager.portfolio_updated` — Portfolio metrics update events (published by Position Manager)
+  - `position-manager.position_snapshot_created` — Position snapshot creation events (published by Position Manager)
+  - `order-manager.position_updated` (optional) — New queue for Order Manager position update events (if created instead of using `order-manager.order_executed`)
+
+- **Existing Queues Used**:
+  - `ws-gateway.position` — WebSocket Gateway continues publishing position events, Position Manager consumes them
+  - `order-manager.order_executed` — Order Manager publishes order execution events, Position Manager consumes them (or new queue `order-manager.position_updated`)
+
+- **Data Flow Changes**:
+  - **Order Manager → Position Manager**: Order Manager publishes order execution events to RabbitMQ, Position Manager consumes and updates positions
+  - **WebSocket Gateway → Position Manager**: WebSocket Gateway publishes position events to `ws-gateway.position`, Position Manager consumes and updates positions
+  - **Position Manager → Model Service**: Position Manager publishes position update events to `position-manager.position_updated`, Model Service subscribes for cache invalidation (optional) or uses REST API
+  - **Position Manager → Risk Manager**: Position Manager publishes portfolio update events to `position-manager.portfolio_updated`, Risk Manager subscribes for portfolio-level limit checking (optional) or uses REST API
+  - **Position Manager → Model Service (Training)**: Position Manager publishes snapshot events to `position-manager.position_snapshot_created`, Model Service subscribes for historical reconstruction during model training
+  - **Model Service → Position Manager**: Model Service queries positions via REST API (`GET /api/v1/positions`, `GET /api/v1/portfolio`)
+  - **Risk Manager → Position Manager**: Risk Manager queries portfolio exposure via REST API (`GET /api/v1/portfolio/exposure`)
+
+- **Removed Direct Access**:
+  - Model Service no longer reads positions directly from database
+  - Risk Manager no longer needs to calculate `total_exposure` independently
+  - Order Manager no longer manages positions directly (removed `PositionManager` class)
+
 ### Consuming Events from RabbitMQ
 
 #### Order Manager Events
