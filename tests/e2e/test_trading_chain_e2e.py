@@ -19,7 +19,7 @@ import asyncio
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 from typing import Dict, Any, Optional, List
 from uuid import uuid4
@@ -333,6 +333,8 @@ class TradingChainE2ETest:
         self,
         asset: str,
         timeout_seconds: int = 60,
+        check_size_change: bool = True,
+        check_closed: bool = False,
     ) -> Optional[Position]:
         """
         Wait for position update in database.
@@ -340,6 +342,8 @@ class TradingChainE2ETest:
         Args:
             asset: Trading pair
             timeout_seconds: Maximum seconds to wait
+            check_size_change: Whether to check for size changes (default: True)
+            check_closed: Whether to check if position is closed (size = 0) (default: False)
 
         Returns:
             Position object if found/updated, None otherwise
@@ -355,7 +359,7 @@ class TradingChainE2ETest:
                 SELECT 
                     id, asset, size, average_entry_price, unrealized_pnl,
                     realized_pnl, mode, long_size, short_size, long_avg_price,
-                    short_avg_price, last_updated, last_snapshot_at
+                    short_avg_price, last_updated, last_snapshot_at, created_at, closed_at
                 FROM positions
                 WHERE asset = $1 AND mode = 'one-way'
             """
@@ -373,8 +377,8 @@ class TradingChainE2ETest:
                     SELECT 
                         id, asset, size, average_entry_price, unrealized_pnl,
                         realized_pnl, mode, long_size, short_size, long_avg_price,
-                        short_avg_price, last_updated, last_snapshot_at
-                    FROM positions
+                        short_avg_price, last_updated, last_snapshot_at, created_at, closed_at
+                FROM positions
                     WHERE asset = $1 AND mode = 'one-way'
                 """
                 row = await pool.fetchrow(query, asset.upper())
@@ -383,12 +387,26 @@ class TradingChainE2ETest:
                     position = Position.from_dict(dict(row))
                     # Check if position was updated
                     if initial_timestamp is None or (position.last_updated and position.last_updated > initial_timestamp):
-                        print(f"✅ Position updated: {asset} (size: {position.size})")
+                        print(f"✅ Position updated: {asset} (size: {position.size}, unrealized_pnl: {position.unrealized_pnl}, realized_pnl: {position.realized_pnl})")
+                        # Check if position is closed (if requested)
+                        if check_closed and position.size == 0:
+                            print(f"✅ Position closed: {asset} (realized_pnl: {position.realized_pnl})")
                         return position
                     # Also check if size changed
-                    elif initial_position is not None and position.size != initial_position.size:
+                    elif check_size_change and initial_position is not None and position.size != initial_position.size:
                         print(f"✅ Position size changed: {asset} (old: {initial_position.size}, new: {position.size})")
+                        # Check if position is closed (if requested)
+                        if check_closed and position.size == 0:
+                            print(f"✅ Position closed: {asset} (realized_pnl: {position.realized_pnl})")
                         return position
+                    # Check if unrealized_pnl or realized_pnl changed (position value changes over time)
+                    elif initial_position is not None:
+                        if position.unrealized_pnl != initial_position.unrealized_pnl:
+                            print(f"✅ Position unrealized_pnl changed: {asset} (old: {initial_position.unrealized_pnl}, new: {position.unrealized_pnl})")
+                            return position
+                        if position.realized_pnl != initial_position.realized_pnl:
+                            print(f"✅ Position realized_pnl changed: {asset} (old: {initial_position.realized_pnl}, new: {position.realized_pnl})")
+                            return position
 
                 await asyncio.sleep(2)
             except Exception as e:
@@ -425,9 +443,10 @@ class TradingChainE2ETest:
         self,
         signal_id: str,
         timeout_seconds: int = 60,
-    ) -> bool:
+        check_performance: bool = False,
+    ) -> Optional[Dict[str, Any]]:
         """
-        Check if execution event was published to RabbitMQ.
+        Check if execution event was published to RabbitMQ and persisted to database.
 
         Note: This checks via database (execution_events table) as a proxy.
         In a full implementation, you would consume from order-manager.order_events queue.
@@ -435,9 +454,10 @@ class TradingChainE2ETest:
         Args:
             signal_id: Signal UUID
             timeout_seconds: Maximum seconds to wait
+            check_performance: Whether to return performance metrics (realized_pnl, return_percent)
 
         Returns:
-            True if execution event exists in database
+            Execution event data dict if found, None otherwise
         """
         pool = await DatabaseConnection.get_pool()
         start_time = datetime.now(timezone.utc)
@@ -445,17 +465,33 @@ class TradingChainE2ETest:
         while (datetime.now(timezone.utc) - start_time).total_seconds() < timeout_seconds:
             try:
                 # Check if execution event exists in database
-                query = """
-                    SELECT event_id, signal_id, asset, side, execution_price, execution_quantity
-                    FROM execution_events
-                    WHERE signal_id = $1
-                    LIMIT 1
-                """
+                if check_performance:
+                    query = """
+                        SELECT event_id, signal_id, asset, side, execution_price, execution_quantity,
+                               execution_fees, executed_at, performance
+                        FROM execution_events
+                        WHERE signal_id = $1
+                        LIMIT 1
+                    """
+                else:
+                    query = """
+                        SELECT event_id, signal_id, asset, side, execution_price, execution_quantity
+                        FROM execution_events
+                        WHERE signal_id = $1
+                        LIMIT 1
+                    """
                 row = await pool.fetchrow(query, signal_id)
 
                 if row:
+                    event_data = dict(row)
                     print(f"✅ Execution event found for signal: {signal_id}")
-                    return True
+                    if check_performance and event_data.get("performance"):
+                        perf = event_data["performance"]
+                        realized_pnl = perf.get("realized_pnl") if isinstance(perf, dict) else None
+                        return_pct = perf.get("return_percent") if isinstance(perf, dict) else None
+                        if realized_pnl is not None:
+                            print(f"   📊 Performance: realized_pnl={realized_pnl}, return_percent={return_pct}")
+                    return event_data
 
                 await asyncio.sleep(2)
             except Exception as e:
@@ -465,7 +501,150 @@ class TradingChainE2ETest:
                 await asyncio.sleep(2)
 
         print(f"⏳ Execution event not found within {timeout_seconds} seconds")
-        return False
+        return None
+
+    async def check_training_orchestrator_buffer(
+        self,
+        expected_min_events: int = 1,
+        timeout_seconds: int = 30,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Check if execution events are buffered in training orchestrator.
+
+        Args:
+            expected_min_events: Minimum number of events expected in buffer
+            timeout_seconds: Maximum seconds to wait
+
+        Returns:
+            Training orchestrator status dict if events found, None otherwise
+        """
+        import httpx
+        start_time = datetime.now(timezone.utc)
+        
+        # Get API key from environment
+        api_key = os.getenv("MODEL_SERVICE_API_KEY", "")
+        model_service_host = os.getenv("MODEL_SERVICE_HOST", "model-service")
+        model_service_port = int(os.getenv("MODEL_SERVICE_PORT", "4700"))
+        
+        headers = {}
+        if api_key:
+            headers["X-API-Key"] = api_key
+
+        while (datetime.now(timezone.utc) - start_time).total_seconds() < timeout_seconds:
+            try:
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    response = await client.get(
+                        f"http://{model_service_host}:{model_service_port}/api/v1/training/status",
+                        headers=headers,
+                    )
+                    if response.status_code == 200:
+                        status = response.json()
+                        buffered_count = status.get("buffered_events_count", 0)
+                        
+                        if buffered_count >= expected_min_events:
+                            print(f"✅ Training orchestrator has {buffered_count} execution event(s) in buffer")
+                            return status
+                        else:
+                            print(f"⏳ Training orchestrator buffer: {buffered_count} events (waiting for {expected_min_events})")
+                    else:
+                        print(f"⚠️  Training status API returned {response.status_code}")
+            except Exception as e:
+                print(f"⚠️  Error checking training orchestrator: {e}")
+            
+            await asyncio.sleep(2)
+        
+        print(f"⏳ Training orchestrator buffer check timeout ({timeout_seconds}s)")
+        return None
+
+    async def monitor_position_unrealized_pnl_over_time(
+        self,
+        asset: str,
+        duration_seconds: int = 30,
+        check_interval_seconds: int = 5,
+        min_changes: int = 1,
+    ) -> Dict[str, Any]:
+        """
+        Monitor position unrealized_pnl changes over time.
+
+        Args:
+            asset: Trading pair
+            duration_seconds: Total duration to monitor
+            check_interval_seconds: Interval between checks
+            min_changes: Minimum number of changes expected
+
+        Returns:
+            Dictionary with monitoring results
+        """
+        pool = await DatabaseConnection.get_pool()
+        start_time = datetime.now(timezone.utc)
+        end_time = start_time + timedelta(seconds=duration_seconds)
+        
+        pnl_history: List[Dict[str, Any]] = []
+        last_pnl: Optional[Decimal] = None
+        change_count = 0
+
+        print(f"\n📊 Monitoring unrealized_pnl for {asset} over {duration_seconds} seconds...")
+
+        while datetime.now(timezone.utc) < end_time:
+            try:
+                query = """
+                    SELECT 
+                        id, asset, size, average_entry_price, unrealized_pnl,
+                        realized_pnl, mode, last_updated, current_price
+                    FROM positions
+                    WHERE asset = $1 AND mode = 'one-way'
+                """
+                row = await pool.fetchrow(query, asset.upper())
+
+                if row:
+                    position = Position.from_dict(dict(row))
+                    current_pnl = position.unrealized_pnl
+                    current_time = datetime.now(timezone.utc)
+                    
+                    # Check if PnL changed
+                    if last_pnl is not None and current_pnl != last_pnl:
+                        change_count += 1
+                        pnl_change = float(current_pnl - last_pnl)
+                        print(f"  📈 PnL changed: {float(last_pnl):.6f} → {float(current_pnl):.6f} (Δ {pnl_change:+.6f})")
+                    
+                    pnl_history.append({
+                        "timestamp": current_time,
+                        "unrealized_pnl": float(current_pnl) if current_pnl else None,
+                        "current_price": float(position.current_price) if position.current_price else None,
+                        "size": float(position.size),
+                    })
+                    
+                    last_pnl = current_pnl
+                else:
+                    # Position might not exist yet or was closed
+                    pnl_history.append({
+                        "timestamp": datetime.now(timezone.utc),
+                        "unrealized_pnl": None,
+                        "current_price": None,
+                        "size": None,
+                    })
+
+            except Exception as e:
+                print(f"⚠️  Error monitoring position: {e}")
+            
+            await asyncio.sleep(check_interval_seconds)
+
+        result = {
+            "monitored_duration_seconds": duration_seconds,
+            "check_interval_seconds": check_interval_seconds,
+            "total_checks": len(pnl_history),
+            "pnl_changes_detected": change_count,
+            "min_changes_expected": min_changes,
+            "pnl_history": pnl_history,
+            "success": change_count >= min_changes,
+        }
+
+        if result["success"]:
+            print(f"✅ Detected {change_count} unrealized_pnl change(s) over {duration_seconds} seconds")
+        else:
+            print(f"⚠️  Only detected {change_count} unrealized_pnl change(s), expected at least {min_changes}")
+
+        return result
 
     async def get_current_price(self, asset: str) -> Decimal:
         """
@@ -584,13 +763,38 @@ class TradingChainE2ETest:
                             print(f"\n⏳ Step 4: Waiting for position update...")
                             position = await self.wait_for_position_update(asset, timeout_seconds=60)
                             results["position_updated"] = position is not None
+                            if position:
+                                results["position_size"] = float(position.size)
+                                results["position_unrealized_pnl"] = float(position.unrealized_pnl) if position.unrealized_pnl else None
+                                results["position_realized_pnl"] = float(position.realized_pnl) if position.realized_pnl else None
 
                             # Step 5: Check execution event
                             if position:
                                 print(f"\n⏳ Step 5: Checking execution event...")
-                                results["execution_event_published"] = await self.check_execution_event_published(
-                                    signal_id, timeout_seconds=30
+                                execution_event = await self.check_execution_event_published(
+                                    signal_id, timeout_seconds=30, check_performance=True
                                 )
+                                results["execution_event_published"] = execution_event is not None
+                                if execution_event:
+                                    results["execution_event"] = execution_event
+                                
+                                # Step 6: Check if execution event is buffered in training orchestrator
+                                print(f"\n⏳ Step 6: Checking training orchestrator buffer...")
+                                training_status = await self.check_training_orchestrator_buffer(
+                                    expected_min_events=1, timeout_seconds=30
+                                )
+                                results["training_orchestrator_has_events"] = training_status is not None
+                                if training_status:
+                                    results["training_buffer_count"] = training_status.get("buffered_events_count", 0)
+                                
+                                # Step 7: Monitor unrealized_pnl changes over time (if position is open)
+                                if position.size != 0:
+                                    print(f"\n⏳ Step 7: Monitoring unrealized_pnl changes over time...")
+                                    pnl_monitoring = await self.monitor_position_unrealized_pnl_over_time(
+                                        asset, duration_seconds=20, check_interval_seconds=5, min_changes=0
+                                    )
+                                    results["pnl_monitoring"] = pnl_monitoring
+                                    results["pnl_changes_detected"] = pnl_monitoring.get("pnl_changes_detected", 0)
                     else:
                         print(f"\nℹ️  Dry-run mode: Skipping execution and position checks")
                         results["order_executed"] = None  # N/A in dry-run
@@ -690,8 +894,42 @@ class TradingChainE2ETest:
                     sell_results["order_executed"] = execution_result["executed"]
 
                     if execution_result["executed"]:
-                        position = await self.wait_for_position_update(asset, timeout_seconds=60)
+                        # Wait for position update - check if position is closed (size = 0)
+                        print(f"\n⏳ Step 4: Waiting for position update (checking for closure)...")
+                        position = await self.wait_for_position_update(
+                            asset, 
+                            timeout_seconds=60,
+                            check_closed=True  # Check if position is closed
+                        )
                         sell_results["position_updated"] = position is not None
+                        sell_results["position_closed"] = position is not None and position.size == 0
+                        if position:
+                            sell_results["final_realized_pnl"] = float(position.realized_pnl) if position.realized_pnl else None
+                            sell_results["final_unrealized_pnl"] = float(position.unrealized_pnl) if position.unrealized_pnl else None
+
+                        # Check execution event with performance metrics
+                        if sell_results["position_updated"]:
+                            print(f"\n⏳ Step 5: Checking execution event with performance metrics...")
+                            execution_event = await self.check_execution_event_published(
+                                sell_signal_id, 
+                                timeout_seconds=30,
+                                check_performance=True
+                            )
+                            sell_results["execution_event_published"] = execution_event is not None
+                            if execution_event and execution_event.get("performance"):
+                                perf = execution_event["performance"]
+                                if isinstance(perf, dict):
+                                    sell_results["execution_realized_pnl"] = perf.get("realized_pnl")
+                                    sell_results["execution_return_percent"] = perf.get("return_percent")
+                            
+                            # Step 6: Check if execution event is buffered in training orchestrator
+                            print(f"\n⏳ Step 6: Checking training orchestrator buffer...")
+                            training_status = await self.check_training_orchestrator_buffer(
+                                expected_min_events=1, timeout_seconds=30
+                            )
+                            sell_results["training_orchestrator_has_events"] = training_status is not None
+                            if training_status:
+                                sell_results["training_buffer_count"] = training_status.get("buffered_events_count", 0)
 
             results["sell"] = sell_results
 
@@ -734,6 +972,27 @@ class TradingChainE2ETest:
                 print(f"    - Status: {order.get('status')}")
                 print(f"    - Type: {order.get('order_type')}")
                 print(f"    - Quantity: {order.get('quantity')}")
+            if sell.get("order_executed"):
+                print(f"  Order executed: {'✅' if sell.get('order_executed') else '⏳'}")
+            if sell.get("position_updated"):
+                print(f"  Position updated: {'✅' if sell.get('position_updated') else '⏳'}")
+            if sell.get("position_closed"):
+                print(f"  Position closed: {'✅' if sell.get('position_closed') else '❌'}")
+                if sell.get("final_realized_pnl") is not None:
+                    print(f"    - Final realized P&L: {sell.get('final_realized_pnl')} USDT")
+            if sell.get("execution_event_published"):
+                print(f"  Execution event published: {'✅' if sell.get('execution_event_published') else '⏳'}")
+                if sell.get("execution_realized_pnl") is not None:
+                    print(f"    - Execution realized P&L: {sell.get('execution_realized_pnl')}")
+                    print(f"    - Return percent: {sell.get('execution_return_percent')}%")
+            if sell.get("training_orchestrator_has_events") is not None:
+                print(f"  Training orchestrator has events: {'✅' if sell.get('training_orchestrator_has_events') else '❌'}")
+                if sell.get("training_buffer_count") is not None:
+                    print(f"    - Buffer count: {sell.get('training_buffer_count')}")
+            if sell.get("training_orchestrator_has_events") is not None:
+                print(f"  Training orchestrator has events: {'✅' if sell.get('training_orchestrator_has_events') else '❌'}")
+                if sell.get("training_buffer_count") is not None:
+                    print(f"    - Buffer count: {sell.get('training_buffer_count')}")
         else:
             # Single order results
             print(f"\nAsset: {results.get('asset')}")
@@ -753,6 +1012,15 @@ class TradingChainE2ETest:
                 print(f"Position updated: {'✅' if results.get('position_updated') else '⏳'}")
             if results.get("execution_event_published") is not None:
                 print(f"Execution event published: {'✅' if results.get('execution_event_published') else '⏳'}")
+            if results.get("training_orchestrator_has_events") is not None:
+                print(f"Training orchestrator has events: {'✅' if results.get('training_orchestrator_has_events') else '❌'}")
+                if results.get("training_buffer_count") is not None:
+                    print(f"  - Buffer count: {results['training_buffer_count']}")
+            if results.get("pnl_monitoring"):
+                pnl_mon = results["pnl_monitoring"]
+                print(f"PnL monitoring: {'✅' if pnl_mon.get('success') else '⚠️'}")
+                print(f"  - Changes detected: {pnl_mon.get('pnl_changes_detected', 0)}")
+                print(f"  - Total checks: {pnl_mon.get('total_checks', 0)}")
 
         if results.get("errors"):
             print("\n❌ ERRORS:")
@@ -803,12 +1071,25 @@ async def test_buy_order_e2e(e2e_test: TradingChainE2ETest):
     assert results["order_created"], "Order should be created"
     assert results["order"] is not None, "Order object should exist"
     assert results["order"]["status"] != "rejected", "Order should not be rejected"
+    
+    # Check execution event and training orchestrator
+    if results.get("execution_event_published"):
+        assert results.get("training_orchestrator_has_events", False), "Execution event should be buffered in training orchestrator"
+        if results.get("training_buffer_count") is not None:
+            assert results["training_buffer_count"] >= 1, "Training orchestrator should have at least 1 event in buffer"
+    
+    # Check PnL monitoring (if position is open)
+    if results.get("pnl_monitoring"):
+        pnl_monitoring = results["pnl_monitoring"]
+        assert pnl_monitoring.get("total_checks", 0) > 0, "PnL monitoring should have performed checks"
+        # Note: We don't assert on pnl_changes_detected because market might be stable
+    
     assert len(results["errors"]) == 0, f"Should have no errors: {results['errors']}"
 
 
 @pytest.mark.asyncio
 async def test_buy_sell_cycle_e2e(e2e_test: TradingChainE2ETest):
-    """Test complete buy-sell cycle end-to-end."""
+    """Test complete buy-sell cycle end-to-end, including position closure and profit/loss tracking."""
     results = await e2e_test.run_buy_sell_cycle_test(
         asset="ETHUSDT",
         buy_amount=Decimal("50.0"),
@@ -821,6 +1102,32 @@ async def test_buy_sell_cycle_e2e(e2e_test: TradingChainE2ETest):
     assert results["buy"]["order_created"], "BUY order should be created"
     assert results["sell"]["signal_sent"], "SELL signal should be sent"
     assert results["sell"]["order_created"], "SELL order should be created"
+    
+    # Check position closure after sell
+    if results["sell"].get("order_executed"):
+        assert results["sell"].get("position_updated"), "Position should be updated after SELL execution"
+        assert results["sell"].get("position_closed", False), "Position should be closed (size = 0) after SELL"
+        assert results["sell"].get("execution_event_published"), "Execution event should be published after SELL"
+        
+        # Check that realized_pnl is calculated (may be 0 or positive/negative)
+        final_realized_pnl = results["sell"].get("final_realized_pnl")
+        assert final_realized_pnl is not None, "realized_pnl should be calculated after position closure"
+        print(f"\n💰 Final realized P&L: {final_realized_pnl} USDT")
+        
+        # Check execution event performance metrics
+        execution_realized_pnl = results["sell"].get("execution_realized_pnl")
+        if execution_realized_pnl is not None:
+            print(f"📊 Execution event realized_pnl: {execution_realized_pnl}")
+            # Verify that execution event contains profit/loss information
+            assert isinstance(execution_realized_pnl, (int, float)), "execution_realized_pnl should be numeric"
+        
+        # Check training orchestrator
+        if results["sell"].get("execution_event_published"):
+            assert results["sell"].get("training_orchestrator_has_events", False), "Execution event should be buffered in training orchestrator"
+            if results["sell"].get("training_buffer_count") is not None:
+                print(f"📚 Training orchestrator buffer: {results['sell']['training_buffer_count']} event(s)")
+                assert results["sell"]["training_buffer_count"] >= 1, "Training orchestrator should have at least 1 event in buffer"
+    
     assert len(results["errors"]) == 0, f"Should have no errors: {results['errors']}"
 
 
