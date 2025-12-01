@@ -201,6 +201,10 @@
 - [X] T091 [P] Add metrics for signal generation skipping in model-service/src/services/intelligent_signal_generator.py (track count of signals skipped due to open orders, log metrics with asset, strategy_id, reason, expose via monitoring endpoint for observability)
 - [X] T092 [P] Update documentation in model-service/README.md to describe open orders check behavior and configuration options (explain how signal generation prevents duplicate orders, document configuration parameters SIGNAL_GENERATION_SKIP_IF_OPEN_ORDER and SIGNAL_GENERATION_CHECK_OPPOSITE_ORDERS_ONLY, provide examples of behavior)
 - [X] T093 [P] [Grafana] Standardize health check endpoint response format for Grafana monitoring: Update HealthResponse in model-service/src/api/health.py to include flat fields database_connected (boolean from checks.database.connected) and queue_connected (boolean from checks.message_queue.connected) in addition to existing checks object. This enables Grafana System Health dashboard panel to extract dependency status directly without nested JSON parsing. Alternatively, update health endpoint to return both formats (flat fields for backward compatibility and checks object for detailed status). Required for Grafana dashboard User Story 5 compliance.
+- [ ] T094 [P] [Optimization] Implement Position Manager event consumer for cache invalidation in model-service/src/consumers/position_update_consumer.py (subscribe to RabbitMQ queue position-manager.position_updated, parse position update events, invalidate local cache for affected assets, handle event parsing errors gracefully, log cache invalidation events with structured logging including asset, trace_id)
+- [ ] T095 [P] [Optimization] Implement in-memory cache for position data in model-service/src/services/position_cache.py (cache position data from Position Manager REST API with TTL, support cache invalidation by asset, provide get/set/invalidate methods, handle cache expiration, support configurable cache size limits, thread-safe operations for concurrent access)
+- [ ] T096 [Optimization] Integrate position cache with PositionManagerClient in model-service/src/services/position_manager_client.py (check cache before making REST API request, update cache after successful API response, invalidate cache on position update events, fallback to REST API if cache miss or expired, log cache hits/misses for monitoring)
+- [ ] T097 [Optimization] Add configuration for position cache in model-service/src/config/settings.py (POSITION_CACHE_ENABLED=true/false to enable/disable caching, POSITION_CACHE_TTL_SECONDS=30 for cache time-to-live, POSITION_CACHE_MAX_SIZE=1000 for maximum cached positions, default: caching enabled with 30s TTL for optimization while REST API remains primary source of truth)
 
 ---
 
@@ -274,6 +278,13 @@
 - **T030c** (balance calculator): Depends on T030b (account_balance_repo exists), must complete before T030d and T052b (signal generators need balance calculator to adapt amounts)
 - **T030d** (warm-up balance integration): Depends on T030c (balance_calculator exists) and T023 (warmup_signal_generator exists). Extends T023 to add balance-aware signal amount calculation
 - **T052b** (intelligent balance integration): Depends on T030c (balance_calculator exists) and T052 (intelligent_signal_generator exists). Extends T052 to add balance-aware signal amount calculation
+
+### Task Dependencies for Position Cache Optimization (T094-T097)
+
+- **T095** (position cache service): Can be done independently, must complete before T096 (PositionManagerClient needs cache service to use)
+- **T097** (cache configuration): Can be done independently, must complete before T095 and T096 (cache service needs configuration values)
+- **T096** (cache integration with client): Depends on T095 (position_cache exists) and T097 (configuration exists), must complete after T052c and T052d (risk management rules use PositionManagerClient)
+- **T094** (position update consumer): Depends on T095 (position_cache exists for invalidation), must complete after T096 (cache integration is working). Consumer invalidates cache when position updates are received from Position Manager via RabbitMQ events (`position-manager.position_updated` queue)
 
 ---
 
@@ -381,14 +392,14 @@ With multiple developers:
 
 ## Task Summary
 
-- **Total Tasks**: 106 tasks (added T052c, T052d, T052e for risk management rules)
+- **Total Tasks**: 110 tasks (added T052c, T052d, T052e for risk management rules, T094-T097 for position cache optimization)
 - **Phase 1 (Setup)**: 9 tasks
 - **Phase 2 (Foundational)**: 12 tasks
 - **Phase 3 (User Story 1 - MVP)**: 15 tasks (added T030a, T030b, T030c, T030d)
 - **Phase 4 (User Story 2)**: 19 tasks (added T037a, T039a)
 - **Phase 5 (User Story 3)**: 14 tasks (added T052a, T052b, T052c, T052d, T052e for risk management)
 - **Phase 6 (User Story 4)**: 17 tasks
-- **Phase 7 (Polish)**: 20 tasks (added T091, T092, T093)
+- **Phase 7 (Polish)**: 24 tasks (added T091, T092, T093, T094-T097 for position cache optimization)
 
 ### Task Count per User Story
 
