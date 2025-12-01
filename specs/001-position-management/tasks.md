@@ -131,10 +131,10 @@
 - [X] T017 [P] [US1] Create in-memory cache for portfolio metrics in src/services/portfolio_manager.py with TTL support (POSITION_MANAGER_METRICS_CACHE_TTL), cache invalidation on position updates, and cache key management
 
 ### T018: Extract positions API routes from Order Manager
-- [ ] T018 [US1] Extract REST API endpoints from order-manager/src/api/routes/positions.py: copy GET /api/v1/positions, GET /api/v1/positions/{asset}, POST /api/v1/positions/{asset}/validate, POST /api/v1/positions/{asset}/snapshot, GET /api/v1/positions/{asset}/snapshots to src/api/routes/positions.py, adapt imports and service references to use PositionManager from new service
+- [X] T018 [US1] Extract REST API endpoints from order-manager/src/api/routes/positions.py: copy GET /api/v1/positions, GET /api/v1/positions/{asset}, POST /api/v1/positions/{asset}/validate, POST /api/v1/positions/{asset}/snapshot, GET /api/v1/positions/{asset}/snapshots to src/api/routes/positions.py, adapt imports and service references to use PositionManager from new service
 
 ### T019: Adapt extracted API routes to new structure
-- [ ] T019 [US1] Adapt extracted API routes in src/api/routes/positions.py: update imports to use new PositionManager service, update authentication middleware references, update response serialization to include calculated ML features, ensure error handling uses new logging configuration
+- [X] T019 [US1] Adapt extracted API routes in src/api/routes/positions.py: update imports to use new PositionManager service, update authentication middleware references, update response serialization to include calculated ML features, ensure error handling uses new logging configuration
 
 ### T020: Create portfolio API route
 - [X] T020 [P] [US1] Create GET /api/v1/portfolio endpoint in src/api/routes/portfolio.py with include_positions and asset query parameters, returning PortfolioMetrics with cached metrics
@@ -318,7 +318,7 @@
 - [ ] T072 [US3] Document risk management integration in README.md: API endpoint usage, response format, error handling, performance characteristics, example integration code
 
 ### T073: Add portfolio limit indicators (optional)
-- [ ] T073 [US3] Add optional portfolio limit indicators in src/services/portfolio_manager.py: include limit_exceeded flag in response when portfolio metrics exceed configured thresholds (future enhancement)
+- [X] T073 [US3] Add optional portfolio limit indicators in src/services/portfolio_manager.py: include limit_exceeded flag in response when portfolio metrics exceed configured thresholds (future enhancement)
 
 ### T074: Create unit tests for portfolio risk management
 - [X] T074 [US3] Create unit tests in tests/unit/test_portfolio_manager.py: test_portfolio_exposure_calculation, test_portfolio_metrics_for_risk_management, test_cache_performance

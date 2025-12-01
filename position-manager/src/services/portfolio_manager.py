@@ -136,7 +136,7 @@ class PortfolioManager:
         if not positions:
             # Empty portfolio handling
             zero = Decimal("0")
-            return PortfolioMetrics(
+            metrics = PortfolioMetrics(
                 total_exposure_usdt=zero,
                 total_unrealized_pnl_usdt=zero,
                 total_realized_pnl_usdt=zero,
@@ -148,6 +148,9 @@ class PortfolioManager:
                 by_asset={},
                 calculated_at=datetime.utcnow(),
             )
+            # No positions -> cannot exceed limits
+            metrics.limit_exceeded = False
+            return metrics
 
         total_exposure = Decimal("0")
         total_unrealized = Decimal("0")
@@ -215,6 +218,15 @@ class PortfolioManager:
             by_asset=asset_breakdown,
             calculated_at=datetime.utcnow(),
         )
+
+        # --- Optional portfolio limit indicators (T073) --------------------
+        limit_exceeded = False
+        max_exposure = settings.position_manager_portfolio_max_exposure_usdt
+        if max_exposure is not None and max_exposure > 0:
+            if metrics.total_exposure_usdt > Decimal(str(max_exposure)):
+                limit_exceeded = True
+
+        metrics.limit_exceeded = limit_exceeded
 
         # Optionally attach positions list in API layer; core metrics stay lean.
         if include_positions:

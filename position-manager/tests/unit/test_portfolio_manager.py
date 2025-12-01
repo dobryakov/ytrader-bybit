@@ -4,6 +4,7 @@ from typing import List
 
 import pytest
 
+from src.config import settings
 from src.models import Position
 from src.services.portfolio_manager import PortfolioManager
 
@@ -98,8 +99,6 @@ async def test_portfolio_metrics_cache_hits_and_misses(monkeypatch) -> None:
     manager = PortfolioManager(position_manager=dummy_pm)
 
     # Force a small TTL to make test deterministic
-    from src.config import settings
-
     original_ttl = settings.settings.position_manager_metrics_cache_ttl
     settings.settings.position_manager_metrics_cache_ttl = 60
 
@@ -121,4 +120,19 @@ async def test_portfolio_metrics_cache_hits_and_misses(monkeypatch) -> None:
         settings.settings.position_manager_metrics_cache_ttl = original_ttl
 
 
+def test_portfolio_limit_exceeded_flag() -> None:
+    """T073: limit_exceeded should reflect configured exposure soft limit."""
+    positions = [make_position("BTCUSDT", "1.0", "100.0")]  # exposure 100
+    dummy_pm = DummyPositionManager(positions)
+    manager = PortfolioManager(position_manager=dummy_pm)
+
+    original_limit = settings.settings.position_manager_portfolio_max_exposure_usdt
+    settings.settings.position_manager_portfolio_max_exposure_usdt = 50.0
+
+    try:
+        metrics = manager.calculate_metrics_from_positions(positions)
+        assert metrics.total_exposure_usdt == Decimal("100")
+        assert metrics.limit_exceeded is True
+    finally:
+        settings.settings.position_manager_portfolio_max_exposure_usdt = original_limit
 

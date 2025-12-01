@@ -67,6 +67,10 @@ class PortfolioMetrics(BaseModel):
         default_factory=datetime.utcnow,
         description="Timestamp when metrics were calculated",
     )
+    limit_exceeded: bool = Field(
+        default=False,
+        description="Indicates whether configured portfolio limits (e.g. max exposure) have been exceeded.",
+    )
 
 
 class PortfolioExposure(BaseModel):

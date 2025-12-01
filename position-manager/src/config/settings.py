@@ -59,6 +59,13 @@ class Settings(BaseSettings):
     position_manager_rate_limit_default: int = Field(default=100, alias="POSITION_MANAGER_RATE_LIMIT_DEFAULT")
     position_manager_rate_limit_overrides: Optional[str] = Field(default=None, alias="POSITION_MANAGER_RATE_LIMIT_OVERRIDES")
 
+    # Portfolio limit indicators (optional, used for T073)
+    position_manager_portfolio_max_exposure_usdt: Optional[float] = Field(
+        default=None,
+        alias="POSITION_MANAGER_PORTFOLIO_MAX_EXPOSURE_USDT",
+        description="Optional soft limit for total_exposure_usdt; when exceeded, limit_exceeded flag is set in portfolio metrics.",
+    )
+
     @field_validator("position_manager_log_level")
     @classmethod
     def validate_log_level(cls, v: str) -> str:
