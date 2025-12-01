@@ -175,6 +175,12 @@
 ### T032: Add database indexes migration note
 - [ ] T032 [US1] Document required database indexes in README.md: idx_positions_asset, idx_positions_mode, idx_positions_asset_mode, idx_positions_current_price, idx_positions_version (migration handled by ws-gateway service)
 
+### T104a: Create database migration for current_price and version fields
+- [ ] T104a [US1] Create database migration file in ws-gateway/migrations/014_add_current_price_and_version_to_positions.sql: add current_price DECIMAL(20, 8) NULL column, add version INTEGER NOT NULL DEFAULT 1 column, create indexes idx_positions_current_price and idx_positions_version, update existing rows to set version=1, include rollback section (per constitution - PostgreSQL migration ownership in ws-gateway service)
+
+### T104: Validate database migration requirements
+- [ ] T104 [US1] Validate database migration requirements: verify migration file 014_add_current_price_and_version_to_positions.sql exists in ws-gateway/migrations/, ensure migration SQL matches data-model.md requirements, document migration execution steps in README.md, verify migration is reversible
+
 ### T033: Implement error handling for missing positions
 - [ ] T033 [US1] Implement error handling in src/api/routes/positions.py: return HTTP 404 when position not found, with proper error message format
 
@@ -431,12 +437,6 @@
 
 ### T103: Add troubleshooting guide
 - [ ] T103 Add troubleshooting guide: common issues, error messages, debugging steps, log analysis, performance tuning
-
-### T104a: Create database migration for current_price and version fields
-- [ ] T104a Create database migration file in ws-gateway/migrations/014_add_current_price_and_version_to_positions.sql: add current_price DECIMAL(20, 8) NULL column, add version INTEGER NOT NULL DEFAULT 1 column, create indexes idx_positions_current_price and idx_positions_version, update existing rows to set version=1, include rollback section (per constitution - PostgreSQL migration ownership in ws-gateway service)
-
-### T104: Validate database migration requirements
-- [ ] T104 Validate database migration requirements: verify migration file 014_add_current_price_and_version_to_positions.sql exists in ws-gateway/migrations/, ensure migration SQL matches data-model.md requirements, document migration execution steps in README.md, verify migration is reversible
 
 ### T105: Add service health monitoring
 - [ ] T105 Add service health monitoring: enhance /health endpoint with detailed status, add metrics endpoint for monitoring systems, implement health check alerts
