@@ -134,6 +134,18 @@ docker compose exec test-container pytest tests/e2e/ -v
 - **Implementation Plan**: `specs/001-position-management/plan.md`
 - **Feature Specification**: `specs/001-position-management/spec.md`
 
+## Risk Management Integration
+
+Position Manager is the single source of truth for positions and portfolio metrics
+used by Risk Manager and Model Service:
+
+- **Order Manager**: uses Position Manager REST API for exposure- and position-based
+  checks instead of maintaining its own position view.
+- **Model Service**: reads position state (`unrealized_pnl_pct`, `position_size_norm`)
+  via `GET /api/v1/positions/{asset}` when applying risk rules (take-profit, size limits).
+- **Grafana**: uses `/health`, `/metrics` and portfolio endpoints to display portfolio
+  exposure, PnL and limit_exceeded indicators on monitoring dashboards.
+
 ## Database Indexes
 
 The following indexes are required for optimal performance (migration handled by ws-gateway service):

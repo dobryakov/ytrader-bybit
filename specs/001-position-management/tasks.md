@@ -271,7 +271,7 @@
 - [X] T059 [US2] Add structured logging in src/services/position_manager.py: log all position updates with trace_id, log conflict resolutions, log validation results, log external API calls
 
 ### T060: Create integration tests for event consumers
-- [ ] T060 [US2] Create integration tests in tests/integration/test_websocket_consumer.py and tests/integration/test_order_consumer.py: test event processing, test conflict resolution, test optimistic locking retries, use testcontainers for RabbitMQ
+- [X] T060 [US2] Create integration tests in tests/integration/test_websocket_consumer.py and tests/integration/test_order_consumer.py: test event processing, test conflict resolution, test optimistic locking retries, use testcontainers for RabbitMQ
 
 ### T061: Create unit tests for conflict resolution
 - [X] T061 [US2] Create unit tests in tests/unit/test_position_manager.py: test_avg_price_conflict_resolution, test_size_validation, test_optimistic_locking_retry, test_position_creation
@@ -283,7 +283,7 @@
 - [X] T063 [US2] Implement rate limiting in src/api/middleware/auth.py: per-API-key rate limits with tiers (POSITION_MANAGER_RATE_LIMIT_DEFAULT, POSITION_MANAGER_RATE_LIMIT_OVERRIDES), sliding window or token bucket algorithm, return HTTP 429 with Retry-After header on exceedance, log rate limit exceedances
 
 ### T064: Create E2E tests for position update flow
-- [ ] T064 [US2] Create E2E tests in tests/e2e/test_position_updates.py: test_websocket_position_update_flow, test_order_execution_update_flow, test_conflict_resolution_flow, test_concurrent_updates
+- [X] T064 [US2] Create E2E tests in tests/e2e/test_position_updates.py: test_websocket_position_update_flow, test_order_execution_update_flow, test_conflict_resolution_flow, test_concurrent_updates
 
 ---
 
@@ -315,7 +315,7 @@
 - [X] T071 [US3] Add performance monitoring in src/services/portfolio_manager.py: log query execution time, track cache hit rate, monitor response times for risk management queries
 
 ### T072: Document risk management integration
-- [ ] T072 [US3] Document risk management integration in README.md: API endpoint usage, response format, error handling, performance characteristics, example integration code
+- [X] T072 [US3] Document risk management integration in README.md: API endpoint usage, response format, error handling, performance characteristics, example integration code
 
 ### T073: Add portfolio limit indicators (optional)
 - [X] T073 [US3] Add optional portfolio limit indicators in src/services/portfolio_manager.py: include limit_exceeded flag in response when portfolio metrics exceed configured thresholds (future enhancement)
@@ -400,7 +400,7 @@
 - [X] T092 [US5] Add structured logging in src/services/position_manager.py: log all validation results, log detected discrepancies, log correction actions, include trace_id in logs
 
 ### T093: Create integration tests for validation
-- [ ] T093 [US5] Create integration tests in tests/integration/test_validation.py: test_position_validation, test_discrepancy_detection, test_automatic_correction, test_validation_task_scheduling
+- [X] T093 [US5] Create integration tests in tests/integration/test_validation.py: test_position_validation, test_discrepancy_detection, test_automatic_correction, test_validation_task_scheduling
 
 ### T094: Add validation statistics tracking
 - [X] T094 [US5] Add validation statistics in src/services/position_manager.py: track number of validations, discrepancies detected, corrections applied, expose via health check or metrics endpoint
