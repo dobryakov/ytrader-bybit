@@ -320,10 +320,17 @@ services:
       - RABBITMQ_PORT=${RABBITMQ_PORT:-5672}
       - RABBITMQ_USER=${RABBITMQ_USER:-guest}
       - RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD:-guest}
+      - BYBIT_API_KEY=${BYBIT_API_KEY}
+      - BYBIT_API_SECRET=${BYBIT_API_SECRET}
+      - BYBIT_ENVIRONMENT=${BYBIT_ENVIRONMENT:-testnet}
+      - ORDERMANAGER_ENABLE_DRY_RUN=${ORDERMANAGER_ENABLE_DRY_RUN:-true}
+      - ORDERMANAGER_API_KEY=${ORDERMANAGER_API_KEY}
+      - POSITION_MANAGER_API_KEY=${POSITION_MANAGER_API_KEY}
+      - WS_GATEWAY_API_KEY=${WS_GATEWAY_API_KEY}
     volumes:
       - ./tests:/app/tests
-      - ./order-manager/src:/app/order-manager/src
-      - ./position-manager/src:/app/position-manager/src
+      - ./order-manager:/app/order-manager
+      - ./position-manager:/app/position-manager
     depends_on:
       - grafana
       - postgres

@@ -31,22 +31,64 @@ import pytest
 # Add project root to path for imports
 script_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(os.path.dirname(script_dir))
-if project_root not in sys.path:
+# Don't add project_root to sys.path if it's /app/tests, as it might conflict
+if project_root not in sys.path and project_root != '/app/tests':
     sys.path.insert(0, project_root)
 
 # Add order-manager and position-manager to path
+# In Docker container, these are mounted at /app/order-manager and /app/position-manager
+# We need to add the base paths (not src) so imports like "from src.config.database" work
 order_manager_path = os.path.join(project_root, 'order-manager')
 position_manager_path = os.path.join(project_root, 'position-manager')
 
-if order_manager_path not in sys.path:
-    sys.path.insert(0, order_manager_path)
-if position_manager_path not in sys.path:
-    sys.path.insert(0, position_manager_path)
+# Also try absolute paths for Docker container
+docker_order_manager = '/app/order-manager'
+docker_position_manager = '/app/position-manager'
+
+# Add base paths (not src subdirectories) to sys.path
+# IMPORTANT: Add order-manager BEFORE position-manager to avoid conflicts
+# Both have 'src' modules, but we need order-manager's src for Order class
+# Collect all paths first, then reorder sys.path to ensure order-manager comes first
+order_paths = []
+position_paths = []
+for base_path in [docker_order_manager, order_manager_path]:
+    if os.path.exists(base_path) and base_path not in sys.path:
+        order_paths.append(base_path)
+for base_path in [docker_position_manager, position_manager_path]:
+    if os.path.exists(base_path) and base_path not in sys.path:
+        position_paths.append(base_path)
+
+# Remove existing paths if they exist
+for path in order_paths + position_paths:
+    if path in sys.path:
+        sys.path.remove(path)
+
+# Rebuild sys.path with correct order: order-manager first, then position-manager
+# This ensures that when Python looks for 'src', it finds order-manager's src first
+new_paths = order_paths + position_paths
+sys.path = new_paths + [p for p in sys.path if p not in new_paths]
+
+# Remove empty string from sys.path to avoid conflicts with current directory
+if '' in sys.path:
+    sys.path.remove('')
+
+# Clear import cache to ensure new paths are used
+import importlib
+importlib.invalidate_caches()
 
 # Import from order-manager
+# Import database first, then settings, then models
 try:
     from src.config.database import DatabaseConnection
+except ImportError as e:
+    raise ImportError(f"Could not import DatabaseConnection: {e}")
+
+try:
     from src.config.settings import settings as order_settings
+except ImportError as e:
+    raise ImportError(f"Could not import settings: {e}")
+
+try:
     from src.models.order import Order
 except ImportError as e:
     # Try alternative import path
@@ -54,8 +96,8 @@ except ImportError as e:
         from order_manager.src.config.database import DatabaseConnection
         from order_manager.src.config.settings import settings as order_settings
         from order_manager.src.models.order import Order
-    except ImportError:
-        raise ImportError(f"Could not import from order-manager: {e}")
+    except ImportError as e2:
+        raise ImportError(f"Could not import from order-manager. First error: {e}, Second error: {e2}. sys.path: {sys.path[:10]}")
 
 # Import from position-manager
 try:
