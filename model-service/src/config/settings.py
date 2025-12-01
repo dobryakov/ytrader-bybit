@@ -68,6 +68,15 @@ class Settings(BaseSettings):
     # Trading Strategy Configuration
     trading_strategies: Optional[str] = Field(default=None, alias="TRADING_STRATEGIES")
 
+    # Position Manager Configuration (for risk management)
+    position_manager_host: str = Field(default="position-manager", alias="POSITION_MANAGER_HOST")
+    position_manager_port: int = Field(default=4600, alias="POSITION_MANAGER_PORT")
+    position_manager_api_key: str = Field(..., alias="POSITION_MANAGER_API_KEY")
+
+    # Risk Management Configuration
+    model_service_take_profit_pct: float = Field(default=3.0, alias="MODEL_SERVICE_TAKE_PROFIT_PCT")
+    model_service_max_position_size_ratio: float = Field(default=0.8, alias="MODEL_SERVICE_MAX_POSITION_SIZE_RATIO")
+
     @field_validator("model_service_log_level")
     @classmethod
     def validate_log_level(cls, v: str) -> str:
@@ -140,6 +149,11 @@ class Settings(BaseSettings):
         return f"http://{self.ws_gateway_host}:{self.ws_gateway_port}"
 
     @property
+    def position_manager_url(self) -> str:
+        """Get Position Manager base URL."""
+        return f"http://{self.position_manager_host}:{self.position_manager_port}"
+
+    @property
     def trading_strategy_list(self) -> List[str]:
         """Parse trading strategies from comma-separated string."""
         if not self.trading_strategies:
@@ -195,12 +209,25 @@ class Settings(BaseSettings):
         if not 1 <= self.ws_gateway_port <= 65535:
             errors.append(f"WebSocket Gateway port must be between 1 and 65535, got {self.ws_gateway_port}")
 
+        if not 1 <= self.position_manager_port <= 65535:
+            errors.append(f"Position Manager port must be between 1 and 65535, got {self.position_manager_port}")
+
+        # Validate risk management configuration
+        if self.model_service_take_profit_pct < 0:
+            errors.append(f"MODEL_SERVICE_TAKE_PROFIT_PCT must be non-negative, got {self.model_service_take_profit_pct}")
+
+        if not 0.0 <= self.model_service_max_position_size_ratio <= 1.0:
+            errors.append(f"MODEL_SERVICE_MAX_POSITION_SIZE_RATIO must be between 0.0 and 1.0, got {self.model_service_max_position_size_ratio}")
+
         # Validate API key is not empty
         if not self.model_service_api_key or len(self.model_service_api_key.strip()) == 0:
             errors.append("MODEL_SERVICE_API_KEY is required and cannot be empty")
 
         if not self.ws_gateway_api_key or len(self.ws_gateway_api_key.strip()) == 0:
             errors.append("WS_GATEWAY_API_KEY is required and cannot be empty")
+
+        if not self.position_manager_api_key or len(self.position_manager_api_key.strip()) == 0:
+            errors.append("POSITION_MANAGER_API_KEY is required and cannot be empty")
 
         # Validate database credentials
         if not self.postgres_db or len(self.postgres_db.strip()) == 0:
@@ -253,6 +280,11 @@ class Settings(BaseSettings):
             ws_url = self.ws_gateway_url
             if not ws_url.startswith("http://") and not ws_url.startswith("https://"):
                 errors.append(f"Invalid WebSocket Gateway URL format: {ws_url}")
+
+            # Test Position Manager URL format
+            pm_url = self.position_manager_url
+            if not pm_url.startswith("http://") and not pm_url.startswith("https://"):
+                errors.append(f"Invalid Position Manager URL format: {pm_url}")
         except Exception as e:
             errors.append(f"Error validating URL formats: {e}")
 

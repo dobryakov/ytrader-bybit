@@ -11,6 +11,7 @@ from datetime import datetime
 
 from ..models.signal import TradingSignal, MarketDataSnapshot
 from ..consumers.market_data_consumer import market_data_cache
+from ..services.balance_calculator import balance_calculator
 from ..config.settings import settings
 from ..config.logging import get_logger, bind_context
 
@@ -38,7 +39,7 @@ class WarmUpSignalGenerator:
         self.max_amount = max_amount
         self.randomness_level = randomness_level
 
-    def generate_signal(
+    async def generate_signal(
         self,
         asset: str,
         strategy_id: str,
@@ -71,7 +72,38 @@ class WarmUpSignalGenerator:
 
         # Generate signal using heuristics or random generation
         signal_type = self._determine_signal_type(asset, market_data)
-        amount = self._determine_amount()
+        base_amount = self._determine_amount()
+        
+        # Check available balance and adapt amount
+        adapted_amount = await balance_calculator.calculate_affordable_amount(
+            trading_pair=asset,
+            signal_type=signal_type,
+            requested_amount=base_amount,
+        )
+        
+        if adapted_amount is None:
+            logger.warning(
+                "Insufficient balance, skipping signal generation",
+                asset=asset,
+                strategy_id=strategy_id,
+                signal_type=signal_type,
+                requested_amount=base_amount,
+                trace_id=trace_id,
+            )
+            return None
+        
+        # Use adapted amount
+        amount = adapted_amount
+        if amount != base_amount:
+            logger.info(
+                "Adapted signal amount to available balance",
+                asset=asset,
+                strategy_id=strategy_id,
+                original_amount=base_amount,
+                adapted_amount=amount,
+                trace_id=trace_id,
+            )
+        
         confidence = self._calculate_confidence(market_data)
 
         # Create market data snapshot
@@ -221,7 +253,7 @@ class WarmUpSignalGenerator:
 
         return round(min(1.0, max(0.0, risk_score)), 2)
 
-    def generate_signals_for_strategies(
+    async def generate_signals_for_strategies(
         self,
         assets: List[str],
         strategy_ids: List[str],
@@ -241,7 +273,7 @@ class WarmUpSignalGenerator:
         signals = []
         for strategy_id in strategy_ids:
             for asset in assets:
-                signal = self.generate_signal(asset, strategy_id, trace_id)
+                signal = await self.generate_signal(asset, strategy_id, trace_id)
                 if signal:
                     signals.append(signal)
         return signals

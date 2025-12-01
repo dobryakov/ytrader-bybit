@@ -19,11 +19,16 @@ router = APIRouter(prefix="/health", tags=["health"])
 
 
 class HealthResponse(BaseModel):
-    """Health check response model."""
+    """Health check response model.
+
+    Includes both nested checks object and flat fields for Grafana dashboards.
+    """
 
     status: str
     service: str
     checks: Dict[str, Any]
+    database_connected: bool
+    queue_connected: bool
 
 
 @router.get("", status_code=status.HTTP_200_OK, response_model=HealthResponse)
@@ -80,13 +85,24 @@ async def health_check() -> HealthResponse:
         overall_healthy = False
 
     response_status = "healthy" if overall_healthy else "unhealthy"
-    status_code = status.HTTP_200_OK if overall_healthy else status.HTTP_503_SERVICE_UNAVAILABLE
 
-    logger.info("Health check completed", status=response_status, checks=checks)
+    # Derive flat connectivity fields for Grafana dashboards
+    database_connected = bool(checks.get("database", {}).get("connected", False))
+    queue_connected = bool(checks.get("message_queue", {}).get("connected", False))
+
+    logger.info(
+        "Health check completed",
+        status=response_status,
+        checks=checks,
+        database_connected=database_connected,
+        queue_connected=queue_connected,
+    )
 
     return HealthResponse(
         status=response_status,
         service="model-service",
         checks=checks,
+        database_connected=database_connected,
+        queue_connected=queue_connected,
     )
 

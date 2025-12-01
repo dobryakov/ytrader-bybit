@@ -15,6 +15,8 @@ from ..services.model_loader import model_loader
 from ..services.model_inference import model_inference
 from ..services.signal_validator import signal_validator
 from ..services.rate_limiter import rate_limiter
+from ..services.balance_calculator import balance_calculator
+from ..services.position_manager_client import position_manager_client
 from ..database.repositories.position_state_repo import PositionStateRepository
 from ..config.settings import settings
 from ..config.logging import get_logger, bind_context
@@ -80,6 +82,17 @@ class IntelligentSignalGenerator:
             strategy_id=strategy_id,
             asset=asset,
         )
+
+        # Risk Management: Check take profit rule (before model inference)
+        take_profit_signal = await self._check_take_profit_rule(asset, strategy_id, trace_id)
+        if take_profit_signal:
+            logger.info(
+                "Take profit rule triggered, generating SELL signal",
+                asset=asset,
+                strategy_id=strategy_id,
+                trace_id=trace_id,
+            )
+            return take_profit_signal
 
         # Check for open orders if configured (before inference)
         # If check_opposite_orders_only is true, we'll check again after determining signal_type
@@ -150,6 +163,27 @@ class IntelligentSignalGenerator:
             # Determine signal type from prediction
             signal_type = self._determine_signal_type(prediction_result)
 
+            # Risk Management: Check position size limit for BUY signals (before generating signal)
+            if signal_type.lower() == "buy":
+                position_size_check = await self._check_position_size_limit(asset, strategy_id, trace_id)
+                if position_size_check["should_skip"]:
+                    reason = position_size_check.get("reason", "position_size_limit")
+                    signal_skip_metrics.record_skip(
+                        asset=asset,
+                        strategy_id=strategy_id,
+                        reason=reason,
+                    )
+                    logger.info(
+                        "Skipping BUY signal due to position size limit",
+                        asset=asset,
+                        strategy_id=strategy_id,
+                        position_size_norm=position_size_check.get("position_size_norm"),
+                        max_ratio_threshold=position_size_check.get("max_ratio_threshold"),
+                        reason=reason,
+                        trace_id=trace_id,
+                    )
+                    return None
+
             # Check for opposite orders if configured (after determining signal_type)
             if settings.signal_generation_skip_if_open_order and settings.signal_generation_check_opposite_orders_only:
                 open_order_check = await self._check_open_orders_for_state(
@@ -178,8 +212,44 @@ class IntelligentSignalGenerator:
                     )
                     return None
 
-            # Calculate order amount
-            amount = self._calculate_amount(asset, order_position_state, market_data_snapshot, confidence)
+            # Calculate order amount from model
+            model_amount = self._calculate_amount(asset, order_position_state, market_data_snapshot, confidence)
+            
+            # Check available balance and adapt amount
+            adapted_amount = await balance_calculator.calculate_affordable_amount(
+                trading_pair=asset,
+                signal_type=signal_type,
+                requested_amount=model_amount,
+            )
+            
+            if adapted_amount is None:
+                logger.warning(
+                    "Insufficient balance, skipping signal generation",
+                    asset=asset,
+                    strategy_id=strategy_id,
+                    signal_type=signal_type,
+                    original_model_amount=model_amount,
+                    trace_id=trace_id,
+                )
+                # Record skip metrics
+                signal_skip_metrics.record_skip(
+                    asset=asset,
+                    strategy_id=strategy_id,
+                    reason="insufficient_balance",
+                )
+                return None
+            
+            # Use adapted amount
+            amount = adapted_amount
+            if amount != model_amount:
+                logger.info(
+                    "Adapted signal amount to available balance",
+                    asset=asset,
+                    strategy_id=strategy_id,
+                    original_model_amount=model_amount,
+                    adapted_amount=amount,
+                    trace_id=trace_id,
+                )
 
             # Get model version string for signal
             if not model_version:
@@ -359,6 +429,142 @@ class IntelligentSignalGenerator:
         amount = max(self.min_amount, min(self.max_amount, amount))
 
         return round(amount, 2)
+
+    async def _check_take_profit_rule(
+        self,
+        asset: str,
+        strategy_id: str,
+        trace_id: Optional[str] = None,
+    ) -> Optional[TradingSignal]:
+        """
+        Check take profit rule and generate SELL signal if threshold exceeded.
+
+        Args:
+            asset: Trading pair symbol
+            strategy_id: Trading strategy identifier
+            trace_id: Trace ID for request flow tracking
+
+        Returns:
+            TradingSignal (SELL) if take profit triggered, None otherwise
+        """
+        try:
+            unrealized_pnl_pct = await position_manager_client.get_unrealized_pnl_pct(asset)
+            if unrealized_pnl_pct is None:
+                # No position or error - continue with normal flow
+                return None
+
+            take_profit_threshold = settings.model_service_take_profit_pct
+
+            if unrealized_pnl_pct > take_profit_threshold:
+                # Get position size to close
+                position_size = await position_manager_client.get_position_size(asset)
+                if position_size is None or position_size == 0:
+                    logger.warning(
+                        "Take profit triggered but position size unavailable",
+                        asset=asset,
+                        unrealized_pnl_pct=unrealized_pnl_pct,
+                    )
+                    return None
+
+                # Get market data snapshot
+                market_data_snapshot = model_inference.get_market_data_snapshot(asset)
+                if not market_data_snapshot:
+                    logger.warning("Market data unavailable for take profit signal", asset=asset)
+                    return None
+
+                # Force generate SELL signal to close position
+                signal = TradingSignal(
+                    signal_type="sell",
+                    asset=asset,
+                    amount=position_size,  # Close entire position
+                    confidence=1.0,  # Maximum confidence for take profit
+                    strategy_id=strategy_id,
+                    model_version=None,  # Not from model
+                    is_warmup=False,
+                    market_data_snapshot=market_data_snapshot,
+                    metadata={
+                        "reasoning": "take_profit_triggered",
+                        "unrealized_pnl_pct": unrealized_pnl_pct,
+                        "take_profit_threshold": take_profit_threshold,
+                        "position_size": position_size,
+                    },
+                    trace_id=trace_id,
+                )
+
+                logger.info(
+                    "Take profit rule triggered",
+                    asset=asset,
+                    strategy_id=strategy_id,
+                    unrealized_pnl_pct=unrealized_pnl_pct,
+                    take_profit_threshold=take_profit_threshold,
+                    position_size=position_size,
+                    trace_id=trace_id,
+                )
+
+                return signal
+
+            return None
+
+        except Exception as e:
+            logger.error(
+                "Error checking take profit rule",
+                asset=asset,
+                strategy_id=strategy_id,
+                error=str(e),
+                exc_info=True,
+            )
+            # Continue with normal flow on error
+            return None
+
+    async def _check_position_size_limit(
+        self,
+        asset: str,
+        strategy_id: str,
+        trace_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Check position size limit before generating BUY signal.
+
+        Args:
+            asset: Trading pair symbol
+            strategy_id: Trading strategy identifier
+            trace_id: Trace ID for request flow tracking
+
+        Returns:
+            Dictionary with:
+                - should_skip: bool - whether to skip signal generation
+                - reason: str - reason for skipping (if should_skip is True)
+                - position_size_norm: float - current position size normalized
+                - max_ratio_threshold: float - maximum allowed ratio
+        """
+        try:
+            position_size_norm = await position_manager_client.get_position_size_norm(asset)
+            if position_size_norm is None:
+                # No position or error - allow signal generation
+                return {"should_skip": False}
+
+            max_ratio = settings.model_service_max_position_size_ratio
+
+            if position_size_norm > max_ratio:
+                return {
+                    "should_skip": True,
+                    "reason": "position_size_limit",
+                    "position_size_norm": position_size_norm,
+                    "max_ratio_threshold": max_ratio,
+                }
+
+            return {"should_skip": False}
+
+        except Exception as e:
+            logger.error(
+                "Error checking position size limit",
+                asset=asset,
+                strategy_id=strategy_id,
+                error=str(e),
+                exc_info=True,
+            )
+            # On error, allow signal generation (fail open)
+            return {"should_skip": False}
 
     async def generate_signals_for_strategies(
         self,

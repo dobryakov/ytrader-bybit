@@ -121,7 +121,7 @@ class WarmUpOrchestrator:
 
                     # Generate signal
                     generator = get_warmup_generator()
-                    signal = generator.generate_signal(asset, strategy_id)
+                    signal = await generator.generate_signal(asset, strategy_id)
                     if signal:
                         signals.append(signal)
 
@@ -208,7 +208,7 @@ class WarmUpOrchestrator:
 
             # Generate signal
             generator = get_warmup_generator()
-            signal = generator.generate_signal(asset, strategy_id, trace_id)
+            signal = await generator.generate_signal(asset, strategy_id, trace_id)
             if not signal:
                 return None
 
