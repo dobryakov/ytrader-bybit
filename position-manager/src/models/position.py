@@ -168,7 +168,8 @@ class Position(BaseModel):
         if "id" in data and isinstance(data["id"], str):
             data["id"] = UUID(data["id"])
 
-        # Decimal conversion
+        # Decimal conversion and NULL handling
+        # For fields with default values, remove None to let Pydantic use defaults
         for field in [
             "size",
             "average_entry_price",
@@ -179,8 +180,18 @@ class Position(BaseModel):
             "short_size",
         ]:
             value = data.get(field)
-            if value is not None and not isinstance(value, Decimal):
-                data[field] = Decimal(str(value))
+            if value is not None:
+                if not isinstance(value, Decimal):
+                    data[field] = Decimal(str(value))
+            else:
+                # Remove None values for fields with defaults to let Pydantic use defaults
+                # Keep None for Optional fields (long_size, short_size, average_entry_price, current_price)
+                if field in ["unrealized_pnl", "realized_pnl"]:
+                    data.pop(field, None)  # Remove to use default Decimal("0")
+
+        # Handle datetime fields with defaults
+        if "created_at" in data and data["created_at"] is None:
+            data.pop("created_at", None)  # Remove to use default_factory
 
         return cls(**data)
 
