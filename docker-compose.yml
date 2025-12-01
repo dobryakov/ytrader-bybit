@@ -242,6 +242,8 @@ services:
       - POSITION_MANAGER_RATE_LIMIT_ENABLED=${POSITION_MANAGER_RATE_LIMIT_ENABLED:-true}
       - POSITION_MANAGER_RATE_LIMIT_DEFAULT=${POSITION_MANAGER_RATE_LIMIT_DEFAULT:-100}
       - POSITION_MANAGER_RATE_LIMIT_OVERRIDES=${POSITION_MANAGER_RATE_LIMIT_OVERRIDES:-}
+    volumes:
+      - ./position-manager/tests:/app/tests
     depends_on:
       postgres:
         condition: service_healthy

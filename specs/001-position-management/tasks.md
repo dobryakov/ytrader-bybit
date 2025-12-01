@@ -107,28 +107,28 @@
 **Independent Test Criteria**: Query position data after simulated position updates and verify returned data reflects current state accurately. Test portfolio metrics calculation with multiple positions.
 
 ### T012: Create Position model
-- [ ] T012 [P] [US1] Create Position Pydantic model in src/models/position.py with all fields from data-model.md (asset, mode, size, average_entry_price, current_price, unrealized_pnl, realized_pnl, version, etc.)
+- [X] T012 [P] [US1] Create Position Pydantic model in src/models/position.py with all fields from data-model.md (asset, mode, size, average_entry_price, current_price, unrealized_pnl, realized_pnl, version, etc.)
 
 ### T013: Create PositionSnapshot model
-- [ ] T013 [P] [US1] Create PositionSnapshot Pydantic model in src/models/position.py with id, position_id, asset, mode, snapshot_data (JSONB), created_at fields
+- [X] T013 [P] [US1] Create PositionSnapshot Pydantic model in src/models/position.py with id, position_id, asset, mode, snapshot_data (JSONB), created_at fields
 
 ### T014: Create Portfolio model
-- [ ] T014 [P] [US1] Create Portfolio Pydantic model in src/models/portfolio.py with calculated fields (total_exposure_usdt, total_unrealized_pnl_usdt, total_realized_pnl_usdt, portfolio_value_usdt, open_positions_count, by_asset, calculated_at)
+- [X] T014 [P] [US1] Create Portfolio Pydantic model in src/models/portfolio.py with calculated fields (total_exposure_usdt, total_unrealized_pnl_usdt, total_realized_pnl_usdt, portfolio_value_usdt, open_positions_count, by_asset, calculated_at)
 
 ### T015: Extract PositionManager from Order Manager
-- [ ] T015 [US1] Extract PositionManager class from order-manager/src/services/position_manager.py: copy class to src/services/position_manager.py, adapt imports and paths to new structure, extract methods get_position(asset, mode), get_all_positions(), update_position_from_order_fill(), update_position_from_websocket(), validate_position(asset, mode), create_position_snapshot(position)
+- [X] T015 [US1] Extract PositionManager class from order-manager/src/services/position_manager.py: copy class to src/services/position_manager.py, adapt imports and paths to new structure, extract methods get_position(asset, mode), get_all_positions(), update_position_from_order_fill(), update_position_from_websocket(), validate_position(asset, mode), create_position_snapshot(position)
 
 ### T015a: Adapt PositionManager to new structure
-- [ ] T015a [US1] Adapt PositionManager class to new structure: update database connection imports to use src/config/database.py, update logging to use src/config/logging.py, update configuration to use src/config/settings.py, ensure all imports reference new module paths
+- [X] T015a [US1] Adapt PositionManager class to new structure: update database connection imports to use src/config/database.py, update logging to use src/config/logging.py, update configuration to use src/config/settings.py, ensure all imports reference new module paths
 
 ### T015b: Enhance PositionManager with portfolio metrics methods
 - [ ] T015b [US1] Add new methods to PositionManager in src/services/position_manager.py: get_total_exposure(), get_portfolio_metrics(), methods for calculating ML features (unrealized_pnl_pct, time_held_minutes, position_size_norm)
 
 ### T016: Create PortfolioManager service
-- [ ] T016 [P] [US1] Create PortfolioManager service in src/services/portfolio_manager.py with methods: get_portfolio_metrics(include_positions, asset_filter), get_total_exposure(), get_portfolio_pnl(), calculate_metrics_from_positions(positions)
+- [X] T016 [P] [US1] Create PortfolioManager service in src/services/portfolio_manager.py with methods: get_portfolio_metrics(include_positions, asset_filter), get_total_exposure(), get_portfolio_pnl(), calculate_metrics_from_positions(positions)
 
 ### T017: Create portfolio metrics cache
-- [ ] T017 [P] [US1] Create in-memory cache for portfolio metrics in src/services/portfolio_manager.py with TTL support (POSITION_MANAGER_METRICS_CACHE_TTL), cache invalidation on position updates, and cache key management
+- [X] T017 [P] [US1] Create in-memory cache for portfolio metrics in src/services/portfolio_manager.py with TTL support (POSITION_MANAGER_METRICS_CACHE_TTL), cache invalidation on position updates, and cache key management
 
 ### T018: Extract positions API routes from Order Manager
 - [ ] T018 [US1] Extract REST API endpoints from order-manager/src/api/routes/positions.py: copy GET /api/v1/positions, GET /api/v1/positions/{asset}, POST /api/v1/positions/{asset}/validate, POST /api/v1/positions/{asset}/snapshot, GET /api/v1/positions/{asset}/snapshots to src/api/routes/positions.py, adapt imports and service references to use PositionManager from new service
@@ -137,70 +137,70 @@
 - [ ] T019 [US1] Adapt extracted API routes in src/api/routes/positions.py: update imports to use new PositionManager service, update authentication middleware references, update response serialization to include calculated ML features, ensure error handling uses new logging configuration
 
 ### T020: Create portfolio API route
-- [ ] T020 [P] [US1] Create GET /api/v1/portfolio endpoint in src/api/routes/portfolio.py with include_positions and asset query parameters, returning PortfolioMetrics with cached metrics
+- [X] T020 [P] [US1] Create GET /api/v1/portfolio endpoint in src/api/routes/portfolio.py with include_positions and asset query parameters, returning PortfolioMetrics with cached metrics
 
 ### T021: Create portfolio exposure API route
-- [ ] T021 [P] [US1] Create GET /api/v1/portfolio/exposure endpoint in src/api/routes/portfolio.py returning PortfolioExposure with total_exposure_usdt
+- [X] T021 [P] [US1] Create GET /api/v1/portfolio/exposure endpoint in src/api/routes/portfolio.py returning PortfolioExposure with total_exposure_usdt
 
 ### T022: Create portfolio PnL API route
-- [ ] T022 [US1] Create GET /api/v1/portfolio/pnl endpoint in src/api/routes/portfolio.py returning PortfolioPnL with total_unrealized_pnl_usdt, total_realized_pnl_usdt, total_pnl_usdt
+- [X] T022 [US1] Create GET /api/v1/portfolio/pnl endpoint in src/api/routes/portfolio.py returning PortfolioPnL with total_unrealized_pnl_usdt, total_realized_pnl_usdt, total_pnl_usdt
 
 ### T023: Create health check endpoint
-- [ ] T023 [US1] Create GET /health endpoint in src/api/routes/health.py with database_connected, queue_connected, positions_count status checks
+- [X] T023 [US1] Create GET /health endpoint in src/api/routes/health.py with database_connected, queue_connected, positions_count status checks
 
 ### T024: Create API authentication middleware
-- [ ] T024 [US1] Create API key authentication middleware in src/api/middleware/auth.py with X-API-Key header validation using POSITION_MANAGER_API_KEY
+- [X] T024 [US1] Create API key authentication middleware in src/api/middleware/auth.py with X-API-Key header validation using POSITION_MANAGER_API_KEY
 
 ### T025: Create API logging middleware
-- [ ] T025 [US1] Create request logging middleware in src/api/middleware/logging.py with trace ID extraction, request/response logging, and structured log output
+- [X] T025 [US1] Create request logging middleware in src/api/middleware/logging.py with trace ID extraction, request/response logging, and structured log output
 
 ### T026: Create main FastAPI application
-- [ ] T026 [US1] Create src/api/main.py with FastAPI app setup, route registration, middleware registration, and startup/shutdown event handlers
+- [X] T026 [US1] Create src/api/main.py with FastAPI app setup, route registration, middleware registration, and startup/shutdown event handlers
 
 ### T027: Create main entry point
-- [ ] T027 [US1] Create src/main.py with uvicorn server startup, database connection initialization, RabbitMQ connection initialization, and graceful shutdown handling
+- [X] T027 [US1] Create src/main.py with uvicorn server startup, database connection initialization, RabbitMQ connection initialization, and graceful shutdown handling
 
 ### T028: Implement database queries for positions
-- [ ] T028 [US1] Implement async database queries in src/services/position_manager.py: get_position_by_asset_mode(asset, mode), get_all_positions(filters), using asyncpg with proper error handling
+- [X] T028 [US1] Implement async database queries in src/services/position_manager.py: get_position_by_asset_mode(asset, mode), get_all_positions(filters), using asyncpg with proper error handling
 
 ### T029: Implement portfolio metrics calculation
-- [ ] T029 [US1] Implement portfolio metrics calculation in src/services/portfolio_manager.py: calculate_total_exposure(positions), calculate_total_pnl(positions), calculate_by_asset(positions), with proper NULL handling for current_price
+- [X] T029 [US1] Implement portfolio metrics calculation in src/services/portfolio_manager.py: calculate_total_exposure(positions), calculate_total_pnl(positions), calculate_by_asset(positions), with proper NULL handling for current_price
 
 ### T030: Implement ML features calculation
-- [ ] T030 [US1] Implement ML features calculation in src/services/position_manager.py: calculate_unrealized_pnl_pct(position), calculate_time_held_minutes(position), calculate_position_size_norm(position, total_exposure)
+- [X] T030 [US1] Implement ML features calculation in src/services/position_manager.py: calculate_unrealized_pnl_pct(position), calculate_time_held_minutes(position), calculate_position_size_norm(position, total_exposure)
 
 ### T031: Implement position filtering logic
-- [ ] T031 [US1] Implement position filtering logic in src/services/position_manager.py: filter_by_asset(positions, asset), filter_by_mode(positions, mode), filter_by_size(positions, size_min, size_max)
+- [X] T031 [US1] Implement position filtering logic in src/services/position_manager.py: filter_by_asset(positions, asset), filter_by_mode(positions, mode), filter_by_size(positions, size_min, size_max)
 
 ### T032: Add database indexes migration note
-- [ ] T032 [US1] Document required database indexes in README.md: idx_positions_asset, idx_positions_mode, idx_positions_asset_mode, idx_positions_current_price, idx_positions_version (migration handled by ws-gateway service)
+- [X] T032 [US1] Document required database indexes in README.md: idx_positions_asset, idx_positions_mode, idx_positions_asset_mode, idx_positions_current_price, idx_positions_version (migration handled by ws-gateway service)
 
 ### T104a: Create database migration for current_price and version fields
-- [ ] T104a [US1] Create database migration file in ws-gateway/migrations/014_add_current_price_and_version_to_positions.sql: add current_price DECIMAL(20, 8) NULL column, add version INTEGER NOT NULL DEFAULT 1 column, create indexes idx_positions_current_price and idx_positions_version, update existing rows to set version=1, include rollback section (per constitution - PostgreSQL migration ownership in ws-gateway service)
+- [X] T104a [US1] Create database migration file in ws-gateway/migrations/014_add_current_price_and_version_to_positions.sql: add current_price DECIMAL(20, 8) NULL column, add version INTEGER NOT NULL DEFAULT 1 column, create indexes idx_positions_current_price and idx_positions_version, update existing rows to set version=1, include rollback section (per constitution - PostgreSQL migration ownership in ws-gateway service)
 
 ### T104: Validate database migration requirements
-- [ ] T104 [US1] Validate database migration requirements: verify migration file 014_add_current_price_and_version_to_positions.sql exists in ws-gateway/migrations/, ensure migration SQL matches data-model.md requirements, document migration execution steps in README.md, verify migration is reversible
+- [X] T104 [US1] Validate database migration requirements: verify migration file 014_add_current_price_and_version_to_positions.sql exists in ws-gateway/migrations/, ensure migration SQL matches data-model.md requirements, document migration execution steps in README.md, verify migration is reversible
 
 ### T033: Implement error handling for missing positions
-- [ ] T033 [US1] Implement error handling in src/api/routes/positions.py: return HTTP 404 when position not found, with proper error message format
+- [X] T033 [US1] Implement error handling in src/api/routes/positions.py: return HTTP 404 when position not found, with proper error message format
 
 ### T034: Implement empty portfolio handling
-- [ ] T034 [US1] Implement empty portfolio handling in src/services/portfolio_manager.py: return zero values for all metrics when no positions exist, return HTTP 200 with empty positions array
+- [X] T034 [US1] Implement empty portfolio handling in src/services/portfolio_manager.py: return zero values for all metrics when no positions exist, return HTTP 200 with empty positions array
 
 ### T035: Add request validation
-- [ ] T035 [US1] Add Pydantic request validation in src/api/routes/positions.py and src/api/routes/portfolio.py for query parameters (asset format, mode enum, size ranges)
+- [X] T035 [US1] Add Pydantic request validation in src/api/routes/positions.py and src/api/routes/portfolio.py for query parameters (asset format, mode enum, size ranges)
 
 ### T036: Implement response serialization
-- [ ] T036 [US1] Implement response serialization in src/api/routes/positions.py and src/api/routes/portfolio.py: convert Decimal to string, format timestamps as ISO 8601, include all calculated ML features
+- [X] T036 [US1] Implement response serialization in src/api/routes/positions.py and src/api/routes/portfolio.py: convert Decimal to string, format timestamps as ISO 8601, include all calculated ML features
 
 ### T037: Add database connection retry logic
-- [ ] T037 [US1] Add database connection retry logic in src/config/database.py: retry on connection failure, exponential backoff, max retries configuration
+- [X] T037 [US1] Add database connection retry logic in src/config/database.py: retry on connection failure, exponential backoff, max retries configuration
 
 ### T038: Add RabbitMQ connection retry logic
-- [ ] T038 [US1] Add RabbitMQ connection retry logic in src/config/rabbitmq.py: retry on connection failure, exponential backoff, max retries configuration
+- [X] T038 [US1] Add RabbitMQ connection retry logic in src/config/rabbitmq.py: retry on connection failure, exponential backoff, max retries configuration
 
 ### T039: Create unit tests for PositionManager
-- [ ] T039 [US1] Create unit tests in tests/unit/test_position_manager.py: test_get_position, test_get_all_positions, test_calculate_ml_features, test_filtering_logic
+- [X] T039 [US1] Create unit tests in tests/unit/test_position_manager.py: test_get_position, test_get_all_positions, test_calculate_ml_features, test_filtering_logic
 
 ---
 
