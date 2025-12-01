@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 
 from ...config.logging import get_logger
@@ -77,7 +78,7 @@ async def get_portfolio(
             logger.warning("portfolio_event_publish_failed", trace_id=trace_id)
 
         logger.info("portfolio_completed", trace_id=trace_id)
-        return JSONResponse(status_code=200, content=response)
+        return JSONResponse(status_code=200, content=jsonable_encoder(response))
     except Exception as e:
         logger.error("portfolio_failed", error=str(e), trace_id=trace_id, exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to calculate portfolio metrics") from e
@@ -88,19 +89,39 @@ async def get_portfolio(
     dependencies=[Depends(api_key_auth)],
 )
 async def get_portfolio_exposure(
+    request: Request,
     portfolio_manager: PortfolioManager = Depends(get_portfolio_manager),
 ):
     """Return portfolio exposure-only metrics."""
     trace_id = get_or_create_trace_id()
-    logger.info("portfolio_exposure_request", trace_id=trace_id)
+    logger.info(
+        "portfolio_exposure_request",
+        trace_id=trace_id,
+        client=str(request.client.host) if request.client else None,
+    )
 
     try:
         exposure = await portfolio_manager.get_total_exposure()
-        logger.info("portfolio_exposure_completed", trace_id=trace_id)
-        return JSONResponse(status_code=200, content=exposure.model_dump())
+        logger.info(
+            "portfolio_exposure_completed",
+            trace_id=trace_id,
+            calculated_at=str(exposure.calculated_at),
+        )
+        return JSONResponse(status_code=200, content=jsonable_encoder(exposure.model_dump()))
     except Exception as e:
-        logger.error("portfolio_exposure_failed", error=str(e), trace_id=trace_id, exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get portfolio exposure") from e
+        logger.error(
+            "portfolio_exposure_failed",
+            error=str(e),
+            trace_id=trace_id,
+            exc_info=True,
+        )
+        # For risk management components, explicitly signal temporary
+        # unavailability with 503 so they can fall back to last-known
+        # metrics instead of treating it as a hard failure (T069).
+        raise HTTPException(
+            status_code=503,
+            detail="Portfolio exposure is temporarily unavailable",
+        ) from e
 
 
 @router.get(
@@ -117,7 +138,7 @@ async def get_portfolio_pnl(
     try:
         pnl = await portfolio_manager.get_portfolio_pnl()
         logger.info("portfolio_pnl_completed", trace_id=trace_id)
-        return JSONResponse(status_code=200, content=pnl.model_dump())
+        return JSONResponse(status_code=200, content=jsonable_encoder(pnl.model_dump()))
     except Exception as e:
         logger.error("portfolio_pnl_failed", error=str(e), trace_id=trace_id, exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to get portfolio PnL") from e

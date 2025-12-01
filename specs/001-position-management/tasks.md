@@ -122,7 +122,7 @@
 - [X] T015a [US1] Adapt PositionManager class to new structure: update database connection imports to use src/config/database.py, update logging to use src/config/logging.py, update configuration to use src/config/settings.py, ensure all imports reference new module paths
 
 ### T015b: Enhance PositionManager with portfolio metrics methods
-- [ ] T015b [US1] Add new methods to PositionManager in src/services/position_manager.py: get_total_exposure(), get_portfolio_metrics(), methods for calculating ML features (unrealized_pnl_pct, time_held_minutes, position_size_norm)
+- [X] T015b [US1] Add new methods to PositionManager in src/services/position_manager.py: get_total_exposure(), get_portfolio_metrics(), methods for calculating ML features (unrealized_pnl_pct, time_held_minutes, position_size_norm)
 
 ### T016: Create PortfolioManager service
 - [X] T016 [P] [US1] Create PortfolioManager service in src/services/portfolio_manager.py with methods: get_portfolio_metrics(include_positions, asset_filter), get_total_exposure(), get_portfolio_pnl(), calculate_metrics_from_positions(positions)
@@ -294,25 +294,25 @@
 **Independent Test Criteria**: Query portfolio metrics and verify risk management components can use these metrics to make limit-checking decisions.
 
 ### T065: Enhance portfolio exposure endpoint for risk management
-- [ ] T065 [US3] Enhance GET /api/v1/portfolio/exposure in src/api/routes/portfolio.py: ensure response format suitable for risk management, include calculated_at timestamp, optimize response time for frequent queries
+- [X] T065 [US3] Enhance GET /api/v1/portfolio/exposure in src/api/routes/portfolio.py: ensure response format suitable for risk management, include calculated_at timestamp, optimize response time for frequent queries
 
 ### T066: Add portfolio metrics breakdown by asset
-- [ ] T066 [US3] Enhance portfolio metrics calculation in src/services/portfolio_manager.py: ensure by_asset breakdown includes exposure_usdt, unrealized_pnl_usdt, size for each asset, suitable for risk management analysis
+- [X] T066 [US3] Enhance portfolio metrics calculation in src/services/portfolio_manager.py: ensure by_asset breakdown includes exposure_usdt, unrealized_pnl_usdt, size for each asset, suitable for risk management analysis
 
 ### T067: Optimize portfolio metrics query performance
-- [ ] T067 [US3] Optimize portfolio metrics queries in src/services/portfolio_manager.py: use database indexes effectively, minimize query execution time, ensure <1s response time for portfolios with up to 100 positions
+- [X] T067 [US3] Optimize portfolio metrics queries in src/services/portfolio_manager.py: use database indexes effectively, minimize query execution time, ensure <1s response time for portfolios with up to 100 positions
 
 ### T068: Add portfolio metrics caching for risk management
-- [ ] T068 [US3] Enhance portfolio metrics cache in src/services/portfolio_manager.py: ensure cache TTL appropriate for risk management use case (5-10 seconds), implement cache warming on service startup
+- [X] T068 [US3] Enhance portfolio metrics cache in src/services/portfolio_manager.py: ensure cache TTL appropriate for risk management use case (5-10 seconds), implement cache warming on service startup
 
 ### T069: Add error handling for risk management queries
-- [ ] T069 [US3] Add error handling in src/api/routes/portfolio.py: handle database unavailability gracefully, return appropriate error codes, implement fallback logic for risk management components
+- [X] T069 [US3] Add error handling in src/api/routes/portfolio.py: handle database unavailability gracefully, return appropriate error codes, implement fallback logic for risk management components
 
 ### T070: Create integration tests for risk management integration
-- [ ] T070 [US3] Create integration tests in tests/integration/test_risk_management.py: test_portfolio_exposure_query, test_portfolio_metrics_for_limit_checking, simulate risk management component queries
+- [X] T070 [US3] Create integration tests in tests/integration/test_risk_management.py: test_portfolio_exposure_query, test_portfolio_metrics_for_limit_checking, simulate risk management component queries
 
 ### T071: Add performance monitoring for portfolio queries
-- [ ] T071 [US3] Add performance monitoring in src/services/portfolio_manager.py: log query execution time, track cache hit rate, monitor response times for risk management queries
+- [X] T071 [US3] Add performance monitoring in src/services/portfolio_manager.py: log query execution time, track cache hit rate, monitor response times for risk management queries
 
 ### T072: Document risk management integration
 - [ ] T072 [US3] Document risk management integration in README.md: API endpoint usage, response format, error handling, performance characteristics, example integration code
@@ -321,13 +321,13 @@
 - [ ] T073 [US3] Add optional portfolio limit indicators in src/services/portfolio_manager.py: include limit_exceeded flag in response when portfolio metrics exceed configured thresholds (future enhancement)
 
 ### T074: Create unit tests for portfolio risk management
-- [ ] T074 [US3] Create unit tests in tests/unit/test_portfolio_manager.py: test_portfolio_exposure_calculation, test_portfolio_metrics_for_risk_management, test_cache_performance
+- [X] T074 [US3] Create unit tests in tests/unit/test_portfolio_manager.py: test_portfolio_exposure_calculation, test_portfolio_metrics_for_risk_management, test_cache_performance
 
 ### T075: Add portfolio metrics aggregation optimization
-- [ ] T075 [US3] Optimize portfolio metrics aggregation in src/services/portfolio_manager.py: use SQL aggregation functions where possible, minimize data transfer, optimize for frequent risk management queries
+- [X] T075 [US3] Optimize portfolio metrics aggregation in src/services/portfolio_manager.py: use SQL aggregation functions where possible, minimize data transfer, optimize for frequent risk management queries
 
 ### T076: Implement portfolio metrics filtering by asset
-- [ ] T076 [US3] Implement asset filtering in src/api/routes/portfolio.py: support asset query parameter for calculating metrics for specific asset only, useful for asset-specific risk management
+- [X] T076 [US3] Implement asset filtering in src/api/routes/portfolio.py: support asset query parameter for calculating metrics for specific asset only, useful for asset-specific risk management
 
 ---
 

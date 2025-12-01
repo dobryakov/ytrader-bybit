@@ -32,6 +32,9 @@ class PortfolioManager:
     def __init__(self, position_manager: Optional[PositionManager] = None) -> None:
         self._position_manager = position_manager or PositionManager()
         self._cache: Dict[str, PortfolioMetricsCacheEntry] = {}
+        # Simple in-memory stats for performance monitoring (T071).
+        self._stats_requests: int = 0
+        self._stats_cache_hits: int = 0
 
     # === Cache management ==================================================
 
@@ -52,13 +55,27 @@ class PortfolioManager:
         include_positions: bool = False,
         asset_filter: Optional[str] = None,
     ) -> PortfolioMetrics:
-        """Get portfolio metrics, using cache when valid."""
+        """Get portfolio metrics, using cache when valid.
+
+        Also records basic performance statistics for risk-management
+        monitoring use-cases (T067, T071).
+        """
+        started_at = datetime.utcnow()
         cache_key = self._cache_key(asset_filter, include_positions)
         ttl_seconds = settings.position_manager_metrics_cache_ttl
 
+        self._stats_requests += 1
+
         entry = self._cache.get(cache_key)
         if entry and not entry.is_expired:
-            logger.debug("portfolio_metrics_cache_hit", cache_key=cache_key)
+            self._stats_cache_hits += 1
+            duration_ms = (datetime.utcnow() - started_at).total_seconds() * 1000
+            logger.debug(
+                "portfolio_metrics_cache_hit",
+                cache_key=cache_key,
+                duration_ms=duration_ms,
+                cache_hit_rate=self._cache_hit_rate,
+            )
             return entry.metrics
 
         logger.debug("portfolio_metrics_cache_miss", cache_key=cache_key)
@@ -71,6 +88,14 @@ class PortfolioManager:
 
         expires_at = datetime.utcnow() + timedelta(seconds=ttl_seconds)
         self._cache[cache_key] = PortfolioMetricsCacheEntry(metrics, expires_at)
+        duration_ms = (datetime.utcnow() - started_at).total_seconds() * 1000
+        logger.debug(
+            "portfolio_metrics_computed",
+            cache_key=cache_key,
+            duration_ms=duration_ms,
+            positions_count=len(positions),
+            cache_hit_rate=self._cache_hit_rate,
+        )
 
         return metrics
 
@@ -94,6 +119,13 @@ class PortfolioManager:
         )
 
     # === Metrics calculation ===============================================
+
+    @property
+    def _cache_hit_rate(self) -> float:
+        """Return current cache hit rate as float in [0, 1]."""
+        if self._stats_requests == 0:
+            return 0.0
+        return self._stats_cache_hits / self._stats_requests
 
     def calculate_metrics_from_positions(
         self,
@@ -186,11 +218,12 @@ class PortfolioManager:
 
         # Optionally attach positions list in API layer; core metrics stay lean.
         if include_positions:
-            # Attach as attribute for later serialization (not part of schema)
+            # Attach as attribute for later serialization (not part of schema).
+            # Not part of the public schema returned to clients.
             setattr(metrics, "_positions", positions)
 
         return metrics
-        
+
 
 # Shared default instance used across the service (for cache invalidation, etc.)
 default_portfolio_manager = PortfolioManager()

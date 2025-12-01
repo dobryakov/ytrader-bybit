@@ -14,6 +14,7 @@ from ..config.settings import settings
 from ..consumers import OrderPositionConsumer, WebSocketPositionConsumer
 from ..exceptions import QueueError
 from .middleware.logging import logging_middleware
+from .routes.portfolio import get_portfolio_manager
 from .routes import health as health_routes
 from .routes import portfolio as portfolio_routes
 from .routes import positions as positions_routes
@@ -46,6 +47,15 @@ def create_app() -> FastAPI:
         logger.info("app_startup_begin", service=settings.position_manager_service_name)
         # Initialize database connection (hard requirement)
         await DatabaseConnection.create_pool()
+
+        # Warm portfolio metrics cache for default view to reduce latency
+        # on first risk-management queries (T068).
+        try:
+            pm = get_portfolio_manager()
+            await pm.get_portfolio_metrics(include_positions=False)
+            logger.info("portfolio_metrics_cache_warm_completed")
+        except Exception:  # pragma: no cover - best-effort
+            logger.warning("portfolio_metrics_cache_warm_failed")
 
         # Initialize RabbitMQ connection, but do not fail startup if it's temporarily unavailable.
         # Health and consumers will reflect queue connectivity separately.
