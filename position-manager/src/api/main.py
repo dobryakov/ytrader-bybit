@@ -13,6 +13,7 @@ from ..config.rabbitmq import RabbitMQConnection
 from ..config.settings import settings
 from ..consumers import OrderPositionConsumer, WebSocketPositionConsumer
 from ..exceptions import QueueError
+from ..tasks import PositionSnapshotCleanupTask, PositionSnapshotTask
 from .middleware.logging import logging_middleware
 from .routes.portfolio import get_portfolio_manager
 from .routes import health as health_routes
@@ -23,9 +24,10 @@ from .routes import positions as positions_routes
 configure_logging()
 logger = get_logger(__name__)
 
-# Global consumer instances so we can start/stop them with the app lifecycle.
+# Global instances so we can start/stop background components with the app lifecycle.
 _ws_consumer: Optional[WebSocketPositionConsumer] = None
 _order_consumer: Optional[OrderPositionConsumer] = None
+_snapshot_task: Optional[PositionSnapshotTask] = None
 
 
 def create_app() -> FastAPI:
@@ -59,7 +61,7 @@ def create_app() -> FastAPI:
 
         # Initialize RabbitMQ connection, but do not fail startup if it's temporarily unavailable.
         # Health and consumers will reflect queue connectivity separately.
-        global _ws_consumer, _order_consumer
+        global _ws_consumer, _order_consumer, _snapshot_task
         try:
             await RabbitMQConnection.create_connection()
 
@@ -69,6 +71,14 @@ def create_app() -> FastAPI:
             _ws_consumer.spawn()
             _order_consumer.spawn()
             logger.info("position_manager_consumers_started")
+
+            # Run one-off snapshot cleanup on startup (US4 T081).
+            cleanup_task = PositionSnapshotCleanupTask()
+            await cleanup_task.run_once()
+
+            # Start periodic snapshot task (US4 T077/T077a/T083).
+            _snapshot_task = PositionSnapshotTask()
+            await _snapshot_task.start()
         except QueueError as e:
             logger.error(
                 "rabbitmq_startup_connection_failed_non_fatal",
@@ -82,8 +92,11 @@ def create_app() -> FastAPI:
     async def on_shutdown() -> None:
         logger.info("app_shutdown_begin", service=settings.position_manager_service_name)
 
-        # Stop consumers first so they no longer use connections.
-        global _ws_consumer, _order_consumer
+        # Stop consumers and background tasks first so they no longer use connections.
+        global _ws_consumer, _order_consumer, _snapshot_task
+        if _snapshot_task is not None:
+            await _snapshot_task.stop()
+            _snapshot_task = None
         if _ws_consumer is not None:
             await _ws_consumer.stop()
             _ws_consumer = None

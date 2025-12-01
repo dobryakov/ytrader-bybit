@@ -10,7 +10,7 @@ from aio_pika import Message
 
 from ..config.logging import get_logger
 from ..config.rabbitmq import RabbitMQConnection
-from ..models import PortfolioMetrics, Position
+from ..models import PortfolioMetrics, Position, PositionSnapshot
 
 logger = get_logger(__name__)
 
@@ -20,6 +20,7 @@ class PositionEventPublisher:
 
     POSITION_QUEUE = "position-manager.position_updated"
     PORTFOLIO_QUEUE = "position-manager.portfolio_updated"
+    SNAPSHOT_QUEUE = "position-manager.position_snapshot_created"
 
     @classmethod
     async def _publish(cls, queue_name: str, payload: Dict[str, Any]) -> None:
@@ -78,5 +79,24 @@ class PositionEventPublisher:
             "timestamp": datetime.now(tz=timezone.utc).isoformat(),
         }
         await cls._publish(cls.PORTFOLIO_QUEUE, payload)
+
+    @classmethod
+    async def publish_snapshot_created(
+        cls,
+        snapshot: PositionSnapshot,
+        trace_id: Optional[str],
+    ) -> None:
+        """Publish position_snapshot_created event with full snapshot payload."""
+        payload: Dict[str, Any] = {
+            "event_type": "position_snapshot_created",
+            "snapshot_id": str(snapshot.id),
+            "position_id": str(snapshot.position_id),
+            "asset": snapshot.asset,
+            "mode": snapshot.mode,
+            "snapshot_data": snapshot.snapshot_data,
+            "created_at": snapshot.created_at.replace(tzinfo=timezone.utc).isoformat(),
+            "trace_id": trace_id,
+        }
+        await cls._publish(cls.SNAPSHOT_QUEUE, payload)
 
 

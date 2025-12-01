@@ -338,37 +338,37 @@
 **Independent Test Criteria**: Create position snapshots and query historical snapshots to verify past states can be accurately reconstructed.
 
 ### T077: Extract position snapshot task from Order Manager
-- [ ] T077 [US4] Extract PositionSnapshotTask from order-manager/src/main.py: copy PositionSnapshotTask class to src/tasks/position_snapshot_task.py, adapt imports and paths to new structure, update configuration to use POSITION_MANAGER_SNAPSHOT_INTERVAL, ensure periodic snapshot creation works with new service structure
+- [X] T077 [US4] Extract PositionSnapshotTask from order-manager/src/main.py: copy PositionSnapshotTask class to src/tasks/position_snapshot_task.py, adapt imports and paths to new structure, update configuration to use POSITION_MANAGER_SNAPSHOT_INTERVAL, ensure periodic snapshot creation works with new service structure
 
 ### T077a: Adapt position snapshot task to new structure
-- [ ] T077a [US4] Adapt PositionSnapshotTask in src/tasks/position_snapshot_task.py: update imports to use new PositionManager service, update database connection to use src/config/database.py, update logging to use src/config/logging.py, configure execution in new service (scheduled tasks or background workers)
+- [X] T077a [US4] Adapt PositionSnapshotTask in src/tasks/position_snapshot_task.py: update imports to use new PositionManager service, update database connection to use src/config/database.py, update logging to use src/config/logging.py, configure execution in new service (scheduled tasks or background workers)
 
 ### T078: Implement create_position_snapshot method
-- [ ] T078 [US4] Implement create_position_snapshot() in src/services/position_manager.py: capture all position fields including ML features, save to position_snapshots table with JSONB snapshot_data, set created_at timestamp
+- [X] T078 [US4] Implement create_position_snapshot() in src/services/position_manager.py: capture all position fields including ML features, save to position_snapshots table with JSONB snapshot_data, set created_at timestamp
 
 ### T079: Create snapshot API endpoint
-- [ ] T079 [US4] Create POST /api/v1/positions/{asset}/snapshot endpoint in src/api/routes/positions.py: manually trigger snapshot creation, return PositionSnapshot object, publish snapshot_created event
+- [X] T079 [US4] Create POST /api/v1/positions/{asset}/snapshot endpoint in src/api/routes/positions.py: manually trigger snapshot creation, return PositionSnapshot object, publish snapshot_created event
 
 ### T080: Create snapshot history API endpoint
-- [ ] T080 [US4] Create GET /api/v1/positions/{asset}/snapshots endpoint in src/api/routes/positions.py: return historical snapshots with pagination (limit, offset), sorted by created_at DESC, return SnapshotList
+- [X] T080 [US4] Create GET /api/v1/positions/{asset}/snapshots endpoint in src/api/routes/positions.py: return historical snapshots with pagination (limit, offset), sorted by created_at DESC, return SnapshotList
 
 ### T081: Extract and create snapshot cleanup task
-- [ ] T081 [US4] Create PositionSnapshotCleanupTask in src/tasks/position_snapshot_cleanup_task.py: create cleanup job that runs on service startup (if not exists in Order Manager, create new), delete snapshots older than POSITION_MANAGER_SNAPSHOT_RETENTION_DAYS (365 days), adapt to use new database connection and logging, log cleanup results
+- [X] T081 [US4] Create PositionSnapshotCleanupTask in src/tasks/position_snapshot_cleanup_task.py: create cleanup job that runs on service startup (if not exists in Order Manager, create new), delete snapshots older than POSITION_MANAGER_SNAPSHOT_RETENTION_DAYS (365 days), adapt to use new database connection and logging, log cleanup results
 
 ### T082: Create snapshot event publisher
-- [ ] T082 [US4] Create snapshot event publisher in src/publishers/position_event_publisher.py: publish position_snapshot_created events to position-manager.position_snapshot_created queue with complete snapshot data
+- [X] T082 [US4] Create snapshot event publisher in src/publishers/position_event_publisher.py: publish position_snapshot_created events to position-manager.position_snapshot_created queue with complete snapshot data
 
 ### T083: Integrate snapshot task with main application
-- [ ] T083 [US4] Integrate snapshot task in src/main.py: schedule periodic snapshot creation, run cleanup task on startup, handle task errors gracefully
+- [X] T083 [US4] Integrate snapshot task in src/main.py: schedule periodic snapshot creation, run cleanup task on startup, handle task errors gracefully
 
 ### T084: Implement snapshot data serialization
-- [ ] T084 [US4] Implement snapshot data serialization in src/services/position_manager.py: serialize position to JSONB format, include all fields and ML features, ensure JSON compatibility
+- [X] T084 [US4] Implement snapshot data serialization in src/services/position_manager.py: serialize position to JSONB format, include all fields and ML features, ensure JSON compatibility
 
 ### T085: Add snapshot query optimization
-- [ ] T085 [US4] Optimize snapshot queries in src/services/position_manager.py: use database indexes (idx_position_snapshots_position_id, idx_position_snapshots_created_at), implement efficient pagination, ensure <2s query time for 1-year retention
+- [X] T085 [US4] Optimize snapshot queries in src/services/position_manager.py: use database indexes (idx_position_snapshots_position_id, idx_position_snapshots_created_at), implement efficient pagination, ensure <2s query time for 1-year retention
 
 ### T086: Create integration tests for snapshots
-- [ ] T086 [US4] Create integration tests in tests/integration/test_snapshots.py: test_snapshot_creation, test_snapshot_history_query, test_snapshot_cleanup, test_snapshot_event_publishing
+- [X] T086 [US4] Create integration tests in tests/integration/test_snapshots.py: test_snapshot_creation, test_snapshot_history_query, test_snapshot_cleanup, test_snapshot_event_publishing
 
 ---
 

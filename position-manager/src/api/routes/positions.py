@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from decimal import Decimal
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
@@ -216,12 +217,9 @@ async def list_snapshots(
     mode: str = Query("one-way", description="Trading mode (one-way, hedge)"),
     limit: int = Query(10, ge=1, le=100),
     offset: int = Query(0, ge=0),
+    position_manager: PositionManager = Depends(get_position_manager),
 ):
-    """Placeholder for snapshot history endpoint.
-
-    Full implementation is part of later phases (historical tracking). For
-    Phase 3 we return an empty list with 200 OK.
-    """
+    """Return historical snapshots for a given asset/mode, paginated."""
     trace_id = get_or_create_trace_id()
     logger.info(
         "position_snapshots_list_request",
@@ -232,13 +230,57 @@ async def list_snapshots(
         trace_id=trace_id,
     )
 
-    return JSONResponse(
-        status_code=200,
-        content={
-            "snapshots": [],
-            "count": 0,
-        },
-    )
+    mode_lower = mode.lower()
+    if mode_lower not in {"one-way", "hedge"}:
+        raise HTTPException(status_code=400, detail="Invalid mode. Must be 'one-way' or 'hedge'")
+
+    try:
+        position = await position_manager.get_position(asset, mode_lower)
+        if position is None:
+            logger.warning(
+                "position_not_found_for_snapshot_history",
+                asset=asset,
+                mode=mode,
+                trace_id=trace_id,
+            )
+            raise HTTPException(
+                status_code=404,
+                detail=f"Position not found for asset: {asset}, mode: {mode}",
+            )
+
+        snapshots = await position_manager.get_position_snapshots(
+            position_id=position.id,
+            limit=limit,
+            offset=offset,
+        )
+        payload = [serialize_snapshot(s) for s in snapshots]
+
+        logger.info(
+            "position_snapshots_list_completed",
+            asset=asset,
+            mode=mode,
+            count=len(payload),
+            trace_id=trace_id,
+        )
+        return JSONResponse(
+            status_code=200,
+            content={
+                "snapshots": payload,
+                "count": len(payload),
+            },
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            "position_snapshots_list_failed",
+            asset=asset,
+            mode=mode,
+            error=str(e),
+            trace_id=trace_id,
+            exc_info=True,
+        )
+        raise HTTPException(status_code=500, detail="Failed to retrieve position snapshots") from e
 
 
 def serialize_position_with_features(
@@ -276,13 +318,26 @@ def serialize_position_with_features(
     return data
 
 
+def _normalize_snapshot_value(value: Any) -> Any:
+    """Normalize snapshot payload values for JSON serialization."""
+    if isinstance(value, datetime):
+        return value.isoformat() + "Z"
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, dict):
+        return {k: _normalize_snapshot_value(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_normalize_snapshot_value(v) for v in value]
+    return value
+
+
 def serialize_snapshot(snapshot: PositionSnapshot) -> dict:
     return {
         "id": str(snapshot.id),
         "position_id": str(snapshot.position_id),
         "asset": snapshot.asset,
         "mode": snapshot.mode,
-        "snapshot_data": snapshot.snapshot_data,
+        "snapshot_data": _normalize_snapshot_value(snapshot.snapshot_data),
         "created_at": snapshot.created_at.isoformat() + "Z",
     }
 

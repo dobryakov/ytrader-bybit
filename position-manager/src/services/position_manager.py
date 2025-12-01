@@ -577,10 +577,30 @@ class PositionManager:
     async def create_position_snapshot(
         self,
         position: Position,
+        trace_id: Optional[str] = None,
     ) -> PositionSnapshot:
-        """Create a snapshot of the current position state into position_snapshots."""
+        """Create a snapshot of the current position state into position_snapshots.
+
+        The snapshot payload is stored in the JSONB ``snapshot_data`` column and
+        contains all DB fields plus ML features (where available) so that past
+        states can be reconstructed for analytics and model training.
+        """
         try:
+            # Base DB payload
             snapshot_payload = position.to_db_dict()
+            # Enrich with ML features for historical analysis
+            snapshot_payload.update(
+                {
+                    "unrealized_pnl_pct": str(position.unrealized_pnl_pct)
+                    if position.unrealized_pnl_pct is not None
+                    else None,
+                    "time_held_minutes": position.time_held_minutes,
+                    # position_size_norm depends on portfolio exposure; include key
+                    # for schema completeness even if not populated here.
+                    "position_size_norm": None,
+                }
+            )
+
             pool = await DatabaseConnection.get_pool()
             insert_query = """
                 INSERT INTO position_snapshots (
@@ -605,7 +625,23 @@ class PositionManager:
                 asset=position.asset,
                 mode=position.mode,
                 snapshot_id=str(snapshot.id),
+                trace_id=trace_id,
             )
+
+            # Best-effort event publishing; failures should not break request.
+            try:
+                await PositionEventPublisher.publish_snapshot_created(
+                    snapshot=snapshot,
+                    trace_id=trace_id,
+                )
+            except Exception:  # pragma: no cover - best-effort path
+                logger.warning(
+                    "position_snapshot_event_publish_failed",
+                    snapshot_id=str(snapshot.id),
+                    position_id=str(position.id),
+                    trace_id=trace_id,
+                )
+
             return snapshot
         except Exception as e:  # pragma: no cover
             logger.error(
@@ -614,8 +650,76 @@ class PositionManager:
                 asset=position.asset,
                 mode=position.mode,
                 error=str(e),
+                trace_id=trace_id,
             )
             raise DatabaseError(f"Failed to create position snapshot: {e}") from e
+
+    # === Snapshot history & cleanup (Phase 6) =================================
+
+    async def get_position_snapshots(
+        self,
+        position_id,
+        limit: int,
+        offset: int,
+    ) -> List[PositionSnapshot]:
+        """Return snapshots for a given position ordered by created_at DESC."""
+        try:
+            pool = await DatabaseConnection.get_pool()
+            query = """
+                SELECT id, position_id, asset, mode, snapshot_data, created_at
+                FROM position_snapshots
+                WHERE position_id = $1
+                ORDER BY created_at DESC
+                LIMIT $2 OFFSET $3
+            """
+            rows = await pool.fetch(query, str(position_id), limit, offset)
+            snapshots = [PositionSnapshot.from_db_dict(dict(row)) for row in rows]
+            logger.debug(
+                "position_snapshots_retrieved",
+                position_id=str(position_id),
+                count=len(snapshots),
+            )
+            return snapshots
+        except Exception as e:  # pragma: no cover
+            logger.error(
+                "position_snapshots_query_failed",
+                position_id=str(position_id),
+                error=str(e),
+            )
+            raise DatabaseError(f"Failed to query position snapshots: {e}") from e
+
+    async def cleanup_old_snapshots(self) -> int:
+        """Delete snapshots older than the configured retention period.
+
+        Returns the number of deleted rows.
+        """
+        try:
+            retention_days = settings.position_manager_snapshot_retention_days
+            cutoff = datetime.utcnow() - timedelta(days=retention_days)
+            pool = await DatabaseConnection.get_pool()
+            query = """
+                DELETE FROM position_snapshots
+                WHERE created_at < $1
+            """
+            command_tag = await pool.execute(query, cutoff)
+            # asyncpg returns tags like "DELETE 42"
+            try:
+                deleted = int(command_tag.split()[-1])
+            except Exception:  # pragma: no cover - extremely defensive
+                deleted = 0
+
+            logger.info(
+                "position_snapshots_cleanup_completed",
+                retention_days=retention_days,
+                deleted=deleted,
+            )
+            return deleted
+        except Exception as e:  # pragma: no cover
+            logger.error(
+                "position_snapshots_cleanup_failed",
+                error=str(e),
+            )
+            raise DatabaseError(f"Failed to cleanup old position snapshots: {e}") from e
 
     # === ML feature helpers (Phase 3) ======================================
 
