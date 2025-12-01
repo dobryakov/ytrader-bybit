@@ -99,8 +99,12 @@ class PositionManager:
                 if new_size != 0:
                     if (current_size > 0 and size_delta > 0) or (current_size < 0 and size_delta < 0):
                         # Same direction: weighted average
-                        total_value = (current_size * current_avg_price) + (size_delta * execution_price)
+                        # Use absolute values for calculation to ensure positive average price
+                        total_value = (abs(current_size) * current_avg_price) + (abs(size_delta) * execution_price)
                         new_avg_price = total_value / abs(new_size)
+                        # Ensure average price is always positive
+                        if new_avg_price < 0:
+                            new_avg_price = abs(new_avg_price)
                     else:
                         # Opposite direction: reduce position
                         if abs(size_delta) >= abs(current_size):

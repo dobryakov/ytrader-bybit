@@ -241,34 +241,63 @@ class TradingChainE2ETest:
         Returns:
             Order object if found, None otherwise
         """
-        pool = await DatabaseConnection.get_pool()
+        try:
+            pool = await DatabaseConnection.get_pool()
+        except Exception as e:
+            print(f"⚠️  Error getting database pool: {e}")
+            return None
+
         start_time = datetime.now(timezone.utc)
+        error_count = 0
+        max_errors = 5
 
         while (datetime.now(timezone.utc) - start_time).total_seconds() < timeout_seconds:
             try:
-                query = """
-                    SELECT 
-                        id, order_id, signal_id, asset, side, order_type,
-                        quantity, price, status, filled_quantity, average_price,
-                        fees, created_at, updated_at, executed_at, trace_id,
-                        is_dry_run, rejection_reason
-                    FROM orders
-                    WHERE signal_id = $1
-                    ORDER BY created_at DESC
-                    LIMIT 1
-                """
-                row = await pool.fetchrow(query, signal_id)
+                # Use acquire/release for proper connection management
+                async with pool.acquire() as conn:
+                    query = """
+                        SELECT 
+                            id, order_id, signal_id, asset, side, order_type,
+                            quantity, price, status, filled_quantity, average_price,
+                            fees, created_at, updated_at, executed_at, trace_id,
+                            is_dry_run, rejection_reason
+                        FROM orders
+                        WHERE signal_id = $1
+                        ORDER BY created_at DESC
+                        LIMIT 1
+                    """
+                    row = await conn.fetchrow(query, signal_id)
 
-                if row:
-                    order_data = dict(row)
-                    order = Order.from_dict(order_data)
-                    print(f"✅ Order created: {order.order_id} (status: {order.status})")
-                    return order
+                    if row:
+                        order_data = dict(row)
+                        order = Order.from_dict(order_data)
+                        print(f"✅ Order created: {order.order_id} (status: {order.status})")
+                        return order
 
                 await asyncio.sleep(1)
+                error_count = 0  # Reset error count on successful iteration
+            except (asyncio.CancelledError, RuntimeError) as e:
+                # Event loop closed or cancelled
+                if "Event loop is closed" in str(e) or "cancelled" in str(e).lower():
+                    print(f"⚠️  Event loop closed, stopping order check")
+                    return None
+                raise
             except Exception as e:
-                print(f"⚠️  Error checking order: {e}")
-                await asyncio.sleep(1)
+                error_count += 1
+                error_msg = str(e)
+                if "another operation is in progress" in error_msg.lower():
+                    # Wait a bit longer for concurrent operation to complete
+                    await asyncio.sleep(0.5)
+                elif "Event loop is closed" in error_msg or "connection was closed" in error_msg.lower():
+                    print(f"⚠️  Connection/event loop issue, stopping order check: {e}")
+                    return None
+                else:
+                    print(f"⚠️  Error checking order: {e}")
+                    await asyncio.sleep(1)
+                
+                if error_count >= max_errors:
+                    print(f"❌ Too many errors ({error_count}), stopping order check")
+                    return None
 
         print(f"❌ Order not created within {timeout_seconds} seconds")
         return None
@@ -288,8 +317,20 @@ class TradingChainE2ETest:
         Returns:
             Dictionary with execution status and details
         """
-        pool = await DatabaseConnection.get_pool()
+        try:
+            pool = await DatabaseConnection.get_pool()
+        except Exception as e:
+            print(f"⚠️  Error getting database pool: {e}")
+            return {
+                "executed": False,
+                "status": order.status,
+                "filled_quantity": float(order.filled_quantity),
+                "average_price": float(order.average_price) if order.average_price else None,
+            }
+
         start_time = datetime.now(timezone.utc)
+        error_count = 0
+        max_errors = 5
 
         result = {
             "executed": False,
@@ -300,31 +341,50 @@ class TradingChainE2ETest:
 
         while (datetime.now(timezone.utc) - start_time).total_seconds() < timeout_seconds:
             try:
-                query = """
-                    SELECT status, filled_quantity, average_price, executed_at
-                    FROM orders
-                    WHERE id = $1
-                """
-                row = await pool.fetchrow(query, str(order.id))
+                async with pool.acquire() as conn:
+                    query = """
+                        SELECT status, filled_quantity, average_price, executed_at
+                        FROM orders
+                        WHERE id = $1
+                    """
+                    row = await conn.fetchrow(query, str(order.id))
 
-                if row:
-                    current_status = row["status"]
-                    filled_qty = Decimal(str(row["filled_quantity"]))
-                    avg_price = Decimal(str(row["average_price"])) if row["average_price"] else None
+                    if row:
+                        current_status = row["status"]
+                        filled_qty = Decimal(str(row["filled_quantity"]))
+                        avg_price = Decimal(str(row["average_price"])) if row["average_price"] else None
 
-                    result["status"] = current_status
-                    result["filled_quantity"] = float(filled_qty)
-                    result["average_price"] = float(avg_price) if avg_price else None
+                        result["status"] = current_status
+                        result["filled_quantity"] = float(filled_qty)
+                        result["average_price"] = float(avg_price) if avg_price else None
 
-                    if current_status in ("filled", "partially_filled"):
-                        result["executed"] = True
-                        print(f"✅ Order executed: {order.order_id} (status: {current_status}, filled: {filled_qty})")
-                        return result
+                        if current_status in ("filled", "partially_filled"):
+                            result["executed"] = True
+                            print(f"✅ Order executed: {order.order_id} (status: {current_status}, filled: {filled_qty})")
+                            return result
 
                 await asyncio.sleep(2)
+                error_count = 0  # Reset error count on successful iteration
+            except (asyncio.CancelledError, RuntimeError) as e:
+                if "Event loop is closed" in str(e) or "cancelled" in str(e).lower():
+                    print(f"⚠️  Event loop closed, stopping execution check")
+                    return result
+                raise
             except Exception as e:
-                print(f"⚠️  Error checking execution: {e}")
-                await asyncio.sleep(2)
+                error_count += 1
+                error_msg = str(e)
+                if "another operation is in progress" in error_msg.lower():
+                    await asyncio.sleep(0.5)
+                elif "Event loop is closed" in error_msg or "connection was closed" in error_msg.lower():
+                    print(f"⚠️  Connection/event loop issue, stopping execution check: {e}")
+                    return result
+                else:
+                    print(f"⚠️  Error checking execution: {e}")
+                    await asyncio.sleep(2)
+                
+                if error_count >= max_errors:
+                    print(f"❌ Too many errors ({error_count}), stopping execution check")
+                    return result
 
         print(f"⏳ Order not executed within {timeout_seconds} seconds (status: {result['status']})")
         return result
@@ -348,70 +408,97 @@ class TradingChainE2ETest:
         Returns:
             Position object if found/updated, None otherwise
         """
-        pool = await DatabaseConnection.get_pool()
+        try:
+            pool = await DatabaseConnection.get_pool()
+        except Exception as e:
+            print(f"⚠️  Error getting database pool: {e}")
+            return None
+
         start_time = datetime.now(timezone.utc)
+        error_count = 0
+        max_errors = 5
 
         # Get initial position state
         initial_position = None
         initial_timestamp = None
         try:
-            query = """
-                SELECT 
-                    id, asset, size, average_entry_price, unrealized_pnl,
-                    realized_pnl, mode, long_size, short_size, long_avg_price,
-                    short_avg_price, last_updated, last_snapshot_at, created_at, closed_at
-                FROM positions
-                WHERE asset = $1 AND mode = 'one-way'
-            """
-            row = await pool.fetchrow(query, asset.upper())
-            if row:
-                initial_position = Position.from_dict(dict(row))
-                initial_timestamp = initial_position.last_updated
+            async with pool.acquire() as conn:
+                query = """
+                    SELECT 
+                        id, asset, size, average_entry_price, unrealized_pnl,
+                        realized_pnl, mode, long_size, short_size, long_avg_price,
+                        short_avg_price, last_updated, last_snapshot_at, created_at, closed_at
+                    FROM positions
+                    WHERE asset = $1 AND mode = 'one-way'
+                """
+                row = await conn.fetchrow(query, asset.upper())
+                if row:
+                    initial_position = Position.from_dict(dict(row))
+                    initial_timestamp = initial_position.last_updated
         except Exception:
             pass  # No initial position
 
         # Wait for position update
         while (datetime.now(timezone.utc) - start_time).total_seconds() < timeout_seconds:
             try:
-                query = """
-                    SELECT 
-                        id, asset, size, average_entry_price, unrealized_pnl,
-                        realized_pnl, mode, long_size, short_size, long_avg_price,
-                        short_avg_price, last_updated, last_snapshot_at, created_at, closed_at
-                FROM positions
-                    WHERE asset = $1 AND mode = 'one-way'
-                """
-                row = await pool.fetchrow(query, asset.upper())
+                async with pool.acquire() as conn:
+                    query = """
+                        SELECT 
+                            id, asset, size, average_entry_price, unrealized_pnl,
+                            realized_pnl, mode, long_size, short_size, long_avg_price,
+                            short_avg_price, last_updated, last_snapshot_at, created_at, closed_at
+                        FROM positions
+                        WHERE asset = $1 AND mode = 'one-way'
+                    """
+                    row = await conn.fetchrow(query, asset.upper())
 
-                if row:
-                    position = Position.from_dict(dict(row))
-                    # Check if position was updated
-                    if initial_timestamp is None or (position.last_updated and position.last_updated > initial_timestamp):
-                        print(f"✅ Position updated: {asset} (size: {position.size}, unrealized_pnl: {position.unrealized_pnl}, realized_pnl: {position.realized_pnl})")
-                        # Check if position is closed (if requested)
-                        if check_closed and position.size == 0:
-                            print(f"✅ Position closed: {asset} (realized_pnl: {position.realized_pnl})")
-                        return position
-                    # Also check if size changed
-                    elif check_size_change and initial_position is not None and position.size != initial_position.size:
-                        print(f"✅ Position size changed: {asset} (old: {initial_position.size}, new: {position.size})")
-                        # Check if position is closed (if requested)
-                        if check_closed and position.size == 0:
-                            print(f"✅ Position closed: {asset} (realized_pnl: {position.realized_pnl})")
-                        return position
-                    # Check if unrealized_pnl or realized_pnl changed (position value changes over time)
-                    elif initial_position is not None:
-                        if position.unrealized_pnl != initial_position.unrealized_pnl:
-                            print(f"✅ Position unrealized_pnl changed: {asset} (old: {initial_position.unrealized_pnl}, new: {position.unrealized_pnl})")
+                    if row:
+                        position = Position.from_dict(dict(row))
+                        # Check if position was updated
+                        if initial_timestamp is None or (position.last_updated and position.last_updated > initial_timestamp):
+                            print(f"✅ Position updated: {asset} (size: {position.size}, unrealized_pnl: {position.unrealized_pnl}, realized_pnl: {position.realized_pnl})")
+                            # Check if position is closed (if requested)
+                            if check_closed and position.size == 0:
+                                print(f"✅ Position closed: {asset} (realized_pnl: {position.realized_pnl})")
                             return position
-                        if position.realized_pnl != initial_position.realized_pnl:
-                            print(f"✅ Position realized_pnl changed: {asset} (old: {initial_position.realized_pnl}, new: {position.realized_pnl})")
+                        # Also check if size changed
+                        elif check_size_change and initial_position is not None and position.size != initial_position.size:
+                            print(f"✅ Position size changed: {asset} (old: {initial_position.size}, new: {position.size})")
+                            # Check if position is closed (if requested)
+                            if check_closed and position.size == 0:
+                                print(f"✅ Position closed: {asset} (realized_pnl: {position.realized_pnl})")
                             return position
+                        # Check if unrealized_pnl or realized_pnl changed (position value changes over time)
+                        elif initial_position is not None:
+                            if position.unrealized_pnl != initial_position.unrealized_pnl:
+                                print(f"✅ Position unrealized_pnl changed: {asset} (old: {initial_position.unrealized_pnl}, new: {position.unrealized_pnl})")
+                                return position
+                            if position.realized_pnl != initial_position.realized_pnl:
+                                print(f"✅ Position realized_pnl changed: {asset} (old: {initial_position.realized_pnl}, new: {position.realized_pnl})")
+                                return position
 
                 await asyncio.sleep(2)
+                error_count = 0  # Reset error count on successful iteration
+            except (asyncio.CancelledError, RuntimeError) as e:
+                if "Event loop is closed" in str(e) or "cancelled" in str(e).lower():
+                    print(f"⚠️  Event loop closed, stopping position check")
+                    return None
+                raise
             except Exception as e:
-                print(f"⚠️  Error checking position: {e}")
-                await asyncio.sleep(2)
+                error_count += 1
+                error_msg = str(e)
+                if "another operation is in progress" in error_msg.lower():
+                    await asyncio.sleep(0.5)
+                elif "Event loop is closed" in error_msg or "connection was closed" in error_msg.lower():
+                    print(f"⚠️  Connection/event loop issue, stopping position check: {e}")
+                    return None
+                else:
+                    print(f"⚠️  Error checking position: {e}")
+                    await asyncio.sleep(2)
+                
+                if error_count >= max_errors:
+                    print(f"❌ Too many errors ({error_count}), stopping position check")
+                    return None
 
         print(f"⏳ Position not updated within {timeout_seconds} seconds")
         return None
@@ -459,46 +546,73 @@ class TradingChainE2ETest:
         Returns:
             Execution event data dict if found, None otherwise
         """
-        pool = await DatabaseConnection.get_pool()
+        try:
+            pool = await DatabaseConnection.get_pool()
+        except Exception as e:
+            print(f"⚠️  Error getting database pool: {e}")
+            return None
+
         start_time = datetime.now(timezone.utc)
+        error_count = 0
+        max_errors = 5
 
         while (datetime.now(timezone.utc) - start_time).total_seconds() < timeout_seconds:
             try:
-                # Check if execution event exists in database
-                if check_performance:
-                    query = """
-                        SELECT event_id, signal_id, asset, side, execution_price, execution_quantity,
-                               execution_fees, executed_at, performance
-                        FROM execution_events
-                        WHERE signal_id = $1
-                        LIMIT 1
-                    """
-                else:
-                    query = """
-                        SELECT event_id, signal_id, asset, side, execution_price, execution_quantity
-                        FROM execution_events
-                        WHERE signal_id = $1
-                        LIMIT 1
-                    """
-                row = await pool.fetchrow(query, signal_id)
+                async with pool.acquire() as conn:
+                    # Check if execution event exists in database
+                    if check_performance:
+                        query = """
+                            SELECT id, signal_id, asset, side, execution_price, execution_quantity,
+                                   execution_fees, executed_at, performance
+                            FROM execution_events
+                            WHERE signal_id = $1
+                            LIMIT 1
+                        """
+                    else:
+                        query = """
+                            SELECT id, signal_id, asset, side, execution_price, execution_quantity
+                            FROM execution_events
+                            WHERE signal_id = $1
+                            LIMIT 1
+                        """
+                    row = await conn.fetchrow(query, signal_id)
 
-                if row:
-                    event_data = dict(row)
-                    print(f"✅ Execution event found for signal: {signal_id}")
-                    if check_performance and event_data.get("performance"):
-                        perf = event_data["performance"]
-                        realized_pnl = perf.get("realized_pnl") if isinstance(perf, dict) else None
-                        return_pct = perf.get("return_percent") if isinstance(perf, dict) else None
-                        if realized_pnl is not None:
-                            print(f"   📊 Performance: realized_pnl={realized_pnl}, return_percent={return_pct}")
-                    return event_data
+                    if row:
+                        event_data = dict(row)
+                        print(f"✅ Execution event found for signal: {signal_id}")
+                        if check_performance and event_data.get("performance"):
+                            perf = event_data["performance"]
+                            realized_pnl = perf.get("realized_pnl") if isinstance(perf, dict) else None
+                            return_pct = perf.get("return_percent") if isinstance(perf, dict) else None
+                            if realized_pnl is not None:
+                                print(f"   📊 Performance: realized_pnl={realized_pnl}, return_percent={return_pct}")
+                        return event_data
 
                 await asyncio.sleep(2)
+                error_count = 0  # Reset error count on successful iteration
+            except (asyncio.CancelledError, RuntimeError) as e:
+                if "Event loop is closed" in str(e) or "cancelled" in str(e).lower():
+                    print(f"⚠️  Event loop closed, stopping execution event check")
+                    return None
+                raise
             except Exception as e:
+                error_count += 1
+                error_msg = str(e)
                 # Table might not exist or no events yet
-                if "does not exist" not in str(e).lower():
+                if "does not exist" in error_msg.lower():
+                    await asyncio.sleep(2)
+                elif "another operation is in progress" in error_msg.lower():
+                    await asyncio.sleep(0.5)
+                elif "Event loop is closed" in error_msg or "connection was closed" in error_msg.lower():
+                    print(f"⚠️  Connection/event loop issue, stopping execution event check: {e}")
+                    return None
+                else:
                     print(f"⚠️  Error checking execution event: {e}")
-                await asyncio.sleep(2)
+                    await asyncio.sleep(2)
+                
+                if error_count >= max_errors:
+                    print(f"❌ Too many errors ({error_count}), stopping execution event check")
+                    return None
 
         print(f"⏳ Execution event not found within {timeout_seconds} seconds")
         return None
