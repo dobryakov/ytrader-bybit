@@ -44,20 +44,34 @@ class OrderExecutionEvent:
 
         trace_id = payload.get("trace_id") or get_or_create_trace_id()
 
-        asset = payload.get("asset")
+        # Extract order data - support both flat structure and nested "order" object
+        order_data = payload.get("order", {})
+        if not order_data:
+            # Fallback to flat structure for backward compatibility
+            order_data = payload
+
+        asset = order_data.get("asset") or payload.get("asset")
         if not asset:
             raise ValueError("Missing 'asset' in order execution event")
 
-        mode = payload.get("mode") or "one-way"
+        mode = payload.get("mode") or order_data.get("mode") or "one-way"
 
-        side = (payload.get("side") or "").lower()
+        side = (order_data.get("side") or payload.get("side") or "").lower()
         filled = (
-            payload.get("filled_quantity")
+            order_data.get("filled_quantity")
+            or payload.get("filled_quantity")
+            or order_data.get("execution_quantity")
             or payload.get("execution_quantity")
+            or order_data.get("filled_qty")
             or payload.get("filled_qty")
         )
-        price = payload.get("execution_price") or payload.get("price")
-        fees_raw = payload.get("execution_fees")
+        price = (
+            order_data.get("average_price")
+            or order_data.get("price")
+            or payload.get("execution_price")
+            or payload.get("price")
+        )
+        fees_raw = order_data.get("fees") or payload.get("execution_fees")
 
         if filled is None or price is None:
             raise ValueError("Missing filled_quantity or execution_price in order event")

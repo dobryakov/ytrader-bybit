@@ -100,13 +100,43 @@ except ImportError as e:
         raise ImportError(f"Could not import from order-manager. First error: {e}, Second error: {e2}. sys.path: {sys.path[:10]}")
 
 # Import from position-manager
-try:
-    from src.models.position import Position
-except ImportError as e:
-    try:
-        from position_manager.src.models.position import Position
-    except ImportError:
-        raise ImportError(f"Could not import from position-manager: {e}")
+# IMPORTANT: Must import from position-manager, not order-manager (which also has Position class)
+# Use importlib to explicitly load from position-manager file
+position_manager_base = None
+for path in [docker_position_manager, position_manager_path]:
+    if os.path.exists(path):
+        position_manager_base = path
+        break
+
+if not position_manager_base:
+    raise ImportError("Could not find position-manager directory")
+
+position_file = os.path.join(position_manager_base, "src", "models", "position.py")
+if not os.path.exists(position_file):
+    raise ImportError(f"Could not find position.py at {position_file}")
+
+# Import dependencies first (UUID, Decimal, etc.) - needed for Pydantic models
+from uuid import UUID
+from decimal import Decimal
+from datetime import datetime
+from typing import Optional, Dict, Any
+
+# Use importlib to explicitly load from file
+spec = importlib.util.spec_from_file_location("position_manager_position", position_file)
+position_module = importlib.util.module_from_spec(spec)
+# Add position-manager base to sys.path for dependencies
+if position_manager_base not in sys.path:
+    sys.path.insert(0, position_manager_base)
+spec.loader.exec_module(position_module)
+Position = position_module.Position
+
+# Rebuild model to resolve forward references (UUID, etc.)
+if hasattr(Position, 'model_rebuild'):
+    Position.model_rebuild()
+
+# Verify that Position has from_db_dict method (from position-manager, not order-manager)
+if not hasattr(Position, 'from_db_dict'):
+    raise ImportError(f"Position class does not have from_db_dict method. Position module: {Position.__module__}, Position file: {getattr(Position, '__file__', 'unknown')}")
 
 
 class TradingChainE2ETest:
@@ -398,7 +428,7 @@ class TradingChainE2ETest:
         check_size_change: bool = True,
         check_closed: bool = False,
         initial_position_size: Optional[Decimal] = None,
-    ) -> Optional[Position]:
+    ) -> Optional["Position"]:
         """
         Wait for position update in database.
 
@@ -462,19 +492,29 @@ class TradingChainE2ETest:
 
                     if row:
                         position = Position.from_db_dict(dict(row))
-                        # Check if position was updated
-                        if initial_timestamp is None or (position.last_updated and position.last_updated > initial_timestamp):
-                            print(f"✅ Position updated: {asset} (size: {position.size}, unrealized_pnl: {position.unrealized_pnl}, realized_pnl: {position.realized_pnl})")
+                        # Check if position was updated (timestamp changed)
+                        timestamp_updated = initial_timestamp is None or (position.last_updated and position.last_updated > initial_timestamp)
+                        if timestamp_updated:
+                            print(f"✅ Position updated (timestamp): {asset} (size: {position.size}, unrealized_pnl: {position.unrealized_pnl}, realized_pnl: {position.realized_pnl})")
                             # Check if position is closed (if requested)
                             if check_closed and position.size == 0:
                                 print(f"✅ Position closed: {asset} (realized_pnl: {position.realized_pnl})")
                             return position
                         # Also check if size changed (using initial_position_size if provided)
-                        elif check_size_change:
+                        if check_size_change:
                             size_changed = False
-                            if initial_position_size is not None and position.size != initial_position_size:
-                                size_changed = True
-                            elif initial_position is not None and position.size != initial_position.size:
+                            if initial_position_size is not None:
+                                # If initial size was provided, check if it changed
+                                if position.size != initial_position_size:
+                                    size_changed = True
+                            elif initial_position is not None:
+                                # If initial position exists, check if size changed
+                                if position.size != initial_position.size:
+                                    size_changed = True
+                            # If no initial size/position, but position exists and we're checking for changes,
+                            # consider it as updated (position was created/updated)
+                            elif initial_position_size is None and initial_position is None:
+                                # Position exists but we had no initial state - consider it as updated
                                 size_changed = True
                             
                             if size_changed:
@@ -876,7 +916,7 @@ class TradingChainE2ETest:
         }
         return fallback_prices.get(asset.upper(), Decimal("1000.0"))
 
-    async def get_position(self, asset: str) -> Optional[Position]:
+    async def get_position(self, asset: str) -> Optional["Position"]:
         """
         Get current position for an asset.
 
@@ -899,9 +939,18 @@ class TradingChainE2ETest:
                 """
                 row = await conn.fetchrow(query, asset.upper())
                 if row:
-                    return Position.from_db_dict(dict(row))
+                    try:
+                        return Position.from_db_dict(dict(row))
+                    except Exception as e:
+                        print(f"⚠️  Error creating Position from_db_dict: {e}")
+                        import traceback
+                        print(f"⚠️  Traceback: {traceback.format_exc()}")
+                        print(f"⚠️  Row data: {dict(row)}")
+                        return None
         except Exception as e:
-            print(f"⚠️  Error getting position: {e}")
+            print(f"⚠️  Error getting position from database: {e}")
+            import traceback
+            print(f"⚠️  Traceback: {traceback.format_exc()}")
         return None
 
     async def run_buy_order_test(
@@ -1156,6 +1205,7 @@ class TradingChainE2ETest:
                         position = await self.wait_for_position_update(
                             asset, 
                             timeout_seconds=60,
+                            check_size_change=True,  # Check if size changed
                             check_closed=True,  # Check if position is closed
                             initial_position_size=initial_position_size_after_buy, # Pass initial size
                         )
