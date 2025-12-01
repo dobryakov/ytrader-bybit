@@ -65,6 +65,21 @@ class TrainingOrchestrator:
         if not should_retrain:
             return
 
+        # Check minimum dataset size before starting training
+        # This prevents training from starting with insufficient data (e.g., scheduled retraining with only 1 event)
+        min_dataset_size = settings.model_training_min_dataset_size
+        buffer_size = len(self._execution_events_buffer)
+        
+        if buffer_size < min_dataset_size:
+            logger.info(
+                "Training triggered but insufficient data in buffer",
+                strategy_id=strategy_id,
+                buffer_size=buffer_size,
+                min_dataset_size=min_dataset_size,
+                reason="waiting_for_more_events",
+            )
+            return  # Wait for more events to accumulate
+
         # Check if training is already in progress
         if self._current_training_task and not self._current_training_task.done():
             logger.info("Training already in progress, cancelling for new training", strategy_id=strategy_id)

@@ -45,9 +45,19 @@ class RetrainingTrigger:
             True if retraining should be triggered
         """
         # Check scheduled periodic retraining
+        # But only if we have enough data (otherwise wait for more events)
         if await self._check_scheduled_retraining(strategy_id):
-            logger.info("Scheduled retraining triggered", strategy_id=strategy_id)
-            return True
+            min_dataset_size = settings.model_training_min_dataset_size
+            if current_dataset_size >= min_dataset_size:
+                logger.info("Scheduled retraining triggered", strategy_id=strategy_id, dataset_size=current_dataset_size)
+                return True
+            else:
+                logger.debug(
+                    "Scheduled retraining skipped - insufficient data",
+                    strategy_id=strategy_id,
+                    dataset_size=current_dataset_size,
+                    min_dataset_size=min_dataset_size,
+                )
 
         # Check data accumulation threshold
         if await self._check_data_accumulation_threshold(current_dataset_size, execution_event_count):

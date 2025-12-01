@@ -150,12 +150,21 @@ class DatasetBuilder:
             Quality score between 0 and 1
         """
         quality_checks = []
+        check_details = {}
 
         # Check 1: No missing values
         missing_features = features_df.isnull().sum().sum()
         missing_labels = labels_series.isnull().sum()
-        missing_ratio = (missing_features + missing_labels) / (len(features_df) * len(features_df.columns) + len(labels_series))
-        quality_checks.append(1.0 - min(missing_ratio, 1.0))  # Penalize missing values
+        total_cells = len(features_df) * len(features_df.columns) + len(labels_series)
+        missing_ratio = (missing_features + missing_labels) / total_cells if total_cells > 0 else 0.0
+        missing_score = 1.0 - min(missing_ratio, 1.0)
+        quality_checks.append(missing_score)
+        check_details["missing_values"] = {
+            "missing_features": int(missing_features),
+            "missing_labels": int(missing_labels),
+            "missing_ratio": float(missing_ratio),
+            "score": float(missing_score),
+        }
 
         # Check 2: No infinite values
         inf_features = np.isinf(features_df.select_dtypes(include=[np.number])).sum().sum()
@@ -164,13 +173,26 @@ class DatasetBuilder:
             inf_labels = np.isinf(labels_series).sum()
         else:
             inf_labels = 0
-        inf_ratio = (inf_features + inf_labels) / (len(features_df) * len(features_df.columns) + len(labels_series))
-        quality_checks.append(1.0 - min(inf_ratio, 1.0))  # Penalize infinite values
+        inf_ratio = (inf_features + inf_labels) / total_cells if total_cells > 0 else 0.0
+        inf_score = 1.0 - min(inf_ratio, 1.0)
+        quality_checks.append(inf_score)
+        check_details["infinite_values"] = {
+            "inf_features": int(inf_features),
+            "inf_labels": int(inf_labels),
+            "inf_ratio": float(inf_ratio),
+            "score": float(inf_score),
+        }
 
         # Check 3: Sufficient data points
         min_records = 10  # Minimum records for meaningful training
-        sufficiency_score = min(len(features_df) / min_records, 1.0) if len(features_df) >= min_records else 0.0
+        record_count = len(features_df)
+        sufficiency_score = min(record_count / min_records, 1.0) if record_count >= min_records else 0.0
         quality_checks.append(sufficiency_score)
+        check_details["sufficient_data"] = {
+            "record_count": int(record_count),
+            "min_records": min_records,
+            "score": float(sufficiency_score),
+        }
 
         # Check 4: Label distribution (for classification)
         if labels_series.dtype in [np.int64, int]:
@@ -179,32 +201,84 @@ class DatasetBuilder:
                 # Check for class imbalance (penalize extreme imbalance)
                 label_counts = labels_series.value_counts()
                 min_class_ratio = label_counts.min() / label_counts.max()
-                quality_checks.append(min_class_ratio)  # Prefer balanced classes
+                label_distribution_score = min_class_ratio
+                quality_checks.append(label_distribution_score)
+                check_details["label_distribution"] = {
+                    "unique_labels": int(unique_labels),
+                    "label_counts": label_counts.to_dict(),
+                    "min_class_ratio": float(min_class_ratio),
+                    "score": float(label_distribution_score),
+                }
             else:
                 quality_checks.append(0.0)  # All same label is bad
+                check_details["label_distribution"] = {
+                    "unique_labels": int(unique_labels),
+                    "label_counts": labels_series.value_counts().to_dict(),
+                    "score": 0.0,
+                    "reason": "all_same_label",
+                }
         else:
             # For regression, check label variance
             label_variance = labels_series.var()
             if label_variance > 0:
-                quality_checks.append(min(label_variance / 100.0, 1.0))  # Normalize variance
+                label_variance_score = min(label_variance / 100.0, 1.0)
+                quality_checks.append(label_variance_score)
+                check_details["label_distribution"] = {
+                    "label_variance": float(label_variance),
+                    "score": float(label_variance_score),
+                }
             else:
                 quality_checks.append(0.0)  # Zero variance is bad
+                check_details["label_distribution"] = {
+                    "label_variance": 0.0,
+                    "score": 0.0,
+                    "reason": "zero_variance",
+                }
 
         # Check 5: Feature variance (avoid constant features)
-        feature_variances = features_df.select_dtypes(include=[np.number]).var()
-        non_zero_variance_ratio = (feature_variances > 1e-10).sum() / len(feature_variances) if len(feature_variances) > 0 else 0.0
-        quality_checks.append(non_zero_variance_ratio)
+        numeric_features = features_df.select_dtypes(include=[np.number])
+        if len(numeric_features.columns) > 0:
+            feature_variances = numeric_features.var()
+            non_zero_variance_count = (feature_variances > 1e-10).sum()
+            total_features = len(feature_variances)
+            non_zero_variance_ratio = non_zero_variance_count / total_features if total_features > 0 else 0.0
+            quality_checks.append(non_zero_variance_ratio)
+            check_details["feature_variance"] = {
+                "total_features": int(total_features),
+                "non_zero_variance_count": int(non_zero_variance_count),
+                "ratio": float(non_zero_variance_ratio),
+                "score": float(non_zero_variance_ratio),
+            }
+        else:
+            quality_checks.append(0.0)
+            check_details["feature_variance"] = {
+                "total_features": 0,
+                "score": 0.0,
+                "reason": "no_numeric_features",
+            }
 
         # Calculate overall quality score (weighted average)
         weights = [0.2, 0.2, 0.2, 0.2, 0.2]  # Equal weights for now
+        if len(quality_checks) != len(weights):
+            # Adjust weights if number of checks changed
+            weights = [1.0 / len(quality_checks)] * len(quality_checks)
+
         quality_score = sum(w * check for w, check in zip(weights, quality_checks))
 
-        logger.debug(
+        # Log detailed quality check results
+        logger.info(
             "Dataset quality validation",
-            quality_score=quality_score,
-            checks=quality_checks,
-            missing_ratio=missing_ratio,
-            inf_ratio=inf_ratio,
+            record_count=len(features_df),
+            feature_count=len(features_df.columns),
+            quality_score=float(quality_score),
+            check_scores={
+                "missing_values": float(quality_checks[0]) if len(quality_checks) > 0 else 0.0,
+                "infinite_values": float(quality_checks[1]) if len(quality_checks) > 1 else 0.0,
+                "sufficient_data": float(quality_checks[2]) if len(quality_checks) > 2 else 0.0,
+                "label_distribution": float(quality_checks[3]) if len(quality_checks) > 3 else 0.0,
+                "feature_variance": float(quality_checks[4]) if len(quality_checks) > 4 else 0.0,
+            },
+            check_details=check_details,
         )
 
         return quality_score

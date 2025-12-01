@@ -75,7 +75,9 @@ class ModelTrainer:
             raise ValueError(f"Unsupported model type: {model_type}")
 
         model_classes = self.supported_model_types[model_type]
-        model_class = model_classes.get(task_type)
+        # Map task_type to dictionary key: "classification" -> "classifier", "regression" -> "regressor"
+        model_key = "classifier" if task_type == "classification" else "regressor"
+        model_class = model_classes.get(model_key)
         if model_class is None:
             raise ValueError(f"Model type {model_type} does not support {task_type}")
 
