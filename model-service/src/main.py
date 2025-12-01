@@ -160,7 +160,7 @@ async def lifespan(app: FastAPI):
             logger.error("Failed to start execution event consumer", error=str(e), exc_info=True)
             # Continue anyway - training can be triggered manually
 
-        # Start position update consumer for cache invalidation
+        # Start position update consumer for cache invalidation and exit strategy evaluation
         app.state.position_update_consumer = position_update_consumer  # Store for shutdown
         try:
             await position_update_consumer.start()
@@ -168,6 +168,14 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error("Failed to start position update consumer", error=str(e), exc_info=True)
             # Continue anyway - cache will work but won't auto-invalidate on updates
+            # If exit strategy is enabled, start fallback mode
+            if settings.exit_strategy_enabled:
+                try:
+                    from ..services.position_based_signal_generator import position_based_signal_generator
+                    await position_based_signal_generator.start_fallback_mode()
+                    logger.warning("Started fallback mode for exit strategy evaluation")
+                except Exception as fallback_error:
+                    logger.error("Failed to start fallback mode", error=str(fallback_error), exc_info=True)
 
         # Start quality monitor for periodic quality evaluation
         try:
@@ -243,6 +251,19 @@ async def lifespan(app: FastAPI):
                 logger.error("Error stopping position update consumer", error=str(e), exc_info=True)
 
         shutdown_tasks.append(stop_position_update_consumer())
+
+        # Stop position-based signal generator fallback mode if active
+        async def stop_position_based_signal_generator():
+            try:
+                from ..services.position_based_signal_generator import position_based_signal_generator
+                await asyncio.wait_for(position_based_signal_generator.stop_fallback_mode(), timeout=5.0)
+                logger.info("Position-based signal generator stopped")
+            except asyncio.TimeoutError:
+                logger.warning("Position-based signal generator stop timed out")
+            except Exception as e:
+                logger.error("Error stopping position-based signal generator", error=str(e), exc_info=True)
+
+        shutdown_tasks.append(stop_position_based_signal_generator())
 
         # Stop intelligent orchestrator
         async def stop_intelligent_orchestrator():

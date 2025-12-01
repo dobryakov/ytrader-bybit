@@ -82,6 +82,30 @@ class Settings(BaseSettings):
     position_cache_ttl_seconds: int = Field(default=30, alias="POSITION_CACHE_TTL_SECONDS")
     position_cache_max_size: int = Field(default=1000, alias="POSITION_CACHE_MAX_SIZE")
 
+    # Exit Strategy Configuration
+    exit_strategy_enabled: bool = Field(default=True, alias="EXIT_STRATEGY_ENABLED")
+    exit_strategy_rate_limit: int = Field(default=10, alias="EXIT_STRATEGY_RATE_LIMIT")
+
+    # Take Profit Configuration
+    take_profit_enabled: bool = Field(default=True, alias="TAKE_PROFIT_ENABLED")
+    take_profit_threshold_pct: float = Field(default=3.0, alias="TAKE_PROFIT_THRESHOLD_PCT")
+    take_profit_partial_exit: bool = Field(default=False, alias="TAKE_PROFIT_PARTIAL_EXIT")
+    take_profit_partial_amount_pct: float = Field(default=50.0, alias="TAKE_PROFIT_PARTIAL_AMOUNT_PCT")
+
+    # Stop Loss Configuration
+    stop_loss_enabled: bool = Field(default=True, alias="STOP_LOSS_ENABLED")
+    stop_loss_threshold_pct: float = Field(default=-2.0, alias="STOP_LOSS_THRESHOLD_PCT")
+
+    # Trailing Stop Configuration
+    trailing_stop_enabled: bool = Field(default=False, alias="TRAILING_STOP_ENABLED")
+    trailing_stop_activation_pct: float = Field(default=2.0, alias="TRAILING_STOP_ACTIVATION_PCT")
+    trailing_stop_distance_pct: float = Field(default=1.0, alias="TRAILING_STOP_DISTANCE_PCT")
+
+    # Time-Based Exit Configuration
+    time_based_exit_enabled: bool = Field(default=False, alias="TIME_BASED_EXIT_ENABLED")
+    time_based_exit_max_hours: int = Field(default=24, alias="TIME_BASED_EXIT_MAX_HOURS")
+    time_based_exit_profit_target_pct: float = Field(default=1.0, alias="TIME_BASED_EXIT_PROFIT_TARGET_PCT")
+
     @field_validator("model_service_log_level")
     @classmethod
     def validate_log_level(cls, v: str) -> str:
