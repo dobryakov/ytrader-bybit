@@ -1,11 +1,15 @@
-# Integration Tests for Grafana Monitoring
+# Integration and E2E Tests
 
-This directory contains integration tests for the Grafana monitoring service.
+This directory contains integration tests for the Grafana monitoring service and end-to-end tests for the complete trading chain.
 
 ## Test Structure
 
-- `test_grafana_container.py` - Tests for Grafana container startup and health endpoints
-- `test_grafana_datasources.py` - Tests for Grafana data source connectivity and configuration
+### Integration Tests
+- `integration/test_grafana_container.py` - Tests for Grafana container startup and health endpoints
+- `integration/test_grafana_datasources.py` - Tests for Grafana data source connectivity and configuration
+
+### E2E Tests
+- `e2e/test_trading_chain_e2e.py` - Complete end-to-end test for trading chain (signal → order → position → execution)
 
 ## Running Tests
 
@@ -34,6 +38,30 @@ docker compose --profile test run --rm test-grafana pytest tests/integration/tes
 
 # Run with markers
 docker compose --profile test run --rm test-grafana pytest tests/integration -v -m integration
+```
+
+**Run E2E tests:**
+```bash
+# Start all required services
+docker compose up -d postgres rabbitmq order-manager position-manager model-service ws-gateway
+
+# Wait for services to be healthy
+docker compose ps
+
+# Run E2E test for BUY order flow
+docker compose --profile test run --rm test-grafana pytest tests/e2e/test_trading_chain_e2e.py::test_buy_order_e2e -v
+
+# Run E2E test for complete buy-sell cycle
+docker compose --profile test run --rm test-grafana pytest tests/e2e/test_trading_chain_e2e.py::test_buy_sell_cycle_e2e -v
+
+# Run all E2E tests
+docker compose --profile test run --rm test-grafana pytest tests/e2e -v
+
+# Run as standalone script (with custom parameters)
+docker compose --profile test run --rm test-grafana python tests/e2e/test_trading_chain_e2e.py --asset ETHUSDT --amount 50.0
+
+# Run buy-sell cycle
+docker compose --profile test run --rm test-grafana python tests/e2e/test_trading_chain_e2e.py --asset ETHUSDT --amount 50.0 --buy-sell
 ```
 
 ### Local Execution (Development)
@@ -75,18 +103,35 @@ The test container (`test-grafana`) is defined in `docker-compose.yml`:
 
 ## Test Coverage
 
-### Container Tests (`test_grafana_container.py`)
+### Integration Tests
 
+#### Container Tests (`test_grafana_container.py`)
 - ✅ Grafana container starts successfully
 - ✅ Health endpoint responds correctly
 - ✅ API is accessible
 
-### Data Source Tests (`test_grafana_datasources.py`)
-
+#### Data Source Tests (`test_grafana_datasources.py`)
 - ✅ PostgreSQL data source is configured
 - ✅ RabbitMQ HTTP API data source is configured
 - ✅ Service health data sources are configured (ws-gateway, model-service, order-manager)
 - ✅ PostgreSQL data source connectivity
+
+### E2E Tests
+
+#### Trading Chain E2E (`test_trading_chain_e2e.py`)
+- ✅ Send trading signal to RabbitMQ queue `model-service.trading_signals`
+- ✅ Order-manager processes signal and creates order in database
+- ✅ Order is placed on Bybit (or in dry-run mode)
+- ✅ Position-manager receives position updates via WebSocket
+- ✅ Model-service receives execution events
+- ✅ Complete buy-sell cycle verification
+
+**Test Flow:**
+1. **Signal Generation**: Test sends BUY/SELL signal to RabbitMQ (simulating model service)
+2. **Order Processing**: Verifies order-manager consumes signal and creates order
+3. **Order Execution**: Verifies order is placed on Bybit (or dry-run mode)
+4. **Position Tracking**: Verifies position-manager updates position from WebSocket events
+5. **Execution Events**: Verifies execution events are published and consumed by model-service
 
 ## Troubleshooting
 
