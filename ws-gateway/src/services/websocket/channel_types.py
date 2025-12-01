@@ -13,7 +13,7 @@ PUBLIC_CHANNELS = {
 PRIVATE_CHANNELS = {
     "balance",     # wallet
     "order",       # order
-    # Note: "position" can be added here if needed in the future
+    "position",    # position updates
 }
 
 

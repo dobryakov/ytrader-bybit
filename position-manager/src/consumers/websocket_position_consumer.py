@@ -43,10 +43,28 @@ class WebSocketPositionEvent:
             raise ValueError(f"Unsupported event_type: {event_type}")
 
         trace_id = payload.get("trace_id") or get_or_create_trace_id()
-        data = payload.get("data") or {}
+        # ws-gateway sends events with "payload" field, but we also support "data" for backward compatibility
+        data = payload.get("payload") or payload.get("data") or {}
+
+        # Log for debugging
+        logger.debug(
+            "ws_position_event_parsing",
+            event_type=event_type,
+            has_payload_field="payload" in payload,
+            has_data_field="data" in payload,
+            data_keys=list(data.keys()) if isinstance(data, dict) else type(data).__name__,
+            trace_id=trace_id,
+        )
 
         symbol = data.get("symbol")
         if not symbol:
+            logger.error(
+                "ws_position_event_missing_symbol",
+                payload_keys=list(payload.keys()),
+                data_keys=list(data.keys()) if isinstance(data, dict) else type(data).__name__,
+                data_preview=str(data)[:500] if data else None,
+                trace_id=trace_id,
+            )
             raise ValueError("Missing 'symbol' in WebSocket position event")
 
         mode = data.get("mode") or "one-way"

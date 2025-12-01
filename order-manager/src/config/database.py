@@ -18,28 +18,40 @@ class DatabaseConnection:
     @classmethod
     async def create_pool(cls) -> asyncpg.Pool:
         """Create and return a connection pool."""
-        if cls._pool is None:
+        # Check if pool exists and is not closed
+        if cls._pool is not None:
             try:
-                cls._pool = await asyncpg.create_pool(
-                    settings.database_url_async,
-                    min_size=5,
-                    max_size=20,
-                    command_timeout=60,
-                )
-                logger.info(
-                    "database_pool_created",
-                    host=settings.postgres_host,
-                    port=settings.postgres_port,
-                    database=settings.postgres_db,
-                )
-            except Exception as e:
-                logger.error(
-                    "database_pool_creation_failed",
-                    error=str(e),
-                    host=settings.postgres_host,
-                    port=settings.postgres_port,
-                )
-                raise DatabaseError(f"Failed to create database pool: {e}") from e
+                # Try to acquire a connection to verify pool is still open
+                async with cls._pool.acquire() as conn:
+                    await conn.fetchval("SELECT 1")
+                return cls._pool
+            except Exception:
+                # Pool is closed or invalid, reset it
+                cls._pool = None
+                logger.warning("database_pool_closed_or_invalid", message="Pool was closed, recreating")
+        
+        # Create new pool
+        try:
+            cls._pool = await asyncpg.create_pool(
+                settings.database_url_async,
+                min_size=5,
+                max_size=20,
+                command_timeout=60,
+            )
+            logger.info(
+                "database_pool_created",
+                host=settings.postgres_host,
+                port=settings.postgres_port,
+                database=settings.postgres_db,
+            )
+        except Exception as e:
+            logger.error(
+                "database_pool_creation_failed",
+                error=str(e),
+                host=settings.postgres_host,
+                port=settings.postgres_port,
+            )
+            raise DatabaseError(f"Failed to create database pool: {e}") from e
         return cls._pool
 
     @classmethod

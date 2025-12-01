@@ -329,14 +329,28 @@ services:
       - ORDERMANAGER_API_KEY=${ORDERMANAGER_API_KEY}
       - POSITION_MANAGER_API_KEY=${POSITION_MANAGER_API_KEY}
       - WS_GATEWAY_API_KEY=${WS_GATEWAY_API_KEY}
+      - MODEL_SERVICE_HOST=${MODEL_SERVICE_HOST:-model-service}
+      - MODEL_SERVICE_PORT=${MODEL_SERVICE_PORT:-4500}
+      - MODEL_SERVICE_API_KEY=${MODEL_SERVICE_API_KEY}
     volumes:
       - ./tests:/app/tests
       - ./order-manager:/app/order-manager
       - ./position-manager:/app/position-manager
     depends_on:
-      - grafana
-      - postgres
-      - rabbitmq
+      grafana:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      ws-gateway:
+        condition: service_started
+      model-service:
+        condition: service_started
+      order-manager:
+        condition: service_started
+      position-manager:
+        condition: service_started
     networks:
       - ytrader-network
     profiles:

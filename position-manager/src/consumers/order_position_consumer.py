@@ -1,6 +1,6 @@
 """Order execution event consumer.
 
-Consumes order execution events from `order-manager.order_executed` queue and
+Consumes order execution events from `order-manager.order_events` queue and
 delegates processing to PositionManager.update_position_from_order_fill().
 """
 
@@ -37,7 +37,9 @@ class OrderExecutionEvent:
     @classmethod
     def from_message(cls, payload: Dict[str, Any]) -> "OrderExecutionEvent":
         event_type = payload.get("event_type")
-        if event_type not in {"position_updated_from_order", "order_executed"}:
+        # Support multiple event types from order-manager
+        supported_types = {"position_updated_from_order", "order_executed", "filled", "partially_filled"}
+        if event_type not in supported_types:
             raise ValueError(f"Unsupported event_type: {event_type}")
 
         trace_id = payload.get("trace_id") or get_or_create_trace_id()
@@ -82,7 +84,7 @@ class OrderExecutionEvent:
 
 
 class OrderPositionConsumer:
-    """Async consumer for `order-manager.order_executed` queue."""
+    """Async consumer for `order-manager.order_events` queue."""
 
     def __init__(self, position_manager: Optional[PositionManager] = None) -> None:
         self._position_manager = position_manager or PositionManager()
@@ -132,9 +134,9 @@ class OrderPositionConsumer:
             await message.nack(requeue=True)
 
     async def start(self) -> None:
-        """Start consuming from order-manager.order_executed."""
+        """Start consuming from order-manager.order_events."""
         channel = await RabbitMQConnection.get_channel()
-        queue = await channel.declare_queue("order-manager.order_executed", durable=True)
+        queue = await channel.declare_queue("order-manager.order_events", durable=True)
 
         logger.info("order_position_consumer_started", queue=queue.name)
 
