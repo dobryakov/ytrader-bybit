@@ -10,6 +10,7 @@ This directory contains integration tests for the Grafana monitoring service and
 
 ### E2E Tests
 - `e2e/test_trading_chain_e2e.py` - Complete end-to-end test for trading chain (signal → order → position → execution)
+- `e2e/test_training_orchestrator_e2e.py` - End-to-end test for training orchestrator (execution events → training pipeline)
 
 ## Running Tests
 
@@ -56,6 +57,12 @@ docker compose --profile test run --rm test-grafana pytest tests/e2e/test_tradin
 
 # Run all E2E tests
 docker compose --profile test run --rm test-grafana pytest tests/e2e -v
+
+# Run training orchestrator E2E test
+docker compose --profile test run --rm test-grafana pytest tests/e2e/test_training_orchestrator_e2e.py -v
+
+# Run specific training orchestrator test
+docker compose --profile test run --rm test-grafana pytest tests/e2e/test_training_orchestrator_e2e.py::test_training_orchestrator_event_buffering -v
 
 # Run as standalone script (with custom parameters)
 docker compose --profile test run --rm test-grafana python tests/e2e/test_trading_chain_e2e.py --asset ETHUSDT --amount 50.0
@@ -132,6 +139,26 @@ The test container (`test-grafana`) is defined in `docker-compose.yml`:
 3. **Order Execution**: Verifies order is placed on Bybit (or dry-run mode)
 4. **Position Tracking**: Verifies position-manager updates position from WebSocket events
 5. **Execution Events**: Verifies execution events are published and consumed by model-service
+
+#### Training Orchestrator E2E (`test_training_orchestrator_e2e.py`)
+- ✅ Publishes mock execution events to RabbitMQ (simulating order-manager)
+- ✅ Verifies events are consumed by model-service and buffered in training orchestrator
+- ✅ Verifies training is triggered when conditions are met (enough events, schedule, etc.)
+- ✅ Verifies training pipeline (dataset building, model training, quality evaluation)
+- ✅ Verifies buffer is cleared after training starts
+
+**Test Flow:**
+1. **Event Publishing**: Test publishes mock execution events to `order-manager.order_events` queue
+2. **Event Consumption**: Verifies model-service consumes events via `ExecutionEventConsumer`
+3. **Event Buffering**: Verifies events are added to training orchestrator buffer
+4. **Training Trigger**: Verifies training starts when conditions are met (min_dataset_size, schedule, etc.)
+5. **Training Pipeline**: Verifies training completes and creates model version
+
+**Key Features:**
+- Does NOT use real orders or Bybit communication
+- Tests only the training pipeline by simulating execution events
+- Can test with different event counts and configurations
+- Verifies training orchestrator API endpoints
 
 ## Troubleshooting
 

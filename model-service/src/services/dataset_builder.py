@@ -159,7 +159,11 @@ class DatasetBuilder:
 
         # Check 2: No infinite values
         inf_features = np.isinf(features_df.select_dtypes(include=[np.number])).sum().sum()
-        inf_labels = np.isinf(labels_series.select_dtypes(include=[np.number])).sum() if labels_series.dtype in [np.float64, np.int64] else 0
+        # For Series, check if dtype is numeric and use np.isinf directly (Series doesn't have select_dtypes)
+        if pd.api.types.is_numeric_dtype(labels_series):
+            inf_labels = np.isinf(labels_series).sum()
+        else:
+            inf_labels = 0
         inf_ratio = (inf_features + inf_labels) / (len(features_df) * len(features_df.columns) + len(labels_series))
         quality_checks.append(1.0 - min(inf_ratio, 1.0))  # Penalize infinite values
 

@@ -360,14 +360,32 @@ class ExecutionEventConsumer:
             # Parse datetime strings if needed
             if isinstance(data.get("executed_at"), str):
                 try:
-                    data["executed_at"] = datetime.fromisoformat(data["executed_at"].replace("Z", "+00:00"))
+                    executed_at_str = data["executed_at"]
+                    # Handle both Z and +00:00 formats, but avoid double timezone
+                    if executed_at_str.endswith("Z"):
+                        # Remove Z and add +00:00, but only if not already present
+                        if "+00:00" not in executed_at_str:
+                            executed_at_str = executed_at_str[:-1] + "+00:00"
+                        else:
+                            # Already has +00:00, just remove Z
+                            executed_at_str = executed_at_str[:-1]
+                    data["executed_at"] = datetime.fromisoformat(executed_at_str)
                 except ValueError as e:
                     logger.warning("Invalid executed_at format", executed_at=data.get("executed_at"), error=str(e))
                     return None
 
             if isinstance(data.get("signal_timestamp"), str):
                 try:
-                    data["signal_timestamp"] = datetime.fromisoformat(data["signal_timestamp"].replace("Z", "+00:00"))
+                    signal_timestamp_str = data["signal_timestamp"]
+                    # Handle both Z and +00:00 formats, but avoid double timezone
+                    if signal_timestamp_str.endswith("Z"):
+                        # Remove Z and add +00:00, but only if not already present
+                        if "+00:00" not in signal_timestamp_str:
+                            signal_timestamp_str = signal_timestamp_str[:-1] + "+00:00"
+                        else:
+                            # Already has +00:00, just remove Z
+                            signal_timestamp_str = signal_timestamp_str[:-1]
+                    data["signal_timestamp"] = datetime.fromisoformat(signal_timestamp_str)
                 except ValueError as e:
                     logger.warning(
                         "Invalid signal_timestamp format", signal_timestamp=data.get("signal_timestamp"), error=str(e)
