@@ -205,6 +205,12 @@
 - [X] T095 [P] [Optimization] Implement in-memory cache for position data in model-service/src/services/position_cache.py (cache position data from Position Manager REST API with TTL, support cache invalidation by asset, provide get/set/invalidate methods, handle cache expiration, support configurable cache size limits, thread-safe operations for concurrent access)
 - [X] T096 [Optimization] Integrate position cache with PositionManagerClient in model-service/src/services/position_manager_client.py (check cache before making REST API request, update cache after successful API response, invalidate cache on position update events, fallback to REST API if cache miss or expired, log cache hits/misses for monitoring)
 - [X] T097 [Optimization] Add configuration for position cache in model-service/src/config/settings.py (POSITION_CACHE_ENABLED=true/false to enable/disable caching, POSITION_CACHE_TTL_SECONDS=30 for cache time-to-live, POSITION_CACHE_MAX_SIZE=1000 for maximum cached positions, default: caching enabled with 30s TTL for optimization while REST API remains primary source of truth)
+- [ ] T117 [P] [Enhancement] Implement automatic asset selection based on account balances in model-service/src/services/asset_selector.py (query account_balances table to identify currencies with non-zero available_balance, extract base currencies from trading pairs, generate list of trading pairs for currencies with balance, support configurable quote currency list USDT/USDC/BUSD, filter out pairs with insufficient balance below minimum threshold, cache asset list with TTL to reduce database queries, handle missing balance data gracefully with fallback to configured asset list)
+- [ ] T118 [Enhancement] Integrate asset selector into intelligent orchestrator in model-service/src/services/intelligent_orchestrator.py (replace hardcoded assets list with automatic asset selection when enabled, use asset_selector.get_trading_assets_with_balance() instead of hardcoded ["BTCUSDT", "ETHUSDT"], add configuration flag AUTO_SELECT_ASSETS=true/false to enable/disable automatic selection, fallback to configured asset list if automatic selection fails or returns empty list, log asset selection results with structured logging)
+- [ ] T119 [Enhancement] Integrate asset selector into warmup orchestrator in model-service/src/services/warmup_orchestrator.py (replace hardcoded assets list with automatic asset selection when enabled, use same asset_selector service as intelligent orchestrator, respect AUTO_SELECT_ASSETS configuration flag, fallback to configured asset list if automatic selection fails)
+- [ ] T120 [Enhancement] Add configuration for automatic asset selection in model-service/src/config/settings.py (AUTO_SELECT_ASSETS=true/false to enable/disable automatic asset selection based on balances, AUTO_SELECT_MIN_BALANCE_USDT=10.0 for minimum balance threshold in USDT equivalent, AUTO_SELECT_QUOTE_CURRENCIES=USDT,USDC,BUSD for supported quote currencies, AUTO_SELECT_CACHE_TTL_SECONDS=300 for asset list cache TTL, AUTO_SELECT_FALLBACK_ASSETS=BTCUSDT,ETHUSDT for fallback when automatic selection fails, default: automatic selection disabled for backward compatibility)
+- [ ] T121 [Enhancement] Update main.py to use asset selector in model-service/src/main.py (replace hardcoded assets list with asset_selector when AUTO_SELECT_ASSETS is enabled, initialize asset_selector service on startup, handle asset selection errors gracefully with fallback to configured list)
+- [ ] T122 [Enhancement] Add structured logging for asset selection in model-service/src/services/asset_selector.py (log selected assets with balance information, log cache hits/misses, log fallback to configured list, include trace_id for request flow tracking)
 
 ---
 
@@ -402,7 +408,7 @@ With multiple developers:
 - **Phase 4 (User Story 2)**: 19 tasks (added T037a, T039a)
 - **Phase 5 (User Story 3)**: 14 tasks (added T052a, T052b, T052c, T052d, T052e for risk management)
 - **Phase 6 (User Story 4)**: 17 tasks
-- **Phase 7 (Polish)**: 24 tasks (added T091, T092, T093, T094-T097 for position cache optimization)
+- **Phase 7 (Polish)**: 30 tasks (added T091, T092, T093, T094-T097 for position cache optimization, T117-T122 for automatic asset selection)
 - **Phase 8 (User Story 5)**: 19 tasks (position-based exit strategy)
 
 ### Task Count per User Story

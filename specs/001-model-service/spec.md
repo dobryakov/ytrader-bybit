@@ -32,6 +32,7 @@ The system generates trading signals using simple heuristics or controlled rando
 3. **Given** the system is in warm-up mode, **When** order execution events are received, **Then** they are accepted and aggregated for future training purposes
 4. **Given** warm-up mode is configured with specific parameters (frequency, randomness level, minimum order parameters), **When** signals are generated, **Then** they adhere to these configured constraints
 5. **Given** the system is in warm-up mode, **When** transitions between modes occur, **Then** all transitions are logged with timestamps and parameter values
+6. **Given** automatic asset selection is enabled in warm-up mode, **When** the system generates warm-up signals, **Then** it automatically determines trading assets based on available account balances instead of using a hardcoded asset list
 
 ---
 
@@ -72,6 +73,9 @@ The system generates high-level trading signals using trained ML models, making 
 3. **Given** the system has both warm-up and trained model capabilities, **When** model quality reaches the configured threshold, **Then** the system automatically transitions from warm-up mode to model-based signal generation
 4. **Given** multiple trading strategies are configured, **When** signals are generated, **Then** they are tagged with the appropriate strategy identifier
 5. **Given** model-based signals are being generated, **When** execution feedback is received, **Then** it is used to evaluate and improve model performance
+6. **Given** automatic asset selection is enabled, **When** the system generates signals, **Then** it automatically determines trading assets based on available account balances, querying account_balances table to identify currencies with non-zero balances and generating trading pairs for those currencies
+7. **Given** automatic asset selection is enabled and some currencies have insufficient balance, **When** the system selects assets, **Then** it filters out trading pairs where balance is below the configured minimum threshold
+8. **Given** automatic asset selection fails or returns empty list, **When** the system generates signals, **Then** it falls back to the configured asset list (e.g., BTCUSDT, ETHUSDT) and logs the fallback with appropriate context
 
 ---
 
@@ -171,6 +175,7 @@ The system reacts to position updates in real-time and generates exit signals (S
 - **FR-031**: System MUST track position state (peak price, entry time, highest unrealized PnL) for trailing stop and time-based exit evaluation
 - **FR-032**: System MUST handle position update event validation errors gracefully, logging failures and continuing processing
 - **FR-033**: System MUST support fallback to periodic evaluation mode when event-driven processing is unavailable
+- **FR-034**: System SHOULD automatically determine trading assets based on available account balances, querying account_balances table to identify currencies with non-zero balances and generating trading pairs (e.g., BTCUSDT, ETHUSDT) for those currencies. This enables the system to adapt to available capital without manual configuration of asset lists. If automatic asset detection is enabled, the system MUST generate signals only for assets where sufficient balance exists for trading.
 
 ### Key Entities *(include if feature involves data)*
 
