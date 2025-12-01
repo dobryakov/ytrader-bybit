@@ -28,6 +28,7 @@ class SubscriptionService:
         "orderbook",
         "order",
         "balance",
+        "position",
         "kline",
         "liquidation",
     ]
@@ -39,6 +40,8 @@ class SubscriptionService:
             return "wallet"
         if channel_type == "order":
             return "order"
+        if channel_type == "position":
+            return "position"
         if channel_type == "trades":
             if not symbol:
                 raise ValidationError("Symbol is required for trades channel")

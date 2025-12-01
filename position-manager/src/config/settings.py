@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     rabbitmq_user: str = Field(default="guest", alias="RABBITMQ_USER")
     rabbitmq_password: str = Field(default="guest", alias="RABBITMQ_PASSWORD")
 
+    # WebSocket Gateway Configuration
+    ws_gateway_url: str = Field(default="http://ws-gateway:4400", alias="WS_GATEWAY_URL")
+    ws_gateway_api_key: str = Field(..., alias="WS_GATEWAY_API_KEY")
+
     # Position Management Configuration
     position_manager_snapshot_interval: int = Field(default=3600, alias="POSITION_MANAGER_SNAPSHOT_INTERVAL")
     position_manager_snapshot_retention_days: int = Field(default=365, alias="POSITION_MANAGER_SNAPSHOT_RETENTION_DAYS")

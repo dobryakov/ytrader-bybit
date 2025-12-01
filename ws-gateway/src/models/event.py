@@ -8,7 +8,7 @@ from typing import Any, Dict, Literal
 from uuid import UUID, uuid4
 
 
-EventType = Literal["trade", "ticker", "orderbook", "order", "balance", "kline", "liquidation"]
+EventType = Literal["trade", "ticker", "orderbook", "order", "balance", "position", "kline", "liquidation"]
 
 
 @dataclass

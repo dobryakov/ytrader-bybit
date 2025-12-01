@@ -14,6 +14,7 @@ ChannelType = Literal[
     "orderbook",
     "order",
     "balance",
+    "position",
     "kline",
     "liquidation",
 ]

@@ -13,6 +13,7 @@ from ..config.rabbitmq import RabbitMQConnection
 from ..config.settings import settings
 from ..consumers import OrderPositionConsumer, WebSocketPositionConsumer
 from ..exceptions import QueueError
+from ..services.ws_gateway_client import WSGatewayClient
 from ..tasks import (
     PositionSnapshotCleanupTask,
     PositionSnapshotTask,
@@ -75,6 +76,25 @@ def create_app() -> FastAPI:
         global _ws_consumer, _order_consumer, _snapshot_task, _validation_task
         try:
             await RabbitMQConnection.create_connection()
+
+            # Subscribe to position updates from ws-gateway
+            try:
+                ws_gateway_client = WSGatewayClient()
+                subscription_success = await ws_gateway_client.subscribe_to_position()
+                if subscription_success:
+                    logger.info("ws_gateway_position_subscription_completed")
+                else:
+                    logger.warning(
+                        "ws_gateway_position_subscription_failed_non_fatal",
+                        message="Position updates may not be received until subscription is created manually",
+                    )
+            except Exception as e:
+                # Non-fatal: subscription can be created manually or retried later
+                logger.warning(
+                    "ws_gateway_position_subscription_error_non_fatal",
+                    error=str(e),
+                    error_type=type(e).__name__,
+                )
 
             # Start background consumers for WS and order events.
             _ws_consumer = WebSocketPositionConsumer()

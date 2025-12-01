@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS subscriptions (
     updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
     last_event_at TIMESTAMP,
     
-    CONSTRAINT chk_channel_type CHECK (channel_type IN ('trades', 'ticker', 'orderbook', 'order', 'balance', 'kline', 'liquidation')),
+    CONSTRAINT chk_channel_type CHECK (channel_type IN ('trades', 'ticker', 'orderbook', 'order', 'balance', 'position', 'kline', 'liquidation')),
     CONSTRAINT chk_symbol_required CHECK (
         (channel_type IN ('trades', 'ticker', 'orderbook', 'order', 'kline') AND symbol IS NOT NULL) OR
         (channel_type NOT IN ('trades', 'ticker', 'orderbook', 'order', 'kline') AND symbol IS NULL)
