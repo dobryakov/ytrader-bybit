@@ -4,7 +4,7 @@ from .account_balance_repo import AccountBalanceRepository
 from .execution_event_repo import ExecutionEventRepository
 from .model_version_repo import ModelVersionRepository
 from .position_state_repo import PositionStateRepository
-from .quality_metrics_repo import QualityMetricsRepository
+from .quality_metrics_repo import ModelQualityMetricsRepository
 from .trading_signal_repo import TradingSignalRepository
 
 __all__ = [
@@ -12,7 +12,7 @@ __all__ = [
     "ExecutionEventRepository",
     "ModelVersionRepository",
     "PositionStateRepository",
-    "QualityMetricsRepository",
+    "ModelQualityMetricsRepository",
     "TradingSignalRepository",
 ]
 

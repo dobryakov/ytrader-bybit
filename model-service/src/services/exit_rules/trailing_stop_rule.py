@@ -76,7 +76,11 @@ class TrailingStopRule(ExitRule):
         unrealized_pnl_pct = float(unrealized_pnl_pct)
 
         # Check if activation threshold reached
-        if unrealized_pnl_pct < self.activation_pct:
+        # If trailing stop was already activated (highest PnL >= activation), continue checking
+        # even if current PnL dropped below activation threshold
+        was_activated = position_state.highest_unrealized_pnl >= self.activation_pct
+        
+        if unrealized_pnl_pct < self.activation_pct and not was_activated:
             # Not activated yet - update highest PnL but don't exit
             position_state.update_highest_pnl(unrealized_pnl_pct)
             return None

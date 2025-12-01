@@ -6,7 +6,7 @@ cooldown periods, and maximum signals per time window.
 """
 
 import time
-from typing import Dict, Optional
+from typing import Dict, Optional, Any
 from collections import defaultdict
 from datetime import datetime, timedelta
 
@@ -38,8 +38,8 @@ class ExitSignalRateLimiter:
             max_signals_per_minute: Maximum exit signals per asset per minute (default from settings)
             cooldown_seconds: Cooldown period after exit signal in seconds (default: 60)
         """
-        self.max_signals_per_minute = max_signals_per_minute or settings.exit_strategy_rate_limit
-        self.cooldown_seconds = cooldown_seconds or 60  # Default 1 minute cooldown
+        self.max_signals_per_minute = max_signals_per_minute if max_signals_per_minute is not None else settings.exit_strategy_rate_limit
+        self.cooldown_seconds = cooldown_seconds if cooldown_seconds is not None else 60  # Default 1 minute cooldown
 
         # Per-asset tracking
         self._signal_times: Dict[str, list] = defaultdict(list)  # Asset -> list of signal timestamps
@@ -59,8 +59,8 @@ class ExitSignalRateLimiter:
         """
         current_time = time.time()
 
-        # Check cooldown period
-        if asset in self._last_signal_time:
+        # Check cooldown period (only if cooldown_seconds > 0)
+        if self.cooldown_seconds > 0 and asset in self._last_signal_time:
             time_since_last = current_time - self._last_signal_time[asset]
             if time_since_last < self.cooldown_seconds:
                 wait_seconds = self.cooldown_seconds - time_since_last
@@ -85,7 +85,9 @@ class ExitSignalRateLimiter:
 
         # Allowed - record signal
         signal_times.append(current_time)
-        self._last_signal_time[asset] = current_time
+        # Only record last signal time if cooldown is enabled
+        if self.cooldown_seconds > 0:
+            self._last_signal_time[asset] = current_time
 
         # Clean up old timestamps (keep only last 5 minutes)
         cutoff_cleanup = current_time - 300.0
@@ -102,7 +104,7 @@ class ExitSignalRateLimiter:
             asset: Trading pair symbol
         """
         if asset in self._signal_times:
-            del self._signal_times[asset]
+            self._signal_times[asset].clear()
         if asset in self._last_signal_time:
             del self._last_signal_time[asset]
         logger.debug("Rate limiter reset for asset", asset=asset)
