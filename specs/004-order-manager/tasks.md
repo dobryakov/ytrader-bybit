@@ -197,6 +197,10 @@
 - [X] T061 Add background task for periodic position snapshots in order-manager/src/main.py (scheduler for snapshot creation)
 - [X] T062 Add background task for periodic position validation in order-manager/src/main.py (scheduler for validation based on ORDERMANAGER_POSITION_VALIDATION_INTERVAL config)
 - [X] T063 Add discrepancy handling when computed position differs from stored position in order-manager/src/services/position_manager.py
+- [ ] T063a [P] Adapt Order Manager risk checks to use Position Manager REST API: create client in order-manager/src/services/position_manager_client.py to call Position Manager endpoints (GET /api/v1/positions, GET /api/v1/positions/{asset}, GET /api/v1/portfolio/exposure) with API key authentication.
+- [ ] T063b [P] Update risk_manager in order-manager/src/services/risk_manager.py to use Position Manager as source of truth for exposure- and position-based limits (max exposure, position size limits) by querying Position Manager API instead of reading local positions table.
+- [ ] T063c [P] Update REST API endpoints in order-manager/src/api/routes/positions.py to delegate position reads to Position Manager REST API (proxy/redirect or deprecate endpoints that expose local positions), keeping Order Manager focused on orders rather than positions.
+- [ ] T063d [P] Update order-manager/README.md and specs/004-order-manager/quickstart.md to document dependency on Position Manager service for position data and risk checks, including required environment variables (POSITION_MANAGER_HOST, POSITION_MANAGER_PORT, POSITION_MANAGER_API_KEY) and integration behaviour.
 
 **Checkpoint**: Position management with snapshots and validation is operational
 
