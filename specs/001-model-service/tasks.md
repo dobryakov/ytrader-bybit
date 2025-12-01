@@ -356,7 +356,8 @@ Task: "Implement manual training trigger API endpoint in model-service/src/api/t
 3. Add User Story 2 → Test independently → Deploy/Demo (Model Training)
 4. Add User Story 3 → Test independently → Deploy/Demo (Intelligent Signals)
 5. Add User Story 4 → Test independently → Deploy/Demo (Quality Tracking)
-6. Each story adds value without breaking previous stories
+6. Add User Story 5 → Test independently → Deploy/Demo (Position-Based Exit Strategy)
+7. Each story adds value without breaking previous stories
 
 ### Parallel Team Strategy
 
@@ -369,7 +370,9 @@ With multiple developers:
    - Developer C: User Story 4 (Quality Tracking) - can start in parallel with US2
 3. After US2 completes:
    - Developer B: User Story 3 (Intelligent Signals) - depends on US2
-4. Stories complete and integrate independently
+4. After US3 completes:
+   - Developer A: User Story 5 (Position-Based Exit Strategy) - can start in parallel with US4
+5. Stories complete and integrate independently
 
 ---
 
@@ -392,7 +395,7 @@ With multiple developers:
 
 ## Task Summary
 
-- **Total Tasks**: 110 tasks (added T052c, T052d, T052e for risk management rules, T094-T097 for position cache optimization)
+- **Total Tasks**: 129 tasks (added T052c, T052d, T052e for risk management rules, T094-T097 for position cache optimization, T098-T116 for position-based exit strategy)
 - **Phase 1 (Setup)**: 9 tasks
 - **Phase 2 (Foundational)**: 12 tasks
 - **Phase 3 (User Story 1 - MVP)**: 15 tasks (added T030a, T030b, T030c, T030d)
@@ -400,6 +403,7 @@ With multiple developers:
 - **Phase 5 (User Story 3)**: 14 tasks (added T052a, T052b, T052c, T052d, T052e for risk management)
 - **Phase 6 (User Story 4)**: 17 tasks
 - **Phase 7 (Polish)**: 24 tasks (added T091, T092, T093, T094-T097 for position cache optimization)
+- **Phase 8 (User Story 5)**: 19 tasks (position-based exit strategy)
 
 ### Task Count per User Story
 
@@ -407,6 +411,7 @@ With multiple developers:
 - **User Story 2 (P2)**: 17 tasks
 - **User Story 3 (P3)**: 13 tasks (added T052b, T052c, T052d, T052e for risk management rules)
 - **User Story 4 (P4)**: 17 tasks
+- **User Story 5 (P3)**: 19 tasks (position-based exit strategy)
 
 ### Parallel Opportunities Identified
 
@@ -415,6 +420,7 @@ With multiple developers:
 - **User Story 1**: 3 parallel tasks (T022, T022a, T022b)
 - **User Story 2**: 4 parallel tasks (T031-T034), plus T036 can run in parallel with T037+
 - **User Story 4**: 8 parallel tasks (T057-T062, T083, T086-T087)
+- **User Story 5**: 6 parallel tasks (T098, T099, T101-T104, T105)
 
 ### Independent Test Criteria
 
@@ -422,6 +428,39 @@ With multiple developers:
 - **User Story 2**: Provide execution events and market data, verify training pipeline, model versioning, and quality tracking
 - **User Story 3**: Provide trained model and market state, verify intelligent signal generation and mode transitions
 - **User Story 4**: Generate multiple model versions, verify quality metrics, version history, and API endpoints
+- **User Story 5**: Simulate position updates with various PnL values and holding times, verify exit signals are generated when rules trigger, rate limiting prevents excessive signals
+
+## Phase 8: User Story 5 - Position-Based Exit Strategy (Priority: P3)
+
+**Goal**: The system reacts to position updates in real-time and generates exit signals (SELL) based on configurable exit rules such as take profit, stop loss, trailing stop, and time-based exits, enabling proactive risk management and profit protection.
+
+**Independent Test**: Can be fully tested by simulating position updates with various unrealized PnL values, holding times, and market conditions, verifying that exit signals are generated when rules are triggered, rate limiting prevents excessive signal generation, and all exit decisions are logged with traceability.
+
+### Implementation for User Story 5
+
+- [ ] T098 [P] [US5] Create ExitDecision data model in model-service/src/models/exit_decision.py (should_exit: bool, exit_reason: str, exit_amount: float, priority: int, rule_triggered: str, metadata: dict)
+- [ ] T099 [P] [US5] Create PositionState data model for tracking in model-service/src/models/position_state_tracker.py (asset: str, entry_price: float, entry_time: datetime, peak_price: float, highest_unrealized_pnl: float, last_exit_signal_time: Optional[datetime])
+- [ ] T100 [US5] Create ExitStrategyEvaluator service in model-service/src/services/exit_strategy_evaluator.py (evaluates all active exit rules, applies rules in priority order, returns ExitDecision)
+- [ ] T101 [P] [US5] Create TakeProfitRule in model-service/src/services/exit_rules/take_profit_rule.py (percentage-based threshold, absolute value threshold optional, partial exit support, extends base ExitRule class)
+- [ ] T102 [P] [US5] Create StopLossRule in model-service/src/services/exit_rules/stop_loss_rule.py (percentage-based stop loss, absolute value stop loss, extends base ExitRule class)
+- [ ] T103 [P] [US5] Create TrailingStopRule in model-service/src/services/exit_rules/trailing_stop_rule.py (activation threshold, trailing distance, lock-in mechanism, requires position state tracking)
+- [ ] T104 [P] [US5] Create TimeBasedExitRule in model-service/src/services/exit_rules/time_based_exit_rule.py (maximum holding time, time-based profit targets, decay function support)
+- [ ] T105 [P] [US5] Create base ExitRule abstract class in model-service/src/services/exit_rules/base.py (defines interface: evaluate(position_data, position_state) -> Optional[ExitDecision], enabled flag, priority)
+- [ ] T106 [US5] Create PositionStateTracker service in model-service/src/services/position_state_tracker.py (tracks entry price/time, peak price, highest PnL, last exit signal time, persists to Redis or database)
+- [ ] T107 [US5] Create PositionBasedSignalGenerator service in model-service/src/services/position_based_signal_generator.py (evaluates position exit on position updates, generates SELL signals when exit rules trigger, integrates with signal publisher)
+- [ ] T108 [US5] Create ExitSignalRateLimiter service in model-service/src/services/exit_signal_rate_limiter.py (per-asset rate limiting, cooldown period after exit signal, maximum signals per time window, prevents excessive signal generation)
+- [ ] T109 [US5] Extend PositionUpdateConsumer in model-service/src/consumers/position_update_consumer.py (extract position data from events, trigger exit strategy evaluation via PositionBasedSignalGenerator, handle evaluation errors gracefully)
+- [ ] T110 [US5] Add exit strategy configuration to model-service/src/config/settings.py (EXIT_STRATEGY_ENABLED, EXIT_STRATEGY_RATE_LIMIT, TAKE_PROFIT_ENABLED, TAKE_PROFIT_THRESHOLD_PCT, TAKE_PROFIT_PARTIAL_EXIT, TAKE_PROFIT_PARTIAL_AMOUNT_PCT, STOP_LOSS_ENABLED, STOP_LOSS_THRESHOLD_PCT, TRAILING_STOP_ENABLED, TRAILING_STOP_ACTIVATION_PCT, TRAILING_STOP_DISTANCE_PCT, TIME_BASED_EXIT_ENABLED, TIME_BASED_EXIT_MAX_HOURS, TIME_BASED_EXIT_PROFIT_TARGET_PCT)
+- [ ] T111 [US5] Integrate PositionBasedSignalGenerator into main application in model-service/src/main.py (initialize on startup, connect to PositionUpdateConsumer, handle graceful shutdown)
+- [ ] T112 [US5] Add structured logging for exit strategy evaluation in model-service/src/services/exit_strategy_evaluator.py (log all rule evaluations, exit decisions, rate limiting events, position state updates)
+- [ ] T113 [US5] Add metrics for exit strategy operations in model-service/src/services/position_based_signal_generator.py (exit signals generated, rules triggered, rate limiting events, evaluation latency)
+- [ ] T114 [US5] Implement debouncing for rapid position updates in model-service/src/services/position_based_signal_generator.py (prevent excessive evaluation when multiple updates arrive quickly for same asset, configurable debounce window)
+- [ ] T115 [US5] Add fallback to periodic evaluation mode in model-service/src/services/position_based_signal_generator.py (when event-driven processing unavailable, fall back to periodic position checks, log degradation)
+- [ ] T116 [US5] Add position update event validation in model-service/src/consumers/position_update_consumer.py (validate required fields: asset, unrealized_pnl, position_size, timestamp, log validation failures with full context, skip invalid events gracefully)
+
+**Checkpoint**: At this point, User Story 5 should be fully functional and testable independently. The system can react to position updates in real-time and generate exit signals based on configurable rules.
+
+---
 
 ### Suggested MVP Scope
 

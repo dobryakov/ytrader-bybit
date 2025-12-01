@@ -93,6 +93,29 @@ The system tracks model quality metrics, maintains version history, and provides
 
 ---
 
+### User Story 5 - Position-Based Exit Strategy (Priority: P3)
+
+The system reacts to position updates in real-time and generates exit signals (SELL) based on configurable exit rules such as take profit, stop loss, trailing stop, and time-based exits, enabling proactive risk management and profit protection.
+
+**Why this priority**: This enables reactive position management that responds immediately to position changes, protecting profits and limiting losses. While the system can function with periodic signal generation, real-time exit strategy evaluation significantly improves risk management and capital efficiency. This complements the existing take profit rule by adding comprehensive exit strategy framework.
+
+**Independent Test**: Can be fully tested by simulating position updates with various unrealized PnL values, holding times, and market conditions, verifying that exit signals are generated when rules are triggered, rate limiting prevents excessive signal generation, and all exit decisions are logged with traceability. The system delivers reactive position management that protects capital and locks in profits.
+
+**Acceptance Scenarios**:
+
+1. **Given** a position update event is received, **When** the position has unrealized profit exceeding take profit threshold, **Then** the system generates a SELL signal to close the position
+2. **Given** a position update event is received, **When** the position has unrealized loss exceeding stop loss threshold, **Then** the system generates a SELL signal to limit losses
+3. **Given** a position has reached profit activation threshold, **When** price moves against the position, **Then** the system generates a SELL signal based on trailing stop distance
+4. **Given** a position has been held for maximum configured time, **When** the position meets profit target, **Then** the system generates a SELL signal to close the position
+5. **Given** multiple exit rules are configured, **When** a position update is received, **Then** the system evaluates all applicable rules and generates exit signal if any rule triggers
+6. **Given** an exit signal was recently generated for a position, **When** another position update is received, **Then** the system respects rate limiting and cooldown period to prevent excessive signal generation
+7. **Given** exit strategy evaluation fails due to missing data or errors, **When** the error occurs, **Then** the system logs the error with full context and continues processing other positions
+8. **Given** position state tracking is required for trailing stop, **When** position updates are received, **Then** the system tracks peak price and highest unrealized PnL for trailing stop evaluation
+9. **Given** partial exit is configured for take profit, **When** first profit threshold is reached, **Then** the system generates SELL signal for partial position closure (e.g., 50% at 3% profit)
+10. **Given** the system is processing position updates, **When** multiple rapid updates occur for the same position, **Then** the system applies debouncing to prevent excessive evaluation
+
+---
+
 ### Edge Cases
 
 - What happens when no order execution events are received for an extended period (affecting retraining schedules)?
@@ -106,6 +129,10 @@ The system tracks model quality metrics, maintains version history, and provides
 - How does the system handle database schema changes or missing required data?
 - What happens when warm-up mode parameters are misconfigured (e.g., frequency too high, amounts too large)? **RESOLVED**: System enforces configurable rate limits with burst allowance; signals exceeding the rate limit are throttled to prevent resource exhaustion.
 - How does the system handle partial order execution events or incomplete market data?
+- What happens when position update events are received but position data is incomplete or missing required fields? **RESOLVED**: System MUST validate position update events, log validation failures with full event context and trace IDs, skip exit strategy evaluation for invalid events, and continue processing valid events.
+- How does the system handle race conditions when multiple position updates arrive rapidly for the same asset? **RESOLVED**: System applies debouncing and per-asset rate limiting to prevent excessive exit signal generation, with configurable cooldown periods.
+- What happens when exit strategy evaluation fails due to Position Manager API unavailability? **RESOLVED**: System falls back to periodic evaluation mode, logs the degradation, and continues operating with reduced reactivity.
+- How does the system handle position state tracking persistence across service restarts? **RESOLVED**: System stores position state (peak price, entry time, highest PnL) in Redis or database for persistence and recovery.
 
 ## Requirements *(mandatory)*
 
@@ -137,6 +164,13 @@ The system tracks model quality metrics, maintains version history, and provides
 - **FR-017**: System MUST handle errors gracefully (queue failures, database unavailability, model training failures) with appropriate fallbacks
 - **FR-025**: System MUST validate all incoming order execution events, log validation failures with full event context and trace IDs, discard invalid or corrupted events, and continue processing valid events without interruption
 - **FR-018**: System MUST support multiple trading strategies with distinct strategy identifiers
+- **FR-027**: System MUST react to position update events in real-time and evaluate exit strategies when positions change
+- **FR-028**: System MUST support configurable exit rules including take profit, stop loss, trailing stop, and time-based exits
+- **FR-029**: System MUST generate SELL signals when exit rules are triggered, with configurable partial exit support
+- **FR-030**: System MUST enforce rate limiting and cooldown periods for exit signal generation to prevent excessive signal generation
+- **FR-031**: System MUST track position state (peak price, entry time, highest unrealized PnL) for trailing stop and time-based exit evaluation
+- **FR-032**: System MUST handle position update event validation errors gracefully, logging failures and continuing processing
+- **FR-033**: System MUST support fallback to periodic evaluation mode when event-driven processing is unavailable
 
 ### Key Entities *(include if feature involves data)*
 
@@ -151,6 +185,10 @@ The system tracks model quality metrics, maintains version history, and provides
 - **Training Dataset**: Aggregated collection of order execution events and associated market data organized for model training, including features, labels, and metadata about data quality and coverage.
 
 - **Model Quality Metrics**: Quantitative measures of model performance including prediction accuracy, confidence calibration, risk-adjusted returns, and other domain-specific metrics. Used for model selection and transition decisions.
+
+- **Position State**: Tracks position lifecycle data including entry price, entry time, peak price, highest unrealized PnL, and last exit signal timestamp. Used for exit strategy evaluation, particularly for trailing stop and time-based exits. Stored in Redis or database for persistence.
+
+- **Exit Decision**: Result of exit strategy evaluation containing should_exit flag, exit_reason, exit_amount (partial or full), and priority. Used to determine if and how to generate exit signals.
 
 ## Success Criteria *(mandatory)*
 
@@ -168,6 +206,10 @@ The system tracks model quality metrics, maintains version history, and provides
 - **SC-008**: System handles message queue and database connection failures with automatic retry and graceful degradation, maintaining 99% uptime
 - **SC-009**: Warm-up mode generates signals at configurable frequency (default: 1 signal per minute) with risk parameters preventing excessive exposure, subject to configurable rate limits with burst allowance
 - **SC-010**: System supports concurrent operation of multiple trading strategies (minimum 5) without interference or performance degradation
+- **SC-013**: System evaluates exit strategies and generates exit signals within 2 seconds (p95 latency) of receiving position update events
+- **SC-014**: System successfully generates exit signals for 99% of triggered exit rules without errors
+- **SC-015**: System enforces rate limiting to prevent more than 1 exit signal per position per minute (configurable)
+- **SC-016**: System tracks position state for trailing stop with accuracy within 0.1% of actual peak price
 
 ## Assumptions
 
