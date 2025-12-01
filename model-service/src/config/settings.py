@@ -77,6 +77,11 @@ class Settings(BaseSettings):
     model_service_take_profit_pct: float = Field(default=3.0, alias="MODEL_SERVICE_TAKE_PROFIT_PCT")
     model_service_max_position_size_ratio: float = Field(default=0.8, alias="MODEL_SERVICE_MAX_POSITION_SIZE_RATIO")
 
+    # Position Cache Configuration (for optimization)
+    position_cache_enabled: bool = Field(default=True, alias="POSITION_CACHE_ENABLED")
+    position_cache_ttl_seconds: int = Field(default=30, alias="POSITION_CACHE_TTL_SECONDS")
+    position_cache_max_size: int = Field(default=1000, alias="POSITION_CACHE_MAX_SIZE")
+
     @field_validator("model_service_log_level")
     @classmethod
     def validate_log_level(cls, v: str) -> str:
@@ -218,6 +223,13 @@ class Settings(BaseSettings):
 
         if not 0.0 <= self.model_service_max_position_size_ratio <= 1.0:
             errors.append(f"MODEL_SERVICE_MAX_POSITION_SIZE_RATIO must be between 0.0 and 1.0, got {self.model_service_max_position_size_ratio}")
+
+        # Validate position cache configuration
+        if self.position_cache_enabled:
+            if self.position_cache_ttl_seconds <= 0:
+                errors.append(f"POSITION_CACHE_TTL_SECONDS must be positive, got {self.position_cache_ttl_seconds}")
+            if self.position_cache_max_size <= 0:
+                errors.append(f"POSITION_CACHE_MAX_SIZE must be positive, got {self.position_cache_max_size}")
 
         # Validate API key is not empty
         if not self.model_service_api_key or len(self.model_service_api_key.strip()) == 0:

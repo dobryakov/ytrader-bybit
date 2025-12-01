@@ -10,6 +10,7 @@ from decimal import Decimal
 
 from ..config.settings import settings
 from ..config.logging import get_logger
+from .position_cache import position_cache
 
 logger = get_logger(__name__)
 
@@ -27,6 +28,9 @@ class PositionManagerClient:
         """
         Get position data for an asset from Position Manager.
 
+        Checks cache first, then falls back to REST API if cache miss or expired.
+        Updates cache after successful API response.
+
         Args:
             asset: Trading pair symbol (e.g., 'BTCUSDT')
 
@@ -41,6 +45,14 @@ class PositionManagerClient:
                 ...
             }
         """
+        # Check cache first
+        cached_data = await position_cache.get(asset)
+        if cached_data is not None:
+            logger.debug("Cache hit for position", asset=asset)
+            return cached_data
+
+        # Cache miss or expired - fetch from REST API
+        logger.debug("Cache miss for position, fetching from API", asset=asset)
         url = f"{self.base_url}/api/v1/positions/{asset}"
         headers = {
             "X-API-Key": self.api_key,
@@ -53,7 +65,9 @@ class PositionManagerClient:
                 response.raise_for_status()
                 data = response.json()
 
-                logger.debug("Retrieved position from Position Manager", asset=asset, data=data)
+                # Update cache after successful API response
+                await position_cache.set(asset, data)
+                logger.debug("Retrieved position from Position Manager and cached", asset=asset, data=data)
                 return data
 
         except httpx.HTTPStatusError as e:

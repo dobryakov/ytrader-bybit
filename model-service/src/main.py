@@ -21,6 +21,7 @@ from .api.health import router as health_router
 from .services.market_data_subscriber import MarketDataSubscriber
 from .consumers.market_data_consumer import market_data_consumer
 from .consumers.execution_event_consumer import ExecutionEventConsumer
+from .consumers.position_update_consumer import position_update_consumer
 from .publishers.signal_publisher import signal_publisher
 from .services.warmup_orchestrator import warmup_orchestrator
 from .services.intelligent_orchestrator import intelligent_orchestrator
@@ -159,6 +160,15 @@ async def lifespan(app: FastAPI):
             logger.error("Failed to start execution event consumer", error=str(e), exc_info=True)
             # Continue anyway - training can be triggered manually
 
+        # Start position update consumer for cache invalidation
+        app.state.position_update_consumer = position_update_consumer  # Store for shutdown
+        try:
+            await position_update_consumer.start()
+            logger.info("Position update consumer started")
+        except Exception as e:
+            logger.error("Failed to start position update consumer", error=str(e), exc_info=True)
+            # Continue anyway - cache will work but won't auto-invalidate on updates
+
         # Start quality monitor for periodic quality evaluation
         try:
             await quality_monitor.start()
@@ -220,6 +230,19 @@ async def lifespan(app: FastAPI):
                 logger.error("Error stopping execution event consumer", error=str(e), exc_info=True)
 
         shutdown_tasks.append(stop_execution_consumer())
+
+        # Stop position update consumer
+        async def stop_position_update_consumer():
+            try:
+                if hasattr(app.state, "position_update_consumer"):
+                    await asyncio.wait_for(app.state.position_update_consumer.stop(), timeout=5.0)
+                    logger.info("Position update consumer stopped")
+            except asyncio.TimeoutError:
+                logger.warning("Position update consumer stop timed out")
+            except Exception as e:
+                logger.error("Error stopping position update consumer", error=str(e), exc_info=True)
+
+        shutdown_tasks.append(stop_position_update_consumer())
 
         # Stop intelligent orchestrator
         async def stop_intelligent_orchestrator():
