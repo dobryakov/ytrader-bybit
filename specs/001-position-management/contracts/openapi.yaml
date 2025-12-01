@@ -21,6 +21,8 @@ tags:
     description: Portfolio-level metrics and aggregation
   - name: Health
     description: Service health checks
+  - name: Metrics
+    description: Service-level metrics and monitoring
 
 security:
   - ApiKeyAuth: []
@@ -373,15 +375,20 @@ components:
 
     Error:
       type: object
-      required:
-        - error
       properties:
-        error:
+        error_code:
+          type: string
+          example: "VALIDATION_ERROR"
+        message:
           type: string
           example: "Invalid API Key"
-        detail:
+        trace_id:
           type: string
-          example: "The provided API key is invalid or missing"
+          example: "c0bb7b4e-5bde-4e25-8e7b-6e4d4b6e0b1f"
+        details:
+          type: object
+          nullable: true
+          description: Optional structured error details
 
 paths:
   /health:
@@ -461,6 +468,40 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+
+  /metrics:
+    get:
+      tags:
+        - Metrics
+      summary: Service metrics
+      description: |
+        Lightweight service-level metrics for monitoring systems.
+        Returns connectivity flags and basic counters (portfolio cache hit rate,
+        validation statistics, rate limiting statistics).
+      security: []
+      responses:
+        '200':
+          description: Metrics payload
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  timestamp:
+                    type: string
+                    format: date-time
+                    example: "2025-01-15T10:00:00Z"
+                  database_connected:
+                    type: boolean
+                  queue_connected:
+                    type: boolean
+                  portfolio_cache_hit_rate:
+                    type: number
+                    format: float
+                    example: 0.85
+                  validation_statistics:
+                    type: object
+                    additionalProperties: true
 
   /api/v1/positions/{asset}:
     get:

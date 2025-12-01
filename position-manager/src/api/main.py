@@ -18,11 +18,13 @@ from ..tasks import (
     PositionSnapshotTask,
     PositionValidationTask,
 )
+from .error_handlers import register_error_handlers
 from .middleware.logging import logging_middleware
 from .routes.portfolio import get_portfolio_manager
 from .routes import health as health_routes
 from .routes import portfolio as portfolio_routes
 from .routes import positions as positions_routes
+from .routes import metrics as metrics_routes
 
 
 configure_logging()
@@ -41,11 +43,15 @@ def create_app() -> FastAPI:
         version="1.0.0",
     )
 
+    # Global error handlers
+    register_error_handlers(app)
+
     # Middleware
     app.middleware("http")(logging_middleware)
 
     # Routes
     app.include_router(health_routes.router)
+    app.include_router(metrics_routes.router)
     app.include_router(positions_routes.router)
     app.include_router(portfolio_routes.router)
 

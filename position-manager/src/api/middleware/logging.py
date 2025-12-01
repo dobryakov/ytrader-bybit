@@ -19,12 +19,16 @@ async def logging_middleware(request: Request, call_next):
     trace_id = request.headers.get("X-Trace-Id") or get_or_create_trace_id()
     set_trace_id(trace_id)
 
+    # Best-effort request size introspection (without buffering large bodies).
+    content_length = request.headers.get("content-length")
+
     logger.info(
         "request_received",
         method=request.method,
         path=request.url.path,
         query=str(request.url.query),
         client=str(request.client.host if request.client else None),
+        content_length=content_length,
         trace_id=trace_id,
     )
 
@@ -38,6 +42,7 @@ async def logging_middleware(request: Request, call_next):
             path=request.url.path,
             status_code=getattr(response, "status_code", None),
             duration_ms=duration_ms,
+            response_content_length=getattr(response, "headers", {}).get("content-length"),
             trace_id=trace_id,
         )
         clear_trace_id()

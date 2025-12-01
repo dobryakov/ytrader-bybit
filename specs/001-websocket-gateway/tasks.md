@@ -182,14 +182,14 @@ description: "Task list for WebSocket Gateway feature implementation"
 - [ ] T126 [P] [Position] Add "position" to PRIVATE_CHANNELS in ws-gateway/src/services/websocket/channel_types.py
 - [ ] T127 [Position] Add "position" to SUPPORTED_EVENT_TYPES in ws-gateway/src/services/queue/setup.py
 - [ ] T128 [Position] Update subscriptions table migration to include 'position' in channel_type CHECK constraint in ws-gateway/migrations/001_create_subscriptions_table.sql (add migration script to update existing constraint)
-- [ ] T129 [P] [Position] Create PositionService for position persistence in ws-gateway/src/services/database/position_service.py (parse position events, validate data, persist to positions table with upsert logic)
-- [ ] T130 [Position] Implement position parsing from Bybit WebSocket payload in ws-gateway/src/services/database/position_service.py (extract symbol, size, side, avgPrice, unrealisedPnl, realisedPnl, mode, etc.)
-- [ ] T131 [Position] Implement position validation logic (non-negative size validation, mode validation, symbol format) in ws-gateway/src/services/database/position_service.py
-- [ ] T132 [Position] Implement position upsert logic (update existing position or create new) in ws-gateway/src/services/database/position_service.py (upsert by asset and mode)
-- [ ] T133 [Position] Integrate position persistence with event processing pipeline in ws-gateway/src/services/websocket/event_processor.py (call PositionService.persist_position_from_event() when event_type == "position")
-- [ ] T134 [Position] Handle database write failures gracefully (log and continue, per FR-017) in ws-gateway/src/services/database/position_service.py
-- [ ] T135 [Position] Add logging for position persistence operations in ws-gateway/src/services/database/position_service.py
-- [ ] T136 [Position] Update event_parser to handle position events (preserve full data structure in payload similar to balance events) in ws-gateway/src/services/websocket/event_parser.py
+- [ ] T129 [P] [Position] Create PositionEventNormalizer in ws-gateway/src/services/positions/position_event_normalizer.py (parse position events, validate data, normalize payload for Position Manager consumption without direct DB writes)
+- [ ] T130 [Position] Implement position parsing from Bybit WebSocket payload in PositionEventNormalizer (extract symbol, size, side, avgPrice, unrealisedPnl, realisedPnl, mode, etc.)
+- [ ] T131 [Position] Implement position validation logic (non-negative size validation, mode validation, symbol format) in PositionEventNormalizer (log-and-drop invalid events)
+- [ ] T132 [Position] Publish normalized position events to RabbitMQ queue ws-gateway.position for Position Manager service consumption instead of persisting directly to positions table
+- [ ] T133 [Position] Integrate position event normalization and publishing with event processing pipeline in ws-gateway/src/services/websocket/event_processor.py (call PositionEventNormalizer.normalize_and_publish() when event_type == "position")
+- [ ] T134 [Position] Handle queue publish failures gracefully (log and continue, per FR-017) in ws-gateway/src/services/positions/position_event_normalizer.py
+- [ ] T135 [Position] Add structured logging for position event normalization and publishing operations (include trace_id, asset, mode, source_channel)
+- [ ] T136 [Position] Update event_parser to handle position events (preserve full data structure in payload similar to balance events, pass through to PositionEventNormalizer)
 
 **Checkpoint**: At this point, position channel should be fully supported - position events are received, parsed, persisted to database, and routed to queues.
 

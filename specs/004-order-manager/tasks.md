@@ -112,16 +112,16 @@
 
 ### Implementation for Position Updates via WebSocket
 
-- [ ] T075 [Position] Subscribe to position channel via WebSocket gateway REST API in order-manager/src/services/position_event_subscriber.py (create new service or extend event_subscriber.py, subscribe to "position" channel without symbol)
-- [ ] T076 [Position] Create consumer for ws-gateway.position RabbitMQ queue in order-manager/src/services/position_event_subscriber.py (consume position events from queue)
-- [ ] T077 [Position] Implement position event parsing from WebSocket payload in order-manager/src/services/position_event_subscriber.py (extract position data: symbol, size, side, avgPrice, unrealisedPnl, realisedPnl, mode, etc.)
-- [ ] T078 [Position] Create update_position_from_websocket() method in order-manager/src/services/position_manager.py (upsert position from WebSocket event data, update all fields including unrealized_pnl and realized_pnl)
-- [ ] T079 [Position] Implement conflict resolution strategy for position updates (WebSocket events vs order execution) in order-manager/src/services/position_manager.py (decide: WebSocket as source of truth for PnL, order execution for size/price, or WebSocket for all fields)
-- [ ] T080 [Position] Add position update logic when position events received in order-manager/src/services/position_event_subscriber.py (call PositionManager.update_position_from_websocket())
-- [ ] T081 [Position] Add validation for position data from WebSocket (size validation, mode validation, symbol format) in order-manager/src/services/position_manager.py
-- [ ] T082 [Position] Add logging for position updates from WebSocket in order-manager/src/services/position_event_subscriber.py and order-manager/src/services/position_manager.py
-- [ ] T083 [Position] Handle errors gracefully (log and continue processing other events) in order-manager/src/services/position_event_subscriber.py
-- [ ] T084 [Position] Integrate position event subscriber into service startup in order-manager/src/main.py (start consumer on service initialization)
+- [X] T075 [Position] (REMOVED - responsibility moved to Position Manager service) Subscribe to position channel via WebSocket gateway from dedicated Position Manager consumer instead of Order Manager
+- [X] T076 [Position] (REMOVED - responsibility moved to Position Manager service) Consume ws-gateway.position RabbitMQ queue in Position Manager for real-time position updates
+- [X] T077 [Position] (REMOVED - responsibility moved to Position Manager service) Implement position event parsing from WebSocket payload in Position Manager service
+- [X] T078 [Position] (REMOVED - responsibility moved to Position Manager service) Implement update_position_from_websocket() in Position Manager service for upserting positions from WebSocket data
+- [X] T079 [Position] (REMOVED - responsibility moved to Position Manager service) Implement conflict resolution strategy for position updates (WebSocket vs order execution) in Position Manager
+- [X] T080 [Position] (REMOVED - responsibility moved to Position Manager service) Handle position update logic on WebSocket events in Position Manager service
+- [X] T081 [Position] (REMOVED - responsibility moved to Position Manager service) Validate position data from WebSocket (size, mode, symbol format) in Position Manager
+- [X] T082 [Position] (REMOVED - responsibility moved to Position Manager service) Log position updates from WebSocket in Position Manager service
+- [X] T083 [Position] (REMOVED - responsibility moved to Position Manager service) Handle errors gracefully during position event processing in Position Manager
+- [X] T084 [Position] (REMOVED - responsibility moved to Position Manager service) Integrate position event consumer into Position Manager startup instead of Order Manager
 
 **Checkpoint**: At this point, positions should be updated from both order execution events and WebSocket position events, with proper conflict resolution.
 
@@ -316,12 +316,12 @@ With multiple developers:
 
 ## Task Summary
 
-- **Total Tasks**: 84 (74 original + 10 new: T075-T084 for position updates via WebSocket)
+- **Total Tasks**: 84 (74 original + 10 WebSocket position tasks T075-T084 now delegated to Position Manager service but kept for traceability)
 - **Setup Phase**: 7 tasks
 - **Foundational Phase**: 9 tasks
 - **User Story 1 (P1)**: 15 tasks
 - **User Story 2 (P1)**: 7 tasks
-- **Position Updates via WebSocket (Phase 4.5)**: 10 tasks (T075-T084 for WebSocket position updates)
+- **Position Updates via WebSocket (Phase 4.5)**: 10 tasks (T075-T084 delegated to Position Manager service)
 - **User Story 3 (P2)**: 6 tasks
 - **User Story 4 (P1)**: 9 tasks
 - **REST API Phase**: 6 tasks

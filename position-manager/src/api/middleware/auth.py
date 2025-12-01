@@ -9,6 +9,7 @@ from typing import Dict, Tuple
 from fastapi import Header, HTTPException, Request
 from fastapi.security.api_key import APIKeyHeader
 
+from ...config.logging import get_logger
 from ...config.settings import settings
 
 
@@ -16,6 +17,14 @@ api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 
 _rate_limit_state: Dict[Tuple[str, str], Tuple[int, float]] = defaultdict(lambda: (0, 0.0))
+
+# Simple in-memory counters for rate limiting observability (T108).
+_rate_limit_metrics = {
+    "total_requests": 0,
+    "rate_limited_requests": 0,
+}
+
+logger = get_logger(__name__)
 
 
 async def api_key_auth(api_key: str = Header(default=None, alias="X-API-Key")) -> str:
@@ -41,6 +50,7 @@ async def api_key_middleware(request: Request, call_next):
 
     # --- Simple per-API-key rate limiting (sliding window approximation) ---
     if settings.position_manager_rate_limit_enabled:
+        _rate_limit_metrics["total_requests"] += 1
         # Window of 60 seconds using configured default limit
         limit = settings.position_manager_rate_limit_default
         now = time.time()
@@ -53,6 +63,14 @@ async def api_key_middleware(request: Request, call_next):
 
         if count >= limit:
             retry_after = max(1, window_start + 60 - int(now))
+            _rate_limit_metrics["rate_limited_requests"] += 1
+            logger.warning(
+                "api_rate_limit_exceeded",
+                api_key_hash=hash(api_key),
+                limit=limit,
+                window_start=window_start,
+                retry_after=retry_after,
+            )
             raise HTTPException(
                 status_code=429,
                 detail="Rate limit exceeded",

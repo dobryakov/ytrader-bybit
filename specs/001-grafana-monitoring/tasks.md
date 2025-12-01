@@ -193,6 +193,9 @@
 - [X] T057 [P] Add Grafana volume to docker-compose.yml volumes section for persistent Grafana data storage
 - [X] T058 [P] Verify all environment variables are documented in env.example with descriptions
 - [ ] T059 Run quickstart.md validation: verify all deployment steps work correctly
+- [ ] T061 [P] [Position Manager] Add Position Manager Health panel to System Health dashboard in grafana/dashboards/trading-system-monitoring.json using Position Manager /health and /metrics HTTP endpoints (display database_connected, queue_connected, validation statistics, cache hit rate)
+- [ ] T062 [P] [Position Manager] Add Portfolio Management dashboard (new JSON in grafana/dashboards/portfolio-management-panel.json) using Position Manager REST API (/api/v1/portfolio, /api/v1/portfolio/exposure, /api/v1/portfolio/pnl) to show total exposure, portfolio PnL breakdown, position size distribution, unrealized PnL by asset, time held by position, and snapshot history
+- [ ] T063 [P] [Position Manager] Update existing dashboards (trading-system-monitoring.json, order-execution-panel.json) to use Position Manager API responses instead of direct SQL queries to positions table where applicable
 - [X] T060 [P] Add security documentation: change default credentials, network access considerations, credential management best practices
 
 ---
@@ -315,7 +318,7 @@ With multiple developers:
 
 ## Task Summary
 
-- **Total Tasks**: 60
+- **Total Tasks**: 63
 - **Setup Tasks**: 3
 - **Foundational Tasks**: 8
 - **User Story 1 Tasks**: 4

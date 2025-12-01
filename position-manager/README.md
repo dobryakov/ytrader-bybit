@@ -46,6 +46,24 @@ The Position Management Service provides centralized portfolio position manageme
 
 See `specs/001-position-management/contracts/openapi.yaml` for complete API specification.
 
+### Example requests
+
+```bash
+# Health (no auth)
+curl http://localhost:4800/health
+
+# Service metrics (no auth, for monitoring systems)
+curl http://localhost:4800/metrics
+
+# List positions
+curl -H "X-API-Key: ${POSITION_MANAGER_API_KEY}" \
+  "http://localhost:4800/api/v1/positions?asset=BTCUSDT&mode=one-way"
+
+# Portfolio metrics
+curl -H "X-API-Key: ${POSITION_MANAGER_API_KEY}" \
+  "http://localhost:4800/api/v1/portfolio?include_positions=true"
+```
+
 ### Key Endpoints
 
 - `GET /api/v1/positions` - Get all positions
