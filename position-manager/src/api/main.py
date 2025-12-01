@@ -13,7 +13,11 @@ from ..config.rabbitmq import RabbitMQConnection
 from ..config.settings import settings
 from ..consumers import OrderPositionConsumer, WebSocketPositionConsumer
 from ..exceptions import QueueError
-from ..tasks import PositionSnapshotCleanupTask, PositionSnapshotTask
+from ..tasks import (
+    PositionSnapshotCleanupTask,
+    PositionSnapshotTask,
+    PositionValidationTask,
+)
 from .middleware.logging import logging_middleware
 from .routes.portfolio import get_portfolio_manager
 from .routes import health as health_routes
@@ -28,6 +32,7 @@ logger = get_logger(__name__)
 _ws_consumer: Optional[WebSocketPositionConsumer] = None
 _order_consumer: Optional[OrderPositionConsumer] = None
 _snapshot_task: Optional[PositionSnapshotTask] = None
+_validation_task: Optional[PositionValidationTask] = None
 
 
 def create_app() -> FastAPI:
@@ -61,7 +66,7 @@ def create_app() -> FastAPI:
 
         # Initialize RabbitMQ connection, but do not fail startup if it's temporarily unavailable.
         # Health and consumers will reflect queue connectivity separately.
-        global _ws_consumer, _order_consumer, _snapshot_task
+        global _ws_consumer, _order_consumer, _snapshot_task, _validation_task
         try:
             await RabbitMQConnection.create_connection()
 
@@ -79,6 +84,10 @@ def create_app() -> FastAPI:
             # Start periodic snapshot task (US4 T077/T077a/T083).
             _snapshot_task = PositionSnapshotTask()
             await _snapshot_task.start()
+
+            # Start periodic validation task (US5 T087/T087a/T091).
+            _validation_task = PositionValidationTask()
+            await _validation_task.start()
         except QueueError as e:
             logger.error(
                 "rabbitmq_startup_connection_failed_non_fatal",
@@ -93,7 +102,10 @@ def create_app() -> FastAPI:
         logger.info("app_shutdown_begin", service=settings.position_manager_service_name)
 
         # Stop consumers and background tasks first so they no longer use connections.
-        global _ws_consumer, _order_consumer, _snapshot_task
+        global _ws_consumer, _order_consumer, _snapshot_task, _validation_task
+        if _validation_task is not None:
+            await _validation_task.stop()
+            _validation_task = None
         if _snapshot_task is not None:
             await _snapshot_task.stop()
             _snapshot_task = None

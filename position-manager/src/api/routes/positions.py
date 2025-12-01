@@ -142,7 +142,7 @@ async def validate_position(
 
     try:
         is_valid, error_message, updated_position = await position_manager.validate_position(
-            asset, mode_lower, fix_discrepancies=fix_discrepancies
+            asset, mode_lower, fix_discrepancies=fix_discrepancies, trace_id=trace_id
         )
         response = {
             "is_valid": is_valid,

@@ -551,28 +551,141 @@ class PositionManager:
         asset: str,
         mode: str = "one-way",
         fix_discrepancies: bool = True,
+        trace_id: Optional[str] = None,
     ) -> Tuple[bool, Optional[str], Optional[Position]]:
-        """Phase 3 placeholder for validate_position.
+        """Validate position by computing from order history and comparing with stored state.
 
-        Detailed validation against authoritative sources is implemented in
-        later phases. For now we simply check that a stored position exists.
+        Args:
+            asset: Trading pair symbol
+            mode: Trading mode ('one-way' or 'hedge')
+            fix_discrepancies: If True, update stored position when discrepancy is found
+            trace_id: Optional trace ID for request tracking
+
+        Returns:
+            Tuple of (is_valid, error_message, updated_position)
+            - is_valid: True if position is valid, False if discrepancy found
+            - error_message: Description of discrepancy if any
+            - updated_position: Updated position if discrepancy was fixed, None otherwise
         """
         try:
-            stored = await self.get_position(asset, mode)
-            if stored is None:
-                msg = f"Position not found for asset={asset}, mode={mode}"
-                logger.warning("position_validation_missing", asset=asset, mode=mode, error=msg)
-                return False, msg, None
+            pool = await DatabaseConnection.get_pool()
+
+            # Compute position from order history (weighted average price by filled quantity)
+            compute_query = """
+                SELECT
+                    SUM(CASE WHEN side = 'Buy' THEN filled_quantity ELSE -filled_quantity END) as computed_size,
+                    CASE 
+                        WHEN SUM(filled_quantity) > 0 THEN
+                            SUM(average_price * filled_quantity) FILTER (WHERE average_price IS NOT NULL) / SUM(filled_quantity) FILTER (WHERE average_price IS NOT NULL)
+                        ELSE NULL
+                    END as computed_avg_price
+                FROM orders
+                WHERE asset = $1 AND status IN ('filled', 'partially_filled')
+            """
+            row = await pool.fetchrow(compute_query, asset.upper())
+
+            computed_size = row["computed_size"] or Decimal("0")
+            computed_avg_price = (
+                Decimal(str(row["computed_avg_price"])) if row["computed_avg_price"] is not None else None
+            )
+
+            # Get stored position
+            stored_position = await self.get_position(asset, mode)
+
+            if stored_position is None:
+                if computed_size == 0:
+                    logger.debug(
+                        "position_validation_passed",
+                        asset=asset,
+                        mode=mode,
+                        reason="no_position_no_orders",
+                        trace_id=trace_id,
+                    )
+                    return (True, None, None)
+                error_msg = f"Stored position missing but computed size is {computed_size}"
+                logger.warning(
+                    "position_validation_failed",
+                    asset=asset,
+                    mode=mode,
+                    error=error_msg,
+                    computed_size=float(computed_size),
+                    trace_id=trace_id,
+                )
+
+                # If discrepancy fixing is enabled and computed position exists, create the position
+                if fix_discrepancies and computed_size != 0:
+                    logger.info(
+                        "fixing_position_discrepancy",
+                        asset=asset,
+                        mode=mode,
+                        action="creating_missing_position",
+                        computed_size=float(computed_size),
+                        computed_avg_price=float(computed_avg_price) if computed_avg_price else None,
+                        trace_id=trace_id,
+                    )
+                    updated_position = await self._update_position_from_computed(
+                        asset, computed_size, computed_avg_price, mode, trace_id
+                    )
+                    return (True, f"Created missing position: {error_msg}", updated_position)
+
+                return (False, error_msg, None)
+
+            # Compare sizes (allow small differences due to rounding)
+            size_diff = abs(stored_position.size - computed_size)
+            if size_diff > Decimal("0.0001"):
+                error_msg = (
+                    f"Position size mismatch: stored={stored_position.size}, "
+                    f"computed={computed_size}, diff={size_diff}"
+                )
+                logger.warning(
+                    "position_validation_failed",
+                    asset=asset,
+                    mode=mode,
+                    error=error_msg,
+                    stored_size=float(stored_position.size),
+                    computed_size=float(computed_size),
+                    size_diff=float(size_diff),
+                    trace_id=trace_id,
+                )
+
+                # Handle discrepancy by updating stored position with computed values
+                if fix_discrepancies:
+                    logger.info(
+                        "fixing_position_discrepancy",
+                        asset=asset,
+                        mode=mode,
+                        action="updating_position",
+                        stored_size=float(stored_position.size),
+                        computed_size=float(computed_size),
+                        size_diff=float(size_diff),
+                        trace_id=trace_id,
+                    )
+                    updated_position = await self._update_position_from_computed(
+                        asset, computed_size, computed_avg_price, mode, trace_id
+                    )
+                    return (True, f"Fixed discrepancy: {error_msg}", updated_position)
+
+                return (False, error_msg, None)
+
             logger.debug(
-                "position_validation_passed_basic",
+                "position_validation_passed",
                 asset=asset,
                 mode=mode,
-                size=str(stored.size),
+                size=float(stored_position.size),
+                trace_id=trace_id,
             )
-            return True, None, stored
-        except Exception as e:  # pragma: no cover
-            logger.error("position_validation_error", asset=asset, mode=mode, error=str(e))
-            return False, f"Validation error: {e}", None
+            return (True, None, None)
+
+        except Exception as e:
+            logger.error(
+                "position_validation_error",
+                asset=asset,
+                mode=mode,
+                error=str(e),
+                trace_id=trace_id,
+                exc_info=True,
+            )
+            return (False, f"Validation error: {e}", None)
 
     async def create_position_snapshot(
         self,
@@ -720,6 +833,146 @@ class PositionManager:
                 error=str(e),
             )
             raise DatabaseError(f"Failed to cleanup old position snapshots: {e}") from e
+
+    # === Validation helpers (Phase 7) ======================================
+
+    async def _update_position_from_computed(
+        self,
+        asset: str,
+        computed_size: Decimal,
+        computed_avg_price: Optional[Decimal],
+        mode: str,
+        trace_id: Optional[str] = None,
+    ) -> Position:
+        """Update stored position from computed values (from order history).
+
+        Args:
+            asset: Trading pair symbol
+            computed_size: Computed position size from order history
+            computed_avg_price: Computed average price from order history
+            mode: Trading mode
+            trace_id: Optional trace ID for request tracking
+
+        Returns:
+            Updated Position object
+        """
+        try:
+            pool = await DatabaseConnection.get_pool()
+
+            # Get existing position to preserve current_price and other fields
+            existing = await self.get_position(asset, mode)
+
+            # Upsert position with computed values, preserving version for optimistic locking
+            if existing:
+                upsert_query = """
+                    UPDATE positions
+                    SET size = $1,
+                        average_entry_price = $2,
+                        last_updated = NOW(),
+                        version = version + 1
+                    WHERE asset = $3 AND mode = $4
+                    RETURNING id, asset, mode, size, average_entry_price, current_price,
+                              unrealized_pnl, realized_pnl,
+                              long_size, short_size, version,
+                              last_updated, closed_at, created_at
+                """
+                row = await pool.fetchrow(
+                    upsert_query,
+                    str(computed_size),
+                    str(computed_avg_price) if computed_avg_price is not None else None,
+                    asset.upper(),
+                    mode.lower(),
+                )
+            else:
+                # Create new position if it doesn't exist
+                upsert_query = """
+                    INSERT INTO positions (
+                        asset, mode, size, average_entry_price, version, last_updated, created_at
+                    )
+                    VALUES ($1, $2, $3, $4, 1, NOW(), NOW())
+                    RETURNING id, asset, mode, size, average_entry_price, current_price,
+                              unrealized_pnl, realized_pnl,
+                              long_size, short_size, version,
+                              last_updated, closed_at, created_at
+                """
+                row = await pool.fetchrow(
+                    upsert_query,
+                    asset.upper(),
+                    mode.lower(),
+                    str(computed_size),
+                    str(computed_avg_price) if computed_avg_price is not None else None,
+                )
+
+            if row is None:
+                raise DatabaseError("Failed to update/create position from computed values")
+
+            position = Position.from_db_dict(dict(row))
+
+            logger.info(
+                "position_updated_from_computed",
+                asset=asset,
+                mode=mode,
+                computed_size=float(computed_size),
+                computed_avg_price=float(computed_avg_price) if computed_avg_price else None,
+                trace_id=trace_id,
+            )
+
+            return position
+
+        except Exception as e:
+            logger.error(
+                "position_update_from_computed_failed",
+                asset=asset,
+                mode=mode,
+                error=str(e),
+                trace_id=trace_id,
+            )
+            raise DatabaseError(f"Failed to update position from computed values: {e}") from e
+
+    # In-memory validation statistics (can be enhanced with database persistence if needed)
+    _validation_stats = {
+        "total_validations": 0,
+        "total_discrepancies": 0,
+        "total_fixes": 0,
+        "total_errors": 0,
+    }
+
+    async def record_validation_statistics(
+        self,
+        validated_count: int,
+        fixed_count: int,
+        error_count: int,
+        total_positions: int,
+    ) -> None:
+        """Record validation statistics for monitoring.
+
+        Args:
+            validated_count: Number of positions that passed validation
+            fixed_count: Number of discrepancies that were fixed
+            error_count: Number of validation errors
+            total_positions: Total number of positions validated
+        """
+        self._validation_stats["total_validations"] += validated_count
+        self._validation_stats["total_discrepancies"] += (fixed_count + error_count)
+        self._validation_stats["total_fixes"] += fixed_count
+        self._validation_stats["total_errors"] += error_count
+
+        logger.debug(
+            "validation_statistics_updated",
+            validated_count=validated_count,
+            fixed_count=fixed_count,
+            error_count=error_count,
+            total_positions=total_positions,
+            cumulative_stats=self._validation_stats,
+        )
+
+    def get_validation_statistics(self) -> dict:
+        """Get current validation statistics.
+
+        Returns:
+            Dictionary with validation statistics
+        """
+        return self._validation_stats.copy()
 
     # === ML feature helpers (Phase 3) ======================================
 

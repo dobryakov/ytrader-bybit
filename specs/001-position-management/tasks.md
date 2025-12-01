@@ -379,31 +379,31 @@
 **Independent Test Criteria**: Introduce intentional discrepancies and verify validation process detects and corrects them.
 
 ### T087: Extract position validation task from Order Manager
-- [ ] T087 [US5] Extract PositionValidationTask from order-manager/src/main.py: copy PositionValidationTask class to src/tasks/position_validation_task.py, adapt imports and paths to new structure, update configuration to use POSITION_MANAGER_VALIDATION_INTERVAL, ensure periodic validation works with new service structure
+- [X] T087 [US5] Extract PositionValidationTask from order-manager/src/main.py: copy PositionValidationTask class to src/tasks/position_validation_task.py, adapt imports and paths to new structure, update configuration to use POSITION_MANAGER_VALIDATION_INTERVAL, ensure periodic validation works with new service structure
 
 ### T087a: Adapt position validation task to new structure
-- [ ] T087a [US5] Adapt PositionValidationTask in src/tasks/position_validation_task.py: update imports to use new PositionManager service, update database connection to use src/config/database.py, update logging to use src/config/logging.py, configure execution in new service (scheduled tasks or background workers)
+- [X] T087a [US5] Adapt PositionValidationTask in src/tasks/position_validation_task.py: update imports to use new PositionManager service, update database connection to use src/config/database.py, update logging to use src/config/logging.py, configure execution in new service (scheduled tasks or background workers)
 
 ### T088: Enhance validate_position method from extracted code
-- [ ] T088 [US5] Enhance validate_position() in src/services/position_manager.py (extracted from Order Manager): ensure method compares position data with external sources (WebSocket, Order Manager), detect discrepancies in size, average_entry_price, PnL, return validation result, update to use new logging and configuration
+- [X] T088 [US5] Enhance validate_position() in src/services/position_manager.py (extracted from Order Manager): ensure method compares position data with external sources (WebSocket, Order Manager), detect discrepancies in size, average_entry_price, PnL, return validation result, update to use new logging and configuration
 
 ### T089: Create validation API endpoint
-- [ ] T089 [US5] Create POST /api/v1/positions/{asset}/validate endpoint in src/api/routes/positions.py: manually trigger validation, return ValidationResult with is_valid, error_message, updated_position, support fix_discrepancies parameter
+- [X] T089 [US5] Create POST /api/v1/positions/{asset}/validate endpoint in src/api/routes/positions.py: manually trigger validation, return ValidationResult with is_valid, error_message, updated_position, support fix_discrepancies parameter
 
 ### T090: Implement discrepancy correction logic
-- [ ] T090 [US5] Implement discrepancy correction in src/services/position_manager.py: automatically fix discrepancies when fix_discrepancies=true, apply conflict resolution rules, update position with corrected data, log all corrections
+- [X] T090 [US5] Implement discrepancy correction in src/services/position_manager.py: automatically fix discrepancies when fix_discrepancies=true, apply conflict resolution rules, update position with corrected data, log all corrections
 
 ### T091: Integrate validation task with main application
-- [ ] T091 [US5] Integrate validation task in src/main.py: schedule periodic validation, handle validation errors gracefully, log validation statistics
+- [X] T091 [US5] Integrate validation task in src/main.py: schedule periodic validation, handle validation errors gracefully, log validation statistics
 
 ### T092: Add validation result logging
-- [ ] T092 [US5] Add structured logging in src/services/position_manager.py: log all validation results, log detected discrepancies, log correction actions, include trace_id in logs
+- [X] T092 [US5] Add structured logging in src/services/position_manager.py: log all validation results, log detected discrepancies, log correction actions, include trace_id in logs
 
 ### T093: Create integration tests for validation
 - [ ] T093 [US5] Create integration tests in tests/integration/test_validation.py: test_position_validation, test_discrepancy_detection, test_automatic_correction, test_validation_task_scheduling
 
 ### T094: Add validation statistics tracking
-- [ ] T094 [US5] Add validation statistics in src/services/position_manager.py: track number of validations, discrepancies detected, corrections applied, expose via health check or metrics endpoint
+- [X] T094 [US5] Add validation statistics in src/services/position_manager.py: track number of validations, discrepancies detected, corrections applied, expose via health check or metrics endpoint
 
 ---
 

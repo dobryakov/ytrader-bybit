@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from ...config.database import DatabaseConnection
 from ...config.logging import get_logger
 from ...config.rabbitmq import RabbitMQConnection
+from ...services.position_manager import PositionManager
 from ...utils.tracing import get_or_create_trace_id
 
 
@@ -24,6 +25,7 @@ async def health_check():
     db_connected = False
     queue_connected = False
     positions_count = 0
+    validation_stats = {}
 
     try:
         # Database connectivity and positions count
@@ -41,6 +43,13 @@ async def health_check():
     except Exception as e:  # pragma: no cover
         logger.error("health_check_queue_failed", error=str(e), trace_id=trace_id)
 
+    try:
+        # Get validation statistics
+        position_manager = PositionManager()
+        validation_stats = position_manager.get_validation_statistics()
+    except Exception as e:  # pragma: no cover
+        logger.warning("health_check_validation_stats_failed", error=str(e), trace_id=trace_id)
+
     status = "healthy" if db_connected and queue_connected else "degraded"
 
     payload = {
@@ -49,6 +58,7 @@ async def health_check():
         "database_connected": db_connected,
         "queue_connected": queue_connected,
         "positions_count": positions_count,
+        "validation_statistics": validation_stats,
     }
 
     logger.info("health_check_completed", **payload, trace_id=trace_id)
