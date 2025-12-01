@@ -22,6 +22,7 @@ from .consumers.signal_consumer import SignalConsumer
 from .services.event_subscriber import EventSubscriber
 from .services.order_state_sync import OrderStateSync
 from .services.position_manager import PositionManager
+from .services.instrument_info_manager import InstrumentInfoRefreshTask
 
 # Configure logging first
 configure_logging()
@@ -303,6 +304,16 @@ async def lifespan(app: FastAPI):
         app.state.validation_task = validation_task
         logger.info("position_validation_task_started", trace_id=trace_id)
 
+        # Start background task for instruments-info periodic refresh
+        instrument_task = InstrumentInfoRefreshTask()
+        await instrument_task.start()
+        app.state.instrument_info_task = instrument_task
+        logger.info(
+            "instrument_info_refresh_task_started",
+            interval=settings.order_manager_instrument_info_refresh_interval,
+            trace_id=trace_id,
+        )
+
         logger.info("application_started", port=settings.order_manager_port, trace_id=trace_id)
     except Exception as e:
         logger.error(
@@ -329,6 +340,11 @@ async def lifespan(app: FastAPI):
         if hasattr(app.state, "snapshot_task"):
             await app.state.snapshot_task.stop()
             logger.info("position_snapshot_task_stopped")
+
+        # Stop instruments-info refresh task
+        if hasattr(app.state, "instrument_info_task"):
+            await app.state.instrument_info_task.stop()
+            logger.info("instrument_info_refresh_task_stopped")
 
         # Stop event subscriber
         if hasattr(app.state, "event_subscriber") and app.state.event_subscriber is not None:

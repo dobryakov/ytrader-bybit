@@ -167,6 +167,9 @@ services:
       - WS_GATEWAY_HOST=${WS_GATEWAY_HOST:-ws-gateway}
       - WS_GATEWAY_PORT=${WS_GATEWAY_PORT:-4400}
       - WS_GATEWAY_API_KEY=${WS_GATEWAY_API_KEY}
+      - POSITION_MANAGER_HOST=${POSITION_MANAGER_HOST:-position-manager}
+      - POSITION_MANAGER_PORT=${POSITION_MANAGER_PORT:-4800}
+      - POSITION_MANAGER_API_KEY=${POSITION_MANAGER_API_KEY}
       - ORDERMANAGER_ENABLE_DRY_RUN=${ORDERMANAGER_ENABLE_DRY_RUN:-false}
       - ORDERMANAGER_MAX_SINGLE_ORDER_SIZE=${ORDERMANAGER_MAX_SINGLE_ORDER_SIZE:-500.0}
       - ORDERMANAGER_ENABLE_ORDER_SPLITTING=${ORDERMANAGER_ENABLE_ORDER_SPLITTING:-false}
@@ -201,6 +204,8 @@ services:
       redis:
         condition: service_healthy
       ws-gateway:
+        condition: service_started
+      position-manager:
         condition: service_started
     networks:
       - ytrader-network

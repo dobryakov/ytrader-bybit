@@ -14,6 +14,7 @@ This guide provides step-by-step instructions to set up and run the Order Manage
 - Shared PostgreSQL database available (managed by ws-gateway service)
 - RabbitMQ message broker available
 - WebSocket Gateway service operational (for order execution event subscriptions)
+- Position Manager service operational (for position queries and risk checks - Order Manager delegates position data to Position Manager as the single source of truth)
 
 ## Quick Setup
 
@@ -64,6 +65,11 @@ WS_GATEWAY_HOST=ws-gateway
 WS_GATEWAY_PORT=4400
 WS_GATEWAY_API_KEY=your-gateway-api-key
 
+# Position Manager Configuration (required for position queries and risk checks)
+POSITION_MANAGER_HOST=position-manager
+POSITION_MANAGER_PORT=4800
+POSITION_MANAGER_API_KEY=your-position-manager-api-key
+
 # Order Execution Configuration
 ORDERMANAGER_ENABLE_DRY_RUN=false  # Set to 'true' for testing without real orders
 ORDERMANAGER_MAX_SINGLE_ORDER_SIZE=10000.0  # Maximum order size in USDT
@@ -96,15 +102,17 @@ ORDERMANAGER_POSITION_VALIDATION_INTERVAL=3600  # seconds (1 hour)
 Ensure all dependencies are running:
 
 ```bash
-docker compose up -d postgres rabbitmq ws-gateway
+docker compose up -d postgres rabbitmq ws-gateway position-manager
 ```
 
 Wait for services to be ready:
 
 ```bash
-docker compose logs -f postgres rabbitmq ws-gateway
+docker compose logs -f postgres rabbitmq ws-gateway position-manager
 # Press Ctrl+C when services are ready
 ```
+
+**Note**: Order Manager requires Position Manager service to be running for position queries and risk checks. Position Manager is the single source of truth for position data. Order Manager's position endpoints delegate to Position Manager REST API.
 
 ### 4. Run Database Migrations
 

@@ -92,12 +92,36 @@ async def get_health():
     """Health check endpoint.
 
     Returns:
-        Health status of the service
+        Overall health status of the service with core dependency flags.
+
+    This endpoint is designed for Grafana System Health dashboard
+    (spec task T074) and returns a compact schema:
+
+    {
+        "status": "healthy" | "unhealthy",
+        "service": "order-manager",
+        "database_connected": bool,
+        "queue_connected": bool,
+        "timestamp": "<ISO8601 UTC>"
+    }
     """
+    # Reuse existing dependency check helpers to avoid duplication
+    database_status = await _check_database()
+    rabbitmq_status = await _check_rabbitmq()
+
+    database_connected = database_status == "available"
+    queue_connected = rabbitmq_status == "available"
+
+    is_healthy = database_connected and queue_connected
+    status = "healthy" if is_healthy else "unhealthy"
+
     return JSONResponse(
         status_code=200,
         content={
-            "status": "healthy",
+            "status": status,
+            "service": "order-manager",
+            "database_connected": database_connected,
+            "queue_connected": queue_connected,
             "timestamp": datetime.utcnow().isoformat() + "Z",
         },
     )

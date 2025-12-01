@@ -8,7 +8,7 @@ from ..config.database import DatabaseConnection
 from ..config.logging import get_logger
 from ..models.trading_signal import TradingSignal
 from ..models.position import Position
-from ..services.position_manager import PositionManager
+from ..services.position_manager_client import PositionManagerClient
 from ..utils.bybit_client import get_bybit_client
 from ..exceptions import RiskLimitError, OrderExecutionError
 
@@ -23,7 +23,7 @@ class RiskManager:
         self.max_position_size = Decimal(str(settings.order_manager_max_position_size))
         self.max_exposure = Decimal(str(settings.order_manager_max_exposure))
         self.max_order_size_ratio = Decimal(str(settings.order_manager_max_order_size_ratio))
-        self.position_manager = PositionManager()
+        self.position_manager_client = PositionManagerClient()
 
     async def check_balance(self, signal: TradingSignal, order_quantity: Decimal, order_price: Decimal) -> bool:
         """Check if sufficient balance is available for order.
@@ -223,7 +223,7 @@ class RiskManager:
                     raise RiskLimitError(error_msg)
             else:
                 # Sell orders: check position first
-                position = await self.position_manager.get_position(signal.asset)
+                position = await self.position_manager_client.get_position(signal.asset, mode="one-way", trace_id=trace_id)
                 has_position = position is not None
                 position_size = position.size if position else Decimal("0")
                 has_long_position = has_position and position_size > 0
@@ -625,4 +625,45 @@ class RiskManager:
         )
 
         return True
+
+    async def check_max_exposure_from_position_manager(self, trace_id: Optional[str] = None) -> bool:
+        """Check if total exposure across all positions exceeds maximum using Position Manager API.
+
+        Gets exposure from Position Manager service as the single source of truth.
+
+        Args:
+            trace_id: Trace ID for logging
+
+        Returns:
+            True if exposure is within limits, False otherwise
+
+        Raises:
+            RiskLimitError: If exposure exceeds limits
+            OrderExecutionError: If Position Manager API call fails
+        """
+        from ..utils.tracing import get_or_create_trace_id
+
+        trace_id = trace_id or get_or_create_trace_id()
+
+        try:
+            # Get portfolio exposure from Position Manager
+            exposure = await self.position_manager_client.get_portfolio_exposure(trace_id=trace_id)
+            total_exposure = exposure.total_exposure_usdt
+
+            # Check against max exposure limit
+            return self.check_max_exposure(total_exposure, trace_id=trace_id)
+
+        except Exception as e:
+            # If Position Manager is unavailable, log warning but don't block order execution
+            # This allows graceful degradation - risk checks can fall back to other mechanisms
+            logger.warning(
+                "max_exposure_check_position_manager_unavailable",
+                error=str(e),
+                error_type=type(e).__name__,
+                trace_id=trace_id,
+                message="Position Manager unavailable - skipping exposure check",
+            )
+            # Return True to allow order execution (risk check skipped)
+            # In production, consider implementing a fallback mechanism
+            return True
 

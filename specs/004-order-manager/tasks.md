@@ -161,8 +161,8 @@
 - [X] T049 [US4] Add conflict resolution for simultaneous signals in order-manager/src/services/signal_processor.py (queue handling for same asset)
 - [X] T050 [US4] Add error handling and rejection logging with clear error messages in order-manager/src/services/signal_processor.py
 - [X] T051 [US4] Add safety mechanism logging for all rejections in order-manager/src/services/risk_manager.py
-- [ ] T072 [US4] Implement instruments-info persistence in database (create instrument_info table, fetch and cache Bybit instruments-info data, periodic refresh logic) in order-manager/src/services/instrument_info_manager.py
-- [ ] T073 [US4] Add order quota MVL validation (check order quota maximum volume limits from instruments-info before order creation) in order-manager/src/services/order_validator.py
+- [X] T072 [US4] Implement instruments-info persistence in database (create instrument_info table, fetch and cache Bybit instruments-info data, periodic refresh logic) in order-manager/src/services/instrument_info_manager.py
+- [X] T073 [US4] Add order quota MVL validation (check order quota maximum volume limits from instruments-info before order creation) in order-manager/src/services/order_validator.py
 
 **Checkpoint**: At this point, all user stories should work together - orders are created safely with proper validation and risk protection
 
@@ -197,10 +197,10 @@
 - [X] T061 Add background task for periodic position snapshots in order-manager/src/main.py (scheduler for snapshot creation)
 - [X] T062 Add background task for periodic position validation in order-manager/src/main.py (scheduler for validation based on ORDERMANAGER_POSITION_VALIDATION_INTERVAL config)
 - [X] T063 Add discrepancy handling when computed position differs from stored position in order-manager/src/services/position_manager.py
-- [ ] T063a [P] Adapt Order Manager risk checks to use Position Manager REST API: create client in order-manager/src/services/position_manager_client.py to call Position Manager endpoints (GET /api/v1/positions, GET /api/v1/positions/{asset}, GET /api/v1/portfolio/exposure) with API key authentication.
-- [ ] T063b [P] Update risk_manager in order-manager/src/services/risk_manager.py to use Position Manager as source of truth for exposure- and position-based limits (max exposure, position size limits) by querying Position Manager API instead of reading local positions table.
-- [ ] T063c [P] Update REST API endpoints in order-manager/src/api/routes/positions.py to delegate position reads to Position Manager REST API (proxy/redirect or deprecate endpoints that expose local positions), keeping Order Manager focused on orders rather than positions.
-- [ ] T063d [P] Update order-manager/README.md and specs/004-order-manager/quickstart.md to document dependency on Position Manager service for position data and risk checks, including required environment variables (POSITION_MANAGER_HOST, POSITION_MANAGER_PORT, POSITION_MANAGER_API_KEY) and integration behaviour.
+- [X] T063a [P] Adapt Order Manager risk checks to use Position Manager REST API: create client in order-manager/src/services/position_manager_client.py to call Position Manager endpoints (GET /api/v1/positions, GET /api/v1/positions/{asset}, GET /api/v1/portfolio/exposure) with API key authentication.
+- [X] T063b [P] Update risk_manager in order-manager/src/services/risk_manager.py to use Position Manager as source of truth for exposure- and position-based limits (max exposure, position size limits) by querying Position Manager API instead of reading local positions table.
+- [X] T063c [P] Update REST API endpoints in order-manager/src/api/routes/positions.py to delegate position reads to Position Manager REST API (proxy/redirect or deprecate endpoints that expose local positions), keeping Order Manager focused on orders rather than positions.
+- [X] T063d [P] Update order-manager/README.md and specs/004-order-manager/quickstart.md to document dependency on Position Manager service for position data and risk checks, including required environment variables (POSITION_MANAGER_HOST, POSITION_MANAGER_PORT, POSITION_MANAGER_API_KEY) and integration behaviour.
 
 **Checkpoint**: Position management with snapshots and validation is operational
 
@@ -218,7 +218,7 @@
 - [X] T069 Security hardening (API key rotation, secure credential storage, input sanitization)
 - [ ] T070 Run quickstart.md validation (verify all steps work end-to-end)
 - [X] T071 Add database migration files in ws-gateway/migrations/ (XXX_create_orders_table.sql, XXX_create_signal_order_relationships_table.sql, XXX_create_positions_table.sql, XXX_create_position_snapshots_table.sql per constitution requirement)
-- [ ] T074 [P] [Grafana] Extend health check endpoint to include dependency status for Grafana monitoring: Update GET /health endpoint in order-manager/src/api/routes/health.py to include dependency status fields (database_connected: boolean from _check_database() result, queue_connected: boolean from _check_rabbitmq() result) in addition to existing status and timestamp fields. This enables Grafana System Health dashboard panel to display service health with component-level status. The endpoint should return: {"status": "healthy"|"unhealthy", "service": "order-manager", "database_connected": boolean, "queue_connected": boolean, "timestamp": string}. Required for Grafana dashboard User Story 5 compliance.
+- [X] T074 [P] [Grafana] Extend health check endpoint to include dependency status for Grafana monitoring: Update GET /health endpoint in order-manager/src/api/routes/health.py to include dependency status fields (database_connected: boolean from _check_database() result, queue_connected: boolean from _check_rabbitmq() result) in addition to existing status and timestamp fields. This enables Grafana System Health dashboard panel to display service health with component-level status. The endpoint should return: {"status": "healthy"|"unhealthy", "service": "order-manager", "database_connected": boolean, "queue_connected": boolean, "timestamp": string}. Required for Grafana dashboard User Story 5 compliance.
 
 ---
 

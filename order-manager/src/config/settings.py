@@ -53,6 +53,11 @@ class Settings(BaseSettings):
     ws_gateway_port: int = Field(default=4400, alias="WS_GATEWAY_PORT")
     ws_gateway_api_key: str = Field(..., alias="WS_GATEWAY_API_KEY")
 
+    # Position Manager Configuration
+    position_manager_host: str = Field(default="position-manager", alias="POSITION_MANAGER_HOST")
+    position_manager_port: int = Field(default=4800, alias="POSITION_MANAGER_PORT")
+    position_manager_api_key: str = Field(..., alias="POSITION_MANAGER_API_KEY")
+
     # Order Execution Configuration
     order_manager_enable_dry_run: bool = Field(default=False, alias="ORDERMANAGER_ENABLE_DRY_RUN")
     order_manager_max_single_order_size: float = Field(default=10000.0, alias="ORDERMANAGER_MAX_SINGLE_ORDER_SIZE")
@@ -87,6 +92,11 @@ class Settings(BaseSettings):
     )
     order_manager_position_validation_interval: int = Field(
         default=3600, alias="ORDERMANAGER_POSITION_VALIDATION_INTERVAL"
+    )
+
+    # Instruments-info refresh configuration
+    order_manager_instrument_info_refresh_interval: int = Field(
+        default=3600, alias="ORDERMANAGER_INSTRUMENT_INFO_REFRESH_INTERVAL"
     )
 
     # Order Cancellation Configuration
@@ -176,6 +186,14 @@ class Settings(BaseSettings):
         """Validate validation interval is positive."""
         if v <= 0:
             raise ValueError("Validation interval must be positive")
+        return v
+
+    @field_validator("order_manager_instrument_info_refresh_interval")
+    @classmethod
+    def validate_instrument_info_refresh_interval(cls, v: int) -> int:
+        """Validate instruments-info refresh interval is positive."""
+        if v <= 0:
+            raise ValueError("Instruments-info refresh interval must be positive")
         return v
 
     @property

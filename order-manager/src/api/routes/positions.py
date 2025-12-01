@@ -1,13 +1,17 @@
-"""Position query endpoints for retrieving position information."""
+"""Position query endpoints delegating to Position Manager service.
+
+These endpoints proxy requests to Position Manager REST API, which is the
+single source of truth for position data. Order Manager no longer reads
+positions directly from the database.
+"""
 
 from typing import Optional
 
 from fastapi import APIRouter, Query, HTTPException
 from fastapi.responses import JSONResponse
 
-from ...config.database import DatabaseConnection
 from ...config.logging import get_logger
-from ...models.position import Position
+from ...services.position_manager_client import PositionManagerClient
 from ...utils.tracing import get_or_create_trace_id
 
 logger = get_logger(__name__)
@@ -22,12 +26,15 @@ async def list_positions(
 ):
     """List positions with optional filtering.
 
+    This endpoint delegates to Position Manager service, which is the single
+    source of truth for position data.
+
     Args:
         asset: Trading pair filter (e.g., BTCUSDT)
         mode: Trading mode filter (one-way, hedge)
 
     Returns:
-        List of positions
+        List of positions from Position Manager
     """
     trace_id = get_or_create_trace_id()
     logger.info("position_list_request", asset=asset, mode=mode, trace_id=trace_id)
@@ -39,38 +46,9 @@ async def list_positions(
             if mode_lower not in {"one-way", "hedge"}:
                 raise HTTPException(status_code=400, detail="Invalid mode. Must be 'one-way' or 'hedge'")
 
-        pool = await DatabaseConnection.get_pool()
-
-        # Build query
-        where_conditions = []
-        params = []
-        param_idx = 1
-
-        if asset:
-            where_conditions.append(f"asset = ${param_idx}")
-            params.append(asset.upper())
-            param_idx += 1
-
-        if mode:
-            where_conditions.append(f"mode = ${param_idx}")
-            params.append(mode.lower())
-            param_idx += 1
-
-        where_clause = " AND ".join(where_conditions) if where_conditions else "1=1"
-
-        query = f"""
-            SELECT id, asset, size, average_entry_price, unrealized_pnl, realized_pnl,
-                   mode, long_size, short_size, long_avg_price, short_avg_price,
-                   last_updated, last_snapshot_at
-            FROM positions
-            WHERE {where_clause}
-            ORDER BY asset, mode
-        """
-
-        rows = await pool.fetch(query, *params)
-
-        # Convert to Position objects
-        positions = [Position.from_dict(dict(row)) for row in rows]
+        # Delegate to Position Manager service
+        client = PositionManagerClient()
+        positions = await client.get_all_positions(asset=asset, mode=mode, trace_id=trace_id)
 
         # Serialize positions to JSON
         positions_data = []
@@ -105,6 +83,11 @@ async def list_positions(
         raise
     except Exception as e:
         logger.error("position_list_failed", error=str(e), trace_id=trace_id, exc_info=True)
+        # Map Position Manager errors to appropriate HTTP status codes
+        if "404" in str(e) or "not found" in str(e).lower():
+            raise HTTPException(status_code=404, detail=f"Positions not found: {e}")
+        elif "503" in str(e) or "unavailable" in str(e).lower():
+            raise HTTPException(status_code=503, detail=f"Position Manager unavailable: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to retrieve positions: {e}") from e
 
 
@@ -115,12 +98,15 @@ async def get_position_by_asset(
 ):
     """Get position for a specific asset.
 
+    This endpoint delegates to Position Manager service, which is the single
+    source of truth for position data.
+
     Args:
         asset: Trading pair symbol (e.g., BTCUSDT)
         mode: Trading mode (one-way, hedge)
 
     Returns:
-        Position details
+        Position details from Position Manager
     """
     trace_id = get_or_create_trace_id()
     logger.info("position_get_request", asset=asset, mode=mode, trace_id=trace_id)
@@ -131,21 +117,13 @@ async def get_position_by_asset(
         if mode_lower not in {"one-way", "hedge"}:
             raise HTTPException(status_code=400, detail="Invalid mode. Must be 'one-way' or 'hedge'")
 
-        pool = await DatabaseConnection.get_pool()
-        query = """
-            SELECT id, asset, size, average_entry_price, unrealized_pnl, realized_pnl,
-                   mode, long_size, short_size, long_avg_price, short_avg_price,
-                   last_updated, last_snapshot_at
-            FROM positions
-            WHERE asset = $1 AND mode = $2
-        """
-        row = await pool.fetchrow(query, asset.upper(), mode_lower)
+        # Delegate to Position Manager service
+        client = PositionManagerClient()
+        position = await client.get_position(asset=asset, mode=mode_lower, trace_id=trace_id)
 
-        if row is None:
+        if position is None:
             logger.warning("position_not_found", asset=asset, mode=mode, trace_id=trace_id)
             raise HTTPException(status_code=404, detail=f"Position not found for asset: {asset}, mode: {mode}")
-
-        position = Position.from_dict(dict(row))
 
         # Serialize position to JSON
         position_dict = {
@@ -172,5 +150,9 @@ async def get_position_by_asset(
         raise
     except Exception as e:
         logger.error("position_get_failed", asset=asset, error=str(e), trace_id=trace_id, exc_info=True)
+        # Map Position Manager errors to appropriate HTTP status codes
+        if "404" in str(e) or "not found" in str(e).lower():
+            raise HTTPException(status_code=404, detail=f"Position not found for asset: {asset}, mode: {mode}")
+        elif "503" in str(e) or "unavailable" in str(e).lower():
+            raise HTTPException(status_code=503, detail=f"Position Manager unavailable: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to retrieve position: {e}") from e
-

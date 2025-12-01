@@ -7,8 +7,8 @@ A microservice that receives high-level trading signals from the model service v
 - **Signal Processing**: Receive and process trading signals from model service via RabbitMQ
 - **Order Execution**: Execute orders on Bybit exchange with configurable order type selection (market vs limit)
 - **Order State Management**: Maintain accurate order state through WebSocket event subscriptions
-- **Position Management**: Track and manage trading positions with periodic snapshots and validation
-- **Risk Management**: Enforce risk limits (max exposure, max order size, position size limits)
+- **Position Queries**: Query positions via REST API (delegates to Position Manager service)
+- **Risk Management**: Enforce risk limits (max exposure, max order size, position size limits) using Position Manager service as the source of truth for position-based risk checks
 - **Event Publishing**: Publish enriched order execution events to RabbitMQ for other microservices
 - **Dry-Run Mode**: Test order logic without executing real orders on exchange
 - **Observability**: Structured logging with trace IDs for request flow tracking
@@ -55,6 +55,7 @@ order-manager/
 - Python 3.11+ (for local development)
 - PostgreSQL 15+ (via Docker)
 - RabbitMQ 3+ (via Docker)
+- **Position Manager service** (required for position queries and risk checks - Order Manager delegates position data to Position Manager as the single source of truth)
 
 ### Environment Variables
 
@@ -71,6 +72,11 @@ ORDERMANAGER_SERVICE_NAME=order-manager
 WS_GATEWAY_HOST=ws-gateway
 WS_GATEWAY_PORT=4400
 WS_GATEWAY_API_KEY=your-ws-gateway-api-key
+
+# Position Manager Configuration (required for position queries and risk checks)
+POSITION_MANAGER_HOST=position-manager
+POSITION_MANAGER_PORT=4800
+POSITION_MANAGER_API_KEY=your-position-manager-api-key
 
 # Order Execution Configuration
 ORDERMANAGER_ENABLE_DRY_RUN=false
@@ -113,13 +119,15 @@ See `env.example` for complete configuration options.
 1. Ensure dependencies are running:
 
 ```bash
-# Start PostgreSQL, RabbitMQ, and WebSocket Gateway
-docker compose up -d postgres rabbitmq ws-gateway
+# Start PostgreSQL, RabbitMQ, WebSocket Gateway, and Position Manager
+docker compose up -d postgres rabbitmq ws-gateway position-manager
 
 # Wait for services to be ready
-docker compose logs -f postgres rabbitmq ws-gateway
+docker compose logs -f postgres rabbitmq ws-gateway position-manager
 # Press Ctrl+C when services are ready
 ```
+
+**Note**: Order Manager requires Position Manager service to be running. Position Manager is the single source of truth for position data. Order Manager's position endpoints and risk checks delegate to Position Manager REST API.
 
 2. Run database migrations:
 

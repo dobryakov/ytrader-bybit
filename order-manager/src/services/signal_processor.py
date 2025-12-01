@@ -12,7 +12,7 @@ from ..models.order import Order
 from ..models.signal_order_rel import SignalOrderRelationship
 from ..services.order_type_selector import OrderTypeSelector
 from ..services.quantity_calculator import QuantityCalculator
-from ..services.position_manager import PositionManager
+from ..services.position_manager_client import PositionManagerClient
 from ..services.risk_manager import RiskManager
 from ..publishers.order_event_publisher import OrderEventPublisher
 # Import OrderExecutor locally to avoid circular dependency
@@ -34,7 +34,7 @@ class SignalProcessor:
         """Initialize signal processor with dependencies."""
         self.order_type_selector = OrderTypeSelector()
         self.quantity_calculator = QuantityCalculator()
-        self.position_manager = PositionManager()
+        self.position_manager_client = PositionManagerClient()
         self.risk_manager = RiskManager()
         self.event_publisher = OrderEventPublisher()
         # Initialize OrderExecutor lazily to avoid circular dependency
@@ -212,8 +212,8 @@ class SignalProcessor:
                 order_type, limit_price = self.order_type_selector.select_order_type(signal)
                 order_price = limit_price or signal.market_data_snapshot.price
 
-                # Step 4: Get current position
-                current_position = await self.position_manager.get_position(asset)
+                # Step 4: Get current position from Position Manager service
+                current_position = await self.position_manager_client.get_position(asset, mode="one-way", trace_id=trace_id)
 
                 # Step 5: Risk checks
                 # 5a: Balance check (skip in dry-run mode or if disabled)
