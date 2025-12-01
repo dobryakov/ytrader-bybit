@@ -401,7 +401,7 @@ With multiple developers:
 
 ## Task Summary
 
-- **Total Tasks**: 129 tasks (added T052c, T052d, T052e for risk management rules, T094-T097 for position cache optimization, T098-T116 for position-based exit strategy)
+- **Total Tasks**: 152 tasks (added T052c, T052d, T052e for risk management rules, T094-T097 for position cache optimization, T098-T116 for position-based exit strategy, T123-T140 for training orchestrator improvements)
 - **Phase 1 (Setup)**: 9 tasks
 - **Phase 2 (Foundational)**: 12 tasks
 - **Phase 3 (User Story 1 - MVP)**: 15 tasks (added T030a, T030b, T030c, T030d)
@@ -410,6 +410,7 @@ With multiple developers:
 - **Phase 6 (User Story 4)**: 17 tasks
 - **Phase 7 (Polish)**: 30 tasks (added T091, T092, T093, T094-T097 for position cache optimization, T117-T122 for automatic asset selection)
 - **Phase 8 (User Story 5)**: 19 tasks (position-based exit strategy)
+- **Phase 9 (Training Orchestrator Improvements)**: 18 tasks (T123-T140 for persistent buffer, training queue, and additional improvements)
 
 ### Task Count per User Story
 
@@ -474,3 +475,73 @@ With multiple developers:
 - This delivers immediate trading capability without requiring historical data or pre-trained models
 - Enables data collection for future model training
 - Total MVP tasks: 32 tasks (9 + 12 + 11)
+
+---
+
+## Phase 9: Training Orchestrator Improvements (Priority: P2)
+
+**Goal**: Improve training orchestrator reliability and efficiency by implementing persistent buffer storage and training queue management to prevent data loss on service restart and avoid wasteful training cancellations.
+
+**Context**: Current implementation has two critical issues:
+1. **In-memory buffer**: Events stored in memory are lost on service restart, requiring re-accumulation of events up to `MODEL_TRAINING_MIN_DATASET_SIZE`
+2. **Training cancellation**: New events arriving during training cause current training to be cancelled and restarted, wasting computational resources and potentially preventing training from ever completing
+
+**Independent Test**: Can be fully tested by simulating service restarts and verifying buffer recovery, and by generating events during training to verify queue behavior without cancellation.
+
+### Implementation for Training Orchestrator Improvements
+
+#### Part 1: Persistent Buffer Storage
+
+- [ ] T123 [P] [US2] Create database migration script in ws-gateway/migrations/011_add_used_for_training_to_execution_events.sql (add columns: used_for_training BOOLEAN DEFAULT FALSE, training_id UUID NULL, add index on used_for_training and strategy_id for efficient queries, add foreign key constraint on training_id referencing model_versions.id)
+- [ ] T124 [US2] Extend ExecutionEventRepository in model-service/src/database/repositories/execution_event_repo.py (add methods: mark_as_used_for_training(event_ids, training_id), get_unused_events(strategy_id, limit), get_unused_events_count(strategy_id), support filtering by strategy_id and date range)
+- [ ] T125 [US2] Implement buffer persistence service in model-service/src/services/buffer_persistence.py (save buffer state to database by marking events as used_for_training=FALSE, restore buffer from database on startup by loading unused events, handle buffer recovery errors gracefully with logging, support incremental buffer updates)
+- [ ] T126 [US2] Integrate buffer persistence into TrainingOrchestrator in model-service/src/services/training_orchestrator.py (on add_execution_event: mark event as unused in DB if not already persisted, on training start: mark events as used_for_training=TRUE with training_id, on service startup: restore buffer from database by loading unused events, handle persistence errors gracefully without blocking training)
+- [ ] T127 [US2] Add buffer recovery on startup in model-service/src/main.py (call training_orchestrator.restore_buffer_from_database() after service initialization, log buffer recovery results with event count, handle recovery failures gracefully with fallback to empty buffer)
+- [ ] T128 [US2] Add configuration for buffer persistence in model-service/src/config/settings.py (BUFFER_PERSISTENCE_ENABLED=true/false to enable/disable persistent buffer, BUFFER_RECOVERY_ON_STARTUP=true/false to enable/disable automatic buffer recovery, BUFFER_MAX_RECOVERY_EVENTS=10000 for maximum events to recover on startup, default: persistence enabled for reliability)
+
+#### Part 2: Training Queue Management
+
+- [ ] T129 [US2] Implement training queue data structure in model-service/src/services/training_orchestrator.py (add _training_queue: List[Tuple[str, List[OrderExecutionEvent], Optional[datetime]]] for (strategy_id, events, priority_timestamp), support FIFO queue with optional priority-based ordering for critical training)
+- [ ] T130 [US2] Modify check_and_trigger_training in model-service/src/services/training_orchestrator.py (if training in progress: add events to queue instead of cancelling, if queue not empty after training completes: automatically start next training, log queue operations with queue size and strategy_id)
+- [ ] T131 [US2] Implement training completion handler in model-service/src/services/training_orchestrator.py (on training completion: check if queue has pending training, if queue not empty: pop next training from queue and start, log queue processing with remaining queue size)
+- [ ] T132 [US2] Add training queue metrics in model-service/src/services/training_orchestrator.py (track queue size, average wait time, maximum queue depth, expose via training status API endpoint)
+- [ ] T133 [US2] Extend training status API in model-service/src/api/training.py (add queue_size, queue_wait_time_seconds, next_queued_training_strategy_id fields to training status response)
+- [ ] T134 [US2] Add configuration for training queue in model-service/src/config/settings.py (TRAINING_QUEUE_ENABLED=true/false to enable/disable queue (default: enabled), TRAINING_QUEUE_MAX_SIZE=10 for maximum queue depth, TRAINING_FORCE_CANCEL_ON_CRITICAL=false to allow critical training to cancel current training, default: queue enabled, no forced cancellation)
+
+#### Part 3: Additional Improvements
+
+- [ ] T135 [US2] Implement graceful shutdown for training orchestrator in model-service/src/services/training_orchestrator.py (on shutdown signal: save current buffer state to database, wait for current training to complete (with timeout), save queue state to database, log shutdown operations with buffer size and queue size)
+- [ ] T136 [US2] Implement parallel training support in model-service/src/services/training_orchestrator.py (support multiple concurrent training tasks for different strategy_id values, track training tasks per strategy_id in _training_tasks: Dict[str, asyncio.Task], prevent duplicate training for same strategy_id, add configuration MAX_PARALLEL_TRAINING=3 for maximum concurrent training tasks)
+- [ ] T137 [US2] Implement training prioritization in model-service/src/services/training_orchestrator.py (add priority field to training queue items, support priority levels: CRITICAL (quality degradation), HIGH (scheduled retraining), NORMAL (data accumulation), CRITICAL priority can cancel current training if TRAINING_FORCE_CANCEL_ON_CRITICAL=true, log priority-based decisions)
+- [ ] T138 [US2] Implement batch event processing in model-service/src/services/training_orchestrator.py (group events by time window before adding to buffer, reduce database write frequency with batch updates, add configuration BATCH_BUFFER_UPDATE_INTERVAL_SECONDS=10 for batch update interval, handle batch processing errors gracefully)
+- [ ] T139 [US2] Add monitoring metrics for training orchestrator in model-service/src/services/training_orchestrator.py (track metrics: buffer_size, queue_size, training_duration, training_success_rate, cancelled_trainings_count, buffer_recovery_count, expose via monitoring API endpoint)
+- [ ] T140 [US2] Add structured logging for training orchestrator improvements in model-service/src/services/training_orchestrator.py (log buffer persistence operations, queue operations, training completion and queue processing, buffer recovery on startup, graceful shutdown operations, include trace_id for request flow tracking)
+
+**Checkpoint**: At this point, training orchestrator should be resilient to service restarts and efficiently handle concurrent training requests without wasteful cancellations.
+
+### Task Dependencies for Training Orchestrator Improvements Phase (T123-T140)
+
+- **T123** (database migration): Can be done independently, must complete before T124 (repository needs columns)
+- **T124** (repository extension): Depends on T123 (columns exist), must complete before T125 (buffer persistence needs repository)
+- **T125** (buffer persistence service): Depends on T124 (repository methods exist), must complete before T126 (orchestrator needs persistence service)
+- **T126** (orchestrator integration): Depends on T125 (buffer persistence exists) and T044 (training orchestrator exists), must complete before T127 (startup integration)
+- **T127** (startup integration): Depends on T126 (orchestrator integration complete)
+- **T128** (configuration): Can be done independently, must complete before T125, T126, T127 (services need configuration values)
+- **T129** (queue data structure): Can be done independently, must complete before T130 (queue management needs structure)
+- **T130** (queue management): Depends on T129 (queue structure exists) and T044 (training orchestrator exists), must complete before T131 (completion handler needs queue)
+- **T131** (completion handler): Depends on T130 (queue management exists)
+- **T132** (queue metrics): Depends on T130 (queue management exists), can be done in parallel with T133
+- **T133** (API extension): Depends on T132 (queue metrics exist) and T061 (training status API exists)
+- **T134** (queue configuration): Can be done independently, must complete before T130, T131 (queue management needs configuration)
+- **T135** (graceful shutdown): Depends on T126 (buffer persistence integration) and T130 (queue management), can be done in parallel with T136-T140
+- **T136** (parallel training): Depends on T044 (training orchestrator exists), can be done in parallel with T137-T140
+- **T137** (prioritization): Depends on T129 (queue structure exists) and T130 (queue management), can be done in parallel with T138-T140
+- **T138** (batch processing): Depends on T126 (buffer persistence integration), can be done in parallel with T139, T140
+- **T139** (monitoring metrics): Depends on T126 (buffer persistence) and T130 (queue management), can be done in parallel with T140
+- **T140** (logging): Can be done independently, but should complete after T126, T130, T135 (to log all improvements)
+
+### Parallel Opportunities
+
+- **T123, T128, T129, T134**: Can run in parallel (independent setup tasks)
+- **T132, T133**: Can run in parallel (metrics and API)
+- **T135, T136, T137, T138, T139, T140**: Can run in parallel (additional improvements)
