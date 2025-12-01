@@ -190,6 +190,8 @@ class PortfolioManager:
             setattr(metrics, "_positions", positions)
 
         return metrics
+        
 
-
+# Shared default instance used across the service (for cache invalidation, etc.)
+default_portfolio_manager = PortfolioManager()
 

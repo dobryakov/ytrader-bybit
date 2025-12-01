@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
+from typing import Optional
+
 from fastapi import FastAPI
 
 from ..config.database import DatabaseConnection
 from ..config.logging import configure_logging, get_logger
 from ..config.rabbitmq import RabbitMQConnection
 from ..config.settings import settings
+from ..consumers import OrderPositionConsumer, WebSocketPositionConsumer
 from ..exceptions import QueueError
 from .middleware.logging import logging_middleware
 from .routes import health as health_routes
@@ -17,6 +21,10 @@ from .routes import positions as positions_routes
 
 configure_logging()
 logger = get_logger(__name__)
+
+# Global consumer instances so we can start/stop them with the app lifecycle.
+_ws_consumer: Optional[WebSocketPositionConsumer] = None
+_order_consumer: Optional[OrderPositionConsumer] = None
 
 
 def create_app() -> FastAPI:
@@ -41,8 +49,16 @@ def create_app() -> FastAPI:
 
         # Initialize RabbitMQ connection, but do not fail startup if it's temporarily unavailable.
         # Health and consumers will reflect queue connectivity separately.
+        global _ws_consumer, _order_consumer
         try:
             await RabbitMQConnection.create_connection()
+
+            # Start background consumers for WS and order events.
+            _ws_consumer = WebSocketPositionConsumer()
+            _order_consumer = OrderPositionConsumer()
+            _ws_consumer.spawn()
+            _order_consumer.spawn()
+            logger.info("position_manager_consumers_started")
         except QueueError as e:
             logger.error(
                 "rabbitmq_startup_connection_failed_non_fatal",
@@ -55,6 +71,16 @@ def create_app() -> FastAPI:
     @app.on_event("shutdown")
     async def on_shutdown() -> None:
         logger.info("app_shutdown_begin", service=settings.position_manager_service_name)
+
+        # Stop consumers first so they no longer use connections.
+        global _ws_consumer, _order_consumer
+        if _ws_consumer is not None:
+            await _ws_consumer.stop()
+            _ws_consumer = None
+        if _order_consumer is not None:
+            await _order_consumer.stop()
+            _order_consumer = None
+
         await DatabaseConnection.close_pool()
         await RabbitMQConnection.close_connection()
         logger.info("app_shutdown_completed", service=settings.position_manager_service_name)

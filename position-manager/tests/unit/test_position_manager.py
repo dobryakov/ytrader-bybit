@@ -1,6 +1,8 @@
 from datetime import datetime, timedelta
 from decimal import Decimal
 
+import pytest
+
 from src.models import Position
 from src.services.position_manager import PositionManager
 
@@ -100,4 +102,118 @@ def test_position_filters() -> None:
 
     by_size = manager.filter_by_size(positions, size_min=Decimal("0.0"), size_max=Decimal("1.0"))
     assert all(Decimal("0.0") <= p.size <= Decimal("1.0") for p in by_size)
+
+
+@pytest.mark.asyncio
+async def test_external_price_api_success(monkeypatch) -> None:
+    """PositionManager should parse markPrice from external API response."""
+    manager = PositionManager()
+
+    class DummyResponse:
+        def __init__(self, json_data: dict) -> None:
+            self._json = json_data
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return self._json
+
+    class DummyClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self) -> "DummyClient":
+            return self
+
+        async def __aexit__(self, *exc_info) -> None:
+            return None
+
+        async def get(self, url, params=None):
+            return DummyResponse(
+                {
+                    "result": {
+                        "list": [
+                            {
+                                "markPrice": "12345.67",
+                            }
+                        ]
+                    }
+                }
+            )
+
+    import src.services.position_manager as pm_module
+
+    # Patch module-level `httpx` symbol used by PositionManager.
+    monkeypatch.setitem(pm_module.__dict__, "httpx", type("M", (), {"AsyncClient": DummyClient}))
+
+    price = await manager._get_current_price_from_api("BTCUSDT", trace_id="test-trace")
+    assert price == Decimal("12345.67")
+
+
+@pytest.mark.asyncio
+async def test_external_price_api_retry_and_fallback(monkeypatch) -> None:
+    """On repeated failures, external price API helper should return None."""
+    manager = PositionManager()
+
+    class FailingClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self) -> "FailingClient":
+            return self
+
+        async def __aexit__(self, *exc_info) -> None:
+            return None
+
+        async def get(self, url, params=None):
+            raise RuntimeError("network failure")
+
+    import src.services.position_manager as pm_module
+
+    monkeypatch.setitem(pm_module.__dict__, "httpx", type("M", (), {"AsyncClient": FailingClient}))
+
+    price = await manager._get_current_price_from_api("BTCUSDT", trace_id="test-trace")
+    assert price is None
+
+
+def test_resolve_avg_price_under_threshold_keeps_existing(monkeypatch) -> None:
+    """_resolve_avg_price should keep existing value when diff below threshold."""
+    manager = PositionManager()
+    existing = Decimal("50000.00")
+    ws_avg = Decimal("50049.00")  # < 0.1% diff
+
+    # Ensure threshold is 0.1%
+    from src.config.settings import settings
+
+    monkeypatch.setattr(settings, "position_manager_avg_price_diff_threshold", 0.001)
+
+    resolved = manager._resolve_avg_price(existing_avg_price=existing, ws_avg_price=ws_avg)  # type: ignore[attr-defined]
+    assert resolved == existing
+
+
+def test_resolve_avg_price_over_threshold_uses_ws(monkeypatch) -> None:
+    """_resolve_avg_price should switch to ws_avg when diff above threshold."""
+    manager = PositionManager()
+    existing = Decimal("50000.00")
+    ws_avg = Decimal("50500.00")  # 1% diff
+
+    from src.config.settings import settings
+
+    monkeypatch.setattr(settings, "position_manager_avg_price_diff_threshold", 0.001)
+
+    resolved = manager._resolve_avg_price(existing_avg_price=existing, ws_avg_price=ws_avg)  # type: ignore[attr-defined]
+    assert resolved == ws_avg
+
+
+def test_has_size_discrepancy() -> None:
+    """_has_size_discrepancy should respect POSITION_MANAGER_SIZE_VALIDATION_THRESHOLD."""
+    manager = PositionManager()
+
+    db_size = Decimal("1.0")
+    ws_close = Decimal("1.00005")  # below default 0.0001 threshold
+    ws_far = Decimal("1.001")  # above threshold
+
+    assert not manager._has_size_discrepancy(db_size, ws_close)  # type: ignore[attr-defined]
+    assert manager._has_size_discrepancy(db_size, ws_far)  # type: ignore[attr-defined]
 

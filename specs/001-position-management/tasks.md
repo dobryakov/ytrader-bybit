@@ -211,76 +211,76 @@
 **Independent Test Criteria**: Send position update events from different sources (order executions, market data) and verify positions are updated correctly and conflicts are resolved appropriately.
 
 ### T040: Create WebSocket position event consumer
-- [ ] T040 [P] [US2] Create WebSocket position event consumer in src/consumers/websocket_position_consumer.py: consume from ws-gateway.position queue, parse event payload, call update_position_from_websocket()
+- [X] T040 [P] [US2] Create WebSocket position event consumer in src/consumers/websocket_position_consumer.py: consume from ws-gateway.position queue, parse event payload, call update_position_from_websocket()
 
 ### T041: Create order execution event consumer
-- [ ] T041 [P] [US2] Create order execution event consumer in src/consumers/order_position_consumer.py: consume from order-manager.order_executed queue, parse event payload, call update_position_from_order_fill()
+- [X] T041 [P] [US2] Create order execution event consumer in src/consumers/order_position_consumer.py: consume from order-manager.order_executed queue, parse event payload, call update_position_from_order_fill()
 
 ### T042: Enhance update_position_from_websocket method from extracted code
-- [ ] T042 [US2] Enhance update_position_from_websocket() in src/services/position_manager.py (extracted from Order Manager): add handling of avgPrice from WebSocket event with threshold comparison (POSITION_MANAGER_AVG_PRICE_DIFF_THRESHOLD), add validation of size from WebSocket event (without direct update, only discrepancy checking), save markPrice to current_price field, add recalculation of ML features (unrealized_pnl_pct, position_size_norm) after update, add logging of all updates with trace_id, add handling of case when avgPrice is missing (use saved value), use optimistic locking
+- [X] T042 [US2] Enhance update_position_from_websocket() in src/services/position_manager.py (extracted from Order Manager): add handling of avgPrice from WebSocket event with threshold comparison (POSITION_MANAGER_AVG_PRICE_DIFF_THRESHOLD), add validation of size from WebSocket event (without direct update, only discrepancy checking), save markPrice to current_price field, add recalculation of ML features (unrealized_pnl_pct, position_size_norm) after update, add logging of all updates with trace_id, add handling of case when avgPrice is missing (use saved value), use optimistic locking
 
 ### T043: Implement update_position_from_order_fill method
-- [ ] T043 [US2] Implement update_position_from_order_fill() in src/services/position_manager.py: update position size, recalculate average_entry_price on order fill, update realized_pnl on position close, use optimistic locking with retry logic
+- [X] T043 [US2] Implement update_position_from_order_fill() in src/services/position_manager.py: update position size, recalculate average_entry_price on order fill, update realized_pnl on position close, use optimistic locking with retry logic
 
 ### T044: Implement optimistic locking with version field
-- [ ] T044 [US2] Implement optimistic locking in src/services/position_manager.py: check version before update, increment version on successful update, retry up to 3 times with exponential backoff (100ms, 200ms, 400ms) on conflict, log conflicts, raise exception if all retries fail
+- [X] T044 [US2] Implement optimistic locking in src/services/position_manager.py: check version before update, increment version on successful update, retry up to 3 times with exponential backoff (100ms, 200ms, 400ms) on conflict, log conflicts, raise exception if all retries fail
 
 ### T045: Implement conflict resolution for average_entry_price
-- [ ] T045 [US2] Implement conflict resolution in src/services/position_manager.py: compare WebSocket avgPrice with existing average_entry_price, update if difference > POSITION_MANAGER_AVG_PRICE_DIFF_THRESHOLD (0.1%), otherwise keep existing value, log all updates
+- [X] T045 [US2] Implement conflict resolution in src/services/position_manager.py: compare WebSocket avgPrice with existing average_entry_price, update if difference > POSITION_MANAGER_AVG_PRICE_DIFF_THRESHOLD (0.1%), otherwise keep existing value, log all updates
 
 ### T046: Implement position size validation
-- [ ] T046 [US2] Implement position size validation in src/services/position_manager.py: compare WebSocket size with database size, log discrepancy if difference > POSITION_MANAGER_SIZE_VALIDATION_THRESHOLD, trigger validation task if configured
+- [X] T046 [US2] Implement position size validation in src/services/position_manager.py: compare WebSocket size with database size, log discrepancy if difference > POSITION_MANAGER_SIZE_VALIDATION_THRESHOLD, trigger validation task if configured
 
 ### T047: Implement position creation on first update
-- [ ] T047 [US2] Implement position creation in src/services/position_manager.py: create new position if not exists when update received, set version=1, set created_at timestamp, initialize all required fields
+- [X] T047 [US2] Implement position creation in src/services/position_manager.py: create new position if not exists when update received, set version=1, set created_at timestamp, initialize all required fields
 
 ### T048: Implement position close handling
-- [ ] T048 [US2] Implement position close handling in src/services/position_manager.py: set size=0 when position closed, set closed_at timestamp, retain position for historical tracking, exclude from open_positions_count
+- [X] T048 [US2] Implement position close handling in src/services/position_manager.py: set size=0 when position closed, set closed_at timestamp, retain position for historical tracking, exclude from open_positions_count
 
 ### T049: Implement cache invalidation on position update
-- [ ] T049 [US2] Implement cache invalidation in src/services/portfolio_manager.py: clear portfolio metrics cache when position updated, trigger cache refresh on next portfolio query
+- [X] T049 [US2] Implement cache invalidation in src/services/portfolio_manager.py: clear portfolio metrics cache when position updated, trigger cache refresh on next portfolio query
 
 ### T050: Create position event publisher
-- [ ] T050 [US2] Create position event publisher in src/publishers/position_event_publisher.py: publish position_updated events to position-manager.position_updated queue with complete position data including ML features
+- [X] T050 [US2] Create position event publisher in src/publishers/position_event_publisher.py: publish position_updated events to position-manager.position_updated queue with complete position data including ML features
 
 ### T051: Create portfolio event publisher
-- [ ] T051 [US2] Create portfolio event publisher in src/publishers/position_event_publisher.py: publish portfolio_updated events to position-manager.portfolio_updated queue with portfolio metrics
+- [X] T051 [US2] Create portfolio event publisher in src/publishers/position_event_publisher.py: publish portfolio_updated events to position-manager.portfolio_updated queue with portfolio metrics
 
 ### T052: Integrate consumers with main application
-- [ ] T052 [US2] Integrate RabbitMQ consumers in src/main.py: start WebSocket consumer and order execution consumer on application startup, handle graceful shutdown, implement error handling and message acknowledgment
+- [X] T052 [US2] Integrate RabbitMQ consumers in src/main.py: start WebSocket consumer and order execution consumer on application startup, handle graceful shutdown, implement error handling and message acknowledgment
 
 ### T053: Implement external price API integration
-- [ ] T053 [US2] Implement external price API integration in src/services/position_manager.py: query Bybit REST API /v5/market/tickers when markPrice missing or stale, 3 retries with exponential backoff (1s, 2s, 4s), 5s timeout, fallback to last known price, set current_price to NULL if all fail
+- [X] T053 [US2] Implement external price API integration in src/services/position_manager.py: query Bybit REST API /v5/market/tickers when markPrice missing or stale, 3 retries with exponential backoff (1s, 2s, 4s), 5s timeout, fallback to last known price, set current_price to NULL if all fail
 
 ### T054: Implement price staleness check
-- [ ] T054 [US2] Implement price staleness check in src/services/position_manager.py: check time since last current_price update, query external API if > POSITION_MANAGER_PRICE_STALENESS_THRESHOLD (300s), log all external API calls
+- [X] T054 [US2] Implement price staleness check in src/services/position_manager.py: check time since last current_price update, query external API if > POSITION_MANAGER_PRICE_STALENESS_THRESHOLD (300s), log all external API calls
 
 ### T055: Add event processing error handling
-- [ ] T055 [US2] Add error handling in src/consumers/websocket_position_consumer.py and src/consumers/order_position_consumer.py: catch exceptions, log errors with trace_id, nack message with requeue on transient errors, dead letter queue on permanent errors
+- [X] T055 [US2] Add error handling in src/consumers/websocket_position_consumer.py and src/consumers/order_position_consumer.py: catch exceptions, log errors with trace_id, nack message with requeue on transient errors, dead letter queue on permanent errors
 
 ### T056: Implement message acknowledgment strategy
-- [ ] T056 [US2] Implement message acknowledgment in src/consumers/websocket_position_consumer.py and src/consumers/order_position_consumer.py: ack on successful processing, nack with requeue on transient errors, nack without requeue on permanent errors
+- [X] T056 [US2] Implement message acknowledgment in src/consumers/websocket_position_consumer.py and src/consumers/order_position_consumer.py: ack on successful processing, nack with requeue on transient errors, nack without requeue on permanent errors
 
 ### T057: Add event validation
-- [ ] T057 [US2] Add event validation in src/consumers/websocket_position_consumer.py and src/consumers/order_position_consumer.py: validate event structure with Pydantic models, validate required fields, reject invalid events with error logging
+- [X] T057 [US2] Add event validation in src/consumers/websocket_position_consumer.py and src/consumers/order_position_consumer.py: validate event structure with Pydantic models, validate required fields, reject invalid events with error logging
 
 ### T058: Implement out-of-order event handling
-- [ ] T058 [US2] Implement out-of-order event handling in src/services/position_manager.py: use version field to detect stale updates, log out-of-order events, process events based on version comparison
+- [X] T058 [US2] Implement out-of-order event handling in src/services/position_manager.py: use version field to detect stale updates, log out-of-order events, process events based on version comparison
 
 ### T059: Add position update logging
-- [ ] T059 [US2] Add structured logging in src/services/position_manager.py: log all position updates with trace_id, log conflict resolutions, log validation results, log external API calls
+- [X] T059 [US2] Add structured logging in src/services/position_manager.py: log all position updates with trace_id, log conflict resolutions, log validation results, log external API calls
 
 ### T060: Create integration tests for event consumers
 - [ ] T060 [US2] Create integration tests in tests/integration/test_websocket_consumer.py and tests/integration/test_order_consumer.py: test event processing, test conflict resolution, test optimistic locking retries, use testcontainers for RabbitMQ
 
 ### T061: Create unit tests for conflict resolution
-- [ ] T061 [US2] Create unit tests in tests/unit/test_position_manager.py: test_avg_price_conflict_resolution, test_size_validation, test_optimistic_locking_retry, test_position_creation
+- [X] T061 [US2] Create unit tests in tests/unit/test_position_manager.py: test_avg_price_conflict_resolution, test_size_validation, test_optimistic_locking_retry, test_position_creation
 
 ### T062: Create unit tests for external price API
-- [ ] T062 [US2] Create unit tests in tests/unit/test_position_manager.py: test_external_price_api_success, test_external_price_api_retry, test_external_price_api_fallback, mock httpx requests
+- [X] T062 [US2] Create unit tests in tests/unit/test_position_manager.py: test_external_price_api_success, test_external_price_api_retry, test_external_price_api_fallback, mock httpx requests
 
 ### T063: Add rate limiting for API endpoints
-- [ ] T063 [US2] Implement rate limiting in src/api/middleware/auth.py: per-API-key rate limits with tiers (POSITION_MANAGER_RATE_LIMIT_DEFAULT, POSITION_MANAGER_RATE_LIMIT_OVERRIDES), sliding window or token bucket algorithm, return HTTP 429 with Retry-After header on exceedance, log rate limit exceedances
+- [X] T063 [US2] Implement rate limiting in src/api/middleware/auth.py: per-API-key rate limits with tiers (POSITION_MANAGER_RATE_LIMIT_DEFAULT, POSITION_MANAGER_RATE_LIMIT_OVERRIDES), sliding window or token bucket algorithm, return HTTP 429 with Retry-After header on exceedance, log rate limit exceedances
 
 ### T064: Create E2E tests for position update flow
 - [ ] T064 [US2] Create E2E tests in tests/e2e/test_position_updates.py: test_websocket_position_update_flow, test_order_execution_update_flow, test_conflict_resolution_flow, test_concurrent_updates

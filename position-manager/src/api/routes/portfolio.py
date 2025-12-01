@@ -8,7 +8,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
 
 from ...config.logging import get_logger
-from ...services.portfolio_manager import PortfolioManager
+from ...publishers import PositionEventPublisher
+from ...services.portfolio_manager import PortfolioManager, default_portfolio_manager
 from ...services.position_manager import PositionManager
 from ...utils.tracing import get_or_create_trace_id
 from ..middleware.auth import api_key_auth
@@ -19,7 +20,9 @@ router = APIRouter(prefix="/api/v1", tags=["portfolio"])
 
 
 def get_portfolio_manager() -> PortfolioManager:
-    return PortfolioManager()
+    # Use shared default instance so that cache invalidation triggered by
+    # position updates affects subsequent API calls.
+    return default_portfolio_manager
 
 
 @router.get(
@@ -66,6 +69,12 @@ async def get_portfolio(
                 }
                 for p in positions
             ]
+
+        # Best-effort publish portfolio_updated event
+        try:
+            await PositionEventPublisher.publish_portfolio_updated(metrics, trace_id=trace_id)
+        except Exception:  # pragma: no cover
+            logger.warning("portfolio_event_publish_failed", trace_id=trace_id)
 
         logger.info("portfolio_completed", trace_id=trace_id)
         return JSONResponse(status_code=200, content=response)
