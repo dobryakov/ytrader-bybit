@@ -211,6 +211,7 @@
 - [ ] T120 [Enhancement] Add configuration for automatic asset selection in model-service/src/config/settings.py (AUTO_SELECT_ASSETS=true/false to enable/disable automatic asset selection based on balances, AUTO_SELECT_MIN_BALANCE_USDT=10.0 for minimum balance threshold in USDT equivalent, AUTO_SELECT_QUOTE_CURRENCIES=USDT,USDC,BUSD for supported quote currencies, AUTO_SELECT_CACHE_TTL_SECONDS=300 for asset list cache TTL, AUTO_SELECT_FALLBACK_ASSETS=BTCUSDT,ETHUSDT for fallback when automatic selection fails, default: automatic selection disabled for backward compatibility)
 - [ ] T121 [Enhancement] Update main.py to use asset selector in model-service/src/main.py (replace hardcoded assets list with asset_selector when AUTO_SELECT_ASSETS is enabled, initialize asset_selector service on startup, handle asset selection errors gracefully with fallback to configured list)
 - [ ] T122 [Enhancement] Add structured logging for asset selection in model-service/src/services/asset_selector.py (log selected assets with balance information, log cache hits/misses, log fallback to configured list, include trace_id for request flow tracking)
+- [ ] T141 [Enhancement] Investigate and fix balance-aware signal amount calculation discrepancies in model-service/src/services/intelligent_signal_generator.py and model-service/src/services/balance_calculator.py (analyze why signals with adapted amounts are still rejected by order-manager due to insufficient balance, compare balance data sources: Model Service reads from account_balances table vs Order Manager reads from exchange API, investigate data freshness: check TTL of balance data in account_balances table, verify balance_calculator.calculate_affordable_amount() logic: ensure safety margin (0.95) accounts for fees and slippage, add logging to compare adapted_amount from Model Service with balance check results in Order Manager, investigate race conditions: balance may change between signal generation and order creation, add balance data freshness check: warn if balance data is older than threshold (e.g., 60 seconds), improve balance adaptation logic: consider exchange fees, slippage, and minimum order size requirements, add configuration BALANCE_ADAPTATION_SAFETY_MARGIN=0.90 for configurable safety margin (default 0.95), add configuration BALANCE_DATA_MAX_AGE_SECONDS=60 for maximum acceptable age of balance data, add metrics for balance adaptation: track adapted_amount vs requested_amount, track rejection rate due to insufficient balance, add integration test to verify balance adaptation works correctly with realistic balance scenarios, document balance adaptation behavior in model-service/README.md)
 
 ---
 
@@ -401,14 +402,14 @@ With multiple developers:
 
 ## Task Summary
 
-- **Total Tasks**: 152 tasks (added T052c, T052d, T052e for risk management rules, T094-T097 for position cache optimization, T098-T116 for position-based exit strategy, T123-T140 for training orchestrator improvements)
+- **Total Tasks**: 153 tasks (added T052c, T052d, T052e for risk management rules, T094-T097 for position cache optimization, T098-T116 for position-based exit strategy, T123-T140 for training orchestrator improvements, T141 for balance adaptation investigation and fixes)
 - **Phase 1 (Setup)**: 9 tasks
 - **Phase 2 (Foundational)**: 12 tasks
 - **Phase 3 (User Story 1 - MVP)**: 15 tasks (added T030a, T030b, T030c, T030d)
 - **Phase 4 (User Story 2)**: 19 tasks (added T037a, T039a)
 - **Phase 5 (User Story 3)**: 14 tasks (added T052a, T052b, T052c, T052d, T052e for risk management)
 - **Phase 6 (User Story 4)**: 17 tasks
-- **Phase 7 (Polish)**: 30 tasks (added T091, T092, T093, T094-T097 for position cache optimization, T117-T122 for automatic asset selection)
+- **Phase 7 (Polish)**: 31 tasks (added T091, T092, T093, T094-T097 for position cache optimization, T117-T122 for automatic asset selection, T141 for balance adaptation investigation and fixes)
 - **Phase 8 (User Story 5)**: 19 tasks (position-based exit strategy)
 - **Phase 9 (Training Orchestrator Improvements)**: 18 tasks (T123-T140 for persistent buffer, training queue, and additional improvements)
 
