@@ -1244,7 +1244,15 @@ class OrderExecutor:
             # Use helper method to ensure precise formatting
             price_str = self._format_decimal_to_string(final_price, decimal_places)
             
-            params["price"] = price_str
+            # Validate price against price_limit_ratio before setting
+            validated_price_str = await self._validate_and_adjust_price_for_limit_ratio(
+                asset=asset,
+                price_str=price_str,
+                price_decimal=final_price,
+                side=side_api,
+                trace_id=signal.trace_id,
+            )
+            params["price"] = validated_price_str
             
             logger.info(
                 "price_prepared_for_bybit",
@@ -1254,6 +1262,7 @@ class OrderExecutor:
                 tick_size=float(tick_size),
                 decimal_places=decimal_places,
                 price_string=params["price"],
+                validated_price_string=validated_price_str,
                 side=side_api,
             )
 
@@ -1373,6 +1382,171 @@ class OrderExecutor:
                 reason="Failed to round price to tick size, using original price",
             )
             return price
+
+    async def _validate_and_adjust_price_for_limit_ratio(
+        self,
+        asset: str,
+        price_str: str,
+        price_decimal: Decimal,
+        side: str,
+        trace_id: Optional[str] = None,
+    ) -> str:
+        """Validate price against price_limit_ratio and adjust if needed.
+        
+        This method ensures that the limit order price is within the allowed
+        deviation from current market price according to Bybit's price_limit_ratio.
+        
+        Args:
+            asset: Trading pair symbol
+            price_str: Formatted price string
+            price_decimal: Price as Decimal
+            side: Order side ('Buy' or 'Sell')
+            trace_id: Optional trace ID for logging
+            
+        Returns:
+            Validated and potentially adjusted price string
+        """
+        try:
+            # Get instrument info to check price_limit_ratio
+            instrument_info = await self.instrument_info_manager.get_instrument(asset)
+            if not instrument_info:
+                logger.warning(
+                    "price_limit_ratio_validation_skipped_no_instrument_info",
+                    asset=asset,
+                    price=price_str,
+                    trace_id=trace_id,
+                    reason="Instrument info not found, skipping price_limit_ratio validation",
+                )
+                return price_str
+            
+            # Get price_limit_ratio (use X for buy orders, Y for sell orders)
+            # Default to 0.1 (10%) if not available
+            if side.lower() == "buy":
+                price_limit_ratio = instrument_info.price_limit_ratio_x or Decimal("0.1")
+            else:
+                price_limit_ratio = instrument_info.price_limit_ratio_y or Decimal("0.1")
+            
+            # Get current market price
+            try:
+                bybit_client = get_bybit_client()
+                ticker_response = await bybit_client.get(
+                    "/v5/market/tickers",
+                    params={"category": "linear", "symbol": asset},
+                    authenticated=False,
+                )
+                ticker_data = ticker_response.get("result", {}).get("list", [])
+                if not ticker_data or not ticker_data[0].get("lastPrice"):
+                    logger.warning(
+                        "price_limit_ratio_validation_skipped_no_market_price",
+                        asset=asset,
+                        price=price_str,
+                        trace_id=trace_id,
+                        reason="Could not fetch current market price",
+                    )
+                    return price_str
+                
+                current_market_price = Decimal(str(ticker_data[0].get("lastPrice")))
+            except Exception as e:
+                logger.warning(
+                    "price_limit_ratio_validation_skipped_api_error",
+                    asset=asset,
+                    price=price_str,
+                    error=str(e),
+                    trace_id=trace_id,
+                    reason="Failed to fetch current market price from API",
+                )
+                return price_str
+            
+            # Calculate maximum allowed deviation
+            max_deviation = current_market_price * price_limit_ratio
+            price_deviation = abs(price_decimal - current_market_price)
+            
+            # Check if price is within allowed deviation
+            if price_deviation <= max_deviation:
+                logger.debug(
+                    "price_limit_ratio_validation_passed",
+                    asset=asset,
+                    price=price_str,
+                    current_market_price=float(current_market_price),
+                    price_deviation=float(price_deviation),
+                    max_deviation=float(max_deviation),
+                    price_limit_ratio=float(price_limit_ratio),
+                    side=side,
+                    trace_id=trace_id,
+                )
+                return price_str
+            
+            # Price exceeds allowed deviation - adjust it
+            logger.warning(
+                "price_limit_ratio_validation_failed_adjusting",
+                asset=asset,
+                original_price=price_str,
+                current_market_price=float(current_market_price),
+                price_deviation=float(price_deviation),
+                max_deviation=float(max_deviation),
+                price_limit_ratio=float(price_limit_ratio),
+                side=side,
+                trace_id=trace_id,
+                reason="Price exceeds maximum allowed deviation, adjusting to limit",
+            )
+            
+            # Adjust price to be within allowed deviation
+            # For buy orders, adjust down (closer to market price)
+            # For sell orders, adjust up (closer to market price)
+            if side.lower() == "buy":
+                # Buy: price should be at most max_deviation below market price
+                adjusted_price = current_market_price - max_deviation
+                # Ensure adjusted price doesn't exceed original price (only move closer to market)
+                if adjusted_price > price_decimal:
+                    adjusted_price = price_decimal
+            else:
+                # Sell: price should be at most max_deviation above market price
+                adjusted_price = current_market_price + max_deviation
+                # Ensure adjusted price doesn't go below original price (only move closer to market)
+                if adjusted_price < price_decimal:
+                    adjusted_price = price_decimal
+            
+            # Round adjusted price to tick size and format
+            tick_size = instrument_info.price_tick_size or Decimal("0.01")
+            if side.lower() == "buy":
+                adjusted_price = adjusted_price.quantize(tick_size, rounding=ROUND_DOWN)
+            else:
+                adjusted_price = adjusted_price.quantize(tick_size, rounding=ROUND_UP)
+            
+            # Format adjusted price
+            tick_str = str(tick_size).rstrip('0').rstrip('.')
+            if '.' in tick_str:
+                decimal_places = len(tick_str.split('.')[1])
+            else:
+                decimal_places = 0
+            
+            adjusted_price_str = self._format_decimal_to_string(adjusted_price, decimal_places)
+            
+            logger.info(
+                "price_adjusted_for_limit_ratio",
+                asset=asset,
+                original_price=price_str,
+                adjusted_price=adjusted_price_str,
+                current_market_price=float(current_market_price),
+                price_limit_ratio=float(price_limit_ratio),
+                side=side,
+                trace_id=trace_id,
+            )
+            
+            return adjusted_price_str
+            
+        except Exception as e:
+            logger.error(
+                "price_limit_ratio_validation_error",
+                asset=asset,
+                price=price_str,
+                error=str(e),
+                trace_id=trace_id,
+                reason="Error during price_limit_ratio validation, using original price",
+                exc_info=True,
+            )
+            # On error, return original price to avoid blocking order creation
+            return price_str
 
     async def _create_dry_run_order(
         self,

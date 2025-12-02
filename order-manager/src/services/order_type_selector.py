@@ -7,6 +7,7 @@ from ..config.settings import settings
 from ..config.logging import get_logger
 from ..models.trading_signal import TradingSignal
 from ..services.instrument_info_manager import InstrumentInfoManager
+from ..utils.bybit_client import get_bybit_client
 
 logger = get_logger(__name__)
 
@@ -83,15 +84,66 @@ class OrderTypeSelector:
             return ("Market", None)
 
         # Default: Limit order with price offset
-        limit_price = await self._calculate_limit_price(signal, snapshot_price, spread_pct)
+        # Get current market price to ensure accuracy
+        current_market_price = await self._get_current_market_price(signal.asset, snapshot_price, trace_id)
+        limit_price = await self._calculate_limit_price(signal, current_market_price, spread_pct)
         logger.info(
             "order_type_selected_limit",
             signal_id=str(signal.signal_id),
             limit_price=float(limit_price),
             snapshot_price=float(snapshot_price),
+            current_market_price=float(current_market_price),
             trace_id=trace_id,
         )
         return ("Limit", limit_price)
+
+    async def _get_current_market_price(self, asset: str, fallback_price: Decimal, trace_id: Optional[str] = None) -> Decimal:
+        """Get current market price from Bybit API.
+        
+        Args:
+            asset: Trading pair symbol
+            fallback_price: Price to use if API call fails
+            trace_id: Optional trace ID for logging
+            
+        Returns:
+            Current market price from Bybit, or fallback_price if unavailable
+        """
+        try:
+            bybit_client = get_bybit_client()
+            ticker_response = await bybit_client.get(
+                "/v5/market/tickers",
+                params={"category": "linear", "symbol": asset},
+                authenticated=False,
+            )
+            ticker_data = ticker_response.get("result", {}).get("list", [])
+            if ticker_data and ticker_data[0].get("lastPrice"):
+                current_price = Decimal(str(ticker_data[0].get("lastPrice")))
+                logger.debug(
+                    "current_market_price_fetched",
+                    asset=asset,
+                    current_price=float(current_price),
+                    fallback_price=float(fallback_price),
+                    trace_id=trace_id,
+                )
+                return current_price
+            else:
+                logger.warning(
+                    "current_market_price_not_found_in_response",
+                    asset=asset,
+                    response_keys=list(ticker_response.keys()) if ticker_response else None,
+                    trace_id=trace_id,
+                )
+                return fallback_price
+        except Exception as e:
+            logger.warning(
+                "current_market_price_fetch_failed",
+                asset=asset,
+                error=str(e),
+                fallback_price=float(fallback_price),
+                trace_id=trace_id,
+                reason="Failed to fetch current market price, using fallback",
+            )
+            return fallback_price
 
     async def _calculate_limit_price(self, signal: TradingSignal, snapshot_price: Decimal, spread: Decimal) -> Decimal:
         """Calculate limit price with offset based on order side.
