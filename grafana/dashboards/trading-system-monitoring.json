@@ -753,6 +753,10 @@
       "id": 5,
       "title": "Queue Metrics",
       "type": "table",
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "rabbitmq-http-api"
+      },
       "gridPos": {
         "h": 6,
         "w": 24,
@@ -762,38 +766,42 @@
       "targets": [
         {
           "datasource": {
-            "type": "infinity",
-            "uid": "RabbitMQ HTTP API"
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "rabbitmq-http-api"
           },
           "format": "table",
           "type": "json",
-          "parser": "json",
+          "source": "url",
+          "parser": "backend",
           "url": "/api/queues",
-          "root_selector": "$",
+          "url_options": {
+            "method": "GET"
+          },
+          "root_selector": "",
           "columns": [
             {
               "text": "queue_name",
-              "selector": "$.name",
+              "selector": "name",
               "type": "string"
             },
             {
               "text": "queue_length",
-              "selector": "$.messages",
+              "selector": "messages",
               "type": "number"
             },
             {
               "text": "message_publish_rate",
-              "selector": "$.message_stats.publish_details.rate",
+              "selector": "message_stats.publish_details.rate",
               "type": "number"
             },
             {
               "text": "message_consume_rate",
-              "selector": "$.message_stats.ack_details.rate",
+              "selector": "message_stats.ack_details.rate",
               "type": "number"
             },
             {
               "text": "consumer_count",
-              "selector": "$.consumers",
+              "selector": "consumers",
               "type": "number"
             }
           ],
@@ -890,6 +898,20 @@
                 "value": 2
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "queue_length"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              }
+            ]
           }
         ]
       },
@@ -900,6 +922,10 @@
       "id": 6,
       "title": "System Health",
       "type": "table",
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "ws-gateway-health"
+      },
       "gridPos": {
         "h": 6,
         "w": 24,
@@ -909,38 +935,42 @@
       "targets": [
         {
           "datasource": {
-            "type": "infinity",
-            "uid": "ws-gateway Health"
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "ws-gateway-health"
           },
           "format": "table",
           "type": "json",
-          "parser": "json",
+          "source": "url",
+          "parser": "backend",
           "url": "/health",
-          "root_selector": "$",
+          "url_options": {
+            "method": "GET"
+          },
+          "root_selector": "",
           "columns": [
             {
               "text": "service_name",
-              "selector": "$.service",
+              "selector": "service",
               "type": "string"
             },
             {
               "text": "overall_status",
-              "selector": "$.status",
+              "selector": "status",
               "type": "string"
             },
             {
               "text": "database_connected",
-              "selector": "$.database_connected",
+              "selector": "database_connected",
               "type": "boolean"
             },
             {
               "text": "queue_connected",
-              "selector": "$.queue_connected",
+              "selector": "queue_connected",
               "type": "boolean"
             },
             {
               "text": "websocket_connected",
-              "selector": "$.websocket_connected",
+              "selector": "websocket_connected",
               "type": "boolean"
             }
           ],
@@ -948,33 +978,37 @@
         },
         {
           "datasource": {
-            "type": "infinity",
-            "uid": "model-service Health"
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "model-service-health"
           },
           "format": "table",
           "type": "json",
-          "parser": "json",
+          "source": "url",
+          "parser": "backend",
           "url": "/health",
-          "root_selector": "$",
+          "url_options": {
+            "method": "GET"
+          },
+          "root_selector": "",
           "columns": [
             {
               "text": "service_name",
-              "selector": "$.service",
+              "selector": "service",
               "type": "string"
             },
             {
               "text": "overall_status",
-              "selector": "$.status",
+              "selector": "status",
               "type": "string"
             },
             {
               "text": "database_connected",
-              "selector": "$.database_connected",
+              "selector": "database_connected",
               "type": "boolean"
             },
             {
               "text": "queue_connected",
-              "selector": "$.queue_connected",
+              "selector": "queue_connected",
               "type": "boolean"
             }
           ],
@@ -982,33 +1016,37 @@
         },
         {
           "datasource": {
-            "type": "infinity",
-            "uid": "order-manager Health"
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "order-manager-health"
           },
           "format": "table",
           "type": "json",
-          "parser": "json",
+          "source": "url",
+          "parser": "backend",
           "url": "/health",
-          "root_selector": "$",
+          "url_options": {
+            "method": "GET"
+          },
+          "root_selector": "",
           "columns": [
             {
               "text": "service_name",
-              "selector": "$.service",
+              "selector": "service",
               "type": "string"
             },
             {
               "text": "overall_status",
-              "selector": "$.status",
+              "selector": "status",
               "type": "string"
             },
             {
               "text": "database_connected",
-              "selector": "$.database_connected",
+              "selector": "database_connected",
               "type": "boolean"
             },
             {
               "text": "queue_connected",
-              "selector": "$.queue_connected",
+              "selector": "queue_connected",
               "type": "boolean"
             }
           ],
@@ -1016,38 +1054,42 @@
         },
         {
           "datasource": {
-            "type": "infinity",
-            "uid": "position-manager Health"
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "position-manager-health"
           },
           "format": "table",
           "type": "json",
-          "parser": "json",
+          "source": "url",
+          "parser": "backend",
           "url": "/health",
-          "root_selector": "$",
+          "url_options": {
+            "method": "GET"
+          },
+          "root_selector": "",
           "columns": [
             {
               "text": "service_name",
-              "selector": "$.service",
+              "selector": "service",
               "type": "string"
             },
             {
               "text": "overall_status",
-              "selector": "$.status",
+              "selector": "status",
               "type": "string"
             },
             {
               "text": "database_connected",
-              "selector": "$.database_connected",
+              "selector": "database_connected",
               "type": "boolean"
             },
             {
               "text": "queue_connected",
-              "selector": "$.queue_connected",
+              "selector": "queue_connected",
               "type": "boolean"
             },
             {
               "text": "positions_count",
-              "selector": "$.positions_count",
+              "selector": "positions_count",
               "type": "number"
             }
           ],
@@ -1196,6 +1238,10 @@
       "id": 7,
       "title": "WebSocket Connection",
       "type": "table",
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "ws-gateway-health"
+      },
       "gridPos": {
         "h": 6,
         "w": 24,
@@ -1205,49 +1251,48 @@
       "targets": [
         {
           "datasource": {
-            "type": "infinity",
-            "uid": "ws-gateway Health"
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "ws-gateway-health"
           },
           "format": "table",
           "type": "json",
-          "parser": "json",
+          "source": "url",
+          "parser": "backend",
           "url": "/health",
-          "root_selector": "$.websocket_state",
+          "url_options": {
+            "method": "GET"
+          },
+          "root_selector": "",
           "columns": [
             {
               "text": "connection_status",
-              "selector": "$.connection_status",
+              "selector": "websocket_status",
               "type": "string"
             },
             {
-              "text": "environment",
-              "selector": "$.environment",
-              "type": "string"
+              "text": "websocket_connected",
+              "selector": "websocket_connected",
+              "type": "boolean"
             },
             {
-              "text": "connection_duration",
-              "selector": "$.connection_duration_seconds",
-              "type": "number"
+              "text": "database_connected",
+              "selector": "database_connected",
+              "type": "boolean"
             },
             {
-              "text": "last_heartbeat_timestamp",
-              "selector": "$.last_heartbeat_at",
-              "type": "time"
-            },
-            {
-              "text": "reconnection_count",
-              "selector": "$.reconnection_count",
-              "type": "number"
-            },
-            {
-              "text": "last_error_message",
-              "selector": "$.last_error",
-              "type": "string"
+              "text": "queue_connected",
+              "selector": "queue_connected",
+              "type": "boolean"
             },
             {
               "text": "active_subscriptions_count",
-              "selector": "$.active_subscriptions",
+              "selector": "active_subscriptions",
               "type": "number"
+            },
+            {
+              "text": "overall_status",
+              "selector": "status",
+              "type": "string"
             }
           ],
           "refId": "A"
@@ -1315,24 +1360,124 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "connection_duration"
+              "options": "websocket_connected"
             },
             "properties": [
               {
-                "id": "unit",
-                "value": "s"
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "true": {
+                        "color": "green",
+                        "index": 0,
+                        "text": "Connected"
+                      },
+                      "false": {
+                        "color": "red",
+                        "index": 1,
+                        "text": "Disconnected"
+                      }
+                    },
+                    "type": "value"
+                  }
+                ]
               }
             ]
           },
           {
             "matcher": {
               "id": "byName",
-              "options": "last_heartbeat_timestamp"
+              "options": "database_connected"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "true": {
+                        "color": "green",
+                        "index": 0,
+                        "text": "Connected"
+                      },
+                      "false": {
+                        "color": "red",
+                        "index": 1,
+                        "text": "Disconnected"
+                      }
+                    },
+                    "type": "value"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "queue_connected"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "true": {
+                        "color": "green",
+                        "index": 0,
+                        "text": "Connected"
+                      },
+                      "false": {
+                        "color": "red",
+                        "index": 1,
+                        "text": "Disconnected"
+                      }
+                    },
+                    "type": "value"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "active_subscriptions_count"
             },
             "properties": [
               {
                 "id": "unit",
-                "value": "dateTimeFromNow"
+                "value": "short"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "overall_status"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "healthy": {
+                        "color": "green",
+                        "index": 0,
+                        "text": "Healthy"
+                      },
+                      "unhealthy": {
+                        "color": "red",
+                        "index": 1,
+                        "text": "Unhealthy"
+                      }
+                    },
+                    "type": "value"
+                  }
+                ]
               }
             ]
           }
@@ -1444,6 +1589,10 @@
       "id": 9,
       "title": "Position Manager Metrics",
       "type": "table",
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "position-manager-health"
+      },
       "gridPos": {
         "h": 6,
         "w": 24,
@@ -1453,33 +1602,37 @@
       "targets": [
         {
           "datasource": {
-            "type": "infinity",
-            "uid": "position-manager Health"
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "position-manager-health"
           },
           "format": "table",
           "type": "json",
-          "parser": "json",
+          "source": "url",
+          "parser": "backend",
           "url": "/metrics",
-          "root_selector": "$",
+          "url_options": {
+            "method": "GET"
+          },
+          "root_selector": "",
           "columns": [
             {
               "text": "timestamp",
-              "selector": "$.timestamp",
+              "selector": "timestamp",
               "type": "string"
             },
             {
               "text": "database_connected",
-              "selector": "$.database_connected",
+              "selector": "database_connected",
               "type": "boolean"
             },
             {
               "text": "queue_connected",
-              "selector": "$.queue_connected",
+              "selector": "queue_connected",
               "type": "boolean"
             },
             {
               "text": "portfolio_cache_hit_rate",
-              "selector": "$.portfolio_cache_hit_rate",
+              "selector": "portfolio_cache_hit_rate",
               "type": "number"
             }
           ],
@@ -1596,6 +1749,10 @@
       "id": 10,
       "title": "Portfolio Management",
       "type": "table",
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "position-manager-api"
+      },
       "gridPos": {
         "h": 8,
         "w": 24,
@@ -1605,38 +1762,42 @@
       "targets": [
         {
           "datasource": {
-            "type": "infinity",
-            "uid": "position-manager API"
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "position-manager-api"
           },
           "format": "table",
           "type": "json",
-          "parser": "json",
+          "source": "url",
+          "parser": "backend",
           "url": "/api/v1/portfolio?include_positions=true",
-          "root_selector": "$",
+          "url_options": {
+            "method": "GET"
+          },
+          "root_selector": "",
           "columns": [
             {
               "text": "total_exposure",
-              "selector": "$.total_exposure",
+              "selector": "total_exposure",
               "type": "number"
             },
             {
               "text": "total_unrealized_pnl",
-              "selector": "$.total_unrealized_pnl",
+              "selector": "total_unrealized_pnl",
               "type": "number"
             },
             {
               "text": "total_realized_pnl",
-              "selector": "$.total_realized_pnl",
+              "selector": "total_realized_pnl",
               "type": "number"
             },
             {
               "text": "portfolio_value",
-              "selector": "$.portfolio_value",
+              "selector": "portfolio_value",
               "type": "number"
             },
             {
               "text": "position_count",
-              "selector": "$.position_count",
+              "selector": "position_count",
               "type": "number"
             }
           ],
