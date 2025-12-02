@@ -66,7 +66,40 @@ class ModelInference:
 
         # Convert to DataFrame (single row)
         features_df = pd.DataFrame([features])
-        logger.debug("Prepared features for inference", asset=asset, feature_count=len(features_df.columns))
+        
+        # Ensure feature order matches training data (use feature_engineer.get_feature_names())
+        # This is critical for XGBoost which validates feature names and order
+        from ..services.feature_engineer import feature_engineer
+        expected_feature_names = feature_engineer.get_feature_names()
+        
+        # Add missing features with default values (should not happen, but handle gracefully)
+        for feature_name in expected_feature_names:
+            if feature_name not in features_df.columns:
+                default_value = 0.0 if "hash" not in feature_name else 0
+                features_df[feature_name] = default_value
+                logger.warning(
+                    "Missing feature in inference, using default",
+                    feature_name=feature_name,
+                    default_value=default_value,
+                )
+        
+        # Remove any extra features that weren't in training data (should not happen)
+        extra_features = set(features_df.columns) - set(expected_feature_names)
+        if extra_features:
+            logger.warning(
+                "Extra features in inference, removing",
+                extra_features=list(extra_features),
+            )
+            features_df = features_df.drop(columns=list(extra_features))
+        
+        # Reorder columns to match expected order
+        features_df = features_df[expected_feature_names]
+        
+        logger.debug(
+            "Prepared features for inference",
+            asset=asset,
+            feature_count=len(features_df.columns),
+        )
         return features_df
 
     def _engineer_inference_features(
@@ -146,7 +179,24 @@ class ModelInference:
             features["bollinger_lower"] = market_snapshot.price
             features["bollinger_width"] = 0.0
 
+        # Open orders features (must match feature_engineer logic for consistency)
+        if order_position_state:
+            asset_orders = [
+                order
+                for order in order_position_state.orders
+                if order.asset == asset and order.status in ("pending", "partially_filled")
+            ]
+            features["open_orders_count"] = len(asset_orders)
+            features["pending_buy_orders"] = len([o for o in asset_orders if o.side.upper() == "BUY"])
+            features["pending_sell_orders"] = len([o for o in asset_orders if o.side.upper() == "SELL"])
+        else:
+            # No order/position state available
+            features["open_orders_count"] = 0
+            features["pending_buy_orders"] = 0
+            features["pending_sell_orders"] = 0
+
         # Position features (from order/position state)
+        # Must match feature_engineer logic for consistency
         if order_position_state:
             position = order_position_state.get_position(asset)
             if position:
@@ -166,7 +216,7 @@ class ModelInference:
                     features["entry_price"] = market_snapshot.price
                     features["price_vs_entry"] = 0.0
             else:
-                # No position
+                # No position for this asset
                 features["position_size"] = 0.0
                 features["position_size_abs"] = 0.0
                 features["unrealized_pnl"] = 0.0
@@ -175,22 +225,12 @@ class ModelInference:
                 features["entry_price"] = market_snapshot.price
                 features["price_vs_entry"] = 0.0
 
-            # Open orders features (must match feature_engineer logic for consistency)
-            asset_orders = [
-                order
-                for order in order_position_state.orders
-                if order.asset == asset and order.status in ("pending", "partially_filled")
-            ]
-            features["open_orders_count"] = len(asset_orders)
-            features["pending_buy_orders"] = len([o for o in asset_orders if o.side.upper() == "BUY"])
-            features["pending_sell_orders"] = len([o for o in asset_orders if o.side.upper() == "SELL"])
-
             # Total exposure
             total_exposure = order_position_state.get_total_exposure(asset)
             features["total_exposure"] = float(total_exposure)
             features["total_exposure_abs"] = abs(float(total_exposure))
         else:
-            # No order/position state available
+            # No order/position state available (should not happen at inference time, but handle gracefully)
             features["position_size"] = 0.0
             features["position_size_abs"] = 0.0
             features["unrealized_pnl"] = 0.0
@@ -198,9 +238,6 @@ class ModelInference:
             features["has_position"] = 0
             features["entry_price"] = market_snapshot.price
             features["price_vs_entry"] = 0.0
-            features["open_orders_count"] = 0
-            features["pending_buy_orders"] = 0
-            features["pending_sell_orders"] = 0
             features["total_exposure"] = 0.0
             features["total_exposure_abs"] = 0.0
 
@@ -258,6 +295,13 @@ class ModelInference:
             - probabilities: Class probabilities (for classification)
         """
         try:
+            # Log feature names before prediction for debugging
+            logger.debug(
+                "Features before prediction",
+                feature_count=len(features.columns),
+                feature_names=list(features.columns),
+            )
+            
             # Handle missing values
             features = features.fillna(features.mean())
 

@@ -219,6 +219,53 @@ class FeatureEngineer:
             features["pending_buy_orders"] = 0
             features["pending_sell_orders"] = 0
 
+        # Position features (from order/position state)
+        # For historical events (order_position_state=None), use default values
+        # For new events and inference, use real position data
+        if order_position_state:
+            position = order_position_state.get_position(event.asset)
+            if position:
+                features["position_size"] = float(position.size)
+                features["position_size_abs"] = abs(float(position.size))
+                features["unrealized_pnl"] = float(position.unrealized_pnl)
+                features["realized_pnl"] = float(position.realized_pnl)
+                features["has_position"] = 1 if position.size != 0 else 0
+                if position.average_entry_price:
+                    features["entry_price"] = float(position.average_entry_price)
+                    features["price_vs_entry"] = (
+                        (market_snapshot.price - float(position.average_entry_price)) / float(position.average_entry_price) * 100
+                        if position.average_entry_price > 0
+                        else 0.0
+                    )
+                else:
+                    features["entry_price"] = market_snapshot.price
+                    features["price_vs_entry"] = 0.0
+            else:
+                # No position for this asset
+                features["position_size"] = 0.0
+                features["position_size_abs"] = 0.0
+                features["unrealized_pnl"] = 0.0
+                features["realized_pnl"] = 0.0
+                features["has_position"] = 0
+                features["entry_price"] = market_snapshot.price
+                features["price_vs_entry"] = 0.0
+
+            # Total exposure
+            total_exposure = order_position_state.get_total_exposure(event.asset)
+            features["total_exposure"] = float(total_exposure)
+            features["total_exposure_abs"] = abs(float(total_exposure))
+        else:
+            # Default values for historical events (order_position_state not available)
+            features["position_size"] = 0.0
+            features["position_size_abs"] = 0.0
+            features["unrealized_pnl"] = 0.0
+            features["realized_pnl"] = 0.0
+            features["has_position"] = 0
+            features["entry_price"] = market_snapshot.price
+            features["price_vs_entry"] = 0.0
+            features["total_exposure"] = 0.0
+            features["total_exposure_abs"] = 0.0
+
         return features
 
     def get_feature_names(self) -> List[str]:
@@ -272,6 +319,15 @@ class FeatureEngineer:
             "open_orders_count",
             "pending_buy_orders",
             "pending_sell_orders",
+            "position_size",
+            "position_size_abs",
+            "unrealized_pnl",
+            "realized_pnl",
+            "has_position",
+            "entry_price",
+            "price_vs_entry",
+            "total_exposure",
+            "total_exposure_abs",
         ]
 
 
