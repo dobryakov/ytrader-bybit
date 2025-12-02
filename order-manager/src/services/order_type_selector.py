@@ -1,10 +1,12 @@
 """Order type selector service for determining market vs limit orders."""
 
-from decimal import Decimal
+from decimal import Decimal, ROUND_DOWN, ROUND_UP
+from typing import Optional
 
 from ..config.settings import settings
 from ..config.logging import get_logger
 from ..models.trading_signal import TradingSignal
+from ..services.instrument_info_manager import InstrumentInfoManager
 
 logger = get_logger(__name__)
 
@@ -17,8 +19,9 @@ class OrderTypeSelector:
         self.confidence_threshold = settings.order_manager_market_order_confidence_threshold
         self.spread_threshold = settings.order_manager_market_order_spread_threshold
         self.price_offset_ratio = settings.order_manager_limit_order_price_offset_ratio
+        self.instrument_info_manager = InstrumentInfoManager()
 
-    def select_order_type(self, signal: TradingSignal) -> tuple[str, Decimal | None]:
+    async def select_order_type(self, signal: TradingSignal) -> tuple[str, Decimal | None]:
         """Select order type and calculate limit price if needed.
 
         Decision logic:
@@ -80,7 +83,7 @@ class OrderTypeSelector:
             return ("Market", None)
 
         # Default: Limit order with price offset
-        limit_price = self._calculate_limit_price(signal, snapshot_price, spread_pct)
+        limit_price = await self._calculate_limit_price(signal, snapshot_price, spread_pct)
         logger.info(
             "order_type_selected_limit",
             signal_id=str(signal.signal_id),
@@ -90,7 +93,7 @@ class OrderTypeSelector:
         )
         return ("Limit", limit_price)
 
-    def _calculate_limit_price(self, signal: TradingSignal, snapshot_price: Decimal, spread: Decimal) -> Decimal:
+    async def _calculate_limit_price(self, signal: TradingSignal, snapshot_price: Decimal, spread: Decimal) -> Decimal:
         """Calculate limit price with offset based on order side.
 
         Args:
@@ -99,7 +102,7 @@ class OrderTypeSelector:
             spread: Current spread percentage
 
         Returns:
-            Calculated limit price
+            Calculated limit price rounded to tick size
         """
         signal_type = signal.signal_type.lower()
 
@@ -121,7 +124,75 @@ class OrderTypeSelector:
         if limit_price <= 0:
             limit_price = snapshot_price
 
+        # Round to tick size
+        limit_price = await self._round_price_to_tick_size(signal.asset, limit_price, signal_type)
+
         return limit_price
+
+    async def _round_price_to_tick_size(self, asset: str, price: Decimal, side: str) -> Decimal:
+        """Round price to tick size for the given asset.
+
+        Args:
+            asset: Trading pair symbol
+            price: Price to round
+            side: Order side ('buy' or 'sell')
+
+        Returns:
+            Rounded price
+        """
+        try:
+            instrument_info = await self.instrument_info_manager.get_instrument_info(asset)
+            if instrument_info and instrument_info.price_tick_size > 0:
+                tick_size = instrument_info.price_tick_size
+                # Round down for buy (to get better price), round up for sell
+                if side.lower() == "buy":
+                    rounded_price = (price / tick_size).quantize(Decimal("1"), rounding=ROUND_DOWN) * tick_size
+                else:
+                    rounded_price = (price / tick_size).quantize(Decimal("1"), rounding=ROUND_UP) * tick_size
+                
+                # Normalize to remove trailing zeros and unnecessary precision
+                rounded_price = rounded_price.normalize()
+                
+                logger.debug(
+                    "price_rounded_to_tick_size",
+                    asset=asset,
+                    original_price=float(price),
+                    rounded_price=float(rounded_price),
+                    tick_size=float(tick_size),
+                    side=side,
+                )
+                return rounded_price
+            else:
+                # Fallback: use reasonable default tick sizes based on asset price
+                # BTCUSDT typically has tick size 0.01, ETHUSDT has 0.01
+                # For other assets, use 0.01 as default
+                default_tick_size = Decimal("0.01")
+                if "BTC" in asset.upper():
+                    default_tick_size = Decimal("0.01")  # BTCUSDT tick size is usually 0.01
+                elif "ETH" in asset.upper():
+                    default_tick_size = Decimal("0.01")  # ETHUSDT tick size is usually 0.01
+                
+                rounded_price = (price / default_tick_size).quantize(Decimal("1"), rounding=ROUND_DOWN if side.lower() == "buy" else ROUND_UP) * default_tick_size
+                # Normalize to remove trailing zeros and unnecessary precision
+                rounded_price = rounded_price.normalize()
+                logger.warning(
+                    "tick_size_not_found_using_default",
+                    asset=asset,
+                    original_price=float(price),
+                    rounded_price=float(rounded_price),
+                    default_tick_size=float(default_tick_size),
+                    reason="Instrument info not found, using default tick size",
+                )
+                return rounded_price
+        except Exception as e:
+            logger.warning(
+                "price_rounding_failed",
+                asset=asset,
+                price=float(price),
+                error=str(e),
+                reason="Failed to round price to tick size, using original price",
+            )
+            return price
 
     def get_time_in_force(self, order_type: str) -> str:
         """Get time-in-force value for order type.

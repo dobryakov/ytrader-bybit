@@ -209,7 +209,7 @@ class SignalProcessor:
                 quantity = await self.quantity_calculator.calculate_quantity(signal)
 
                 # Step 3: Select order type and price
-                order_type, limit_price = self.order_type_selector.select_order_type(signal)
+                order_type, limit_price = await self.order_type_selector.select_order_type(signal)
                 order_price = limit_price or signal.market_data_snapshot.price
 
                 # Step 4: Get current position from Position Manager service

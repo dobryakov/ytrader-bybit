@@ -5,6 +5,8 @@ from typing import Optional
 from uuid import UUID, uuid4
 from datetime import datetime
 
+from decimal import ROUND_DOWN, ROUND_UP
+
 from ..config.settings import settings
 from ..config.database import DatabaseConnection
 from ..config.logging import get_logger
@@ -12,6 +14,7 @@ from ..models.trading_signal import TradingSignal
 from ..models.order import Order
 from ..publishers.order_event_publisher import OrderEventPublisher
 from ..services.position_manager import PositionManager
+from ..services.instrument_info_manager import InstrumentInfoManager
 from ..utils.bybit_client import get_bybit_client
 from ..exceptions import OrderExecutionError, BybitAPIError
 
@@ -25,6 +28,7 @@ class OrderExecutor:
         """Initialize order executor."""
         self.event_publisher = OrderEventPublisher()
         self.position_manager = PositionManager()
+        self.instrument_info_manager = InstrumentInfoManager()
 
     async def create_order(
         self,
@@ -1139,7 +1143,57 @@ class OrderExecutor:
 
         # Add price for limit orders only
         if order_type == "Limit" and price:
-            params["price"] = str(price)
+            # Round price to tick size before sending to Bybit
+            logger.debug(
+                "rounding_price_before_bybit",
+                asset=asset,
+                original_price=float(price),
+                price_type=type(price).__name__,
+                side=side_api,
+            )
+            rounded_price = await self._round_price_to_tick_size(asset, price, side_api)
+            # Get tick size to determine decimal places
+            try:
+                instrument_info = await self.instrument_info_manager.get_instrument_info(asset)
+                if instrument_info and instrument_info.price_tick_size > 0:
+                    tick_size = instrument_info.price_tick_size
+                else:
+                    # Use default tick size based on asset (BTCUSDT and ETHUSDT use 0.01)
+                    if "BTC" in asset.upper() or "ETH" in asset.upper():
+                        tick_size = Decimal("0.01")
+                    else:
+                        tick_size = Decimal("0.01")
+            except Exception:
+                tick_size = Decimal("0.01")
+            
+            # Quantize to exact tick size precision
+            quantized_price = rounded_price.quantize(tick_size)
+            
+            # Format as string - determine decimal places from tick size
+            # For 0.01 tick size, we need 2 decimal places
+            tick_str = str(tick_size).rstrip('0').rstrip('.')
+            if '.' in tick_str:
+                decimal_places = len(tick_str.split('.')[1])
+            else:
+                decimal_places = 0
+            
+            # Format with exact decimal places
+            # Convert quantized Decimal to string with proper formatting
+            # Use f-string with explicit decimal places to ensure correct format
+            price_str = f"{quantized_price:.{decimal_places}f}"
+            params["price"] = price_str
+            
+            logger.info(
+                "price_prepared_for_bybit",
+                asset=asset,
+                original_price=float(price),
+                rounded_price=float(rounded_price),
+                quantized_price=float(quantized_price),
+                tick_size=float(tick_size),
+                decimal_places=decimal_places,
+                price_string=params["price"],
+                side=side_api,
+            )
 
         # Add post_only flag for limit orders
         if selector.should_use_post_only(order_type):
@@ -1192,6 +1246,71 @@ class OrderExecutor:
             # Continue without reduce_only if position check fails
 
         return params
+
+    async def _round_price_to_tick_size(self, asset: str, price: Decimal, side: str) -> Decimal:
+        """Round price to tick size for the given asset.
+
+        Args:
+            asset: Trading pair symbol
+            price: Price to round
+            side: Order side ('Buy' or 'Sell')
+
+        Returns:
+            Rounded price
+        """
+        try:
+            instrument_info = await self.instrument_info_manager.get_instrument_info(asset)
+            if instrument_info and instrument_info.price_tick_size > 0:
+                tick_size = instrument_info.price_tick_size
+                # Round down for buy (to get better price), round up for sell
+                if side.lower() == "buy":
+                    rounded_price = (price / tick_size).quantize(Decimal("1"), rounding=ROUND_DOWN) * tick_size
+                else:
+                    rounded_price = (price / tick_size).quantize(Decimal("1"), rounding=ROUND_UP) * tick_size
+                
+                # Normalize to remove trailing zeros and unnecessary precision
+                rounded_price = rounded_price.normalize()
+                
+                logger.debug(
+                    "price_rounded_to_tick_size",
+                    asset=asset,
+                    original_price=float(price),
+                    rounded_price=float(rounded_price),
+                    tick_size=float(tick_size),
+                    side=side,
+                )
+                return rounded_price
+            else:
+                # Fallback: use reasonable default tick sizes based on asset price
+                # BTCUSDT typically has tick size 0.01, ETHUSDT has 0.01
+                # For other assets, use 0.01 as default
+                default_tick_size = Decimal("0.01")
+                if "BTC" in asset.upper():
+                    default_tick_size = Decimal("0.01")  # BTCUSDT tick size is usually 0.01
+                elif "ETH" in asset.upper():
+                    default_tick_size = Decimal("0.01")  # ETHUSDT tick size is usually 0.01
+                
+                rounded_price = (price / default_tick_size).quantize(Decimal("1"), rounding=ROUND_DOWN if side.lower() == "buy" else ROUND_UP) * default_tick_size
+                # Normalize to remove trailing zeros and unnecessary precision
+                rounded_price = rounded_price.normalize()
+                logger.warning(
+                    "tick_size_not_found_using_default",
+                    asset=asset,
+                    original_price=float(price),
+                    rounded_price=float(rounded_price),
+                    default_tick_size=float(default_tick_size),
+                    reason="Instrument info not found, using default tick size",
+                )
+                return rounded_price
+        except Exception as e:
+            logger.warning(
+                "price_rounding_failed",
+                asset=asset,
+                price=float(price),
+                error=str(e),
+                reason="Failed to round price to tick size, using original price",
+            )
+            return price
 
     async def _create_dry_run_order(
         self,
