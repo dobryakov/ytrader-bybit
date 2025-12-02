@@ -74,7 +74,11 @@ class OrderExecutionEvent(BaseModel):
     @classmethod
     def validate_executed_at(cls, v: datetime) -> datetime:
         """Validate executed_at is not in the future."""
-        if v > datetime.now(timezone.utc):
+        # Ensure datetime is timezone-aware for comparison
+        now = datetime.now(timezone.utc)
+        if v.tzinfo is None:
+            v = v.replace(tzinfo=timezone.utc)
+        if v > now:
             raise ValueError("executed_at cannot be in the future")
         return v
 
@@ -82,7 +86,11 @@ class OrderExecutionEvent(BaseModel):
     @classmethod
     def validate_signal_timestamp(cls, v: datetime) -> datetime:
         """Validate signal_timestamp is not in the future."""
-        if v > datetime.now(timezone.utc):
+        # Ensure datetime is timezone-aware for comparison
+        now = datetime.now(timezone.utc)
+        if v.tzinfo is None:
+            v = v.replace(tzinfo=timezone.utc)
+        if v > now:
             raise ValueError("signal_timestamp cannot be in the future")
         return v
 

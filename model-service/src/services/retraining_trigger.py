@@ -113,25 +113,26 @@ class RetrainingTrigger:
         """
         Check if data accumulation threshold is reached.
 
+        Triggers training when buffer size reaches the minimum dataset size (every 100 events by default).
+
         Args:
-            current_dataset_size: Current size of accumulated dataset
-            new_event_count: Number of new execution events
+            current_dataset_size: Current size of accumulated dataset (buffer size)
+            new_event_count: Number of new execution events (unused, kept for API compatibility)
 
         Returns:
             True if threshold is reached
         """
         min_dataset_size = settings.model_training_min_dataset_size
 
-        # Check if we have enough new data
-        if new_event_count >= min_dataset_size:
+        # Trigger training when buffer reaches the minimum dataset size
+        # This ensures training happens every N events (default: 100)
+        if current_dataset_size >= min_dataset_size:
+            logger.debug(
+                "Data accumulation threshold reached",
+                current_dataset_size=current_dataset_size,
+                min_dataset_size=min_dataset_size,
+            )
             return True
-
-        # Check if total dataset size is sufficient and we have some new data
-        if current_dataset_size >= min_dataset_size and new_event_count > 0:
-            # Retrain if we have at least 10% new data
-            new_data_ratio = new_event_count / current_dataset_size
-            if new_data_ratio >= 0.1:
-                return True
 
         return False
 

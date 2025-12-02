@@ -318,11 +318,82 @@ class ExecutionEventRepository(BaseRepository[Dict[str, Any]]):
         records = await self._fetch(query, *params)
         results = self._records_to_dicts(records)
 
-        # Convert Decimal to float for numeric fields
+        # Convert Decimal to float for numeric fields and handle JSONB
         for result in results:
             for key in ["execution_price", "execution_quantity", "execution_fees", "signal_price"]:
                 if isinstance(result.get(key), Decimal):
                     result[key] = float(result[key])
+            # Ensure performance JSONB is properly parsed as dict
+            # asyncpg should parse JSONB automatically, but handle edge cases
+            if "performance" in result and result["performance"] is not None:
+                perf_value = result["performance"]
+                if isinstance(perf_value, str):
+                    try:
+                        result["performance"] = json.loads(perf_value)
+                    except (json.JSONDecodeError, TypeError):
+                        result["performance"] = {}
+
+        return results
+
+    async def get_all_unused_events(
+        self,
+        limit: Optional[int] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Get all execution events that have not yet been used for training (across all strategies).
+
+        Args:
+            limit: Maximum number of events to return
+            start_time: Optional start time filter
+            end_time: Optional end time filter
+
+        Returns:
+            List of unused execution event records
+        """
+        conditions = ["used_for_training = FALSE"]
+        params: List[Any] = []
+        param_index = 1
+
+        if start_time:
+            conditions.append(f"executed_at >= ${param_index}")
+            params.append(start_time)
+            param_index += 1
+
+        if end_time:
+            conditions.append(f"executed_at <= ${param_index}")
+            params.append(end_time)
+            param_index += 1
+
+        query = f"""
+            SELECT *
+            FROM {self.table_name}
+            WHERE {' AND '.join(conditions)}
+            ORDER BY executed_at ASC
+        """
+
+        if limit is not None:
+            query += f" LIMIT ${param_index}"
+            params.append(limit)
+
+        records = await self._fetch(query, *params)
+        results = self._records_to_dicts(records)
+
+        # Convert Decimal to float for numeric fields and handle JSONB
+        for result in results:
+            for key in ["execution_price", "execution_quantity", "execution_fees", "signal_price"]:
+                if isinstance(result.get(key), Decimal):
+                    result[key] = float(result[key])
+            # Ensure performance JSONB is properly parsed as dict
+            # asyncpg should parse JSONB automatically, but handle edge cases
+            if "performance" in result and result["performance"] is not None:
+                perf_value = result["performance"]
+                if isinstance(perf_value, str):
+                    try:
+                        result["performance"] = json.loads(perf_value)
+                    except (json.JSONDecodeError, TypeError):
+                        result["performance"] = {}
 
         return results
 

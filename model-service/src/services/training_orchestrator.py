@@ -97,6 +97,12 @@ class TrainingOrchestrator:
             total_buffer_size=len(self._execution_events_buffer),
             strategy_id=strategy_id,
         )
+        
+        # After restoring buffer, check if training should be triggered immediately
+        # (e.g., if we restored 100+ events)
+        if restored_events:
+            # Check if we have enough events to trigger training
+            await self.check_and_trigger_training(strategy_id)
 
     def _normalize_strategy_id(self, strategy_id: Optional[str]) -> Optional[str]:
         """
