@@ -219,6 +219,9 @@
 - [ ] T070 Run quickstart.md validation (verify all steps work end-to-end)
 - [X] T071 Add database migration files in ws-gateway/migrations/ (XXX_create_orders_table.sql, XXX_create_signal_order_relationships_table.sql, XXX_create_positions_table.sql, XXX_create_position_snapshots_table.sql per constitution requirement)
 - [X] T074 [P] [Grafana] Extend health check endpoint to include dependency status for Grafana monitoring: Update GET /health endpoint in order-manager/src/api/routes/health.py to include dependency status fields (database_connected: boolean from _check_database() result, queue_connected: boolean from _check_rabbitmq() result) in addition to existing status and timestamp fields. This enables Grafana System Health dashboard panel to display service health with component-level status. The endpoint should return: {"status": "healthy"|"unhealthy", "service": "order-manager", "database_connected": boolean, "queue_connected": boolean, "timestamp": string}. Required for Grafana dashboard User Story 5 compliance.
+- [ ] T085 [Enhancement] Add signal processing delay monitoring in order-manager/src/services/signal_processor.py (extract signal creation timestamp from TradingSignal.created_at or signal.timestamp field, calculate and log time delta between signal creation and processing start, add structured logging fields: signal_creation_time, signal_processing_time, processing_delay_seconds, add metrics for monitoring: track average processing delay, maximum delay, delay distribution per asset, add configuration SIGNAL_PROCESSING_DELAY_ALERT_THRESHOLD_SECONDS=300 for alert threshold (default: 5 minutes), log warning if processing delay exceeds threshold to detect stale signals, expose metrics via monitoring API endpoint for observability, correlate delay with order rejection rate to identify stale price issues)
+- [ ] T086 [Enhancement] Add snapshot price freshness check in order-manager/src/services/order_type_selector.py (check if snapshot_price from signal is stale by comparing signal creation timestamp with current time, if snapshot_price age exceeds threshold (e.g., > 5 minutes), log warning and always fetch current market price for limit price calculation, add configuration SNAPSHOT_PRICE_MAX_AGE_SECONDS=300 for maximum acceptable age of snapshot price (default: 5 minutes), ensure current market price fetching logic (from Variant 3 implementation) handles stale snapshot prices gracefully, document behavior in order-manager/README.md)
+- [ ] T087 [Enhancement] Add configuration for signal processing delay monitoring in order-manager/src/config/settings.py (SIGNAL_PROCESSING_DELAY_ALERT_THRESHOLD_SECONDS=300 for alert threshold in seconds, SNAPSHOT_PRICE_MAX_AGE_SECONDS=300 for maximum acceptable age of snapshot price, default: 300 seconds (5 minutes) for both thresholds, document configuration options in order-manager/README.md)
 
 ---
 
@@ -320,7 +323,7 @@ With multiple developers:
 
 ## Task Summary
 
-- **Total Tasks**: 84 (74 original + 10 WebSocket position tasks T075-T084 now delegated to Position Manager service but kept for traceability)
+- **Total Tasks**: 87 (74 original + 10 WebSocket position tasks T075-T084 now delegated to Position Manager service but kept for traceability + 3 new tasks T085-T087 for signal processing delay monitoring)
 - **Setup Phase**: 7 tasks
 - **Foundational Phase**: 9 tasks
 - **User Story 1 (P1)**: 15 tasks
@@ -330,7 +333,7 @@ With multiple developers:
 - **User Story 4 (P1)**: 9 tasks
 - **REST API Phase**: 6 tasks
 - **Position Management Phase**: 6 tasks
-- **Polish Phase**: 9 tasks
+- **Polish Phase**: 12 tasks (added T085-T087 for signal processing delay monitoring)
 
 ### Parallel Opportunities Identified
 
