@@ -67,33 +67,9 @@ class ModelInference:
         # Convert to DataFrame (single row)
         features_df = pd.DataFrame([features])
         
-        # Ensure feature order matches training data (use feature_engineer.get_feature_names())
-        # This is critical for XGBoost which validates feature names and order
-        from ..services.feature_engineer import feature_engineer
-        expected_feature_names = feature_engineer.get_feature_names()
-        
-        # Add missing features with default values (should not happen, but handle gracefully)
-        for feature_name in expected_feature_names:
-            if feature_name not in features_df.columns:
-                default_value = 0.0 if "hash" not in feature_name else 0
-                features_df[feature_name] = default_value
-                logger.warning(
-                    "Missing feature in inference, using default",
-                    feature_name=feature_name,
-                    default_value=default_value,
-                )
-        
-        # Remove any extra features that weren't in training data (should not happen)
-        extra_features = set(features_df.columns) - set(expected_feature_names)
-        if extra_features:
-            logger.warning(
-                "Extra features in inference, removing",
-                extra_features=list(extra_features),
-            )
-            features_df = features_df.drop(columns=list(extra_features))
-        
-        # Reorder columns to match expected order
-        features_df = features_df[expected_feature_names]
+        # Note: Feature alignment with model's expected features will be done in predict() method
+        # based on the actual model's feature_names_in_ attribute. This ensures compatibility
+        # with models trained with different feature sets (e.g., with or without position features).
         
         logger.debug(
             "Prepared features for inference",
@@ -295,9 +271,70 @@ class ModelInference:
             - probabilities: Class probabilities (for classification)
         """
         try:
-            # Log feature names before prediction for debugging
-            logger.debug(
-                "Features before prediction",
+            # Get expected feature names from model (what it was trained with)
+            # XGBoost models store feature names in different places depending on version
+            expected_feature_names = None
+            
+            # Try feature_names_in_ first (newer XGBoost versions)
+            if hasattr(model, "feature_names_in_") and model.feature_names_in_ is not None:
+                expected_feature_names = list(model.feature_names_in_)
+                logger.debug("Using feature_names_in_ from model", count=len(expected_feature_names))
+            
+            # Try get_booster().feature_names (older XGBoost versions or when feature_names_in_ is None)
+            if expected_feature_names is None and hasattr(model, "get_booster"):
+                try:
+                    booster = model.get_booster()
+                    if hasattr(booster, "feature_names") and booster.feature_names:
+                        expected_feature_names = list(booster.feature_names)
+                        logger.debug("Using feature_names from booster", count=len(expected_feature_names))
+                except Exception as e:
+                    logger.warning("Failed to get feature names from booster", error=str(e))
+            
+            # Fallback: use provided features (should not happen, but handle gracefully)
+            if expected_feature_names is None or len(expected_feature_names) == 0:
+                logger.warning(
+                    "Could not determine model's expected features, using provided features",
+                    provided_count=len(features.columns),
+                )
+                expected_feature_names = list(features.columns)
+            
+            logger.info(
+                "Features before alignment",
+                feature_count=len(features.columns),
+                model_expected_count=len(expected_feature_names),
+                provided_features=list(features.columns),
+                expected_features=expected_feature_names,
+            )
+            
+            # Align features with model's expected features
+            # Add missing features with default values
+            for feature_name in expected_feature_names:
+                if feature_name not in features.columns:
+                    default_value = 0.0 if "hash" not in feature_name else 0
+                    features[feature_name] = default_value
+                    logger.warning(
+                        "Missing feature in inference, using default",
+                        feature_name=feature_name,
+                        default_value=default_value,
+                    )
+            
+            # Remove extra features that model doesn't expect
+            extra_features = set(features.columns) - set(expected_feature_names)
+            if extra_features:
+                logger.warning(
+                    "Removing extra features not expected by model",
+                    extra_features=list(extra_features),
+                    model_expected_count=len(expected_feature_names),
+                    provided_count=len(features.columns),
+                )
+                features = features.drop(columns=list(extra_features))
+            
+            # Reorder columns to match model's expected order
+            features = features[expected_feature_names]
+            
+            # Log feature names after alignment
+            logger.info(
+                "Features after alignment",
                 feature_count=len(features.columns),
                 feature_names=list(features.columns),
             )
