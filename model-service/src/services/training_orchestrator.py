@@ -98,6 +98,63 @@ class TrainingOrchestrator:
             strategy_id=strategy_id,
         )
 
+    def _normalize_strategy_id(self, strategy_id: Optional[str]) -> Optional[str]:
+        """
+        Normalize strategy_id to match configured strategies.
+
+        This ensures that strategy_id from events matches the strategy_id
+        used for signal generation, preventing mismatches like 'test-strategy' vs 'test_strategy'.
+
+        Args:
+            strategy_id: Strategy identifier from event or None
+
+        Returns:
+            Normalized strategy_id that matches configured strategies, or original if not found
+        """
+        if not strategy_id:
+            return strategy_id
+
+        configured_strategies = settings.trading_strategy_list
+        if not configured_strategies:
+            # No strategies configured, return as-is
+            return strategy_id
+
+        # Check exact match first
+        if strategy_id in configured_strategies:
+            return strategy_id
+
+        # Check case-insensitive match
+        strategy_id_lower = strategy_id.lower()
+        for configured_strategy in configured_strategies:
+            if configured_strategy.lower() == strategy_id_lower:
+                logger.warning(
+                    "Strategy ID case mismatch, using configured value",
+                    event_strategy_id=strategy_id,
+                    configured_strategy_id=configured_strategy,
+                )
+                return configured_strategy
+
+        # Check if strategy_id differs only by separator (hyphen vs underscore)
+        # Normalize separators and compare
+        normalized_event = strategy_id.replace("-", "_").replace(" ", "_")
+        for configured_strategy in configured_strategies:
+            normalized_configured = configured_strategy.replace("-", "_").replace(" ", "_")
+            if normalized_event.lower() == normalized_configured.lower():
+                logger.warning(
+                    "Strategy ID separator mismatch, using configured value",
+                    event_strategy_id=strategy_id,
+                    configured_strategy_id=configured_strategy,
+                )
+                return configured_strategy
+
+        # Strategy not found in configured list - log warning but return original
+        logger.warning(
+            "Strategy ID not found in configured strategies, using event value",
+            event_strategy_id=strategy_id,
+            configured_strategies=configured_strategies,
+        )
+        return strategy_id
+
     async def check_and_trigger_training(self, strategy_id: Optional[str] = None) -> None:
         """
         Check if training should be triggered and start it if needed.
@@ -105,6 +162,9 @@ class TrainingOrchestrator:
         Args:
             strategy_id: Trading strategy identifier
         """
+        # Normalize strategy_id to match configured strategies
+        strategy_id = self._normalize_strategy_id(strategy_id)
+
         # Check if retraining should occur
         should_retrain = await retraining_trigger.should_retrain(
             strategy_id=strategy_id,
@@ -175,6 +235,9 @@ class TrainingOrchestrator:
         Args:
             strategy_id: Trading strategy identifier
         """
+        # Normalize strategy_id to match configured strategies
+        strategy_id = self._normalize_strategy_id(strategy_id)
+
         if not self._execution_events_buffer:
             logger.warning("No execution events available for training", strategy_id=strategy_id)
             return
