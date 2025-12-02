@@ -259,7 +259,9 @@ class ExecutionEventRepository(BaseRepository[Dict[str, Any]]):
                 uuid_ids,
                 UUID(str(training_id)) if isinstance(training_id, str) else training_id,
             )
-            return int(result or 0)
+            # _execute returns string like "UPDATE 0", extract the number
+            count = int(result.split()[-1]) if result else 0
+            return count
         except Exception as e:
             logger.error(
                 "Failed to mark execution events as used for training",

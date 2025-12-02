@@ -7,6 +7,7 @@ Provides CRUD operations for model_versions table.
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 import asyncpg
+import json
 from uuid import UUID
 
 from ..base import BaseRepository
@@ -65,6 +66,9 @@ class ModelVersionRepository(BaseRepository[Dict[str, Any]]):
             RETURNING *
         """
         try:
+            # Serialize training_config dict to JSON string for JSONB column
+            training_config_json = json.dumps(training_config) if training_config else None
+            
             record = await self._fetchrow(
                 query,
                 version,
@@ -73,7 +77,7 @@ class ModelVersionRepository(BaseRepository[Dict[str, Any]]):
                 strategy_id,
                 training_duration_seconds,
                 training_dataset_size,
-                training_config,
+                training_config_json,
                 is_active,
                 is_warmup_mode,
             )
@@ -259,7 +263,7 @@ class ModelVersionRepository(BaseRepository[Dict[str, Any]]):
         Returns:
             Activated model version record or None if not found
         """
-        async with await self._transaction() as conn:
+        async with self._transaction() as conn:
             # Deactivate all models for this strategy
             await conn.execute(
                 f"""

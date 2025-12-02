@@ -4,7 +4,8 @@ Database repository base class.
 Provides common database operations and transaction management for repositories.
 """
 
-from typing import Optional, List, Dict, Any, TypeVar, Generic
+from typing import Optional, List, Dict, Any, TypeVar, Generic, AsyncContextManager
+from contextlib import asynccontextmanager
 import asyncpg
 from abc import ABC, abstractmethod
 
@@ -118,19 +119,24 @@ class BaseRepository(ABC, Generic[T]):
             logger.error("Repository query fetchval failed", query=query, error=str(e), exc_info=True)
             raise DatabaseQueryError(f"Query fetchval failed: {e}") from e
 
+    @asynccontextmanager
     async def _transaction(self):
         """
         Get a transaction context manager.
 
         Returns:
-            Transaction context manager
+            Transaction context manager that yields a connection
 
         Example:
             async with await self._transaction() as conn:
                 await conn.execute("INSERT INTO ...")
         """
         pool = await db_pool.get_pool()
-        return pool.transaction()
+        # In asyncpg, transactions are created from a connection, not from the pool
+        # We need to acquire a connection first, then create a transaction
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                yield conn
 
     def _record_to_dict(self, record: asyncpg.Record) -> Dict[str, Any]:
         """

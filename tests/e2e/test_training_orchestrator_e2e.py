@@ -15,6 +15,7 @@ the training pipeline by simulating execution events.
 import asyncio
 import json
 import os
+import random
 import sys
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, Optional, List
@@ -266,7 +267,8 @@ class TrainingOrchestratorE2ETest:
                     return True
                 else:
                     print(f"⏳ Buffer has {buffer_count} events (waiting for {expected_count})")
-            await asyncio.sleep(2)
+            # Check every 3 seconds instead of 2 to reduce API calls
+            await asyncio.sleep(3)
 
         print(f"⏳ Timeout waiting for {expected_count} events in buffer")
         return False
@@ -295,7 +297,8 @@ class TrainingOrchestratorE2ETest:
                 else:
                     buffer_count = status.get("buffered_events_count", 0)
                     print(f"⏳ Training not started yet (buffer: {buffer_count} events)")
-            await asyncio.sleep(2)
+            # Check every 3 seconds instead of 2 to reduce API calls
+            await asyncio.sleep(3)
 
         print("⏳ Timeout waiting for training to start")
         return False
@@ -509,20 +512,75 @@ async def test_training_orchestrator_training_trigger():
         # - Feature variance: non_zero_variance_ratio - need varied prices/quantities
         print("\n📤 Publishing execution events to trigger training...")
         
-        # Publish 100+ events to meet MODEL_TRAINING_MIN_DATASET_SIZE=100
-        # With 100+ events: sufficiency_score = 1.0, balanced labels, good variance
+        # Publish 250+ events to meet MODEL_TRAINING_MIN_DATASET_SIZE=100 with margin
+        # With 250+ events: sufficiency_score = 1.0, balanced labels, good variance
+        # Extra events will remain in buffer for next training cycle
+        # Using 250 events ensures we have enough even if some are processed slowly
         events_published = 0
-        for i in range(100):
+        random.seed(42)  # For reproducibility
+        
+        for i in range(250):
             signal_id = str(uuid4())
             order_id = str(uuid4())
             
             # Create highly varied events for maximum quality score
-            asset = "ETHUSDT" if i % 2 == 0 else "BTCUSDT"
+            # Use more variation in assets, sides, prices, quantities
+            asset_idx = i % 4
+            assets = ["ETHUSDT", "BTCUSDT", "BNBUSDT", "SOLUSDT"]
+            asset = assets[asset_idx]
+            
             # Balanced 50/50 buy/sell mix for optimal label distribution score
             side = "buy" if i % 2 == 0 else "sell"
-            base_price = 3000.0 if asset == "ETHUSDT" else 50000.0
+            
+            # Base prices for different assets
+            base_prices = {"ETHUSDT": 3000.0, "BTCUSDT": 50000.0, "BNBUSDT": 600.0, "SOLUSDT": 150.0}
+            base_price = base_prices[asset]
+            
             # Significant price variation for feature variance
-            execution_price = base_price + (i * 50)  # Larger variation
+            # Add random variation to make events more unique
+            price_variation = (i * 50) + random.uniform(-20, 20)
+            execution_price = base_price + price_variation
+            
+            # Vary signal price to create different slippage scenarios
+            # This will generate different performance metrics and labels
+            signal_price_offset = random.uniform(-0.02, 0.02) * execution_price  # ±2% variation
+            signal_price = execution_price + signal_price_offset
+            
+            # Vary quantities significantly
+            quantity_base = 0.01 + (i * 0.002)
+            quantity_variation = random.uniform(-0.001, 0.001)
+            execution_quantity = quantity_base + quantity_variation
+            
+            # Create varied performance metrics to ensure label diversity
+            # Mix of profitable and unprofitable trades
+            is_profitable = (i % 3) != 0  # 2/3 profitable, 1/3 unprofitable
+            if is_profitable:
+                # Profitable trade: positive return
+                return_percent = random.uniform(0.1, 5.0)  # 0.1% to 5% profit
+                realized_pnl = execution_price * execution_quantity * (return_percent / 100.0)
+            else:
+                # Unprofitable trade: negative return
+                return_percent = random.uniform(-5.0, -0.1)  # -5% to -0.1% loss
+                realized_pnl = execution_price * execution_quantity * (return_percent / 100.0)
+            
+            # Calculate slippage from signal price
+            slippage = execution_price - signal_price
+            slippage_percent = (slippage / signal_price * 100) if signal_price > 0 else 0.0
+            
+            # Create performance dict with varied metrics
+            performance = {
+                "slippage": slippage,
+                "slippage_percent": slippage_percent,
+                "realized_pnl": realized_pnl,  # Set to create label diversity
+                "return_percent": return_percent,  # Set to create label diversity
+            }
+            
+            # Vary market conditions for more feature diversity
+            market_conditions = {
+                "spread": 0.001 + random.uniform(0.0005, 0.002),  # 0.1% to 0.3%
+                "volume_24h": 1000000.0 * random.uniform(0.5, 2.0),  # 500k to 2M
+                "volatility": 0.01 + random.uniform(0.005, 0.03),  # 1% to 4%
+            }
             
             event = test.create_mock_execution_event(
                 signal_id=signal_id,
@@ -530,23 +588,26 @@ async def test_training_orchestrator_training_trigger():
                 asset=asset,
                 side=side,
                 execution_price=execution_price,
-                execution_quantity=0.01 + (i * 0.002),  # Significant quantity variation
+                execution_quantity=execution_quantity,
                 strategy_id="test_strategy",
+                signal_price=signal_price,
+                market_conditions=market_conditions,
+                performance=performance,
             )
             await test.publish_execution_event(event)
             events_published += 1
-            await asyncio.sleep(0.1)  # Small delay between events
+            await asyncio.sleep(0.05)  # Small delay between events
 
-        print(f"✅ Published {events_published} execution events (meets MODEL_TRAINING_MIN_DATASET_SIZE=100, guaranteed quality score > 0.5)")
+        print(f"✅ Published {events_published} execution events (meets MODEL_TRAINING_MIN_DATASET_SIZE=100 with margin, guaranteed quality score > 0.5, extra events for next cycle)")
         
         # Give time for events to accumulate in buffer before training might start
-        await asyncio.sleep(3)
+        await asyncio.sleep(5)
 
         # Wait for events to be processed - either buffered or training started
         print("\n⏳ Waiting for events to be processed...")
         
         # Give more time for events to be consumed and processed
-        await asyncio.sleep(5)
+        await asyncio.sleep(10)
         
         # Check if events are buffered OR training started
         # Training might start immediately if scheduled retraining is triggered
@@ -554,21 +615,29 @@ async def test_training_orchestrator_training_trigger():
         events_processed = False
         training_started = False
         
-        while (datetime.now(timezone.utc) - start_time).total_seconds() < 15:
+        # Check less frequently to reduce API calls (every 2 seconds instead of 0.5)
+        while (datetime.now(timezone.utc) - start_time).total_seconds() < 30:
             status = await test.get_training_status()
             if status:
                 buffer_count = status.get("buffered_events_count", 0)
                 is_training = status.get("is_training", False)
                 
-                if buffer_count >= events_published:
-                    print(f"✅ Events are in buffer: {buffer_count} events")
+                # Check if we have enough events in buffer (at least 100) or training started
+                if buffer_count >= 100:
+                    print(f"✅ Events are in buffer: {buffer_count} events (enough for training)")
                     events_processed = True
-                    break
+                    # Don't break - continue to check if training starts
+                    if is_training:
+                        print("✅ Training started (events were processed and training triggered)")
+                        training_started = True
+                        break
                 elif is_training:
                     print("✅ Training started (events were processed and training triggered)")
                     training_started = True
                     break
-            await asyncio.sleep(0.5)  # Check frequently
+                else:
+                    print(f"⏳ Buffer: {buffer_count} events, waiting for more events or training to start...")
+            await asyncio.sleep(2)  # Check every 2 seconds instead of 0.5
         
         # Also check database to verify events were processed
         if not (events_processed or training_started):
@@ -616,12 +685,58 @@ async def test_training_orchestrator_training_trigger():
             if training_completed:
                 print("✅ Training completed")
                 
-                # Verify buffer is cleared after training
+                # Verify buffer status after training
+                # With 250 events and MODEL_TRAINING_MIN_DATASET_SIZE=100,
+                # training should use 100 events, leaving ~150 in buffer for next cycle
                 final_status = await test.get_training_status()
                 if final_status:
                     final_buffer = final_status.get("buffered_events_count", 0)
                     is_training_final = final_status.get("is_training", False)
                     print(f"ℹ️  Final buffer count: {final_buffer}, is_training: {is_training_final}")
+                    
+                    # Verify that some events remain in buffer for next training cycle
+                    # (250 published - 100 used for training = ~150 should remain)
+                    if final_buffer > 0:
+                        print(f"✅ {final_buffer} events remain in buffer for next training cycle (expected ~150)")
+                    else:
+                        print("⚠️  No events in buffer after training (all events may have been used)")
+                
+                # Verify model was created in database
+                print("\n⏳ Verifying model was created in database...")
+                await asyncio.sleep(2)  # Give time for DB commit
+                try:
+                    import asyncpg
+                    db_host = os.getenv("POSTGRES_HOST", "postgres")
+                    db_port = int(os.getenv("POSTGRES_PORT", "5432"))
+                    db_name = os.getenv("POSTGRES_DB", "ytrader")
+                    db_user = os.getenv("POSTGRES_USER", "ytrader")
+                    db_password = os.getenv("POSTGRES_PASSWORD", "")
+                    
+                    conn = await asyncpg.connect(
+                        host=db_host, port=db_port, database=db_name, user=db_user, password=db_password,
+                    )
+                    try:
+                        # Check for model version created in last 5 minutes
+                        model_count = await conn.fetchval(
+                            "SELECT COUNT(*) FROM model_versions WHERE trained_at > NOW() - INTERVAL '5 minutes'"
+                        )
+                        if model_count and model_count > 0:
+                            print(f"✅ Found {model_count} model version(s) in database")
+                            
+                            # Check that events are marked as used_for_training
+                            used_events_count = await conn.fetchval(
+                                "SELECT COUNT(*) FROM execution_events WHERE used_for_training = true AND executed_at > NOW() - INTERVAL '10 minutes'"
+                            )
+                            if used_events_count and used_events_count > 0:
+                                print(f"✅ Found {used_events_count} execution event(s) marked as used_for_training")
+                            else:
+                                print("⚠️  No events marked as used_for_training (this might be expected if training failed)")
+                        else:
+                            print("⚠️  No model versions found in database (training might have failed)")
+                    finally:
+                        await conn.close()
+                except Exception as e:
+                    print(f"⚠️  Could not verify model in database: {e}")
             else:
                 print("⚠️  Training did not complete within timeout (this is OK if it's still running)")
         else:

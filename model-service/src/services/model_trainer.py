@@ -88,6 +88,41 @@ class ModelTrainer:
         # Handle missing values
         X = X.fillna(X.mean())  # Fill with mean for numeric columns
 
+        # Check for label diversity (critical for XGBoost with logistic loss)
+        unique_labels = y.unique()
+        if len(unique_labels) == 1:
+            # All labels are the same - XGBoost will fail with logistic loss
+            # For XGBoost, we need to handle this case
+            if model_type == "xgboost" and task_type == "classification":
+                logger.warning(
+                    "All labels are identical - cannot train XGBoost classifier with logistic loss",
+                    unique_label=unique_labels[0],
+                    dataset_size=len(y),
+                )
+                # Set base_score explicitly to avoid XGBoost error
+                # base_score should be in (0,1) for logistic loss
+                # If all labels are 0, set base_score to 0.1 (low probability)
+                # If all labels are 1, set base_score to 0.9 (high probability)
+                if unique_labels[0] == 0:
+                    base_score = 0.1
+                elif unique_labels[0] == 1:
+                    base_score = 0.9
+                else:
+                    # For other values, normalize to (0,1)
+                    base_score = max(0.1, min(0.9, float(unique_labels[0])))
+                
+                logger.info(
+                    "Setting base_score for XGBoost to handle identical labels",
+                    base_score=base_score,
+                )
+            else:
+                # For other models, log warning but proceed
+                logger.warning(
+                    "All labels are identical - model may not learn effectively",
+                    unique_label=unique_labels[0],
+                    dataset_size=len(y),
+                )
+
         # Prepare hyperparameters
         if hyperparameters is None:
             hyperparameters = {}
@@ -95,6 +130,16 @@ class ModelTrainer:
         # Set default hyperparameters based on model type
         default_hyperparameters = self._get_default_hyperparameters(model_type, task_type)
         hyperparameters = {**default_hyperparameters, **hyperparameters}
+
+        # Add base_score for XGBoost if all labels are identical
+        if model_type == "xgboost" and task_type == "classification" and len(unique_labels) == 1:
+            if "base_score" not in hyperparameters:
+                if unique_labels[0] == 0:
+                    hyperparameters["base_score"] = 0.1
+                elif unique_labels[0] == 1:
+                    hyperparameters["base_score"] = 0.9
+                else:
+                    hyperparameters["base_score"] = max(0.1, min(0.9, float(unique_labels[0])))
 
         # Create and train model
         try:
