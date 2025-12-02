@@ -108,8 +108,34 @@ async def lifespan(app: FastAPI):
 
         # Check if trained model exists and start appropriate orchestrator
         model_version_repo = ModelVersionRepository()
-        active_model = await model_version_repo.get_active_by_strategy(None)  # Check for default strategy
-        has_trained_model = active_model is not None
+        
+        # Check for active models across all configured strategies
+        has_trained_model = False
+        active_model = None
+        strategies = settings.trading_strategy_list
+        
+        if strategies:
+            # Check each strategy for active model
+            for strategy_id in strategies:
+                model = await model_version_repo.get_active_by_strategy(strategy_id)
+                if model:
+                    has_trained_model = True
+                    active_model = model
+                    logger.info(
+                        "Active model found for strategy",
+                        strategy_id=strategy_id,
+                        model_version=model["version"],
+                    )
+                    break
+        else:
+            # If no strategies configured, check for default strategy (None)
+            active_model = await model_version_repo.get_active_by_strategy(None)
+            has_trained_model = active_model is not None
+            if has_trained_model:
+                logger.info(
+                    "Active model found for default strategy",
+                    model_version=active_model["version"],
+                )
 
         if has_trained_model:
             logger.info("Active model found, starting intelligent signal generation", model_version=active_model["version"])

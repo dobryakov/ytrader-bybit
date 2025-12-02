@@ -11,6 +11,8 @@ from ..models.signal import TradingSignal
 from ..services.warmup_signal_generator import get_warmup_generator
 from ..services.rate_limiter import rate_limiter
 from ..services.signal_validator import signal_validator, SignalValidationError
+from ..services.mode_transition import mode_transition
+from ..services.intelligent_orchestrator import intelligent_orchestrator
 from ..publishers.signal_publisher import signal_publisher
 from ..config.settings import settings
 from ..config.logging import get_logger, bind_context
@@ -73,6 +75,29 @@ class WarmUpOrchestrator:
 
         while self._running:
             try:
+                # Check for automatic mode transition (warm-up -> model-based)
+                for strategy_id in strategies:
+                    transition_occurred = await mode_transition.check_and_transition(strategy_id=strategy_id)
+                    if transition_occurred:
+                        logger.info(
+                            "Mode transition detected, switching from warm-up to intelligent mode",
+                            strategy_id=strategy_id,
+                        )
+                        # Stop warm-up orchestrator
+                        await self.stop()
+                        # Start intelligent orchestrator
+                        try:
+                            await intelligent_orchestrator.start()
+                            logger.info("Switched to intelligent orchestrator after mode transition")
+                        except Exception as e:
+                            logger.error(
+                                "Failed to start intelligent orchestrator after transition",
+                                error=str(e),
+                                exc_info=True,
+                            )
+                        # Exit the loop as we've transitioned to intelligent mode
+                        return
+
                 # Generate signals for all strategies and assets
                 signals = await self._generate_signals_for_all(strategies, assets)
 
