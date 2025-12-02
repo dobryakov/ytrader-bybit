@@ -531,3 +531,125 @@ model-service должен:
 2. Model Service получает готовый feature vector
 3. Model Service выполняет inference на модели
 4. Model Service генерирует торговый сигнал на основе предсказания
+
+---
+
+## 15. Position Features и их роль в Feature Service
+
+### Обязанности Feature Service по Position Features
+
+**Feature Service ДОЛЖЕН:**
+
+1. **Сбор данных о позициях**
+   - Подписываться на очередь `position-manager.position_updated` для получения обновлений позиций в реальном времени
+   - Или опрашивать Position Manager REST API `GET /api/v1/positions/{asset}` для получения текущего состояния позиций
+   - Кэшировать данные о позициях для быстрого доступа при вычислении признаков
+   - Обеспечивать актуальность данных о позициях (TTL кэша ≤ 30 секунд)
+
+2. **Вычисление position-признаков**
+   - `position_size`: текущий размер позиции (положительный для long, отрицательный для short)
+   - `position_size_abs`: абсолютное значение размера позиции
+   - `unrealized_pnl`: нереализованная прибыль/убыток в абсолютных единицах
+   - `realized_pnl`: реализованная прибыль/убыток
+   - `has_position`: бинарный признак (1 если есть позиция, 0 если нет)
+   - `entry_price`: средняя цена входа в позицию
+   - `price_vs_entry`: процентное отклонение текущей цены от цены входа
+     - Формула: `(current_price - entry_price) / entry_price * 100`
+   - `total_exposure`: общая экспозиция по активу (включая открытые ордера)
+   - `total_exposure_abs`: абсолютное значение общей экспозиции
+
+3. **Интеграция position-признаков в feature vector**
+   - Включать position-признаки в каждый feature vector для online inference
+   - Включать position-признаки в исторические датасеты для обучения
+   - Обеспечивать идентичность position-признаков в online и offline режимах
+   - Использовать исторические данные о позициях для пересборки датасетов
+
+4. **Обработка отсутствующих данных о позициях**
+   - Если позиция отсутствует: устанавливать все position-признаки в 0 (кроме `entry_price`, который равен текущей цене)
+   - Если данные о позиции недоступны: использовать значения по умолчанию и логировать предупреждение
+   - Обеспечивать консистентность: одинаковые значения по умолчанию для online и offline
+
+5. **Валидация position-признаков**
+   - Проверять, что `entry_price > 0` если `has_position == 1`
+   - Проверять, что `position_size != 0` если `has_position == 1`
+   - Проверять, что `price_vs_entry` вычислен корректно относительно `entry_price`
+   - Логировать предупреждения при обнаружении несоответствий
+
+**Feature Service НЕ ДОЛЖЕН:**
+
+- Принимать торговые решения (это ответственность Model Service и IntelligentSignalGenerator)
+- Применять бизнес-правила (лимиты позиций, take profit, stop loss)
+- Генерировать торговые сигналы
+- Управлять позициями или ордерами
+
+### Источники данных для Position Features
+
+**Online режим (realtime):**
+
+- **Position Manager REST API**: `GET /api/v1/positions/{asset}` для получения текущего состояния позиции
+- **Position Manager Events**: очередь `position-manager.position_updated` для получения обновлений в реальном времени
+- **Кэширование**: in-memory кэш с TTL для оптимизации запросов
+
+**Offline режим (пересборка датасетов):**
+
+- **Исторические данные о позициях**: хранить в базе данных или Parquet файлах
+- **Восстановление состояния позиций**: реконструировать состояние позиций на каждый момент времени из исторических данных
+- **Синхронизация с execution events**: использовать `execution_events` для восстановления истории позиций
+
+### Интеграция Position Features в Feature Registry
+
+**Пример конфигурации position-признаков в Feature Registry:**
+
+```yaml
+features:
+  - name: "position_size"
+    sources: ["position_manager"]
+    lookback_window: "0s"  # текущее состояние
+    lookahead_forbidden: true
+    calculation: "position.size"
+    default_value: 0.0
+    
+  - name: "unrealized_pnl"
+    sources: ["position_manager"]
+    lookback_window: "0s"
+    lookahead_forbidden: true
+    calculation: "position.unrealized_pnl"
+    default_value: 0.0
+    
+  - name: "price_vs_entry"
+    sources: ["position_manager", "market_data"]
+    lookback_window: "0s"
+    lookahead_forbidden: true
+    calculation: "(current_price - entry_price) / entry_price * 100"
+    default_value: 0.0
+    requires: ["entry_price", "current_price"]
+```
+
+### Гарантии идентичности Position Features
+
+**Требования к Feature Service:**
+
+1. **Один код расчёта**: одинаковый алгоритм вычисления position-признаков для online и offline режимов
+2. **Одинаковые источники данных**: использование одних и тех же источников (Position Manager) для online и исторических данных для offline
+3. **Одинаковые значения по умолчанию**: если позиция отсутствует, использовать одинаковые значения по умолчанию в обоих режимах
+4. **Валидация**: автоматические тесты на идентичность online и offline position-признаков
+
+### Взаимодействие с Model Service
+
+**Feature Service предоставляет:**
+
+- Готовые position-признаки в feature vector для inference
+- Исторические position-признаки в датасетах для обучения
+- Гарантию, что position-признаки вычислены корректно и без data leakage
+
+**Model Service использует:**
+
+- Position-признаки как входные данные для модели (модель учится на них)
+- Модель может предсказывать на основе position-признаков (например, "hold" если уже есть большая позиция)
+- Model Service НЕ вычисляет position-признаки самостоятельно
+
+**IntelligentSignalGenerator использует:**
+
+- Position-признаки из feature vector для бизнес-логики (проверка лимитов, take profit)
+- Дополнительные запросы к Position Manager для бизнес-правил (если нужно более свежее состояние)
+- Модель уже учла position-признаки в своём предсказании

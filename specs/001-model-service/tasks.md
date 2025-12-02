@@ -545,3 +545,126 @@ With multiple developers:
 - **T123, T128, T129, T134**: Can run in parallel (independent setup tasks)
 - **T132, T133**: Can run in parallel (metrics and API)
 - **T135, T136, T137, T138, T139, T140**: Can run in parallel (additional improvements)
+
+---
+
+## Phase 10: Model and Signal Generator Responsibilities (Architecture Clarification)
+
+**Purpose**: Define clear boundaries of responsibility between ML Model, Signal Generator, and Feature Service
+
+### ML Model Responsibilities
+
+**The ML model MUST:**
+
+1. **Accept feature vectors and produce predictions**
+   - Receive complete feature vectors from Feature Service (via queue `features.live` or REST API `/features/latest`)
+   - Output prediction: direction (buy/sell/hold) and confidence score (0-1)
+   - Output class probabilities: `buy_probability`, `sell_probability` for classification models
+   - Handle feature alignment: automatically align provided features with model's expected features (from `feature_names_in_` or `get_booster().feature_names`)
+
+2. **Use all provided features for decision-making**
+   - Consider all market features (price, volume, volatility, technical indicators)
+   - Consider all position features (position_size, unrealized_pnl, price_vs_entry, total_exposure)
+   - Learn patterns from historical data that include position context
+   - Make predictions based on learned patterns, not business rules
+
+3. **Provide confidence scores**
+   - Calculate confidence based on model's internal certainty
+   - Return confidence as max probability for classification models
+   - Return normalized confidence for regression models
+
+**The ML model MUST NOT:**
+
+- Make business decisions (position limits, risk rules, take profit/stop loss)
+- Adapt confidence thresholds based on position state
+- Generate trading signals directly
+- Manage position sizes or portfolio allocation
+- Know about business rules or risk management policies
+
+### IntelligentSignalGenerator Responsibilities
+
+**The IntelligentSignalGenerator MUST:**
+
+1. **Orchestrate model inference and business logic**
+   - Request features from Feature Service (via queue `features.live` or REST API `/features/latest`)
+   - Call model inference with prepared features
+   - Apply business rules and risk management policies
+   - Generate final trading signals
+
+2. **Apply business rules and risk management**
+   - **Position size limits**: Check `position_size_norm` before generating BUY signals (skip if exceeds `MODEL_SERVICE_MAX_POSITION_SIZE_RATIO`)
+   - **Take profit rules**: Check `unrealized_pnl_pct` before model inference (force SELL if exceeds `MODEL_SERVICE_TAKE_PROFIT_PCT`)
+   - **Stop loss rules**: Check `unrealized_pnl_pct` for stop loss triggers (force SELL if below threshold)
+   - **Rate limiting**: Enforce signal generation frequency limits
+   - **Open orders check**: Skip signal generation if opposite orders exist
+   - **Balance validation**: Check available balance and adapt signal amount
+
+3. **Transform model predictions into trading signals**
+   - Convert model prediction (buy/sell/hold) to `TradingSignal` object
+   - Calculate order amount based on:
+     - Model confidence score (higher confidence → larger amount)
+     - Current position size (reduce amount if large position exists)
+     - Available balance (adapt to affordable amount)
+   - Apply confidence threshold (`min_confidence_threshold`) to filter low-confidence predictions
+   - Set signal metadata (model_version, confidence, reasoning)
+
+4. **Adaptive confidence thresholds (business logic)**
+   - Dynamically adjust `min_confidence_threshold` based on:
+     - Current position state (require higher confidence if already have position)
+     - Market volatility (require higher confidence in volatile markets)
+     - Recent performance (require higher confidence after losses)
+   - This is business logic, not model responsibility
+
+5. **Position management decisions**
+   - Interpret model predictions in context of current position:
+     - If model predicts "buy" but already have large position → reduce amount or skip
+     - If model predicts "sell" but no position → skip signal
+     - If model predicts "hold" → no signal generated
+   - Decide on partial position management:
+     - Increase position size if model confidence is high and position is small
+     - Decrease position size if model confidence is low and position is large
+     - Close position entirely if risk rules trigger
+
+**The IntelligentSignalGenerator MUST NOT:**
+
+- Engineer features (this is Feature Service responsibility)
+- Train models (this is separate training pipeline)
+- Store historical data (this is Feature Service responsibility)
+- Calculate technical indicators (this is Feature Service responsibility)
+
+### Integration with Feature Service
+
+**When Feature Service is implemented:**
+
+1. **Model Service receives ready features**
+   - Subscribe to queue `features.live` for real-time features
+   - Or call REST API `GET /features/latest?symbol=BTCUSDT` for on-demand features
+   - Features include: market data, position data, order data, technical indicators
+   - All features are pre-calculated and validated by Feature Service
+
+2. **Model Service removes feature engineering code**
+   - Remove `FeatureEngineer` class (moved to Feature Service)
+   - Remove feature calculation logic from `ModelInference.prepare_features()`
+   - Keep only feature alignment logic (matching model's expected features)
+
+3. **Training uses Feature Service datasets**
+   - Request dataset build: `POST /dataset/build` with train/val/test periods
+   - Receive notification: queue `features.dataset.ready` when dataset is ready
+   - Download dataset: `GET /dataset/{dataset_id}/download?split=train`
+   - Train model on provided dataset (no feature engineering in Model Service)
+
+### Current State (Before Feature Service)
+
+**Temporary responsibilities (to be removed when Feature Service is implemented):**
+
+- `FeatureEngineer`: Currently engineers features in Model Service (will move to Feature Service)
+- `ModelInference.prepare_features()`: Currently calculates features for inference (will receive ready features from Feature Service)
+- Market data collection: Currently subscribes to ws-gateway (will receive features from Feature Service)
+
+**Permanent responsibilities (stay in Model Service):**
+
+- Model inference and prediction
+- Business rules and risk management
+- Signal generation and publishing
+- Model training (on datasets from Feature Service)
+- Model versioning and quality tracking
