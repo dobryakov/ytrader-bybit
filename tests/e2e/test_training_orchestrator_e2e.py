@@ -723,6 +723,25 @@ async def test_training_orchestrator_training_trigger():
                         if model_count and model_count > 0:
                             print(f"✅ Found {model_count} model version(s) in database")
                             
+                            # Get the latest model version to check feature count
+                            model_row = await conn.fetchrow(
+                                "SELECT id, version, training_config FROM model_versions WHERE trained_at > NOW() - INTERVAL '5 minutes' ORDER BY trained_at DESC LIMIT 1"
+                            )
+                            if model_row:
+                                training_config = model_row.get("training_config", {})
+                                if isinstance(training_config, str):
+                                    import json
+                                    training_config = json.loads(training_config)
+                                
+                                # Check feature count in training config
+                                feature_count = training_config.get("feature_count", 0)
+                                if feature_count >= 50:  # Should have 50 features (43 + 7 position-related)
+                                    print(f"✅ Model trained with {feature_count} features (includes position-related features)")
+                                elif feature_count >= 43:
+                                    print(f"⚠️  Model trained with {feature_count} features (expected 50 with position-related)")
+                                else:
+                                    print(f"⚠️  Model trained with {feature_count} features (expected 50)")
+                            
                             # Check that events are marked as used_for_training
                             used_events_count = await conn.fetchval(
                                 "SELECT COUNT(*) FROM execution_events WHERE used_for_training = true AND executed_at > NOW() - INTERVAL '10 minutes'"

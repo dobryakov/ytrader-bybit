@@ -289,7 +289,11 @@ class TrainingOrchestrator:
                 strategy_id=strategy_id,
                 training_duration_seconds=int(training_duration),
                 training_dataset_size=dataset.get_record_count(),
-                training_config={"model_type": "xgboost", "task_type": "classification"},
+                training_config={
+                    "model_type": "xgboost",
+                    "task_type": "classification",
+                    "feature_count": len(dataset.get_feature_names()),
+                },
                 is_active=False,  # Don't activate automatically, require manual activation or quality check
             )
 
