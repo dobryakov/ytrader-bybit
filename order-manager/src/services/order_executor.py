@@ -1143,16 +1143,7 @@ class OrderExecutor:
 
         # Add price for limit orders only
         if order_type == "Limit" and price:
-            # Round price to tick size before sending to Bybit
-            logger.debug(
-                "rounding_price_before_bybit",
-                asset=asset,
-                original_price=float(price),
-                price_type=type(price).__name__,
-                side=side_api,
-            )
-            rounded_price = await self._round_price_to_tick_size(asset, price, side_api)
-            # Get tick size to determine decimal places
+            # Get tick size first
             try:
                 instrument_info = await self.instrument_info_manager.get_instrument_info(asset)
                 if instrument_info and instrument_info.price_tick_size > 0:
@@ -1166,28 +1157,50 @@ class OrderExecutor:
             except Exception:
                 tick_size = Decimal("0.01")
             
-            # Quantize to exact tick size precision
-            quantized_price = rounded_price.quantize(tick_size)
+            # Round price to tick size using quantize
+            # This ensures price matches Bybit's tick size requirements
+            if side_api.lower() == "buy":
+                # For buy orders, round down to get better price
+                quantized_price = price.quantize(tick_size, rounding=ROUND_DOWN)
+            else:
+                # For sell orders, round up to get better price
+                quantized_price = price.quantize(tick_size, rounding=ROUND_UP)
             
-            # Format as string - determine decimal places from tick size
-            # For 0.01 tick size, we need 2 decimal places
+            # Determine decimal places from tick size
             tick_str = str(tick_size).rstrip('0').rstrip('.')
             if '.' in tick_str:
                 decimal_places = len(tick_str.split('.')[1])
             else:
                 decimal_places = 0
             
-            # Format with exact decimal places
-            # Convert quantized Decimal to string with proper formatting
-            # Use f-string with explicit decimal places to ensure correct format
-            price_str = f"{quantized_price:.{decimal_places}f}"
+            # Format as string with exact decimal places
+            # Use Decimal's quantize to ensure exact precision
+            precision = Decimal('0.1') ** decimal_places
+            final_price = quantized_price.quantize(precision)
+            
+            # Format as string with exact decimal places
+            # Convert to float and format to ensure proper precision
+            price_float = float(final_price)
+            price_str = f"{price_float:.{decimal_places}f}"
+            
+            # Additional safety: manually ensure exact format
+            # This handles edge cases where float formatting might not work correctly
+            if '.' in price_str:
+                integer_part, decimal_part = price_str.split('.', 1)
+                # Truncate or pad to exact length
+                decimal_part = (decimal_part[:decimal_places] if len(decimal_part) >= decimal_places 
+                              else decimal_part.ljust(decimal_places, '0'))
+                price_str = f"{integer_part}.{decimal_part}"
+            else:
+                # No decimal point, add it
+                price_str = f"{price_str}.{'0' * decimal_places}"
+            
             params["price"] = price_str
             
             logger.info(
                 "price_prepared_for_bybit",
                 asset=asset,
                 original_price=float(price),
-                rounded_price=float(rounded_price),
                 quantized_price=float(quantized_price),
                 tick_size=float(tick_size),
                 decimal_places=decimal_places,

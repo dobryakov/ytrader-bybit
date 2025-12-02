@@ -144,55 +144,47 @@ class OrderTypeSelector:
             instrument_info = await self.instrument_info_manager.get_instrument_info(asset)
             if instrument_info and instrument_info.price_tick_size > 0:
                 tick_size = instrument_info.price_tick_size
-                # Round down for buy (to get better price), round up for sell
-                if side.lower() == "buy":
-                    rounded_price = (price / tick_size).quantize(Decimal("1"), rounding=ROUND_DOWN) * tick_size
-                else:
-                    rounded_price = (price / tick_size).quantize(Decimal("1"), rounding=ROUND_UP) * tick_size
-                
-                # Normalize to remove trailing zeros and unnecessary precision
-                rounded_price = rounded_price.normalize()
-                
-                logger.debug(
-                    "price_rounded_to_tick_size",
-                    asset=asset,
-                    original_price=float(price),
-                    rounded_price=float(rounded_price),
-                    tick_size=float(tick_size),
-                    side=side,
-                )
-                return rounded_price
             else:
-                # Fallback: use reasonable default tick sizes based on asset price
-                # BTCUSDT typically has tick size 0.01, ETHUSDT has 0.01
-                # For other assets, use 0.01 as default
-                default_tick_size = Decimal("0.01")
+                # Fallback: use reasonable default tick sizes based on asset
                 if "BTC" in asset.upper():
-                    default_tick_size = Decimal("0.01")  # BTCUSDT tick size is usually 0.01
+                    tick_size = Decimal("0.01")  # BTCUSDT tick size is usually 0.01
                 elif "ETH" in asset.upper():
-                    default_tick_size = Decimal("0.01")  # ETHUSDT tick size is usually 0.01
-                
-                rounded_price = (price / default_tick_size).quantize(Decimal("1"), rounding=ROUND_DOWN if side.lower() == "buy" else ROUND_UP) * default_tick_size
-                # Normalize to remove trailing zeros and unnecessary precision
-                rounded_price = rounded_price.normalize()
-                logger.warning(
-                    "tick_size_not_found_using_default",
-                    asset=asset,
-                    original_price=float(price),
-                    rounded_price=float(rounded_price),
-                    default_tick_size=float(default_tick_size),
-                    reason="Instrument info not found, using default tick size",
-                )
-                return rounded_price
+                    tick_size = Decimal("0.01")  # ETHUSDT tick size is usually 0.01
+                else:
+                    tick_size = Decimal("0.01")
+            
+            # Use quantize directly with tick_size to ensure proper rounding
+            if side.lower() == "buy":
+                rounded_price = price.quantize(tick_size, rounding=ROUND_DOWN)
+            else:
+                rounded_price = price.quantize(tick_size, rounding=ROUND_UP)
+            
+            logger.debug(
+                "price_rounded_to_tick_size",
+                asset=asset,
+                original_price=float(price),
+                rounded_price=float(rounded_price),
+                tick_size=float(tick_size),
+                side=side,
+            )
+            return rounded_price
         except Exception as e:
             logger.warning(
                 "price_rounding_failed",
                 asset=asset,
                 price=float(price),
                 error=str(e),
-                reason="Failed to round price to tick size, using original price",
+                reason="Failed to round price to tick size, using quantize with default",
             )
-            return price
+            # Fallback: use default tick size
+            default_tick_size = Decimal("0.01")
+            try:
+                if side.lower() == "buy":
+                    return price.quantize(default_tick_size, rounding=ROUND_DOWN)
+                else:
+                    return price.quantize(default_tick_size, rounding=ROUND_UP)
+            except Exception:
+                return price
 
     def get_time_in_force(self, order_type: str) -> str:
         """Get time-in-force value for order type.
