@@ -141,7 +141,7 @@ class OrderTypeSelector:
             Rounded price
         """
         try:
-            instrument_info = await self.instrument_info_manager.get_instrument_info(asset)
+            instrument_info = await self.instrument_info_manager.get_instrument(asset)
             if instrument_info and instrument_info.price_tick_size > 0:
                 tick_size = instrument_info.price_tick_size
             else:

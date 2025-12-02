@@ -1101,6 +1101,67 @@ class OrderExecutor:
             )
             return False
 
+    def _format_decimal_to_string(self, value: Decimal, decimal_places: int) -> str:
+        """Format Decimal to string with exact number of decimal places.
+        
+        This method formats a Decimal value to a string with exactly the specified
+        number of decimal places, without converting to float to avoid precision errors.
+        
+        Args:
+            value: Decimal value to format
+            decimal_places: Exact number of decimal places required
+            
+        Returns:
+            Formatted string with exact decimal places (e.g., "3026.18" for 2 decimal places)
+        """
+        # Handle zero
+        if value == 0:
+            if decimal_places > 0:
+                return f"0.{'0' * decimal_places}"
+            return "0"
+        
+        # Get sign and absolute value
+        is_negative = value < 0
+        abs_value = abs(value)
+        
+        # Use Decimal's tuple representation to build string directly
+        # This avoids any float conversion precision issues
+        sign, digits, exponent = abs_value.as_tuple()
+        
+        # Convert digits tuple to list of strings
+        digits_list = [str(d) for d in digits]
+        
+        # Build the number parts based on exponent
+        if exponent >= 0:
+            # Integer part only (or with trailing zeros)
+            integer_part = ''.join(digits_list + ['0'] * exponent) if digits_list else '0'
+            if decimal_places > 0:
+                return f"{'-' if is_negative else ''}{integer_part}.{'0' * decimal_places}"
+            return f"{'-' if is_negative else ''}{integer_part}"
+        else:
+            # Has decimal part
+            abs_exponent = abs(exponent)
+            
+            # Determine integer and decimal parts
+            if abs_exponent <= len(digits_list):
+                # Decimal point is within the digits
+                integer_part = ''.join(digits_list[:-abs_exponent]) if len(digits_list) > abs_exponent else '0'
+                decimal_part_raw = ''.join(digits_list[-abs_exponent:])
+            else:
+                # Decimal point is before all digits (e.g., 0.0123)
+                integer_part = '0'
+                decimal_part_raw = '0' * (abs_exponent - len(digits_list)) + ''.join(digits_list)
+            
+            # Ensure exactly the required decimal places
+            if len(decimal_part_raw) > decimal_places:
+                decimal_part = decimal_part_raw[:decimal_places]
+            elif len(decimal_part_raw) < decimal_places:
+                decimal_part = decimal_part_raw.ljust(decimal_places, '0')
+            else:
+                decimal_part = decimal_part_raw
+            
+            return f"{'-' if is_negative else ''}{integer_part}.{decimal_part}"
+
     async def _prepare_bybit_order_params(
         self,
         signal: TradingSignal,
@@ -1145,7 +1206,7 @@ class OrderExecutor:
         if order_type == "Limit" and price:
             # Get tick size first
             try:
-                instrument_info = await self.instrument_info_manager.get_instrument_info(asset)
+                instrument_info = await self.instrument_info_manager.get_instrument(asset)
                 if instrument_info and instrument_info.price_tick_size > 0:
                     tick_size = instrument_info.price_tick_size
                 else:
@@ -1173,27 +1234,15 @@ class OrderExecutor:
             else:
                 decimal_places = 0
             
-            # Format as string with exact decimal places
-            # Use Decimal's quantize to ensure exact precision
+            # Format Decimal directly as string with exact decimal places
+            # Avoid float conversion to prevent precision errors
+            # Use Decimal's quantize to ensure exact precision matching tick size
             precision = Decimal('0.1') ** decimal_places
             final_price = quantized_price.quantize(precision)
             
-            # Format as string with exact decimal places
-            # Convert to float and format to ensure proper precision
-            price_float = float(final_price)
-            price_str = f"{price_float:.{decimal_places}f}"
-            
-            # Additional safety: manually ensure exact format
-            # This handles edge cases where float formatting might not work correctly
-            if '.' in price_str:
-                integer_part, decimal_part = price_str.split('.', 1)
-                # Truncate or pad to exact length
-                decimal_part = (decimal_part[:decimal_places] if len(decimal_part) >= decimal_places 
-                              else decimal_part.ljust(decimal_places, '0'))
-                price_str = f"{integer_part}.{decimal_part}"
-            else:
-                # No decimal point, add it
-                price_str = f"{price_str}.{'0' * decimal_places}"
+            # Format Decimal to string with exact decimal places
+            # Use helper method to ensure precise formatting
+            price_str = self._format_decimal_to_string(final_price, decimal_places)
             
             params["price"] = price_str
             
