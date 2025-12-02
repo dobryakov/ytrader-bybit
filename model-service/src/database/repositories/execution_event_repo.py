@@ -4,7 +4,7 @@ Execution Event database repository.
 Provides CRUD operations for execution_events table.
 """
 
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Sequence
 from datetime import datetime, timezone
 from uuid import UUID
 import asyncpg
@@ -225,4 +225,124 @@ class ExecutionEventRepository(BaseRepository[Dict[str, Any]]):
                 if isinstance(result.get(key), Decimal):
                     result[key] = float(result[key])
         return results
+
+    async def mark_as_used_for_training(
+        self,
+        event_ids: Sequence[UUID] | Sequence[str],
+        training_id: UUID | str,
+    ) -> int:
+        """
+        Mark execution events as used for training.
+
+        Args:
+            event_ids: Sequence of execution event UUIDs
+            training_id: Model version UUID associated with this training run
+
+        Returns:
+            Number of rows updated
+        """
+        if not event_ids:
+            return 0
+
+        # Normalize to UUID list
+        uuid_ids = [UUID(str(eid)) for eid in event_ids]
+
+        query = f"""
+            UPDATE {self.table_name}
+            SET used_for_training = TRUE,
+                training_id = $2
+            WHERE id = ANY($1::uuid[])
+        """
+        try:
+            result = await self._execute(
+                query,
+                uuid_ids,
+                UUID(str(training_id)) if isinstance(training_id, str) else training_id,
+            )
+            return int(result or 0)
+        except Exception as e:
+            logger.error(
+                "Failed to mark execution events as used for training",
+                error=str(e),
+                event_count=len(event_ids),
+                exc_info=True,
+            )
+            raise
+
+    async def get_unused_events(
+        self,
+        strategy_id: str,
+        limit: Optional[int] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Get execution events that have not yet been used for training.
+
+        Args:
+            strategy_id: Trading strategy identifier
+            limit: Maximum number of events to return
+            start_time: Optional start time filter
+            end_time: Optional end time filter
+
+        Returns:
+            List of unused execution event records
+        """
+        conditions = ["strategy_id = $1", "used_for_training = FALSE"]
+        params: List[Any] = [strategy_id]
+        param_index = 2
+
+        if start_time:
+            conditions.append(f"executed_at >= ${param_index}")
+            params.append(start_time)
+            param_index += 1
+
+        if end_time:
+            conditions.append(f"executed_at <= ${param_index}")
+            params.append(end_time)
+            param_index += 1
+
+        query = f"""
+            SELECT *
+            FROM {self.table_name}
+            WHERE {' AND '.join(conditions)}
+            ORDER BY executed_at ASC
+        """
+
+        if limit is not None:
+            query += f" LIMIT ${param_index}"
+            params.append(limit)
+
+        records = await self._fetch(query, *params)
+        results = self._records_to_dicts(records)
+
+        # Convert Decimal to float for numeric fields
+        for result in results:
+            for key in ["execution_price", "execution_quantity", "execution_fees", "signal_price"]:
+                if isinstance(result.get(key), Decimal):
+                    result[key] = float(result[key])
+
+        return results
+
+    async def get_unused_events_count(self, strategy_id: str) -> int:
+        """
+        Get count of execution events that have not yet been used for training.
+
+        Args:
+            strategy_id: Trading strategy identifier
+
+        Returns:
+            Count of unused events
+        """
+        query = f"""
+            SELECT COUNT(*) AS count
+            FROM {self.table_name}
+            WHERE strategy_id = $1
+              AND used_for_training = FALSE
+        """
+        record = await self._fetchrow(query, strategy_id)
+        if not record:
+            return 0
+        # asyncpg returns numeric as Decimal; cast to int safely
+        return int(record["count"])
 

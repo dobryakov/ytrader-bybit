@@ -140,6 +140,12 @@ async def lifespan(app: FastAPI):
         else:
             logger.warning("No trained model and warm-up mode disabled, signal generation will not start")
 
+        # Restore training buffer from database (if enabled)
+        try:
+            await training_orchestrator.restore_buffer_from_database()
+        except Exception as e:
+            logger.error("Failed to restore training buffer on startup", error=str(e), exc_info=True)
+
         # Start execution event consumer for training pipeline
         async def handle_execution_event(event):
             """Handle execution event for training."""
@@ -202,17 +208,17 @@ async def lifespan(app: FastAPI):
         # Create shutdown tasks with timeout
         shutdown_tasks = []
 
-        # Cancel any ongoing training
-        async def cancel_training():
+        # Gracefully shut down training orchestrator
+        async def shutdown_training_orchestrator():
             try:
-                await asyncio.wait_for(training_orchestrator._cancel_current_training(), timeout=5.0)
-                logger.info("Training cancelled")
+                await asyncio.wait_for(training_orchestrator.shutdown(timeout=10.0), timeout=15.0)
+                logger.info("Training orchestrator shut down gracefully")
             except asyncio.TimeoutError:
-                logger.warning("Training cancellation timed out")
+                logger.warning("Training orchestrator shutdown timed out")
             except Exception as e:
-                logger.error("Error cancelling training", error=str(e), exc_info=True)
+                logger.error("Error shutting down training orchestrator", error=str(e), exc_info=True)
 
-        shutdown_tasks.append(cancel_training())
+        shutdown_tasks.append(shutdown_training_orchestrator())
 
         # Stop quality monitor
         async def stop_quality_monitor():

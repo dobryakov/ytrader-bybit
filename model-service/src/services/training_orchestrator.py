@@ -6,7 +6,7 @@ and handles training cancellation and restart on new triggers.
 """
 
 from typing import List, Optional, Dict, Any
-from datetime import datetime
+from datetime import datetime, timedelta
 import asyncio
 from uuid import uuid4
 import pandas as pd
@@ -18,6 +18,7 @@ from ..services.model_trainer import model_trainer
 from ..services.quality_evaluator import quality_evaluator
 from ..services.model_version_manager import model_version_manager
 from ..services.retraining_trigger import retraining_trigger
+from ..services.buffer_persistence import buffer_persistence
 from ..config.settings import settings
 from ..config.logging import get_logger
 
@@ -30,9 +31,27 @@ class TrainingOrchestrator:
     def __init__(self):
         """Initialize training orchestrator."""
         self._current_training_task: Optional[asyncio.Task] = None
+        self._current_strategy_id: Optional[str] = None
         self._training_cancelled = False
         self._execution_events_buffer: List[OrderExecutionEvent] = []
         self._signal_market_data: Dict[str, MarketDataSnapshot] = {}
+
+        # Training queue: list of items waiting to be trained
+        # Each item: {"strategy_id": str | None, "events": List[OrderExecutionEvent],
+        #             "signal_market_data": Dict[str, MarketDataSnapshot],
+        #             "priority": str, "enqueued_at": datetime}
+        self._training_queue: List[Dict[str, Any]] = []
+
+        # Metrics for observability
+        self._metrics: Dict[str, Any] = {
+            "buffer_recovery_count": 0,
+            "cancelled_trainings_count": 0,
+            "successful_trainings_count": 0,
+            "total_trainings_count": 0,
+            "last_training_duration_seconds": None,
+        }
+        self._last_buffer_persist_time: Optional[datetime] = None
+        self._last_queue_metrics_update: Optional[datetime] = None
 
     async def add_execution_event(self, event: OrderExecutionEvent, signal_market_data: Optional[MarketDataSnapshot] = None) -> None:
         """
@@ -47,6 +66,37 @@ class TrainingOrchestrator:
             self._signal_market_data[event.signal_id] = signal_market_data
 
         logger.debug("Added execution event to buffer", event_id=event.event_id, buffer_size=len(self._execution_events_buffer))
+
+    async def restore_buffer_from_database(self, strategy_id: Optional[str] = None) -> None:
+        """
+        Restore execution events buffer from database on startup.
+
+        This uses the buffer_persistence service to load execution events that
+        have not yet been used for training, so that the service can resume
+        from where it left off before restart.
+        """
+        if not settings.buffer_persistence_enabled or not settings.buffer_recovery_on_startup:
+            return
+
+        max_events = settings.buffer_max_recovery_events
+        restored_events = await buffer_persistence.restore_buffer(
+            strategy_id=strategy_id,
+            max_events=max_events,
+        )
+
+        if not restored_events:
+            return
+
+        # Append restored events to in-memory buffer
+        self._execution_events_buffer.extend(restored_events)
+        self._metrics["buffer_recovery_count"] = self._metrics.get("buffer_recovery_count", 0) + 1
+
+        logger.info(
+            "Restored training buffer from database",
+            restored_events=len(restored_events),
+            total_buffer_size=len(self._execution_events_buffer),
+            strategy_id=strategy_id,
+        )
 
     async def check_and_trigger_training(self, strategy_id: Optional[str] = None) -> None:
         """
@@ -69,7 +119,7 @@ class TrainingOrchestrator:
         # This prevents training from starting with insufficient data (e.g., scheduled retraining with only 1 event)
         min_dataset_size = settings.model_training_min_dataset_size
         buffer_size = len(self._execution_events_buffer)
-        
+
         if buffer_size < min_dataset_size:
             logger.info(
                 "Training triggered but insufficient data in buffer",
@@ -82,6 +132,36 @@ class TrainingOrchestrator:
 
         # Check if training is already in progress
         if self._current_training_task and not self._current_training_task.done():
+            # If queueing is enabled, enqueue a new training request instead of cancelling
+            if settings.training_queue_enabled:
+                if len(self._training_queue) >= settings.training_queue_max_size:
+                    logger.warning(
+                        "Training queue is full, dropping new training request",
+                        strategy_id=strategy_id,
+                        queue_size=len(self._training_queue),
+                    )
+                    return
+
+                queue_item = {
+                    "strategy_id": strategy_id,
+                    "events": self._execution_events_buffer.copy(),
+                    "signal_market_data": self._signal_market_data.copy(),
+                    "priority": "NORMAL",
+                    "enqueued_at": datetime.utcnow(),
+                }
+                self._training_queue.append(queue_item)
+                self._execution_events_buffer.clear()
+                self._signal_market_data.clear()
+
+                logger.info(
+                    "Enqueued training request while training in progress",
+                    strategy_id=strategy_id,
+                    queue_size=len(self._training_queue),
+                    buffer_size=buffer_size,
+                )
+                return
+
+            # Legacy behaviour: cancel current training and start a new one
             logger.info("Training already in progress, cancelling for new training", strategy_id=strategy_id)
             await self._cancel_current_training()
 
@@ -103,10 +183,20 @@ class TrainingOrchestrator:
 
         # Reset cancellation flag
         self._training_cancelled = False
+        self._current_strategy_id = strategy_id
 
         # Create training task
         self._current_training_task = asyncio.create_task(
-            self._train_model_async(strategy_id, self._execution_events_buffer.copy(), self._signal_market_data.copy())
+            self._train_model_async(
+                strategy_id,
+                self._execution_events_buffer.copy(),
+                self._signal_market_data.copy(),
+            )
+        )
+
+        # Attach completion handler to process queued trainings
+        self._current_training_task.add_done_callback(
+            lambda _: asyncio.create_task(self._handle_training_completion())
         )
 
         # Clear buffer after starting training
@@ -133,7 +223,7 @@ class TrainingOrchestrator:
         try:
             logger.info(
                 "Training model",
-                training_id=training_id,
+            training_id=training_id,
                 strategy_id=strategy_id,
                 event_count=len(execution_events),
             )
@@ -214,6 +304,17 @@ class TrainingOrchestrator:
                 evaluation_dataset_size=dataset.get_record_count(),
             )
 
+            # Mark events as used for training if buffer persistence is enabled
+            if settings.buffer_persistence_enabled:
+                try:
+                    await buffer_persistence.mark_events_used_for_training(
+                        [event.event_id for event in execution_events],
+                        model_version["id"],
+                    )
+                except Exception:
+                    # Errors are already logged in buffer_persistence; do not fail training
+                    pass
+
             # Check if model quality meets threshold for activation
             accuracy = metrics.get("accuracy", 0.0)
             if accuracy >= settings.model_quality_threshold_accuracy:
@@ -226,6 +327,10 @@ class TrainingOrchestrator:
             retraining_trigger.record_retraining(strategy_id)
 
             training_duration = (datetime.utcnow() - training_start_time).total_seconds()
+            self._metrics["last_training_duration_seconds"] = training_duration
+            self._metrics["successful_trainings_count"] = self._metrics.get("successful_trainings_count", 0) + 1
+            self._metrics["total_trainings_count"] = self._metrics.get("total_trainings_count", 0) + 1
+
             logger.info(
                 "Model training completed",
                 training_id=training_id,
@@ -236,6 +341,8 @@ class TrainingOrchestrator:
             )
 
         except asyncio.CancelledError:
+            self._metrics["cancelled_trainings_count"] = self._metrics.get("cancelled_trainings_count", 0) + 1
+            self._metrics["total_trainings_count"] = self._metrics.get("total_trainings_count", 0) + 1
             logger.info("Training task cancelled", training_id=training_id)
             raise
         except Exception as e:
@@ -252,6 +359,85 @@ class TrainingOrchestrator:
             except asyncio.CancelledError:
                 pass
             logger.info("Training cancelled")
+
+    async def _handle_training_completion(self) -> None:
+        """
+        Handle completion of a training task.
+
+        If the training queue has pending items, automatically start the next one.
+        """
+        # Clear current training reference
+        self._current_training_task = None
+        self._current_strategy_id = None
+
+        if not settings.training_queue_enabled or not self._training_queue:
+            return
+
+        # Pop next item (FIFO queue)
+        queue_item = self._training_queue.pop(0)
+        self._execution_events_buffer = queue_item["events"]
+        self._signal_market_data = queue_item["signal_market_data"]
+
+        logger.info(
+            "Starting queued training after previous completion",
+            strategy_id=queue_item.get("strategy_id"),
+            remaining_queue_size=len(self._training_queue),
+        )
+
+        await self._start_training(queue_item.get("strategy_id"))
+
+    async def shutdown(self, timeout: float = 10.0) -> None:
+        """
+        Gracefully shut down training orchestrator.
+
+        - Wait for current training to complete (up to timeout)
+        - Leave unused buffer events in database for future recovery
+        - Log buffer and queue state for observability
+        """
+        logger.info(
+            "Shutting down training orchestrator",
+            buffer_size=len(self._execution_events_buffer),
+            queue_size=len(self._training_queue),
+        )
+
+        if self._current_training_task and not self._current_training_task.done():
+            try:
+                await asyncio.wait_for(self._current_training_task, timeout=timeout)
+                logger.info("Current training completed during shutdown")
+            except asyncio.TimeoutError:
+                logger.warning("Training did not complete before shutdown timeout, cancelling task")
+                await self._cancel_current_training()
+            except Exception as e:
+                logger.error("Error while waiting for training to complete during shutdown", error=str(e), exc_info=True)
+
+    def get_status(self) -> Dict[str, Any]:
+        """
+        Get current training orchestrator status for API responses.
+
+        Returns:
+            Dictionary with training status, buffer, and queue metrics.
+        """
+        is_training = self._current_training_task is not None and not self._current_training_task.done()
+        now = datetime.utcnow()
+
+        queue_size = len(self._training_queue)
+        next_item = self._training_queue[0] if self._training_queue else None
+        next_wait_seconds: Optional[float] = None
+        next_strategy_id: Optional[str] = None
+
+        if next_item:
+            enqueued_at: datetime = next_item.get("enqueued_at", now)
+            next_wait_seconds = max((now - enqueued_at).total_seconds(), 0.0)
+            next_strategy_id = next_item.get("strategy_id")
+
+        return {
+            "is_training": is_training,
+            "buffered_events_count": len(self._execution_events_buffer),
+            "queue_size": queue_size,
+            "queue_next_wait_time_seconds": next_wait_seconds,
+            "next_queued_training_strategy_id": next_strategy_id,
+            "metrics": self._metrics.copy(),
+        }
 
 
 # Global training orchestrator instance

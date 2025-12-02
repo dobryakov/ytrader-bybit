@@ -52,6 +52,20 @@ class Settings(BaseSettings):
     model_quality_threshold_accuracy: float = Field(default=0.75, alias="MODEL_QUALITY_THRESHOLD_ACCURACY")
     model_retraining_schedule: Optional[str] = Field(default=None, alias="MODEL_RETRAINING_SCHEDULE")
 
+    # Training Buffer Persistence Configuration
+    buffer_persistence_enabled: bool = Field(default=True, alias="BUFFER_PERSISTENCE_ENABLED")
+    buffer_recovery_on_startup: bool = Field(default=True, alias="BUFFER_RECOVERY_ON_STARTUP")
+    buffer_max_recovery_events: int = Field(default=10000, alias="BUFFER_MAX_RECOVERY_EVENTS")
+
+    # Training Queue Configuration
+    training_queue_enabled: bool = Field(default=True, alias="TRAINING_QUEUE_ENABLED")
+    training_queue_max_size: int = Field(default=10, alias="TRAINING_QUEUE_MAX_SIZE")
+    training_force_cancel_on_critical: bool = Field(default=False, alias="TRAINING_FORCE_CANCEL_ON_CRITICAL")
+
+    # Training Orchestrator Advanced Configuration
+    max_parallel_training: int = Field(default=1, alias="MAX_PARALLEL_TRAINING")
+    batch_buffer_update_interval_seconds: int = Field(default=10, alias="BATCH_BUFFER_UPDATE_INTERVAL_SECONDS")
+
     # Signal Generation Configuration
     signal_generation_rate_limit: int = Field(default=60, alias="SIGNAL_GENERATION_RATE_LIMIT")
     signal_generation_burst_allowance: int = Field(default=10, alias="SIGNAL_GENERATION_BURST_ALLOWANCE")
@@ -130,6 +144,30 @@ class Settings(BaseSettings):
         """Validate minimum dataset size is positive."""
         if v <= 0:
             raise ValueError("Minimum dataset size must be positive")
+        return v
+
+    @field_validator("buffer_max_recovery_events")
+    @classmethod
+    def validate_buffer_max_recovery_events(cls, v: int) -> int:
+        """Validate maximum recovery events is positive."""
+        if v <= 0:
+            raise ValueError("BUFFER_MAX_RECOVERY_EVENTS must be positive")
+        return v
+
+    @field_validator("training_queue_max_size")
+    @classmethod
+    def validate_training_queue_max_size(cls, v: int) -> int:
+        """Validate training queue max size is positive."""
+        if v <= 0:
+            raise ValueError("TRAINING_QUEUE_MAX_SIZE must be positive")
+        return v
+
+    @field_validator("max_parallel_training")
+    @classmethod
+    def validate_max_parallel_training(cls, v: int) -> int:
+        """Validate maximum parallel training tasks is positive."""
+        if v <= 0:
+            raise ValueError("MAX_PARALLEL_TRAINING must be positive")
         return v
 
     @field_validator("signal_generation_rate_limit")

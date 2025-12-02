@@ -26,6 +26,9 @@ class TrainingStatusResponse(BaseModel):
     last_training: Optional[dict] = None
     next_scheduled_training: Optional[str] = None
     buffered_events_count: int = 0
+    queue_size: int = 0
+    queue_wait_time_seconds: Optional[float] = None
+    next_queued_training_strategy_id: Optional[str] = None
 
 
 class TrainingTriggerRequest(BaseModel):
@@ -51,32 +54,24 @@ async def get_training_status() -> TrainingStatusResponse:
         Training status with current, last, and next scheduled training info
     """
     try:
-        is_training = (
-            training_orchestrator._current_training_task is not None
-            and not training_orchestrator._current_training_task.done()
+        status = training_orchestrator.get_status()
+
+        logger.info(
+            "Retrieved training status",
+            is_training=status["is_training"],
+            buffered_events_count=status["buffered_events_count"],
+            queue_size=status["queue_size"],
         )
 
-        current_training = None
-        if is_training:
-            current_training = {
-                "status": "in_progress",
-                "strategy_id": getattr(training_orchestrator, "_current_strategy_id", None),
-            }
-
-        # Get buffered events count
-        buffered_events_count = len(training_orchestrator._execution_events_buffer)
-
-        # TODO: Implement last_training and next_scheduled_training tracking
-        # This would require storing training history in database or state
-
-        logger.info("Retrieved training status", is_training=is_training, buffered_events_count=buffered_events_count)
-
         return TrainingStatusResponse(
-            is_training=is_training,
-            current_training=current_training,
+            is_training=status["is_training"],
+            current_training=None,
             last_training=None,
             next_scheduled_training=None,
-            buffered_events_count=buffered_events_count,
+            buffered_events_count=status["buffered_events_count"],
+            queue_size=status["queue_size"],
+            queue_wait_time_seconds=status["queue_next_wait_time_seconds"],
+            next_queued_training_strategy_id=status["next_queued_training_strategy_id"],
         )
     except Exception as e:
         logger.error("Failed to get training status", error=str(e), exc_info=True)
@@ -99,18 +94,6 @@ async def trigger_training(request: Optional[TrainingTriggerRequest] = None) -> 
     """
     try:
         strategy_id = request.strategy_id if request else None
-
-        # Check if training is already in progress
-        if (
-            training_orchestrator._current_training_task is not None
-            and not training_orchestrator._current_training_task.done()
-        ):
-            logger.warning("Training already in progress", strategy_id=strategy_id)
-            return TrainingTriggerResponse(
-                triggered=False,
-                message="Training already in progress. It will be cancelled and restarted with new data.",
-                strategy_id=strategy_id,
-            )
 
         # Check if there are enough events to train
         if len(training_orchestrator._execution_events_buffer) == 0:
