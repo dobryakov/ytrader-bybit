@@ -65,6 +65,21 @@ datasources:
         - model-service:4500
     isDefault: false
 
+  # HTTP Data Source for model-service API (with API key authentication)
+  - name: model-service API
+    type: infinity
+    access: proxy
+    url: http://model-service:4500
+    basicAuth: false
+    secureJsonData:
+      httpHeaderValue1: ${MODEL_SERVICE_API_KEY}
+    jsonData:
+      auth_type: none
+      allowed_hosts:
+        - model-service:4500
+      httpHeaderName1: "X-API-Key"
+    isDefault: false
+
   # HTTP Data Source for order-manager Service Health
   - name: order-manager Health
     type: infinity
@@ -75,4 +90,31 @@ datasources:
       auth_type: none
       allowed_hosts:
         - order-manager:4600
+    isDefault: false
+
+  # HTTP Data Source for position-manager Service Health
+  - name: position-manager Health
+    type: infinity
+    access: proxy
+    url: http://position-manager:4800
+    basicAuth: false
+    jsonData:
+      auth_type: none
+      allowed_hosts:
+        - position-manager:4800
+    isDefault: false
+
+  # HTTP Data Source for position-manager API (with API key authentication)
+  - name: position-manager API
+    type: infinity
+    access: proxy
+    url: http://position-manager:4800
+    basicAuth: false
+    secureJsonData:
+      httpHeaderValue1: ${POSITION_MANAGER_API_KEY}
+    jsonData:
+      auth_type: none
+      allowed_hosts:
+        - position-manager:4800
+      httpHeaderName1: "X-API-Key"
     isDefault: false

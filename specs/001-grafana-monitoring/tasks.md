@@ -192,7 +192,7 @@
 - [X] T056 [P] Create integration test in tests/integration/test_grafana_dashboard.py to verify dashboard loads and all panels render correctly
 - [X] T057 [P] Add Grafana volume to docker-compose.yml volumes section for persistent Grafana data storage
 - [X] T058 [P] Verify all environment variables are documented in env.example with descriptions
-- [ ] T059 Run quickstart.md validation: verify all deployment steps work correctly
+- [X] T059 Run quickstart.md validation: verify all deployment steps work correctly
 - [X] T060 [P] Add security documentation: change default credentials, network access considerations, credential management best practices
 
 ---
@@ -203,39 +203,39 @@
 
 ### Database Access Updates
 
-- [ ] T061 [P] Update grafana_monitor user permissions migration (ws-gateway/migrations/011_create_grafana_monitor_user.sql) to explicitly grant SELECT on positions and position_snapshots tables if not already covered by default privileges. Verify access works correctly after migration.
+- [X] T061 [P] Update grafana_monitor user permissions migration (ws-gateway/migrations/011_create_grafana_monitor_user.sql) to explicitly grant SELECT on positions and position_snapshots tables if not already covered by default privileges. Verify access works correctly after migration.
 
 ### Foundational Updates for New Services
 
-- [ ] T062 [P] Add Position Manager HTTP data source provisioning entry to grafana/provisioning/datasources/datasources.yml for Position Manager /health endpoint (position-manager Health, no auth required)
+- [X] T062 [P] Add Position Manager HTTP data source provisioning entry to grafana/provisioning/datasources/datasources.yml for Position Manager /health endpoint (position-manager Health, no auth required)
 
 ### Position Manager Monitoring
 
-- [ ] T063 [P] [Position Manager] Add Position Manager Health panel to System Health dashboard in grafana/dashboards/trading-system-monitoring.json using Position Manager /health HTTP endpoint (display database_connected, queue_connected, positions_count, validation_statistics)
-- [ ] T064 [P] [Position Manager] Add Position Manager Metrics panel to System Health dashboard in grafana/dashboards/trading-system-monitoring.json using Position Manager /metrics HTTP endpoint (display portfolio_cache_hit_rate, validation_statistics breakdown)
-- [ ] T065 [P] [Position Manager] Update System Health dashboard panel queries in grafana/dashboards/trading-system-monitoring.json to include Position Manager Health data source in service health aggregation
-- [ ] T066 [P] [Position Manager] Create Portfolio Management dashboard panel JSON in grafana/dashboards/portfolio-management-panel.json using Position Manager REST API (/api/v1/portfolio endpoint with include_positions=true) to show total_exposure, total_unrealized_pnl, total_realized_pnl, portfolio_value, position_count
-- [ ] T067 [P] [Position Manager] Add Portfolio Exposure panel to Portfolio Management dashboard in grafana/dashboards/portfolio-management-panel.json using Position Manager /api/v1/portfolio/exposure endpoint (display total_exposure_usd, exposure_by_asset breakdown, exposure_by_mode)
-- [ ] T068 [P] [Position Manager] Add Portfolio PnL panel to Portfolio Management dashboard in grafana/dashboards/portfolio-management-panel.json using Position Manager /api/v1/portfolio/pnl endpoint (display total_unrealized_pnl, total_realized_pnl, pnl_by_asset, pnl_trends over time)
-- [ ] T069 [P] [Position Manager] Add Position List panel to Portfolio Management dashboard using Position Manager /api/v1/portfolio?include_positions=true to display individual positions with asset, size, current_price, unrealized_pnl, average_entry_price
-- [ ] T070 [P] [Position Manager] Add Position Manager Portfolio Management dashboard to main dashboard JSON file grafana/dashboards/trading-system-monitoring.json with auto-refresh configuration (60 seconds interval)
-- [ ] T071 [P] [Position Manager] Create Position Manager HTTP data source provisioning entry in grafana/provisioning/datasources/datasources.yml with API key authentication for authenticated endpoints (/api/v1/portfolio/*)
-- [ ] T072 [P] [Position Manager] Update existing dashboards (trading-system-monitoring.json, order-execution-panel.json) to use Position Manager API responses where applicable (consider using /api/v1/portfolio for position data instead of direct SQL queries)
+- [X] T063 [P] [Position Manager] Add Position Manager Health panel to System Health dashboard in grafana/dashboards/trading-system-monitoring.json using Position Manager /health HTTP endpoint (display database_connected, queue_connected, positions_count, validation_statistics)
+- [X] T064 [P] [Position Manager] Add Position Manager Metrics panel to System Health dashboard in grafana/dashboards/trading-system-monitoring.json using Position Manager /metrics HTTP endpoint (display portfolio_cache_hit_rate, validation_statistics breakdown)
+- [X] T065 [P] [Position Manager] Update System Health dashboard panel queries in grafana/dashboards/trading-system-monitoring.json to include Position Manager Health data source in service health aggregation
+- [X] T066 [P] [Position Manager] Create Portfolio Management dashboard panel JSON in grafana/dashboards/portfolio-management-panel.json using Position Manager REST API (/api/v1/portfolio endpoint with include_positions=true) to show total_exposure, total_unrealized_pnl, total_realized_pnl, portfolio_value, position_count
+- [X] T067 [P] [Position Manager] Add Portfolio Exposure panel to Portfolio Management dashboard in grafana/dashboards/portfolio-management-panel.json using Position Manager /api/v1/portfolio/exposure endpoint (display total_exposure_usd, exposure_by_asset breakdown, exposure_by_mode)
+- [X] T068 [P] [Position Manager] Add Portfolio PnL panel to Portfolio Management dashboard in grafana/dashboards/portfolio-management-panel.json using Position Manager /api/v1/portfolio/pnl endpoint (display total_unrealized_pnl, total_realized_pnl, pnl_by_asset, pnl_trends over time)
+- [X] T069 [P] [Position Manager] Add Position List panel to Portfolio Management dashboard using Position Manager /api/v1/portfolio?include_positions=true to display individual positions with asset, size, current_price, unrealized_pnl, average_entry_price
+- [X] T070 [P] [Position Manager] Add Position Manager Portfolio Management dashboard to main dashboard JSON file grafana/dashboards/trading-system-monitoring.json with auto-refresh configuration (60 seconds interval)
+- [X] T071 [P] [Position Manager] Create Position Manager HTTP data source provisioning entry in grafana/provisioning/datasources/datasources.yml with API key authentication for authenticated endpoints (/api/v1/portfolio/*)
+- [X] T072 [P] [Position Manager] Update existing dashboards (trading-system-monitoring.json, order-execution-panel.json) to use Position Manager API responses where applicable (consider using /api/v1/portfolio for position data instead of direct SQL queries)
 
 ### Model Service Enhanced Monitoring
 
-- [ ] T073 [P] [Model Service] Add Model Performance Metrics panel to Model State dashboard in grafana/dashboards/model-state-panel.json using Model Service /api/v1/monitoring/models/performance endpoint (display active_models_count, total_models_count, models_by_strategy, models_by_type breakdown)
-- [ ] T074 [P] [Model Service] Add System Health Details panel to System Health dashboard in grafana/dashboards/system-health-panel.json using Model Service /api/v1/monitoring/health endpoint (display model_storage_accessible, active_models count, warmup_mode_enabled status)
-- [ ] T075 [P] [Model Service] Create Signal Skip Metrics dashboard panel JSON in grafana/dashboards/signal-skip-metrics-panel.json using Model Service /api/v1/monitoring/signals/skip-metrics endpoint (display total_skips, skip breakdown by asset/strategy, skip breakdown by reason)
-- [ ] T076 [P] [Model Service] Add Signal Skip Metrics panel to main dashboard JSON file grafana/dashboards/trading-system-monitoring.json with table visualization and auto-refresh configuration (60 seconds interval)
-- [ ] T077 [P] [Model Service] Create Strategy Performance Time-Series dashboard panel JSON in grafana/dashboards/strategy-performance-panel.json using Model Service /api/v1/strategies/{strategy_id}/performance/time-series endpoint (display success_rate, total_pnl, avg_pnl trends over time with configurable granularity: hour/day/week)
-- [ ] T078 [P] [Model Service] Add Strategy Performance panel to main dashboard JSON file grafana/dashboards/trading-system-monitoring.json with time-series chart visualization and auto-refresh configuration (60 seconds interval)
-- [ ] T079 [P] [Model Service] Update Model Service HTTP data source provisioning entry in grafana/provisioning/datasources/datasources.yml to include API key authentication for authenticated monitoring endpoints (/api/v1/monitoring/*, /api/v1/strategies/*)
+- [X] T073 [P] [Model Service] Add Model Performance Metrics panel to Model State dashboard in grafana/dashboards/model-state-panel.json using Model Service /api/v1/monitoring/models/performance endpoint (display active_models_count, total_models_count, models_by_strategy, models_by_type breakdown)
+- [X] T074 [P] [Model Service] Add System Health Details panel to System Health dashboard in grafana/dashboards/system-health-panel.json using Model Service /api/v1/monitoring/health endpoint (display model_storage_accessible, active_models count, warmup_mode_enabled status)
+- [X] T075 [P] [Model Service] Create Signal Skip Metrics dashboard panel JSON in grafana/dashboards/signal-skip-metrics-panel.json using Model Service /api/v1/monitoring/signals/skip-metrics endpoint (display total_skips, skip breakdown by asset/strategy, skip breakdown by reason)
+- [X] T076 [P] [Model Service] Add Signal Skip Metrics panel to main dashboard JSON file grafana/dashboards/trading-system-monitoring.json with table visualization and auto-refresh configuration (60 seconds interval)
+- [X] T077 [P] [Model Service] Create Strategy Performance Time-Series dashboard panel JSON in grafana/dashboards/strategy-performance-panel.json using Model Service /api/v1/strategies/{strategy_id}/performance/time-series endpoint (display success_rate, total_pnl, avg_pnl trends over time with configurable granularity: hour/day/week)
+- [X] T078 [P] [Model Service] Add Strategy Performance panel to main dashboard JSON file grafana/dashboards/trading-system-monitoring.json with time-series chart visualization and auto-refresh configuration (60 seconds interval)
+- [X] T079 [P] [Model Service] Update Model Service HTTP data source provisioning entry in grafana/provisioning/datasources/datasources.yml to include API key authentication for authenticated monitoring endpoints (/api/v1/monitoring/*, /api/v1/strategies/*)
 
 ### Order Manager Enhanced Monitoring
 
-- [ ] T080 [P] [Order Manager] Add Order Manager Metrics panel to System Health dashboard in grafana/dashboards/system-health-panel.json using Order Manager /metrics HTTP endpoint (display performance metrics summary including latency statistics and counters)
-- [ ] T081 [P] [Order Manager] Update Order Manager Health panel in System Health dashboard to include additional health check information from /ready endpoint (display dependency status: database, rabbitmq, bybit_api, ws_gateway)
+- [X] T080 [P] [Order Manager] Add Order Manager Metrics panel to System Health dashboard in grafana/dashboards/system-health-panel.json using Order Manager /metrics HTTP endpoint (display performance metrics summary including latency statistics and counters)
+- [X] T081 [P] [Order Manager] Update Order Manager Health panel in System Health dashboard to include additional health check information from /ready endpoint (display dependency status: database, rabbitmq, bybit_api, ws_gateway)
 
 **Checkpoint**: Enhanced monitoring features provide comprehensive visibility into service-specific metrics and capabilities
 

@@ -36,7 +36,22 @@ GRANT SELECT ON ALL SEQUENCES IN SCHEMA public TO grafana_monitor;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO grafana_monitor;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON SEQUENCES TO grafana_monitor;
 
+-- Explicitly grant SELECT on positions and position_snapshots tables (if they exist)
+-- This ensures access even if tables were created before default privileges were set
+DO $$
+BEGIN
+    IF EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'positions') THEN
+        GRANT SELECT ON TABLE public.positions TO grafana_monitor;
+    END IF;
+    IF EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'position_snapshots') THEN
+        GRANT SELECT ON TABLE public.position_snapshots TO grafana_monitor;
+    END IF;
+END
+$$;
+
 -- Rollback (reverse migration):
+-- REVOKE SELECT ON TABLE public.positions FROM grafana_monitor;
+-- REVOKE SELECT ON TABLE public.position_snapshots FROM grafana_monitor;
 -- REVOKE SELECT ON ALL SEQUENCES IN SCHEMA public FROM grafana_monitor;
 -- REVOKE SELECT ON ALL TABLES IN SCHEMA public FROM grafana_monitor;
 -- REVOKE USAGE ON SCHEMA public FROM grafana_monitor;

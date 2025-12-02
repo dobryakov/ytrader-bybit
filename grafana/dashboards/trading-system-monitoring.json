@@ -1013,6 +1013,45 @@
             }
           ],
           "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "infinity",
+            "uid": "position-manager Health"
+          },
+          "format": "table",
+          "type": "json",
+          "parser": "json",
+          "url": "/health",
+          "root_selector": "$",
+          "columns": [
+            {
+              "text": "service_name",
+              "selector": "$.service",
+              "type": "string"
+            },
+            {
+              "text": "overall_status",
+              "selector": "$.status",
+              "type": "string"
+            },
+            {
+              "text": "database_connected",
+              "selector": "$.database_connected",
+              "type": "boolean"
+            },
+            {
+              "text": "queue_connected",
+              "selector": "$.queue_connected",
+              "type": "boolean"
+            },
+            {
+              "text": "positions_count",
+              "selector": "$.positions_count",
+              "type": "number"
+            }
+          ],
+          "refId": "D"
         }
       ],
       "options": {
@@ -1399,6 +1438,355 @@
         ]
       },
       "maxDataPoints": 200,
+      "interval": "60s"
+    },
+    {
+      "id": 9,
+      "title": "Position Manager Metrics",
+      "type": "table",
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 48
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "infinity",
+            "uid": "position-manager Health"
+          },
+          "format": "table",
+          "type": "json",
+          "parser": "json",
+          "url": "/metrics",
+          "root_selector": "$",
+          "columns": [
+            {
+              "text": "timestamp",
+              "selector": "$.timestamp",
+              "type": "string"
+            },
+            {
+              "text": "database_connected",
+              "selector": "$.database_connected",
+              "type": "boolean"
+            },
+            {
+              "text": "queue_connected",
+              "selector": "$.queue_connected",
+              "type": "boolean"
+            },
+            {
+              "text": "portfolio_cache_hit_rate",
+              "selector": "$.portfolio_cache_hit_rate",
+              "type": "number"
+            }
+          ],
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "showHeader": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "displayMode": "auto"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "database_connected"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "true": {
+                        "color": "green",
+                        "index": 0,
+                        "text": "Connected"
+                      },
+                      "false": {
+                        "color": "red",
+                        "index": 1,
+                        "text": "Disconnected"
+                      }
+                    },
+                    "type": "value"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "queue_connected"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "true": {
+                        "color": "green",
+                        "index": 0,
+                        "text": "Connected"
+                      },
+                      "false": {
+                        "color": "red",
+                        "index": 1,
+                        "text": "Disconnected"
+                      }
+                    },
+                    "type": "value"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "portfolio_cache_hit_rate"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              },
+              {
+                "id": "min",
+                "value": 0
+              },
+              {
+                "id": "max",
+                "value": 1
+              }
+            ]
+          }
+        ]
+      },
+      "maxDataPoints": 100,
+      "interval": "60s"
+    },
+    {
+      "id": 10,
+      "title": "Portfolio Management",
+      "type": "table",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 54
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "infinity",
+            "uid": "position-manager API"
+          },
+          "format": "table",
+          "type": "json",
+          "parser": "json",
+          "url": "/api/v1/portfolio?include_positions=true",
+          "root_selector": "$",
+          "columns": [
+            {
+              "text": "total_exposure",
+              "selector": "$.total_exposure",
+              "type": "number"
+            },
+            {
+              "text": "total_unrealized_pnl",
+              "selector": "$.total_unrealized_pnl",
+              "type": "number"
+            },
+            {
+              "text": "total_realized_pnl",
+              "selector": "$.total_realized_pnl",
+              "type": "number"
+            },
+            {
+              "text": "portfolio_value",
+              "selector": "$.portfolio_value",
+              "type": "number"
+            },
+            {
+              "text": "position_count",
+              "selector": "$.position_count",
+              "type": "number"
+            }
+          ],
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "showHeader": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "displayMode": "auto"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "total_exposure"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "total_unrealized_pnl"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "green",
+                      "value": 0
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "total_realized_pnl"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "green",
+                      "value": 0
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "portfolio_value"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "position_count"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              }
+            ]
+          }
+        ]
+      },
+      "maxDataPoints": 100,
       "interval": "60s"
     }
   ],
