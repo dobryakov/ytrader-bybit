@@ -9,8 +9,10 @@ from ..config.logging import get_logger
 from ..models.trading_signal import TradingSignal
 from ..models.position import Position
 from ..services.position_manager_client import PositionManagerClient
+from ..services.instrument_info_manager import InstrumentInfoManager
 from ..utils.bybit_client import get_bybit_client
 from ..exceptions import RiskLimitError, OrderExecutionError
+from decimal import ROUND_DOWN
 
 logger = get_logger(__name__)
 
@@ -24,6 +26,7 @@ class RiskManager:
         self.max_exposure = Decimal(str(settings.order_manager_max_exposure))
         self.max_order_size_ratio = Decimal(str(settings.order_manager_max_order_size_ratio))
         self.position_manager_client = PositionManagerClient()
+        self.instrument_info_manager = InstrumentInfoManager()
 
     async def check_balance(self, signal: TradingSignal, order_quantity: Decimal, order_price: Decimal) -> bool:
         """Check if sufficient balance is available for order.
@@ -454,8 +457,13 @@ class RiskManager:
         
         return Decimal("0")
 
-    def check_order_size(self, signal: TradingSignal, order_quantity: Decimal, order_price: Decimal) -> bool:
-        """Check if order size exceeds maximum order size limit.
+    async def check_and_adapt_order_size(
+        self, signal: TradingSignal, order_quantity: Decimal, order_price: Decimal
+    ) -> tuple[Decimal, bool]:
+        """Check and adapt order size to fit within maximum order size limit.
+
+        If order value exceeds max_order_size, reduces quantity proportionally
+        and rounds to lot_size to create a valid order within limits.
 
         Args:
             signal: Trading signal
@@ -464,52 +472,132 @@ class RiskManager:
             trace_id: Trace ID for logging
 
         Returns:
-            True if order size is within limits, False otherwise
+            Tuple of (adapted_quantity, was_adapted) where:
+            - adapted_quantity: Original or reduced quantity that fits within limits
+            - was_adapted: True if quantity was reduced, False otherwise
 
         Raises:
-            RiskLimitError: If order size exceeds limits
+            RiskLimitError: If order cannot be adapted (e.g., would be below minimum)
         """
         trace_id = signal.trace_id
         order_value = order_quantity * order_price
         max_order_size = self.max_exposure * self.max_order_size_ratio
 
         # Check against max order size ratio of max exposure
-        if order_value > max_order_size:
-            excess = order_value - max_order_size
-            excess_percentage = (excess / order_value) * 100 if order_value > 0 else 0
-            error_msg = (
-                f"Order size exceeds limit: order_value={order_value} USDT, "
-                f"max_allowed={max_order_size} USDT (max_exposure={self.max_exposure} * "
-                f"max_ratio={self.max_order_size_ratio}), excess={excess} USDT ({excess_percentage:.2f}%)"
-            )
-            logger.error(
-                "order_size_check_failed",
+        if order_value <= max_order_size:
+            logger.debug(
+                "order_size_check_passed",
                 signal_id=str(signal.signal_id),
                 asset=signal.asset,
-                signal_type=signal.signal_type,
                 order_value=float(order_value),
-                order_quantity=float(order_quantity),
-                order_price=float(order_price),
                 max_order_size=float(max_order_size),
-                max_exposure=float(self.max_exposure),
-                max_ratio=float(self.max_order_size_ratio),
-                excess=float(excess),
-                excess_percentage=float(excess_percentage),
-                error_type="RiskLimitError",
                 trace_id=trace_id,
             )
-            raise RiskLimitError(error_msg)
+            return order_quantity, False
 
-        logger.debug(
-            "order_size_check_passed",
+        # Order size exceeds limit - adapt quantity
+        excess = order_value - max_order_size
+        excess_percentage = (excess / order_value) * 100 if order_value > 0 else 0
+
+        logger.warning(
+            "order_size_exceeds_limit_adapting",
             signal_id=str(signal.signal_id),
             asset=signal.asset,
-            order_value=float(order_value),
+            signal_type=signal.signal_type,
+            original_order_value=float(order_value),
+            original_order_quantity=float(order_quantity),
+            order_price=float(order_price),
             max_order_size=float(max_order_size),
+            max_exposure=float(self.max_exposure),
+            max_ratio=float(self.max_order_size_ratio),
+            excess=float(excess),
+            excess_percentage=float(excess_percentage),
             trace_id=trace_id,
+            reason="Order size exceeds limit, reducing quantity to fit within max_order_size",
         )
 
-        return True
+        # Calculate maximum allowed quantity based on max_order_size
+        max_allowed_quantity = max_order_size / order_price
+
+        # Get instrument info to round to lot_size
+        try:
+            instrument_info = await self.instrument_info_manager.get_instrument(signal.asset)
+            if not instrument_info:
+                logger.warning(
+                    "order_size_adaptation_no_instrument_info",
+                    asset=signal.asset,
+                    trace_id=trace_id,
+                    reason="Cannot get lot_size for rounding, using direct calculation",
+                )
+                # Fallback: use original quantity (will fail validation later)
+                adapted_quantity = max_allowed_quantity
+            else:
+                # Round down to lot_size to ensure valid quantity
+                lot_size = instrument_info.lot_size
+                if lot_size > 0:
+                    adapted_quantity = (
+                        (max_allowed_quantity / lot_size).quantize(Decimal("1"), rounding=ROUND_DOWN) * lot_size
+                    )
+                else:
+                    adapted_quantity = max_allowed_quantity
+
+                # Ensure adapted quantity is not below minimum
+                min_order_qty = instrument_info.min_order_qty
+                if adapted_quantity < min_order_qty:
+                    logger.error(
+                        "order_size_adaptation_below_minimum",
+                        signal_id=str(signal.signal_id),
+                        asset=signal.asset,
+                        adapted_quantity=float(adapted_quantity),
+                        min_order_qty=float(min_order_qty),
+                        trace_id=trace_id,
+                        reason="Adapted quantity would be below minimum order quantity",
+                    )
+                    raise RiskLimitError(
+                        f"Cannot adapt order size: adapted quantity {adapted_quantity} would be below minimum {min_order_qty} for {signal.asset}"
+                    )
+
+                # Verify adapted order value is within limits
+                adapted_order_value = adapted_quantity * order_price
+                if adapted_order_value > max_order_size:
+                    # Round down one more step if still exceeds
+                    adapted_quantity = adapted_quantity - lot_size
+                    if adapted_quantity < min_order_qty:
+                        raise RiskLimitError(
+                            f"Cannot adapt order size: quantity {order_quantity} too large for max_order_size {max_order_size} USDT"
+                        )
+
+        except Exception as e:
+            if isinstance(e, RiskLimitError):
+                raise
+            logger.error(
+                "order_size_adaptation_error",
+                signal_id=str(signal.signal_id),
+                asset=signal.asset,
+                error=str(e),
+                trace_id=trace_id,
+                exc_info=True,
+            )
+            raise RiskLimitError(f"Failed to adapt order size: {e}") from e
+
+        adapted_order_value = adapted_quantity * order_price
+        reduction_percentage = ((order_quantity - adapted_quantity) / order_quantity * 100) if order_quantity > 0 else 0
+
+        logger.info(
+            "order_size_adapted",
+            signal_id=str(signal.signal_id),
+            asset=signal.asset,
+            original_order_quantity=float(order_quantity),
+            original_order_value=float(order_value),
+            adapted_order_quantity=float(adapted_quantity),
+            adapted_order_value=float(adapted_order_value),
+            max_order_size=float(max_order_size),
+            reduction_percentage=float(reduction_percentage),
+            trace_id=trace_id,
+            reason="Order quantity reduced to fit within max_order_size limit",
+        )
+
+        return adapted_quantity, True
 
     def check_position_size(
         self,

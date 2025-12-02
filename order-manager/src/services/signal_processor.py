@@ -230,8 +230,19 @@ class SignalProcessor:
                         trace_id=trace_id,
                     )
 
-                # 5b: Order size check
-                self.risk_manager.check_order_size(signal, quantity, order_price)
+                # 5b: Order size check and adaptation
+                original_quantity = quantity
+                adapted_quantity, was_adapted = await self.risk_manager.check_and_adapt_order_size(signal, quantity, order_price)
+                quantity = adapted_quantity  # Always use the returned quantity (may be adapted or original)
+                if was_adapted:
+                    logger.info(
+                        "quantity_adapted_for_order_size_limit",
+                        signal_id=str(signal_id),
+                        asset=asset,
+                        original_quantity=float(original_quantity),
+                        adapted_quantity=float(adapted_quantity),
+                        trace_id=trace_id,
+                    )
 
                 # 5c: Position size check
                 order_side = "Buy" if signal.signal_type.lower() == "buy" else "SELL"
