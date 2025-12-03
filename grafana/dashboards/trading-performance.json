@@ -41,24 +41,31 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT \n    COALESCE(\n        SUM((e.performance->>'realized_pnl')::DECIMAL), 0\n    ) + COALESCE(\n        (SELECT SUM(unrealized_pnl) FROM positions WHERE size != 0), 0\n    ) as total_pnl\nFROM execution_events e\nWHERE $__timeFilter(e.executed_at)\n  AND (e.performance->>'realized_pnl') IS NOT NULL;",
-          "refId": "A",
-          "sql": {
-            "columns": [
-              {
-                "parameters": [],
-                "type": "function"
-              }
-            ],
-            "groupBy": [
-              {
-                "property": {
-                  "type": "string"
-                },
-                "type": "groupBy"
-              }
-            ]
-          }
+          "rawSql": "SELECT \n    COALESCE(SUM((e.performance->>'realized_pnl')::DECIMAL), 0) as realized_pnl\nFROM execution_events e\nWHERE $__timeFilter(e.executed_at)\n  AND (e.performance->>'realized_pnl') IS NOT NULL;",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "position-manager-api"
+          },
+          "format": "table",
+          "type": "json",
+          "source": "url",
+          "parser": "backend",
+          "url": "/api/v1/portfolio/pnl",
+          "url_options": {
+            "method": "GET"
+          },
+          "root_selector": "",
+          "columns": [
+            {
+              "text": "unrealized_pnl",
+              "selector": "total_unrealized_pnl_usdt",
+              "type": "number"
+            }
+          ],
+          "refId": "B"
         }
       ],
       "fieldConfig": {
@@ -93,7 +100,7 @@
         "reduceOptions": {
           "values": false,
           "calcs": [
-            "lastNotNull"
+            "sum"
           ],
           "fields": ""
         },
@@ -175,13 +182,25 @@
       "targets": [
         {
           "datasource": {
-            "type": "postgres",
-            "uid": "PostgreSQL"
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "position-manager-api"
           },
-          "editorMode": "code",
           "format": "table",
-          "rawQuery": true,
-          "rawSql": "SELECT \n    COALESCE(SUM(unrealized_pnl), 0) as unrealized_pnl\nFROM positions\nWHERE size != 0;",
+          "type": "json",
+          "source": "url",
+          "parser": "backend",
+          "url": "/api/v1/portfolio/pnl",
+          "url_options": {
+            "method": "GET"
+          },
+          "root_selector": "",
+          "columns": [
+            {
+              "text": "unrealized_pnl",
+              "selector": "total_unrealized_pnl_usdt",
+              "type": "number"
+            }
+          ],
           "refId": "A"
         }
       ],
@@ -568,13 +587,25 @@
         },
         {
           "datasource": {
-            "type": "postgres",
-            "uid": "PostgreSQL"
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "position-manager-api"
           },
-          "editorMode": "code",
-          "format": "time_series",
-          "rawQuery": true,
-          "rawSql": "SELECT \n    NOW() as time,\n    (SELECT SUM(unrealized_pnl) FROM positions WHERE size != 0) as current_unrealized_pnl;",
+          "format": "table",
+          "type": "json",
+          "source": "url",
+          "parser": "backend",
+          "url": "/api/v1/portfolio/pnl",
+          "url_options": {
+            "method": "GET"
+          },
+          "root_selector": "",
+          "columns": [
+            {
+              "text": "current_unrealized_pnl",
+              "selector": "total_unrealized_pnl_usdt",
+              "type": "number"
+            }
+          ],
           "refId": "B"
         }
       ],
@@ -697,9 +728,9 @@
             "uid": "PostgreSQL"
           },
           "editorMode": "code",
-          "format": "table",
+          "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT \n    date_trunc('day', executed_at) as time,\n    SUM((performance->>'realized_pnl')::DECIMAL) as daily_pnl,\n    COUNT(*) as trade_count\nFROM execution_events\nWHERE $__timeFilter(executed_at)\n  AND (performance->>'realized_pnl') IS NOT NULL\nGROUP BY date_trunc('day', executed_at)\nORDER BY time;",
+          "rawSql": "SELECT \n    date_trunc('day', executed_at) as time,\n    SUM((performance->>'realized_pnl')::DECIMAL) as daily_pnl\nFROM execution_events\nWHERE $__timeFilter(executed_at)\n  AND (performance->>'realized_pnl') IS NOT NULL\nGROUP BY date_trunc('day', executed_at)\nORDER BY time;",
           "refId": "A"
         }
       ],
@@ -732,40 +763,7 @@
           "unit": "currencyUSD",
           "decimals": 2
         },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "time"
-            },
-            "properties": [
-              {
-                "id": "custom.axisPlacement",
-                "value": "bottom"
-              },
-              {
-                "id": "unit",
-                "value": "dateTimeFromNow"
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "trade_count"
-            },
-            "properties": [
-              {
-                "id": "custom.hideFrom",
-                "value": {
-                  "tooltip": false,
-                  "viz": true,
-                  "legend": false
-                }
-              }
-            ]
-          }
-        ]
+        "overrides": []
       },
       "options": {
         "legend": {

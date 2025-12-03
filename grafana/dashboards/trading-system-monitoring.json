@@ -1777,27 +1777,27 @@
           "columns": [
             {
               "text": "total_exposure",
-              "selector": "total_exposure",
+              "selector": "total_exposure_usdt",
               "type": "number"
             },
             {
               "text": "total_unrealized_pnl",
-              "selector": "total_unrealized_pnl",
+              "selector": "total_unrealized_pnl_usdt",
               "type": "number"
             },
             {
               "text": "total_realized_pnl",
-              "selector": "total_realized_pnl",
+              "selector": "total_realized_pnl_usdt",
               "type": "number"
             },
             {
               "text": "portfolio_value",
-              "selector": "portfolio_value",
+              "selector": "portfolio_value_usdt",
               "type": "number"
             },
             {
               "text": "position_count",
-              "selector": "position_count",
+              "selector": "open_positions_count",
               "type": "number"
             }
           ],

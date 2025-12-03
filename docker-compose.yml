@@ -285,6 +285,8 @@ services:
       - GRAFANA_POSTGRES_PASSWORD=${GRAFANA_POSTGRES_PASSWORD}
       - RABBITMQ_USER=${RABBITMQ_USER:-guest}
       - RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD:-guest}
+      - POSITION_MANAGER_API_KEY=${POSITION_MANAGER_API_KEY}
+      - MODEL_SERVICE_API_KEY=${MODEL_SERVICE_API_KEY}
     volumes:
       - grafana_data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning
