@@ -44,7 +44,13 @@ class TakeProfitRule(ExitRule):
             priority: Rule priority (default 10 - high priority for profit protection)
         """
         super().__init__(enabled=enabled, priority=priority)
-        self.threshold_pct = threshold_pct or settings.take_profit_threshold_pct
+        # Use unified take profit threshold (MODEL_SERVICE_TAKE_PROFIT_PCT)
+        # If threshold_pct is explicitly provided, use it; otherwise use unified setting
+        if threshold_pct is not None:
+            self.threshold_pct = threshold_pct
+        else:
+            # Use unified MODEL_SERVICE_TAKE_PROFIT_PCT (default 3.0 if not set)
+            self.threshold_pct = getattr(settings, 'model_service_take_profit_pct', 3.0)
         self.partial_exit = partial_exit or settings.take_profit_partial_exit
         self.partial_amount_pct = partial_amount_pct or settings.take_profit_partial_amount_pct
         self._partial_exit_triggered = False  # Track if partial exit was already triggered

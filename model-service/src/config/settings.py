@@ -137,8 +137,8 @@ class Settings(BaseSettings):
     exit_strategy_rate_limit: int = Field(default=10, alias="EXIT_STRATEGY_RATE_LIMIT")
 
     # Take Profit Configuration
+    # Note: threshold_pct now uses MODEL_SERVICE_TAKE_PROFIT_PCT (unified with intelligent_signal_generator)
     take_profit_enabled: bool = Field(default=True, alias="TAKE_PROFIT_ENABLED")
-    take_profit_threshold_pct: float = Field(default=3.0, alias="TAKE_PROFIT_THRESHOLD_PCT")
     take_profit_partial_exit: bool = Field(default=False, alias="TAKE_PROFIT_PARTIAL_EXIT")
     take_profit_partial_amount_pct: float = Field(default=50.0, alias="TAKE_PROFIT_PARTIAL_AMOUNT_PCT")
 

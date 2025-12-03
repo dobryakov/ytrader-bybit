@@ -36,7 +36,7 @@ class ExitStrategyEvaluator:
         if settings.take_profit_enabled:
             self.rules.append(
                 TakeProfitRule(
-                    threshold_pct=settings.take_profit_threshold_pct,
+                    threshold_pct=settings.model_service_take_profit_pct,  # Use unified take profit threshold
                     partial_exit=settings.take_profit_partial_exit,
                     partial_amount_pct=settings.take_profit_partial_amount_pct,
                     enabled=settings.take_profit_enabled,

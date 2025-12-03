@@ -33,7 +33,7 @@ async def test_evaluator_priority_order():
     """Test that rules are evaluated in priority order."""
     with patch("src.services.exit_strategy_evaluator.settings") as mock_settings:
         mock_settings.take_profit_enabled = True
-        mock_settings.take_profit_threshold_pct = 3.0
+        mock_settings.model_service_take_profit_pct = 3.0
         mock_settings.take_profit_partial_exit = False
         mock_settings.take_profit_partial_amount_pct = 50.0
         mock_settings.stop_loss_enabled = True
@@ -61,7 +61,7 @@ async def test_evaluator_rule_error_handling():
     """Test that evaluator continues with other rules if one fails."""
     with patch("src.services.exit_strategy_evaluator.settings") as mock_settings:
         mock_settings.take_profit_enabled = True
-        mock_settings.take_profit_threshold_pct = 3.0
+        mock_settings.model_service_take_profit_pct = 3.0
         mock_settings.take_profit_partial_exit = False
         mock_settings.take_profit_partial_amount_pct = 50.0
         mock_settings.stop_loss_enabled = False
@@ -97,7 +97,7 @@ async def test_evaluator_get_rules():
     """Test getting list of rules."""
     with patch("src.services.exit_strategy_evaluator.settings") as mock_settings:
         mock_settings.take_profit_enabled = True
-        mock_settings.take_profit_threshold_pct = 3.0
+        mock_settings.model_service_take_profit_pct = 3.0
         mock_settings.take_profit_partial_exit = False
         mock_settings.take_profit_partial_amount_pct = 50.0
         mock_settings.stop_loss_enabled = True
