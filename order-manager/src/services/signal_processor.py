@@ -304,14 +304,39 @@ class SignalProcessor:
                     error_type="RiskLimitError",
                     trace_id=trace_id,
                 )
-                # Mark signal as failed in tracking
-                await self._mark_signal_processing_status(signal_id, "failed", error_msg, trace_id)
-                # Publish rejection event with signal information
-                await self._publish_signal_rejection_event(
+                
+                # Save rejected order to database before publishing event
+                # Note: quantity, order_type, limit_price are guaranteed to be defined at this point
+                # because RiskLimitError is thrown after Step 5c which comes after their calculation
+                rejected_order = await self._save_rejected_order(
                     signal=signal,
+                    order_type=order_type or "Market",
+                    quantity=quantity,
+                    price=limit_price,
                     rejection_reason=error_msg,
                     trace_id=trace_id,
                 )
+                
+                # Mark signal as failed in tracking
+                await self._mark_signal_processing_status(signal_id, "failed", error_msg, trace_id)
+                
+                # Create signal-order relationship if order was saved
+                if rejected_order:
+                    await self._create_signal_order_relationship(signal_id, rejected_order.id, trace_id)
+                    # Publish rejection event with saved order
+                    await self._publish_signal_rejection_event(
+                        signal=signal,
+                        rejected_order=rejected_order,
+                        rejection_reason=error_msg,
+                        trace_id=trace_id,
+                    )
+                else:
+                    # Fallback: publish event without saved order
+                    await self._publish_signal_rejection_event(
+                        signal=signal,
+                        rejection_reason=error_msg,
+                        trace_id=trace_id,
+                    )
                 return None
             except OrderExecutionError as e:
                 error_msg = f"Order execution failed: {str(e)}"

@@ -1,0 +1,551 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "id": 1,
+      "title": "Trading Flow: Signal → Order → Position",
+      "type": "table",
+      "gridPos": {
+        "h": 12,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "PostgreSQL"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "PostgreSQL"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT \n    -- Signal данные\n    LEFT(s.signal_id::text, 8) as signal_guid,\n    s.timestamp as signal_time,\n    s.asset,\n    INITCAP(s.side) as signal_side,\n    s.price as signal_price,\n    COALESCE(sor.allocation_amount, 0) as signal_amount_usdt,\n    COALESCE(s.confidence * 100, 0) as signal_confidence_pct,\n    \n    -- Order данные (может быть NULL)\n    COALESCE(LEFT(o.order_id, 8), 'N/A') as order_guid,\n    COALESCE(o.quantity, 0) as order_quantity,\n    CASE \n        WHEN o.order_type = 'Market' THEN 'Market'\n        WHEN o.price IS NOT NULL THEN o.price::text\n        ELSE 'N/A'\n    END as order_price,\n    COALESCE(o.order_type, 'N/A') as order_type,\n    COALESCE(o.status, 'N/A') as order_status,\n    COALESCE(o.rejection_reason, '') as order_reason,\n    COALESCE(o.filled_quantity, 0) as filled_quantity,\n    COALESCE(o.average_price, 0) as average_price,\n    \n    -- Position данные (может быть NULL)\n    CASE \n        WHEN p.closed_at IS NOT NULL THEN 'Closed'\n        WHEN p.id IS NOT NULL THEN 'Open'\n        ELSE 'N/A'\n    END as position_status,\n    COALESCE(p.size, 0) as position_size,\n    CASE \n        WHEN p.closed_at IS NOT NULL THEN 'Closed'\n        WHEN o.status = 'cancelled' THEN 'Order cancelled'\n        WHEN o.status = 'rejected' THEN CONCAT('Order rejected', \n            CASE WHEN o.rejection_reason IS NOT NULL AND o.rejection_reason != '' \n                THEN CONCAT(': ', o.rejection_reason) \n                ELSE '' \n            END)\n        WHEN o.id IS NULL THEN 'No order created'\n        WHEN o.status IS NOT NULL AND o.status NOT IN ('filled', 'partially_filled') THEN 'Order not filled'\n        WHEN p.id IS NULL AND o.id IS NOT NULL AND o.status IN ('filled', 'partially_filled') THEN 'No position'\n        ELSE ''\n    END as position_reason,\n    \n    -- PnL\n    CASE \n        WHEN p.closed_at IS NOT NULL THEN COALESCE(p.realized_pnl, 0)\n        WHEN p.id IS NOT NULL THEN COALESCE(p.unrealized_pnl, 0)\n        ELSE 0\n    END as current_pnl\n\nFROM trading_signals s\nLEFT JOIN signal_order_relationships sor ON s.signal_id = sor.signal_id\nLEFT JOIN orders o ON sor.order_id = o.id\nLEFT JOIN positions p ON o.asset = p.asset \n    AND CASE \n        WHEN o.side = 'Buy' THEN p.size > 0 \n        WHEN o.side = 'SELL' THEN p.size < 0 \n        ELSE false\n    END\n    AND p.mode = 'one-way'\n    AND o.id IS NOT NULL\nWHERE $__timeFilter(s.timestamp)\nORDER BY s.timestamp DESC, o.created_at DESC NULLS LAST\nLIMIT 30;",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "signal_time"
+          }
+        ],
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": ["sum"],
+          "show": false
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "displayMode": "auto",
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "signal_guid"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 100
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "signal_time"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeFromNow"
+              },
+              {
+                "id": "custom.width",
+                "value": 120
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "asset"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 90
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "signal_side"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 70
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "Buy": {
+                        "color": "green",
+                        "index": 0,
+                        "text": "Buy"
+                      },
+                      "Sell": {
+                        "color": "red",
+                        "index": 1,
+                        "text": "Sell"
+                      }
+                    },
+                    "type": "value"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "signal_price"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              },
+              {
+                "id": "custom.width",
+                "value": 110
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "signal_amount_usdt"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              },
+              {
+                "id": "custom.width",
+                "value": 120
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "signal_confidence_pct"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              },
+              {
+                "id": "custom.width",
+                "value": 100
+              },
+              {
+                "id": "min",
+                "value": 0
+              },
+              {
+                "id": "max",
+                "value": 100
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "order_guid"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 100
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "order_quantity"
+            },
+            "properties": [
+              {
+                "id": "decimals",
+                "value": 8
+              },
+              {
+                "id": "custom.width",
+                "value": 110
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "order_price"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 100
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "order_type"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 80
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "order_status"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 100
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "filled": {
+                        "color": "green",
+                        "index": 0,
+                        "text": "filled"
+                      },
+                      "partially_filled": {
+                        "color": "yellow",
+                        "index": 1,
+                        "text": "partially_filled"
+                      },
+                      "pending": {
+                        "color": "yellow",
+                        "index": 2,
+                        "text": "pending"
+                      },
+                      "rejected": {
+                        "color": "red",
+                        "index": 3,
+                        "text": "rejected"
+                      },
+                      "cancelled": {
+                        "color": "red",
+                        "index": 4,
+                        "text": "cancelled"
+                      },
+                      "dry_run": {
+                        "color": "blue",
+                        "index": 5,
+                        "text": "dry_run"
+                      },
+                      "N/A": {
+                        "color": "gray",
+                        "index": 6,
+                        "text": "N/A"
+                      }
+                    },
+                    "type": "value"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "order_reason"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 200
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "filled_quantity"
+            },
+            "properties": [
+              {
+                "id": "decimals",
+                "value": 8
+              },
+              {
+                "id": "custom.width",
+                "value": 110
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "average_price"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              },
+              {
+                "id": "custom.width",
+                "value": 110
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "position_status"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 80
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "Open": {
+                        "color": "green",
+                        "index": 0,
+                        "text": "Open"
+                      },
+                      "Closed": {
+                        "color": "gray",
+                        "index": 1,
+                        "text": "Closed"
+                      },
+                      "N/A": {
+                        "color": "red",
+                        "index": 2,
+                        "text": "N/A"
+                      }
+                    },
+                    "type": "value"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "position_size"
+            },
+            "properties": [
+              {
+                "id": "decimals",
+                "value": 8
+              },
+              {
+                "id": "custom.width",
+                "value": 110
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "position_reason"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 200
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "current_pnl"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              },
+              {
+                "id": "custom.width",
+                "value": 110
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "red",
+                      "value": -0.01
+                    },
+                    {
+                      "color": "gray",
+                      "value": 0
+                    },
+                    {
+                      "color": "green",
+                      "value": 0.01
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.displayMode",
+                "value": "color-background"
+              }
+            ]
+          }
+        ]
+      },
+      "pluginVersion": "10.0.0",
+      "transformations": []
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "style": "dark",
+  "tags": ["trading", "signals", "orders", "positions"],
+  "templating": {
+    "list": []
+  },
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "",
+  "title": "Trading Flow",
+  "uid": "trading-flow",
+  "version": 1,
+  "weekStart": ""
+}
+
