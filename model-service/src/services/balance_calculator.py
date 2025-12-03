@@ -17,6 +17,7 @@ import httpx
 from ..database.repositories.account_balance_repo import AccountBalanceRepository
 from ..config.logging import get_logger
 from ..config.settings import settings
+from ..services.position_manager_client import position_manager_client
 
 logger = get_logger(__name__)
 
@@ -303,6 +304,7 @@ class BalanceCalculator:
         trading_pair: str,
         signal_type: str,
         requested_amount: float,
+        current_price: Optional[float] = None,
     ) -> Optional[float]:
         """
         Calculate maximum affordable amount based on available balance.
@@ -311,6 +313,7 @@ class BalanceCalculator:
             trading_pair: Trading pair symbol (e.g., 'BTCUSDT')
             signal_type: Signal type ('buy' or 'sell')
             requested_amount: Requested signal amount in quote currency
+            current_price: Current market price (optional, used for SELL signal conversion)
 
         Returns:
             Adapted amount that fits available balance, or None if insufficient balance.
@@ -325,30 +328,23 @@ class BalanceCalculator:
             "required_currency": required_currency,
         }
 
-        # Get fresh balance for required currency (with optional sync)
-        balance_data = await self._get_fresh_balance(required_currency, context)
-        if not balance_data:
-            logger.warning(
-                "Balance data unavailable or stale after sync, cannot calculate affordable amount",
-                **context,
-            )
-            return None
-
-        balance_age_seconds: Optional[float] = balance_data.get("_age_seconds")
-
-        available_balance = float(balance_data["available_balance"])
-
-        # Apply safety margin
-        usable_balance = available_balance * self.safety_margin
-        
-        # For buy orders, amount is already in quote currency (USDT)
-        # For sell orders, we need to check if we have enough base currency
-        # But since requested_amount is in quote currency, we need to convert
-        # For simplicity, we'll assume requested_amount is always in quote currency
-        # and check if we have enough quote currency for buy, or enough base currency for sell
-        
         if signal_type.lower() == "buy":
             # Buy: requested_amount is in quote currency (USDT)
+            # Get fresh balance for quote currency (with optional sync)
+            balance_data = await self._get_fresh_balance(required_currency, context)
+            if not balance_data:
+                logger.warning(
+                    "Balance data unavailable or stale after sync, cannot calculate affordable amount",
+                    **context,
+                )
+                return None
+
+            balance_age_seconds: Optional[float] = balance_data.get("_age_seconds")
+            available_balance = float(balance_data["available_balance"])
+
+            # Apply safety margin
+            usable_balance = available_balance * self.safety_margin
+
             # Check if we have enough quote currency
             if usable_balance >= requested_amount:
                 # We have enough, return requested amount
@@ -387,48 +383,103 @@ class BalanceCalculator:
                 return None
         else:  # sell
             # Sell: requested_amount is in quote currency (USDT), but we need base currency
-            # This is a simplification - in reality, we'd need current price to convert
-            # For now, we'll check if we have any base currency available
-            # If we have base currency, we assume we can sell it
+            # For SELL signals, use position size instead of balance, as balance may be 0
+            # when assets are locked in open positions
             base_currency, _ = self._extract_currencies(trading_pair)
-            base_context = {
-                "trading_pair": trading_pair,
-                "signal_type": signal_type,
-                "base_currency": base_currency,
-            }
-            base_balance_data = await self._get_fresh_balance(base_currency, base_context)
-
-            if not base_balance_data:
+            
+            logger.debug(
+                "Checking position size for sell order",
+                trading_pair=trading_pair,
+                base_currency=base_currency,
+                requested_amount=requested_amount,
+                current_price=current_price,
+            )
+            
+            # Get position size from position-manager
+            position_size = await position_manager_client.get_position_size(trading_pair)
+            
+            logger.debug(
+                "Position size retrieved",
+                trading_pair=trading_pair,
+                position_size=position_size,
+            )
+            
+            if position_size is None or position_size <= 0:
+                # No open position - cannot sell
                 logger.warning(
-                    "Base currency balance unavailable or stale for sell order",
-                    **base_context,
+                    "No open position for sell order",
+                    trading_pair=trading_pair,
+                    base_currency=base_currency,
                     requested_amount=requested_amount,
                 )
                 return None
 
-            base_available = float(base_balance_data["available_balance"])
-
-            # For sell orders, if we have base currency, we can proceed
-            # The amount check is more complex (needs price conversion), but for now
-            # we'll return requested_amount if we have any base currency
-            if base_available > 0:
-                logger.debug(
-                    "Sufficient base currency for sell order",
-                    trading_pair=trading_pair,
-                    base_currency=base_currency,
-                    base_available=base_available,
-                    requested_amount=requested_amount,
-                    balance_age_seconds=base_balance_age_seconds,
-                )
-                return requested_amount
-            else:
+            # Convert requested_amount (in quote currency) to base currency
+            # If current_price is not provided, we'll use a conservative approach
+            if current_price is None or current_price <= 0:
                 logger.warning(
-                    "Insufficient base currency for sell order",
+                    "Current price not provided for sell order conversion, using position size directly",
+                    trading_pair=trading_pair,
+                    position_size=position_size,
+                    requested_amount=requested_amount,
+                )
+                # Without price, we can't convert accurately, but we know we have position_size
+                # Return position_size in base currency (conservative - use all available position)
+                logger.warning(
+                    "Current price not available, using full position size",
+                    trading_pair=trading_pair,
+                    position_size=position_size,
+                    requested_amount=requested_amount,
+                )
+                return round(position_size * self.safety_margin, 6)
+
+            # Convert requested_amount (USDT) to base currency quantity
+            requested_quantity_base = requested_amount / current_price
+
+            # Apply safety margin to position size
+            usable_position_size = position_size * self.safety_margin
+
+            if usable_position_size >= requested_quantity_base:
+                # We have enough position, return requested amount in base currency
+                logger.debug(
+                    "Sufficient position size for sell order",
                     trading_pair=trading_pair,
                     base_currency=base_currency,
-                    base_available=base_available,
+                    position_size=position_size,
+                    usable_position_size=usable_position_size,
                     requested_amount=requested_amount,
-                    balance_age_seconds=base_balance_age_seconds,
+                    requested_quantity_base=requested_quantity_base,
+                    current_price=current_price,
+                )
+                # Return in base currency (ETH), not USDT
+                return round(requested_quantity_base, 6)
+            elif usable_position_size > 0:
+                # Adapt amount to available position size
+                adapted_quantity_base = usable_position_size
+                logger.info(
+                    "Adapting sell amount to available position size",
+                    trading_pair=trading_pair,
+                    base_currency=base_currency,
+                    position_size=position_size,
+                    usable_position_size=usable_position_size,
+                    requested_amount=requested_amount,
+                    requested_quantity_base=requested_quantity_base,
+                    adapted_quantity_base=adapted_quantity_base,
+                    current_price=current_price,
+                )
+                # Return in base currency (ETH), not USDT
+                return round(adapted_quantity_base, 6)
+            else:
+                # Insufficient position
+                logger.warning(
+                    "Insufficient position size for sell order",
+                    trading_pair=trading_pair,
+                    base_currency=base_currency,
+                    position_size=position_size,
+                    usable_position_size=usable_position_size,
+                    requested_amount=requested_amount,
+                    requested_quantity_base=requested_quantity_base,
+                    current_price=current_price,
                 )
                 return None
 

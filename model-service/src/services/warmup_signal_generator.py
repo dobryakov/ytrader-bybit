@@ -79,10 +79,13 @@ class WarmUpSignalGenerator:
         base_amount = self._determine_amount()
         
         # Check available balance and adapt amount
+        # For SELL signals, pass current_price to convert quote currency to base currency
+        current_price = float(market_data.price) if market_data.price else None
         adapted_amount = await balance_calculator.calculate_affordable_amount(
             trading_pair=asset,
             signal_type=signal_type,
             requested_amount=base_amount,
+            current_price=current_price,
         )
         
         if adapted_amount is None:

@@ -209,10 +209,13 @@ class IntelligentSignalGenerator:
             model_amount = self._calculate_amount(asset, order_position_state, market_data_snapshot, confidence)
             
             # Check available balance and adapt amount
+            # For SELL signals, pass current_price to convert quote currency to base currency
+            current_price = float(market_data_snapshot.price) if market_data_snapshot.price else None
             adapted_amount = await balance_calculator.calculate_affordable_amount(
                 trading_pair=asset,
                 signal_type=signal_type,
                 requested_amount=model_amount,
+                current_price=current_price,
             )
             
             if adapted_amount is None:
