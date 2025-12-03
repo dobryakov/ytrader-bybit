@@ -181,6 +181,16 @@
 - [X] T056 Integrate all routes into FastAPI application in order-manager/src/api/main.py
 - [X] T057 Add API endpoint logging (request/response logging with trace IDs) in order-manager/src/api/middleware/logging.py
 
+### Phase 7.1: Manual Trading and Position Control REST API
+
+**Purpose**: Provide explicit REST endpoints for manual order management and high-level position control actions, reusing existing core services (signal processing, order execution, risk checks).
+
+- [ ] T088 [P] Implement manual order creation endpoint in order-manager/src/api/routes/orders.py: POST /api/v1/orders that accepts explicit order parameters (asset, side, order_type, quantity/amount, price, dry_run flag) and routes the request through existing signal_processor and order_executor logic instead of duplicating business rules.
+- [ ] T089 [P] Implement order cancellation endpoints in order-manager/src/api/routes/orders.py: POST /api/v1/orders/{order_id}/cancel for single-order cancel and POST /api/v1/orders/cancel for bulk cancellation by filters (asset, side, status, only_active), delegating to order_executor and Bybit REST API.
+- [ ] T090 [P] Implement order modification endpoint in order-manager/src/api/routes/orders.py: POST /api/v1/orders/{order_id}/replace that creates appropriate replace/cancel+new flow using order_executor and persists resulting order state in database.
+- [ ] T091 [P] Implement high-level position control endpoints in order-manager/src/api/routes/positions.py (or a dedicated positions_commands module): POST /api/v1/positions/{asset}/close and POST /api/v1/positions/{asset}/close-partial that translate commands into appropriate closing orders (market by default), with support for explicit size or percentage and full reuse of risk checks.
+- [ ] T092 [P] Update order-manager/README.md and REST API contracts (specs/004-order-manager/contracts/openapi.yaml) to document manual trading and position control endpoints with ready-to-use curl examples for local testing via ORDERMANAGER_API_KEY.
+
 **Checkpoint**: REST API endpoints are available for querying and manual operations
 
 ---

@@ -512,6 +512,21 @@
 
 ---
 
+## Phase 10: Position Command REST API (P2)
+
+**Goal**: Provide high-level REST commands for closing and resynchronizing positions, while keeping Position Manager as the orchestrator and delegating actual trading actions to Order Manager where appropriate.
+
+### T124: Implement position close command endpoints
+- [ ] T124 [P] [US5] Implement POST /api/v1/positions/{asset}/close and POST /api/v1/positions/{asset}/close-partial endpoints in src/api/routes/positions.py (or a dedicated positions_commands module): accept parameters (mode, size or percentage, dry_run), and delegate to a new PositionCloseService that calls Order Manager REST API to place appropriate closing orders.
+
+### T125: Implement hard resync endpoint for positions
+- [ ] T125 [US5] Implement POST /api/v1/positions/{asset}/resync endpoint in src/api/routes/positions.py that triggers a “hard” reconciliation for the given asset/mode by invoking existing validate_position() and, when necessary, recomputing position from order history and/or Bybit REST API, returning detailed reconciliation result.
+
+### T126: Documentation for position command API
+- [ ] T126 [P] [US5] Update position-manager/README.md and specs/001-position-management/contracts/openapi.yaml to document new position command endpoints (/api/v1/positions/{asset}/close, /close-partial, /resync), including example curl requests for manual position management in local environments.
+
+---
+
 ## Notes
 
 - **Database Migration**: The migration to add `current_price` and `version` fields to `positions` table must be created in `ws-gateway` service (per constitution) and executed before Position Manager deployment.
