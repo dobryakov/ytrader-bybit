@@ -5,6 +5,7 @@ from typing import List
 from ...config.logging import get_logger
 from ...models.event import Event
 from ..database.balance_service import BalanceService
+from ..positions.position_event_normalizer import PositionEventNormalizer
 from ..queue.publisher import get_publisher
 from ..queue.router import get_queue_name_for_event
 
@@ -32,16 +33,22 @@ async def process_events(events: List[Event]) -> None:
     for event in events:
         try:
             # Persist balance events to database (User Story 5)
-            # This happens before queue publishing to ensure critical data is stored
-            # Per FR-017, database failures don't block queue publishing
+            # This happens before queue publishing to ensure critical data is stored.
+            # Per FR-017, database failures don't block queue publishing.
             if event.event_type == "balance":
                 await BalanceService.persist_balance_from_event(event)
 
-            # Determine target queue based on event class
-            queue_name = get_queue_name_for_event(event)
+            # Position events are normalized and published via PositionEventNormalizer.
+            # They are not written directly to the positions table in this service.
+            if event.event_type == "position":
+                success = await PositionEventNormalizer.normalize_and_publish(event)
+                queue_name = get_queue_name_for_event(event)
+            else:
+                # Determine target queue based on event class
+                queue_name = get_queue_name_for_event(event)
 
-            # Publish event to queue
-            success = await publisher.publish_event(event, queue_name)
+                # Publish event to queue
+                success = await publisher.publish_event(event, queue_name)
 
             if success:
                 logger.debug(

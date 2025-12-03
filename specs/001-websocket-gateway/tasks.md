@@ -192,19 +192,19 @@ description: "Task list for WebSocket Gateway feature implementation"
 
 ### Implementation for Position Channel Support
 
-- [ ] T125 [P] [Position] Add "position" to EventType literal in ws-gateway/src/models/event.py
-- [ ] T126 [P] [Position] Add "position" to PRIVATE_CHANNELS in ws-gateway/src/services/websocket/channel_types.py
-- [ ] T127 [Position] Add "position" to SUPPORTED_EVENT_TYPES in ws-gateway/src/services/queue/setup.py
-- [ ] T128 [Position] Update subscriptions table migration to include 'position' in channel_type CHECK constraint in ws-gateway/migrations/001_create_subscriptions_table.sql (add migration script to update existing constraint)
-- [ ] T129 [P] [Position] Create PositionEventNormalizer in ws-gateway/src/services/positions/position_event_normalizer.py (parse position events, validate data, normalize payload for Position Manager consumption without direct DB writes)
-- [ ] T130 [Position] Implement position parsing from Bybit WebSocket payload in PositionEventNormalizer (extract symbol, size, side, avgPrice, unrealisedPnl, realisedPnl, mode, etc.)
-- [ ] T131 [Position] Implement position validation logic (non-negative size validation, mode validation, symbol format) in PositionEventNormalizer (log-and-drop invalid events)
-- [ ] T132 [Position] Publish normalized position events to RabbitMQ queue ws-gateway.position for Position Manager service consumption instead of persisting directly to positions table
-- [ ] T133 [Position] Integrate position event normalization and publishing with event processing pipeline in ws-gateway/src/services/websocket/event_processor.py (call PositionEventNormalizer.normalize_and_publish() when event_type == "position")
-- [ ] T134 [Position] Handle queue publish failures gracefully (log and continue, per FR-017) in ws-gateway/src/services/positions/position_event_normalizer.py
-- [ ] T135 [Position] Add structured logging for position event normalization and publishing operations (include trace_id, asset, mode, source_channel)
-- [ ] T136 [Position] Update event_parser to handle position events (preserve full data structure in payload similar to balance events, pass through to PositionEventNormalizer)
-- [ ] T137 [Position] Ensure timestamp is included in position event payload: verify that Event.timestamp field is included in event_data when publishing to ws-gateway.position queue in ws-gateway/src/services/queue/publisher.py (timestamp already included in event_data structure at lines 141-142), document timestamp field availability in position event payload structure, ensure position-manager can extract timestamp from event payload for time-based conflict resolution
+- [X] T125 [P] [Position] Add "position" to EventType literal in ws-gateway/src/models/event.py
+- [X] T126 [P] [Position] Add "position" to PRIVATE_CHANNELS in ws-gateway/src/services/websocket/channel_types.py
+- [X] T127 [Position] Add "position" to SUPPORTED_EVENT_TYPES in ws-gateway/src/services/queue/setup.py
+- [X] T128 [Position] Update subscriptions table migration to include 'position' in channel_type CHECK constraint in ws-gateway/migrations/001_create_subscriptions_table.sql (add migration script to update existing constraint)
+- [X] T129 [P] [Position] Create PositionEventNormalizer in ws-gateway/src/services/positions/position_event_normalizer.py (parse position events, validate data, normalize payload for Position Manager consumption without direct DB writes)
+- [X] T130 [Position] Implement position parsing from Bybit WebSocket payload in PositionEventNormalizer (extract symbol, size, side, avgPrice, unrealisedPnl, realisedPnl, mode, etc.)
+- [X] T131 [Position] Implement position validation logic (non-negative size validation, mode validation, symbol format) in PositionEventNormalizer (log-and-drop invalid events)
+- [X] T132 [Position] Publish normalized position events to RabbitMQ queue ws-gateway.position for Position Manager service consumption instead of persisting directly to positions table
+- [X] T133 [Position] Integrate position event normalization and publishing with event processing pipeline in ws-gateway/src/services/websocket/event_processor.py (call PositionEventNormalizer.normalize_and_publish() when event_type == "position")
+- [X] T134 [Position] Handle queue publish failures gracefully (log and continue, per FR-017) in ws-gateway/src/services/positions/position_event_normalizer.py
+- [X] T135 [Position] Add structured logging for position event normalization and publishing operations (include trace_id, asset, mode, source_channel)
+- [X] T136 [Position] Update event_parser to handle position events (preserve full data structure in payload similar to balance events, pass through to PositionEventNormalizer)
+- [X] T137 [Position] Ensure timestamp is included in position event payload: verify that Event.timestamp field is included in event_data when publishing to ws-gateway.position queue in ws-gateway/src/services/queue/publisher.py (timestamp already included in event_data structure at lines 141-142), document timestamp field availability in position event payload structure, ensure position-manager can extract timestamp from event payload for time-based conflict resolution
 
 ---
 
@@ -216,7 +216,7 @@ description: "Task list for WebSocket Gateway feature implementation"
 
 **Independent Test**: Verify that position events published to ws-gateway.position queue include timestamp field in payload, and that position-manager can extract this timestamp for conflict resolution.
 
-- [ ] T138 [P] [Position Sync] Verify timestamp propagation in position events: check that Event.timestamp (from WebSocket message creationTime or ts field) is included in event_data when publishing position events to ws-gateway.position queue, verify timestamp is available in event payload structure for position-manager consumer extraction
+- [X] T138 [P] [Position Sync] Verify timestamp propagation in position events: check that Event.timestamp (from WebSocket message creationTime or ts field) is included in event_data when publishing position events to ws-gateway.position queue, verify timestamp is available in event payload structure for position-manager consumer extraction
 
 **Checkpoint**: At this point, position channel should be fully supported - position events are received, parsed, persisted to database, and routed to queues.
 

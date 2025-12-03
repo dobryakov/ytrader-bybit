@@ -127,7 +127,28 @@ def parse_events_from_message(
             payload["id"] = message["id"]
         if "creationTime" in message:
             payload["creationTime"] = message["creationTime"]
-        
+
+        event = Event.create(
+            event_type=subscription.channel_type,
+            topic=topic,
+            timestamp=ts,
+            payload=payload,
+            trace_id=trace_id,
+        )
+        events.append(event)
+    elif subscription.channel_type == "position":
+        # For position events, preserve the full data array similar to balance events
+        # so PositionEventNormalizer can access the complete structure for normalization.
+        payload = {
+            "data": data_items,
+            "topic": topic,
+        }
+        # Include useful top-level fields if present
+        if "id" in message:
+            payload["id"] = message["id"]
+        if "creationTime" in message:
+            payload["creationTime"] = message["creationTime"]
+
         event = Event.create(
             event_type=subscription.channel_type,
             topic=topic,

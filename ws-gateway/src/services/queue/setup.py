@@ -24,6 +24,7 @@ SUPPORTED_EVENT_TYPES: Set[EventType] = {
     "orderbook",
     "order",
     "balance",
+    "position",
     "kline",
     "liquidation",
 }
