@@ -10,11 +10,16 @@ from ..models.trading_signal import TradingSignal
 from ..models.position import Position
 from ..services.position_manager_client import PositionManagerClient
 from ..services.instrument_info_manager import InstrumentInfoManager
-from ..utils.bybit_client import get_bybit_client
 from ..exceptions import RiskLimitError, OrderExecutionError
 from decimal import ROUND_DOWN
+import httpx
+from datetime import datetime, timezone
+import asyncio
 
 logger = get_logger(__name__)
+
+# Global lock to avoid spamming ws-gateway with concurrent balance sync requests
+_balance_sync_lock = asyncio.Lock()
 
 
 class RiskManager:
@@ -27,6 +32,137 @@ class RiskManager:
         self.max_order_size_ratio = Decimal(str(settings.order_manager_max_order_size_ratio))
         self.position_manager_client = PositionManagerClient()
         self.instrument_info_manager = InstrumentInfoManager()
+        self._last_sync_at: Optional[datetime] = None
+
+    @property
+    def _ws_gateway_base_url(self) -> str:
+        return f"http://{settings.ws_gateway_host}:{settings.ws_gateway_port}".rstrip("/")
+
+    async def _trigger_balance_sync(self, trace_id: Optional[str]) -> bool:
+        """
+        Trigger on-demand balance sync via ws-gateway REST API.
+
+        This reuses the same mechanism as model-service: ws-gateway will call
+        Bybit REST /v5/account/wallet-balance, persist results into the
+        account_balances/account_margin_balances tables, and return a summary.
+        """
+        # Reuse model-service sync limits to avoid overloading ws-gateway/Bybit.
+        min_interval = int(getattr(settings, "balance_sync_min_interval_seconds", 30))
+        timeout = float(getattr(settings, "balance_sync_timeout_seconds", 5.0))
+
+        now = datetime.now(timezone.utc)
+        if self._last_sync_at is not None:
+            elapsed = (now - self._last_sync_at).total_seconds()
+            if elapsed < min_interval:
+                logger.info(
+                    "order_manager_balance_sync_skipped_min_interval",
+                    elapsed_seconds=elapsed,
+                    min_interval_seconds=min_interval,
+                    trace_id=trace_id,
+                )
+                return False
+
+        async with _balance_sync_lock:
+            now = datetime.now(timezone.utc)
+            if self._last_sync_at is not None:
+                elapsed = (now - self._last_sync_at).total_seconds()
+                if elapsed < min_interval:
+                    logger.info(
+                        "order_manager_balance_sync_skipped_min_interval_inside_lock",
+                        elapsed_seconds=elapsed,
+                        min_interval_seconds=min_interval,
+                        trace_id=trace_id,
+                    )
+                    return False
+
+            sync_url = f"{self._ws_gateway_base_url}/api/v1/balances/sync"
+            headers = {
+                "X-API-Key": settings.ws_gateway_api_key,
+                "Content-Type": "application/json",
+            }
+
+            try:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    response = await client.post(sync_url, headers=headers)
+                    status_code = response.status_code
+                    try:
+                        payload = response.json()
+                    except Exception:
+                        payload = {"raw_text": response.text}
+
+                if 200 <= status_code < 300:
+                    self._last_sync_at = now
+                    logger.info(
+                        "order_manager_balance_sync_completed",
+                        status_code=status_code,
+                        updated_coins=payload.get("updated_coins"),
+                        updated_count=payload.get("updated_count"),
+                        trace_id=trace_id,
+                    )
+                    return True
+
+                logger.warning(
+                    "order_manager_balance_sync_failed_non_2xx",
+                    status_code=status_code,
+                    response=payload,
+                    trace_id=trace_id,
+                )
+                return False
+            except httpx.RequestError as e:
+                logger.error(
+                    "order_manager_balance_sync_request_error",
+                    error=str(e),
+                    trace_id=trace_id,
+                )
+                return False
+            except Exception as e:
+                logger.error(
+                    "order_manager_balance_sync_unexpected_error",
+                    error=str(e),
+                    trace_id=trace_id,
+                )
+                return False
+
+    async def _get_latest_usdt_balance_from_db(self, trace_id: Optional[str]) -> Optional[Decimal]:
+        """
+        Read latest USDT available balance from account_balances table.
+
+        This assumes ws-gateway has already persisted fresh snapshots either
+        via WebSocket wallet events or via sync_from_rest().
+        """
+        try:
+            pool = await DatabaseConnection.get_pool()
+            query = """
+                SELECT available_balance, received_at
+                FROM account_balances
+                WHERE coin = 'USDT'
+                ORDER BY received_at DESC
+                LIMIT 1
+            """
+            row = await pool.fetchrow(query)
+            if row is None:
+                logger.warning(
+                    "order_manager_balance_db_no_usdt",
+                    trace_id=trace_id,
+                )
+                return None
+
+            available = Decimal(str(row["available_balance"]))
+            received_at = row["received_at"]
+            logger.info(
+                "order_manager_balance_db_latest_usdt",
+                available_balance=str(available),
+                received_at=received_at.isoformat() if received_at else None,
+                trace_id=trace_id,
+            )
+            return available
+        except Exception as e:
+            logger.error(
+                "order_manager_balance_db_error",
+                error=str(e),
+                trace_id=trace_id,
+            )
+            return None
 
     async def check_balance(self, signal: TradingSignal, order_quantity: Decimal, order_price: Decimal) -> bool:
         """Check if sufficient balance is available for order.
@@ -45,154 +181,22 @@ class RiskManager:
         """
         trace_id = signal.trace_id
         try:
-            bybit_client = get_bybit_client()
+            # 1) Trigger ws-gateway balance sync (best-effort).
+            await self._trigger_balance_sync(trace_id)
 
-            # Get account balance from Bybit API
-            endpoint = "/v5/account/wallet-balance"
-            params = {"accountType": "UNIFIED"}
+            # 2) Read latest USDT balance from account_balances via DB.
+            usdt_balance = await self._get_latest_usdt_balance_from_db(trace_id)
 
-            response = await bybit_client.get(endpoint, params=params, authenticated=True)
-            
-            # Log full response for debugging
-            logger.info(
-                "bybit_balance_response",
-                response=response,
-                response_keys=list(response.keys()) if isinstance(response, dict) else None,
-                trace_id=trace_id,
-            )
-            
-            # Check response status
-            ret_code = response.get("retCode", 0)
-            ret_msg = response.get("retMsg", "")
-            
-            if ret_code != 0:
-                # Handle signature error (10004) - may be due to invalid API keys or signature format
-                if ret_code == 10004:
-                    logger.warning(
-                        "balance_check_signature_error",
-                        signal_id=str(signal.signal_id),
-                        ret_code=ret_code,
-                        ret_msg=ret_msg,
-                        note="Signature error - may be due to invalid API keys or testnet account setup",
-                        trace_id=trace_id,
-                    )
-                    # For testnet with signature errors, skip balance check to allow testing
-                    # In production, this should be handled more strictly
-                    logger.info(
-                        "balance_check_skipped_signature_error",
-                        signal_id=str(signal.signal_id),
-                        reason="Signature error - skipping balance check for testnet",
-                        trace_id=trace_id,
-                    )
-                    return True
-                
-                logger.error(
-                    "balance_check_api_error",
-                    signal_id=str(signal.signal_id),
-                    ret_code=ret_code,
-                    ret_msg=ret_msg,
-                    trace_id=trace_id,
-                )
-                raise OrderExecutionError(f"Bybit API error: {ret_msg} (code: {ret_code})")
-            
-            result = response.get("result", {})
-            
-            # Handle different response structures
-            # Structure 1: result.list[] (unified account)
-            # Structure 2: result may be None or empty if no balance
-            list_data = result.get("list", []) if result else []
-
-            if not list_data:
-                # Check if result is empty (no account or no balance)
-                # This is acceptable for testnet accounts with no balance
+            if usdt_balance is None:
+                # For testnet, keep behaviour lenient: if we cannot obtain margin data,
+                # allow the order but log a warning. In production, this could be stricter.
                 logger.warning(
-                    "balance_check_no_account_data",
+                    "balance_check_no_usdt_balance_after_sync",
                     signal_id=str(signal.signal_id),
-                    ret_code=ret_code,
-                    ret_msg=ret_msg,
-                    result_type=type(result).__name__,
-                    result_keys=list(result.keys()) if result else None,
-                    trace_id=trace_id,
-                )
-                # For testnet with no balance, assume sufficient balance for small orders
-                # In production, this should be handled more strictly
-                logger.info(
-                    "balance_check_skipped_no_data",
-                    signal_id=str(signal.signal_id),
-                    reason="No account data in response (testnet account may be empty)",
+                    asset=signal.asset,
                     trace_id=trace_id,
                 )
                 return True
-
-            # For unified account, use totalAvailableBalance from account level
-            # This is more reliable than coin-level availableToWithdraw which may be empty
-            account = list_data[0]
-            account_type = account.get("accountType", "")
-            
-            # Try to get totalAvailableBalance from account (unified account)
-            if account_type == "UNIFIED":
-                total_available = account.get("totalAvailableBalance", "0")
-                if total_available and total_available != "":
-                    try:
-                        usdt_balance = Decimal(str(total_available))
-                        logger.info(
-                            "balance_check_using_total_available",
-                            signal_id=str(signal.signal_id),
-                            total_available_balance=str(usdt_balance),
-                            trace_id=trace_id,
-                        )
-                    except (ValueError, TypeError) as e:
-                        logger.warning(
-                            "balance_check_invalid_total_available",
-                            signal_id=str(signal.signal_id),
-                            total_available=total_available,
-                            error=str(e),
-                            trace_id=trace_id,
-                        )
-                        usdt_balance = Decimal("0")
-                else:
-                    # Fallback to coin-level balance
-                    usdt_balance = Decimal("0")
-                    coins = account.get("coin", [])
-                    for coin in coins:
-                        if coin.get("coin") == "USDT":
-                            # Try walletBalance if availableToWithdraw is empty
-                            wallet_balance = coin.get("walletBalance", "0")
-                            if wallet_balance and wallet_balance != "":
-                                try:
-                                    usdt_balance = Decimal(str(wallet_balance))
-                                    logger.info(
-                                        "balance_check_using_wallet_balance",
-                                        signal_id=str(signal.signal_id),
-                                        wallet_balance=str(usdt_balance),
-                                        trace_id=trace_id,
-                                    )
-                                except (ValueError, TypeError):
-                                    usdt_balance = Decimal("0")
-                            break
-            else:
-                # For non-unified accounts, use coin-level balance
-                coins = account.get("coin", [])
-                usdt_balance = Decimal("0")
-                for coin in coins:
-                    if coin.get("coin") == "USDT":
-                        # Try availableToWithdraw first, then walletBalance
-                        available_value = coin.get("availableToWithdraw", "")
-                        if not available_value or available_value == "":
-                            available_value = coin.get("walletBalance", "0")
-                        if available_value and available_value != "":
-                            try:
-                                usdt_balance = Decimal(str(available_value))
-                            except (ValueError, TypeError) as e:
-                                logger.warning(
-                                    "balance_check_invalid_value",
-                                    signal_id=str(signal.signal_id),
-                                    available_value=available_value,
-                                    error=str(e),
-                                    trace_id=trace_id,
-                                )
-                                usdt_balance = Decimal("0")
-                        break
 
             # Calculate required balance and check against appropriate currency
             if signal.signal_type.lower() == "buy":

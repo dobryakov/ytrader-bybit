@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, Optional, Tuple
 
@@ -607,8 +608,6 @@ class BalanceService:
         3. Persists them via repositories with validation
         4. Returns a summary of updated coins
         """
-        from datetime import datetime  # local import to avoid top-of-file reordering
-
         logger.info("balance_sync_rest_started", environment=settings.bybit_environment)
 
         try:

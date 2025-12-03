@@ -13,8 +13,8 @@ from decimal import Decimal
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-from utils.bybit_client import get_bybit_client
-from config.logging import setup_logging, get_logger
+from src.utils.bybit_client import get_bybit_client
+from src.config.logging import setup_logging, get_logger
 
 setup_logging()
 logger = get_logger(__name__)

@@ -2,16 +2,26 @@
 Balance-aware signal amount calculator.
 
 Calculates maximum affordable amount for trading signals based on available balance.
+When balance snapshots from the database are stale or missing, this calculator can
+optionally trigger an on-demand balance sync via ws-gateway's REST API and then
+re-read the latest snapshot, similar in spirit to how order-manager refreshes
+balance directly from Bybit.
 """
 
-from typing import Optional
+from typing import Optional, Dict, Any
 from datetime import datetime, timezone
+import asyncio
+
+import httpx
 
 from ..database.repositories.account_balance_repo import AccountBalanceRepository
 from ..config.logging import get_logger
 from ..config.settings import settings
 
 logger = get_logger(__name__)
+
+# Global lock to avoid spamming ws-gateway with concurrent balance sync requests
+_balance_sync_lock = asyncio.Lock()
 
 
 class BalanceCalculator:
@@ -30,6 +40,8 @@ class BalanceCalculator:
         else:
             self.safety_margin = settings.balance_adaptation_safety_margin
         self.balance_repo = AccountBalanceRepository()
+        # Track last successful sync trigger time to enforce min interval
+        self._last_sync_at: Optional[datetime] = None
 
     def _extract_currencies(self, trading_pair: str) -> tuple[str, str]:
         """
@@ -81,6 +93,211 @@ class BalanceCalculator:
             # Sell order requires base currency (BTC to sell)
             return base_currency
 
+    async def _trigger_balance_sync(self, context: Dict[str, Any]) -> bool:
+        """
+        Trigger on-demand balance sync via ws-gateway REST API.
+
+        This method respects BALANCE_SYNC_MIN_INTERVAL_SECONDS to avoid
+        overloading ws-gateway/Bybit, and logs all outcomes but does not raise
+        to the caller (it returns False on failure).
+        """
+        if not settings.balance_sync_enabled:
+            logger.info(
+                "Balance sync via ws-gateway is disabled by configuration",
+                context=context,
+            )
+            return False
+
+        now = datetime.now(timezone.utc)
+
+        # Fast path check before acquiring lock
+        if self._last_sync_at is not None:
+            elapsed = (now - self._last_sync_at).total_seconds()
+            if elapsed < settings.balance_sync_min_interval_seconds:
+                logger.info(
+                    "Skipping balance sync, minimum interval not elapsed",
+                    elapsed_seconds=elapsed,
+                    min_interval_seconds=settings.balance_sync_min_interval_seconds,
+                    context=context,
+                )
+                return False
+
+        async with _balance_sync_lock:
+            # Re-check inside the lock to avoid races
+            now = datetime.now(timezone.utc)
+            if self._last_sync_at is not None:
+                elapsed = (now - self._last_sync_at).total_seconds()
+                if elapsed < settings.balance_sync_min_interval_seconds:
+                    logger.info(
+                        "Skipping balance sync inside lock, minimum interval not elapsed",
+                        elapsed_seconds=elapsed,
+                        min_interval_seconds=settings.balance_sync_min_interval_seconds,
+                        context=context,
+                    )
+                    return False
+
+            ws_url = settings.ws_gateway_url.rstrip("/")
+            sync_endpoint = f"{ws_url}/api/v1/balances/sync"
+
+            headers = {
+                "X-API-Key": settings.ws_gateway_api_key,
+                "Content-Type": "application/json",
+            }
+
+            try:
+                timeout = settings.balance_sync_timeout_seconds
+            except Exception:
+                timeout = 5.0
+
+            try:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    response = await client.post(sync_endpoint, headers=headers)
+                    status_code = response.status_code
+                    # Try to parse JSON but don't fail if it's not JSON
+                    try:
+                        payload = response.json()
+                    except Exception:
+                        payload = {"raw_text": response.text}
+
+                if status_code >= 200 and status_code < 300:
+                    self._last_sync_at = now
+                    logger.info(
+                        "Balance sync via ws-gateway completed successfully",
+                        status_code=status_code,
+                        updated_coins=payload.get("updated_coins"),
+                        updated_count=payload.get("updated_count"),
+                        context=context,
+                    )
+                    return True
+
+                logger.warning(
+                    "Balance sync via ws-gateway failed with non-2xx status",
+                    status_code=status_code,
+                    response=payload,
+                    context=context,
+                )
+                return False
+            except httpx.RequestError as e:
+                logger.error(
+                    "Balance sync via ws-gateway request error",
+                    error=str(e),
+                    context=context,
+                )
+                return False
+            except Exception as e:
+                logger.error(
+                    "Balance sync via ws-gateway unexpected error",
+                    error=str(e),
+                    context=context,
+                )
+                return False
+
+    async def _get_fresh_balance(
+        self,
+        coin: str,
+        freshness_context: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Get latest balance for a coin, optionally triggering ws-gateway sync when stale.
+
+        Returns:
+            Fresh balance dict or None if unable to obtain a fresh snapshot.
+        """
+        balance_data = await self.balance_repo.get_latest_balance(coin)
+
+        if not balance_data:
+            logger.warning(
+                "Balance data unavailable from database",
+                required_currency=coin,
+                context=freshness_context,
+            )
+            # Try sync, then re-read
+            synced = await self._trigger_balance_sync(freshness_context)
+            if not synced:
+                return None
+            balance_data = await self.balance_repo.get_latest_balance(coin)
+            if not balance_data:
+                logger.warning(
+                    "Balance data still unavailable after sync",
+                    required_currency=coin,
+                    context=freshness_context,
+                )
+                return None
+
+        received_at = balance_data.get("received_at")
+        balance_age_seconds: Optional[float] = None
+        if received_at:
+            try:
+                now = datetime.now(timezone.utc)
+                if getattr(received_at, "tzinfo", None) is None:
+                    received_at = received_at.replace(tzinfo=timezone.utc)
+                balance_age_seconds = (now - received_at).total_seconds()
+                if balance_age_seconds > settings.balance_data_max_age_seconds:
+                    logger.warning(
+                        "Balance data is stale before sync attempt",
+                        required_currency=coin,
+                        balance_received_at=received_at.isoformat(),
+                        balance_age_seconds=balance_age_seconds,
+                        max_age_seconds=settings.balance_data_max_age_seconds,
+                        context=freshness_context,
+                    )
+                    # Try to sync and re-check
+                    synced = await self._trigger_balance_sync(freshness_context)
+                    if not synced:
+                        return None
+                    balance_data = await self.balance_repo.get_latest_balance(coin)
+                    if not balance_data:
+                        logger.warning(
+                            "Balance data still unavailable after sync for stale snapshot",
+                            required_currency=coin,
+                            context=freshness_context,
+                        )
+                        return None
+                    # Recalculate age with new snapshot
+                    received_at = balance_data.get("received_at")
+                    if received_at:
+                        now = datetime.now(timezone.utc)
+                        if getattr(received_at, "tzinfo", None) is None:
+                            received_at = received_at.replace(tzinfo=timezone.utc)
+                        balance_age_seconds = (now - received_at).total_seconds()
+                        if balance_age_seconds > settings.balance_data_max_age_seconds:
+                            logger.warning(
+                                "Balance data remains stale after sync",
+                                required_currency=coin,
+                                balance_received_at=received_at.isoformat(),
+                                balance_age_seconds=balance_age_seconds,
+                                max_age_seconds=settings.balance_data_max_age_seconds,
+                                context=freshness_context,
+                            )
+                            return None
+                    else:
+                        logger.warning(
+                            "Balance data after sync missing received_at timestamp",
+                            required_currency=coin,
+                            context=freshness_context,
+                        )
+                        return None
+
+            except Exception as e:
+                logger.warning(
+                    "Failed to evaluate balance data freshness",
+                    required_currency=coin,
+                    error=str(e),
+                    context=freshness_context,
+                )
+                return None
+        else:
+            logger.warning(
+                "Balance data missing received_at timestamp, cannot verify freshness",
+                required_currency=coin,
+                context=freshness_context,
+            )
+            return None
+
+        # Attach age info for callers
+        balance_data["_age_seconds"] = balance_age_seconds
+        return balance_data
+
     async def calculate_affordable_amount(
         self,
         trading_pair: str,
@@ -101,56 +318,23 @@ class BalanceCalculator:
         """
         # Determine required currency
         required_currency = self._get_required_currency(trading_pair, signal_type)
-        
-        # Get latest balance for required currency
-        balance_data = await self.balance_repo.get_latest_balance(required_currency)
 
+        context = {
+            "trading_pair": trading_pair,
+            "signal_type": signal_type,
+            "required_currency": required_currency,
+        }
+
+        # Get fresh balance for required currency (with optional sync)
+        balance_data = await self._get_fresh_balance(required_currency, context)
         if not balance_data:
             logger.warning(
-                "Balance data unavailable, cannot calculate affordable amount",
-                trading_pair=trading_pair,
-                signal_type=signal_type,
-                required_currency=required_currency,
+                "Balance data unavailable or stale after sync, cannot calculate affordable amount",
+                **context,
             )
             return None
 
-        # Check balance data freshness
-        received_at = balance_data.get("received_at")
-        balance_age_seconds: Optional[float] = None
-        if received_at:
-            try:
-                now = datetime.now(timezone.utc)
-                if getattr(received_at, "tzinfo", None) is None:
-                    received_at = received_at.replace(tzinfo=timezone.utc)
-                balance_age_seconds = (now - received_at).total_seconds()
-                if balance_age_seconds > settings.balance_data_max_age_seconds:
-                    logger.warning(
-                        "Balance data is stale, skipping balance-based adaptation",
-                        trading_pair=trading_pair,
-                        signal_type=signal_type,
-                        required_currency=required_currency,
-                        balance_received_at=received_at.isoformat(),
-                        balance_age_seconds=balance_age_seconds,
-                        max_age_seconds=settings.balance_data_max_age_seconds,
-                    )
-                    return None
-            except Exception as e:
-                logger.warning(
-                    "Failed to evaluate balance data freshness, skipping adaptation",
-                    trading_pair=trading_pair,
-                    signal_type=signal_type,
-                    required_currency=required_currency,
-                    error=str(e),
-                )
-                return None
-        else:
-            logger.warning(
-                "Balance data missing received_at timestamp, cannot verify freshness",
-                trading_pair=trading_pair,
-                signal_type=signal_type,
-                required_currency=required_currency,
-            )
-            return None
+        balance_age_seconds: Optional[float] = balance_data.get("_age_seconds")
 
         available_balance = float(balance_data["available_balance"])
 
@@ -207,52 +391,18 @@ class BalanceCalculator:
             # For now, we'll check if we have any base currency available
             # If we have base currency, we assume we can sell it
             base_currency, _ = self._extract_currencies(trading_pair)
-            base_balance_data = await self.balance_repo.get_latest_balance(base_currency)
+            base_context = {
+                "trading_pair": trading_pair,
+                "signal_type": signal_type,
+                "base_currency": base_currency,
+            }
+            base_balance_data = await self._get_fresh_balance(base_currency, base_context)
 
             if not base_balance_data:
                 logger.warning(
-                    "Base currency balance unavailable for sell order",
-                    trading_pair=trading_pair,
-                    base_currency=base_currency,
+                    "Base currency balance unavailable or stale for sell order",
+                    **base_context,
                     requested_amount=requested_amount,
-                )
-                return None
-
-            # Check base currency balance freshness separately
-            base_received_at = base_balance_data.get("received_at")
-            base_balance_age_seconds: Optional[float] = None
-            if base_received_at:
-                try:
-                    now = datetime.now(timezone.utc)
-                    if getattr(base_received_at, "tzinfo", None) is None:
-                        base_received_at = base_received_at.replace(tzinfo=timezone.utc)
-                    base_balance_age_seconds = (now - base_received_at).total_seconds()
-                    if base_balance_age_seconds > settings.balance_data_max_age_seconds:
-                        logger.warning(
-                            "Base currency balance data is stale, skipping balance-based adaptation",
-                            trading_pair=trading_pair,
-                            signal_type=signal_type,
-                            base_currency=base_currency,
-                            balance_received_at=base_received_at.isoformat(),
-                            balance_age_seconds=base_balance_age_seconds,
-                            max_age_seconds=settings.balance_data_max_age_seconds,
-                        )
-                        return None
-                except Exception as e:
-                    logger.warning(
-                        "Failed to evaluate base currency balance freshness, skipping adaptation",
-                        trading_pair=trading_pair,
-                        signal_type=signal_type,
-                        base_currency=base_currency,
-                        error=str(e),
-                    )
-                    return None
-            else:
-                logger.warning(
-                    "Base currency balance data missing received_at timestamp, cannot verify freshness",
-                    trading_pair=trading_pair,
-                    signal_type=signal_type,
-                    base_currency=base_currency,
                 )
                 return None
 

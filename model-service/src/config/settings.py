@@ -91,12 +91,27 @@ class Settings(BaseSettings):
     model_service_take_profit_pct: float = Field(default=3.0, alias="MODEL_SERVICE_TAKE_PROFIT_PCT")
     model_service_max_position_size_ratio: float = Field(default=0.8, alias="MODEL_SERVICE_MAX_POSITION_SIZE_RATIO")
 
-    # Balance Adaptation Configuration
+    # Balance Adaptation & Sync Configuration
     balance_adaptation_safety_margin: float = Field(
         default=0.95,
         alias="BALANCE_ADAPTATION_SAFETY_MARGIN",
     )
     balance_data_max_age_seconds: int = Field(default=60, alias="BALANCE_DATA_MAX_AGE_SECONDS")
+    balance_sync_enabled: bool = Field(
+        default=True,
+        alias="BALANCE_SYNC_ENABLED",
+        description="Enable on-demand balance sync via ws-gateway when DB snapshot is stale or missing",
+    )
+    balance_sync_min_interval_seconds: int = Field(
+        default=30,
+        alias="BALANCE_SYNC_MIN_INTERVAL_SECONDS",
+        description="Minimum interval (seconds) between successive balance sync requests to ws-gateway",
+    )
+    balance_sync_timeout_seconds: float = Field(
+        default=5.0,
+        alias="BALANCE_SYNC_TIMEOUT_SECONDS",
+        description="Timeout (seconds) for HTTP requests to ws-gateway balance sync endpoint",
+    )
 
     # Market Data Cache Freshness Configuration
     market_data_max_age_seconds: int = Field(default=60, alias="MARKET_DATA_MAX_AGE_SECONDS")
@@ -315,6 +330,15 @@ class Settings(BaseSettings):
         if self.balance_data_max_age_seconds <= 0:
             errors.append(
                 f"BALANCE_DATA_MAX_AGE_SECONDS must be positive, got {self.balance_data_max_age_seconds}"
+            )
+
+        if self.balance_sync_min_interval_seconds <= 0:
+            errors.append(
+                f"BALANCE_SYNC_MIN_INTERVAL_SECONDS must be positive, got {self.balance_sync_min_interval_seconds}"
+            )
+        if self.balance_sync_timeout_seconds <= 0:
+            errors.append(
+                f"BALANCE_SYNC_TIMEOUT_SECONDS must be positive, got {self.balance_sync_timeout_seconds}"
             )
 
         # Validate market data cache freshness configuration
