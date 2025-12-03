@@ -795,10 +795,10 @@ class PositionManager:
             pool = await DatabaseConnection.get_pool()
             insert_query = """
                 INSERT INTO position_snapshots (
-                    id, position_id, asset, mode, snapshot_data, created_at
+                    id, position_id, asset, mode, snapshot_data, snapshot_timestamp
                 )
                 VALUES (gen_random_uuid(), $1, $2, $3, $4, NOW())
-                RETURNING id, position_id, asset, mode, snapshot_data, created_at
+                RETURNING id, position_id, asset, mode, snapshot_data, snapshot_timestamp AS created_at
             """
             row = await pool.fetchrow(
                 insert_query,
@@ -857,10 +857,10 @@ class PositionManager:
         try:
             pool = await DatabaseConnection.get_pool()
             query = """
-                SELECT id, position_id, asset, mode, snapshot_data, created_at
+                SELECT id, position_id, asset, mode, snapshot_data, snapshot_timestamp AS created_at
                 FROM position_snapshots
                 WHERE position_id = $1
-                ORDER BY created_at DESC
+                ORDER BY snapshot_timestamp DESC
                 LIMIT $2 OFFSET $3
             """
             rows = await pool.fetch(query, str(position_id), limit, offset)
@@ -890,7 +890,7 @@ class PositionManager:
             pool = await DatabaseConnection.get_pool()
             query = """
                 DELETE FROM position_snapshots
-                WHERE created_at < $1
+                WHERE snapshot_timestamp < $1
             """
             command_tag = await pool.execute(query, cutoff)
             # asyncpg returns tags like "DELETE 42"

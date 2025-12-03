@@ -99,7 +99,7 @@ class SignalPublisher:
             # Delay measurement issues should not block publishing
             logger.warning(
                 "Failed to measure signal processing delay (continuing)",
-                signal_id=getattr(signal, \"signal_id\", None),
+                signal_id=getattr(signal, "signal_id", None),
                 error=str(e),
             )
 

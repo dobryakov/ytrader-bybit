@@ -235,6 +235,9 @@ class PositionSnapshot(BaseModel):
         for field in ["id", "position_id"]:
             if field in data and isinstance(data[field], str):
                 data[field] = UUID(data[field])
+        # Map snapshot_timestamp to created_at if present (for backward compatibility)
+        if "snapshot_timestamp" in data and "created_at" not in data:
+            data["created_at"] = data.pop("snapshot_timestamp")
         return cls(**data)
 
 
