@@ -190,6 +190,19 @@ description: "Task list for WebSocket Gateway feature implementation"
 - [ ] T134 [Position] Handle queue publish failures gracefully (log and continue, per FR-017) in ws-gateway/src/services/positions/position_event_normalizer.py
 - [ ] T135 [Position] Add structured logging for position event normalization and publishing operations (include trace_id, asset, mode, source_channel)
 - [ ] T136 [Position] Update event_parser to handle position events (preserve full data structure in payload similar to balance events, pass through to PositionEventNormalizer)
+- [ ] T137 [Position] Ensure timestamp is included in position event payload: verify that Event.timestamp field is included in event_data when publishing to ws-gateway.position queue in ws-gateway/src/services/queue/publisher.py (timestamp already included in event_data structure at lines 141-142), document timestamp field availability in position event payload structure, ensure position-manager can extract timestamp from event payload for time-based conflict resolution
+
+---
+
+## Phase 9.5: Position Size Synchronization Support (P2)
+
+**Purpose**: Support timestamp-based conflict resolution for position size synchronization between WebSocket events and Order Manager updates.
+
+**Goal**: Ensure timestamp from WebSocket position events is properly propagated through the event pipeline to enable time-based conflict resolution in position-manager service.
+
+**Independent Test**: Verify that position events published to ws-gateway.position queue include timestamp field in payload, and that position-manager can extract this timestamp for conflict resolution.
+
+- [ ] T138 [P] [Position Sync] Verify timestamp propagation in position events: check that Event.timestamp (from WebSocket message creationTime or ts field) is included in event_data when publishing position events to ws-gateway.position queue, verify timestamp is available in event payload structure for position-manager consumer extraction
 
 **Checkpoint**: At this point, position channel should be fully supported - position events are received, parsed, persisted to database, and routed to queues.
 
@@ -503,7 +516,7 @@ With multiple developers:
 
 ## Task Summary
 
-- **Total Tasks**: 136 (75 original + 13 new: T051a, EC1-EC8, T074a-T074f + 8 new: T076-T096 for dual connection support + 28 new: T097-T124 for multi-category public connection support + 12 new: T125-T136 for position channel support)
+- **Total Tasks**: 138 (75 original + 13 new: T051a, EC1-EC8, T074a-T074f + 8 new: T076-T096 for dual connection support + 28 new: T097-T124 for multi-category public connection support + 12 new: T125-T136 for position channel support + 2 new: T137-T138 for position size synchronization support)
 - **Setup Phase**: 7 tasks
 - **Foundational Phase**: 10 tasks
 - **User Story 1 (P1)**: 8 tasks
@@ -511,12 +524,13 @@ With multiple developers:
 - **User Story 3 (P2)**: 10 tasks
 - **User Story 4 (P2)**: 9 tasks (added T051a for queue retention enforcement)
 - **User Story 5 (P3)**: 7 tasks
-- **Position Channel Support (Phase 7.5)**: 12 tasks (T125-T136 for position channel support)
+- **Position Channel Support (Phase 7.5)**: 13 tasks (T125-T137 for position channel support and timestamp propagation)
 - **User Story 6 (P3)**: 6 tasks
 - **Edge Case Handling (Phase 8.5)**: 8 tasks (EC1-EC8, EC6 is verification note)
 - **Polish Phase**: 13 tasks (T074 expanded to T074a-T074f for monitoring)
 - **Dual Connection Support (Phase 10)**: 21 tasks (T076-T096 for public/private endpoint separation)
 - **Multi-Category Public Connection Support (Phase 11)**: 28 tasks (T097-T124 for multiple public connections per category)
+- **Position Size Synchronization Support (Phase 9.5)**: 1 task (T138 for timestamp verification)
 
 **Suggested MVP Scope**: User Stories 1 & 2 (WebSocket Connection + Subscriptions & Events) - 18 implementation tasks plus setup and foundational phases.
 

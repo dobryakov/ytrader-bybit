@@ -7,7 +7,7 @@
 
 ## Summary
 
-- **Total Tasks**: 121
+- **Total Tasks**: 131
 - **User Story 1 (P1)**: 31 tasks (T012-T015b, T016-T039)
 - **User Story 2 (P1)**: 25 tasks (T040-T064)
 - **User Story 3 (P2)**: 12 tasks (T065-T076)
@@ -15,6 +15,7 @@
 - **User Story 5 (P3)**: 10 tasks (T087-T087a, T088-T094)
 - **Setup & Foundational**: 11 tasks (T001-T011)
 - **Polish & Cross-Cutting**: 20 tasks (T095-T114)
+- **Position Size Synchronization (P2)**: 10 tasks (T115-T116a, T117-T123)
 
 ## Implementation Strategy
 
@@ -467,6 +468,47 @@
 
 ### T114: Validate and update Grafana Monitoring tasks.md
 - [X] T114 Validate and update Grafana Monitoring tasks.md in specs/001-grafana-monitoring/tasks.md: add new tasks for Stage 6 (Refactor Grafana Dashboards) per spec.md Stage 6, add tasks for updating existing dashboards (trading-performance.json, trading-system-monitoring.json, order-execution-panel.json) to use Position Manager API instead of direct SQL queries to positions table, add tasks for creating new dashboard "Portfolio Management" with panels for total exposure, portfolio PnL breakdown, position size distribution, unrealized PnL by asset, time held by position, position snapshots history, add tasks for adding Position Manager Health panel to System Health dashboard, add tasks for adding Risk Management Metrics panel, add tasks for configuring Infinity datasource or PostgreSQL views for Position Manager API integration, update task counters in summary section, update dependencies between phases if changed
+
+---
+
+## Phase 9: Position Size Synchronization with Time-Based Conflict Resolution (P2)
+
+**Goal**: Implement time-based conflict resolution for position size updates to ensure synchronization between WebSocket events (source of truth from exchange) and Order Manager updates (source of truth for executed orders).
+
+**Independent Test Criteria**: Create scenarios with position size discrepancies and verify that timestamp-based conflict resolution correctly updates size based on which source has the fresher data.
+
+### T115: Add timestamp parameter to update_position_from_order_fill method
+- [ ] T115 [US2] Add optional timestamp parameter to update_position_from_order_fill() method in src/services/position_manager.py: accept execution_timestamp (datetime) from Order Manager event, default to None for backward compatibility, use position.last_updated as fallback if timestamp not provided, this timestamp will be used for comparison with WebSocket timestamp in conflict resolution
+
+### T115a: Add timestamp parameter to update_position_from_websocket method
+- [ ] T115a [US2] Add optional timestamp parameter to update_position_from_websocket() method in src/services/position_manager.py: accept event_timestamp (datetime) from WebSocket event, default to None for backward compatibility, use position.last_updated as fallback if timestamp not provided
+
+### T116: Add timestamp extraction in WebSocket position event consumer
+- [ ] T116 [US2] Enhance WebSocketPositionEvent dataclass in src/consumers/websocket_position_consumer.py: add optional event_timestamp field (datetime), extract timestamp from event payload (timestamp field or creationTime), parse timestamp using existing utilities, pass timestamp to update_position_from_websocket() method
+
+### T116a: Add timestamp extraction in order execution event consumer
+- [ ] T116a [US2] Enhance OrderExecutionEvent dataclass in src/consumers/order_position_consumer.py: add optional execution_timestamp field (datetime), extract timestamp from event payload (use order.executed_at as primary source, fallback to timestamp field if executed_at missing), parse timestamp from ISO format string, pass timestamp to update_position_from_order_fill() method
+
+### T117: Implement timestamp-based size conflict resolution
+- [ ] T117 [US2] Implement timestamp comparison logic in src/services/position_manager.py: compare WebSocket event timestamp with Order Manager execution timestamp (not position.last_updated, but actual event timestamps), if WebSocket event is fresher (newer timestamp) AND size discrepancy detected, update size from WebSocket, if Order Manager update is fresher, keep existing size and log warning, handle cases where timestamp is None for either source (fallback to validation-only behavior), add configuration setting POSITION_MANAGER_ENABLE_TIMESTAMP_RESOLUTION (default: true)
+
+### T118: Add size update from WebSocket when timestamp is fresher
+- [ ] T118 [US2] Modify position update query in src/services/position_manager.py: include size update in UPDATE statement when WebSocket timestamp is fresher, update size field along with current_price, unrealized_pnl, realized_pnl, ensure optimistic locking still works with size updates, handle position close (size=0) from WebSocket events
+
+### T119: Add conflict resolution logging
+- [ ] T119 [US2] Enhance logging in src/services/position_manager.py: log timestamp comparison results (ws_timestamp, db_last_updated, resolution_decision), log size updates from WebSocket with timestamp context, log cases where size is NOT updated due to stale WebSocket event, include trace_id in all conflict resolution logs
+
+### T120: Add configuration for timestamp resolution
+- [ ] T120 [US2] Add configuration setting in src/config/settings.py: POSITION_MANAGER_ENABLE_TIMESTAMP_RESOLUTION (bool, default: true) to enable/disable timestamp-based resolution, POSITION_MANAGER_TIMESTAMP_TOLERANCE_SECONDS (int, default: 0) for tolerance window (optional enhancement), document in env.example and README.md
+
+### T121: Create unit tests for timestamp conflict resolution
+- [ ] T121 [US2] Create unit tests in tests/unit/test_position_manager.py: test_size_update_when_ws_fresher, test_size_kept_when_order_manager_fresher, test_fallback_when_timestamp_missing, test_timestamp_comparison_logic, test_configuration_disable_timestamp_resolution
+
+### T122: Create integration tests for timestamp conflict resolution
+- [ ] T122 [US2] Create integration tests in tests/integration/test_position_sync.py: test_websocket_fresh_event_updates_size, test_stale_websocket_event_does_not_update_size, test_concurrent_updates_with_timestamp_resolution, test_position_size_synchronization_flow
+
+### T123: Update WebSocket Gateway to include timestamp in position events
+- [ ] T123 [US2] Verify timestamp propagation in ws-gateway: ensure Event.timestamp is included in payload when publishing to ws-gateway.position queue, check that position event payload includes timestamp field, add timestamp extraction from Bybit position messages if missing, document timestamp field in position event payload structure
 
 ---
 
