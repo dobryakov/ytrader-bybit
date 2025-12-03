@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+from datetime import datetime
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Dict, Optional
@@ -35,6 +36,7 @@ class WebSocketPositionEvent:
     realized_pnl: Optional[Decimal]
     mark_price: Optional[Decimal]
     trace_id: Optional[str]
+    event_timestamp: Optional[datetime]
 
     @classmethod
     def from_message(cls, payload: Dict[str, Any]) -> "WebSocketPositionEvent":
@@ -77,6 +79,19 @@ class WebSocketPositionEvent:
             except Exception:
                 return None
 
+        # Timestamp from normalized payload (Phase 9: used for conflict resolution)
+        ts_raw = data.get("timestamp")
+        event_ts: Optional[datetime] = None
+        if isinstance(ts_raw, str):
+            try:
+                # Support both naive and 'Z'-suffixed ISO8601 strings
+                if ts_raw.endswith("Z"):
+                    event_ts = datetime.fromisoformat(ts_raw[:-1])
+                else:
+                    event_ts = datetime.fromisoformat(ts_raw)
+            except ValueError:
+                event_ts = None
+
         return cls(
             asset=symbol,
             mode=mode,
@@ -86,6 +101,7 @@ class WebSocketPositionEvent:
             realized_pnl=to_decimal(data.get("realisedPnl")),
             mark_price=to_decimal(data.get("markPrice")),
             trace_id=trace_id,
+            event_timestamp=event_ts,
         )
 
 
@@ -120,6 +136,7 @@ class WebSocketPositionConsumer:
                 unrealized_pnl=event.unrealized_pnl,
                 realized_pnl=event.realized_pnl,
                 trace_id=trace_id,
+                event_timestamp=event.event_timestamp,
             )
 
             await message.ack()

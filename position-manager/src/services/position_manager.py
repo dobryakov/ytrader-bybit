@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta
 from decimal import Decimal
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import httpx
 
@@ -24,6 +24,11 @@ __all__ = ["PositionManager", "httpx"]
 
 class PositionManager:
     """Service for managing position state, queries, and ML feature helpers."""
+
+    # In-memory tracking of last-seen timestamps per source for conflict resolution.
+    # Keys are (asset_upper, mode_lower).
+    _last_order_timestamp: Dict[Tuple[str, str], datetime] = {}
+    _last_ws_timestamp: Dict[Tuple[str, str], datetime] = {}
 
     # === Core queries ======================================================
 
@@ -85,6 +90,7 @@ class PositionManager:
         execution_price: Decimal,
         execution_fees: Optional[Decimal] = None,
         mode: str = "one-way",
+        execution_timestamp: Optional[datetime] = None,
     ) -> Position:
         """Update position based on order execution.
 
@@ -131,6 +137,11 @@ class PositionManager:
                     )
                     if row:
                         position = Position.from_db_dict(dict(row))
+                        # Record last order timestamp for conflict resolution (Phase 9)
+                        effective_ts = execution_timestamp or position.last_updated
+                        if effective_ts is not None:
+                            key = (position.asset, position.mode)
+                            self._last_order_timestamp[key] = effective_ts
                         logger.info(
                             "position_created_from_order_fill",
                             asset=asset,
@@ -234,6 +245,11 @@ class PositionManager:
                     )
                     if row:
                         position = Position.from_db_dict(dict(row))
+                        # Record last order timestamp for conflict resolution (Phase 9)
+                        effective_ts = execution_timestamp or position.last_updated
+                        if effective_ts is not None:
+                            key = (position.asset, position.mode)
+                            self._last_order_timestamp[key] = effective_ts
                         logger.info(
                             "position_updated_from_order_fill",
                             asset=asset,
@@ -306,6 +322,7 @@ class PositionManager:
         unrealized_pnl: Optional[Decimal] = None,
         realized_pnl: Optional[Decimal] = None,
         trace_id: Optional[str] = None,
+        event_timestamp: Optional[datetime] = None,
     ) -> Optional[Position]:
         """Update position from WebSocket event.
 
@@ -373,6 +390,11 @@ class PositionManager:
                     )
                     if row:
                         created = Position.from_db_dict(dict(row))
+                        # Record last WebSocket timestamp for conflict resolution (Phase 9)
+                        ws_effective_ts = event_timestamp or created.last_updated
+                        if ws_effective_ts is not None:
+                            key = (created.asset, created.mode)
+                            self._last_ws_timestamp[key] = ws_effective_ts
                         logger.info(
                             "position_created_from_websocket",
                             asset=asset,
@@ -408,6 +430,9 @@ class PositionManager:
                         trace_id=trace_id,
                     )
                 else:
+                    # Effective WebSocket timestamp for this update
+                    ws_effective_ts = event_timestamp or position.last_updated
+
                     # Conflict resolution for average_entry_price
                     new_avg_price = self._resolve_avg_price(position.average_entry_price, avg_price)
                     if (
@@ -424,7 +449,10 @@ class PositionManager:
                             trace_id=trace_id,
                         )
 
-                    # Size validation (Order Manager is source of truth)
+                    # Size validation + optional timestamp-based conflict resolution (Phase 9)
+                    size_update_from_ws = False
+                    resolved_size = position.size
+
                     if self._has_size_discrepancy(position.size, size_from_ws):
                         size_diff = abs(size_from_ws - position.size)  # type: ignore[arg-type]
                         threshold = Decimal(
@@ -440,6 +468,48 @@ class PositionManager:
                             threshold=str(threshold),
                             trace_id=trace_id,
                         )
+
+                        order_ts = self._last_order_timestamp.get(
+                            (position.asset, position.mode)
+                        )
+                        if self._should_update_size_from_ws(
+                            db_size=position.size,
+                            ws_size=size_from_ws,
+                            ws_timestamp=ws_effective_ts,
+                            order_timestamp=order_ts,
+                        ):
+                            size_update_from_ws = True
+                            resolved_size = size_from_ws  # type: ignore[assignment]
+                            logger.info(
+                                "position_size_resolved_from_websocket",
+                                asset=asset,
+                                mode=mode,
+                                db_size=str(position.size),
+                                ws_size=str(size_from_ws),
+                                ws_timestamp=ws_effective_ts.isoformat()
+                                if ws_effective_ts is not None
+                                else None,
+                                order_timestamp=order_ts.isoformat()
+                                if order_ts is not None
+                                else None,
+                                trace_id=trace_id,
+                            )
+                        else:
+                            logger.info(
+                                "position_size_ws_not_applied_due_to_timestamp_or_config",
+                                asset=asset,
+                                mode=mode,
+                                db_size=str(position.size),
+                                ws_size=str(size_from_ws),
+                                ws_timestamp=ws_effective_ts.isoformat()
+                                if ws_effective_ts is not None
+                                else None,
+                                order_timestamp=order_ts.isoformat()
+                                if order_ts is not None
+                                else None,
+                                timestamp_resolution_enabled=settings.position_manager_enable_timestamp_resolution,
+                                trace_id=trace_id,
+                            )
 
                     # Price and PnL updates
                     current_price = mark_price or position.current_price
@@ -457,15 +527,17 @@ class PositionManager:
 
                     update_query = """
                         UPDATE positions
-                        SET current_price = $1,
-                            unrealized_pnl = $2,
-                            realized_pnl = $3,
-                            average_entry_price = COALESCE($4, average_entry_price),
+                        SET size = $1,
+                            current_price = $2,
+                            unrealized_pnl = $3,
+                            realized_pnl = $4,
+                            average_entry_price = COALESCE($5, average_entry_price),
                             version = version + 1,
-                            last_updated = NOW()
-                        WHERE asset = $5
-                          AND mode = $6
-                          AND version = $7
+                            last_updated = NOW(),
+                            closed_at = CASE WHEN $1 = 0 THEN NOW() ELSE closed_at END
+                        WHERE asset = $6
+                          AND mode = $7
+                          AND version = $8
                         RETURNING id, asset, mode, size, average_entry_price, current_price,
                                   unrealized_pnl, realized_pnl,
                                   long_size, short_size, version,
@@ -473,6 +545,7 @@ class PositionManager:
                     """
                     row = await pool.fetchrow(
                         update_query,
+                        str(resolved_size),
                         str(current_price) if current_price is not None else None,
                         str(new_unrealized),
                         str(new_realized),
@@ -483,6 +556,11 @@ class PositionManager:
                     )
                     if row:
                         updated = Position.from_db_dict(dict(row))
+                        # Record last WebSocket timestamp for conflict resolution (Phase 9)
+                        ws_final_ts = ws_effective_ts or updated.last_updated
+                        if ws_final_ts is not None:
+                            key = (updated.asset, updated.mode)
+                            self._last_ws_timestamp[key] = ws_final_ts
                         logger.info(
                             "position_updated_from_websocket",
                             asset=asset,
@@ -1072,6 +1150,41 @@ class PositionManager:
         threshold = Decimal(str(settings.position_manager_size_validation_threshold))
         size_diff = abs(ws_size - db_size)
         return size_diff > threshold
+
+    def _should_update_size_from_ws(
+        self,
+        db_size: Decimal,
+        ws_size: Optional[Decimal],
+        ws_timestamp: Optional[datetime],
+        order_timestamp: Optional[datetime],
+    ) -> bool:
+        """Decide if size should be updated from WebSocket based on timestamps.
+
+        Rules (Phase 9 - T117):
+        - Feature must be enabled via POSITION_MANAGER_ENABLE_TIMESTAMP_RESOLUTION
+        - Both WebSocket and Order Manager timestamps must be present
+        - Size discrepancy must exceed POSITION_MANAGER_SIZE_VALIDATION_THRESHOLD
+        - WebSocket event timestamp must be fresher than Order Manager execution
+          timestamp (optionally plus POSITION_MANAGER_TIMESTAMP_TOLERANCE_SECONDS)
+        """
+        if not settings.position_manager_enable_timestamp_resolution:
+            return False
+        if ws_size is None:
+            return False
+        if ws_timestamp is None or order_timestamp is None:
+            return False
+
+        threshold = Decimal(str(settings.position_manager_size_validation_threshold))
+        size_diff = abs(ws_size - db_size)
+        if size_diff <= threshold:
+            return False
+
+        tolerance_seconds = settings.position_manager_timestamp_tolerance_seconds
+        effective_order_ts = order_timestamp
+        if tolerance_seconds > 0:
+            effective_order_ts = order_timestamp + timedelta(seconds=tolerance_seconds)
+
+        return ws_timestamp > effective_order_ts
 
     async def _get_current_price_from_api(
         self,

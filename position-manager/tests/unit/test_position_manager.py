@@ -217,3 +217,103 @@ def test_has_size_discrepancy() -> None:
     assert not manager._has_size_discrepancy(db_size, ws_close)  # type: ignore[attr-defined]
     assert manager._has_size_discrepancy(db_size, ws_far)  # type: ignore[attr-defined]
 
+
+def test_timestamp_conflict_resolution_ws_fresher(monkeypatch) -> None:
+    """_should_update_size_from_ws should return True when WS event is fresher."""
+    manager = PositionManager()
+
+    from src.config.settings import settings
+
+    monkeypatch.setattr(settings, "position_manager_enable_timestamp_resolution", True)
+    monkeypatch.setattr(settings, "position_manager_size_validation_threshold", 0.0001)
+    monkeypatch.setattr(settings, "position_manager_timestamp_tolerance_seconds", 0)
+
+    db_size = Decimal("1.0")
+    ws_size = Decimal("1.5")
+    order_ts = datetime.utcnow()
+    ws_ts = order_ts + timedelta(seconds=1)
+
+    assert manager._should_update_size_from_ws(  # type: ignore[attr-defined]
+        db_size=db_size,
+        ws_size=ws_size,
+        ws_timestamp=ws_ts,
+        order_timestamp=order_ts,
+    )
+
+
+def test_timestamp_conflict_resolution_order_fresher(monkeypatch) -> None:
+    """_should_update_size_from_ws should return False when Order Manager is fresher."""
+    manager = PositionManager()
+
+    from src.config.settings import settings
+
+    monkeypatch.setattr(settings, "position_manager_enable_timestamp_resolution", True)
+    monkeypatch.setattr(settings, "position_manager_size_validation_threshold", 0.0001)
+    monkeypatch.setattr(settings, "position_manager_timestamp_tolerance_seconds", 0)
+
+    db_size = Decimal("1.0")
+    ws_size = Decimal("1.5")
+    ws_ts = datetime.utcnow()
+    order_ts = ws_ts + timedelta(seconds=1)
+
+    assert not manager._should_update_size_from_ws(  # type: ignore[attr-defined]
+        db_size=db_size,
+        ws_size=ws_size,
+        ws_timestamp=ws_ts,
+        order_timestamp=order_ts,
+    )
+
+
+def test_timestamp_conflict_resolution_missing_timestamps(monkeypatch) -> None:
+    """_should_update_size_from_ws should fallback to validation-only when timestamps missing."""
+    manager = PositionManager()
+
+    from src.config.settings import settings
+
+    monkeypatch.setattr(settings, "position_manager_enable_timestamp_resolution", True)
+    monkeypatch.setattr(settings, "position_manager_size_validation_threshold", 0.0001)
+    monkeypatch.setattr(settings, "position_manager_timestamp_tolerance_seconds", 0)
+
+    db_size = Decimal("1.0")
+    ws_size = Decimal("1.5")
+    now = datetime.utcnow()
+
+    # Missing WS timestamp
+    assert not manager._should_update_size_from_ws(  # type: ignore[attr-defined]
+        db_size=db_size,
+        ws_size=ws_size,
+        ws_timestamp=None,
+        order_timestamp=now,
+    )
+
+    # Missing Order Manager timestamp
+    assert not manager._should_update_size_from_ws(  # type: ignore[attr-defined]
+        db_size=db_size,
+        ws_size=ws_size,
+        ws_timestamp=now,
+        order_timestamp=None,
+    )
+
+
+def test_timestamp_conflict_resolution_disabled_feature(monkeypatch) -> None:
+    """_should_update_size_from_ws should return False when feature flag is disabled."""
+    manager = PositionManager()
+
+    from src.config.settings import settings
+
+    monkeypatch.setattr(settings, "position_manager_enable_timestamp_resolution", False)
+    monkeypatch.setattr(settings, "position_manager_size_validation_threshold", 0.0001)
+    monkeypatch.setattr(settings, "position_manager_timestamp_tolerance_seconds", 0)
+
+    db_size = Decimal("1.0")
+    ws_size = Decimal("1.5")
+    order_ts = datetime.utcnow()
+    ws_ts = order_ts + timedelta(seconds=1)
+
+    assert not manager._should_update_size_from_ws(  # type: ignore[attr-defined]
+        db_size=db_size,
+        ws_size=ws_size,
+        ws_timestamp=ws_ts,
+        order_timestamp=order_ts,
+    )
+

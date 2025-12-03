@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+from datetime import datetime
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Dict, Optional
@@ -33,6 +34,7 @@ class OrderExecutionEvent:
     execution_price: Decimal
     execution_fees: Optional[Decimal]
     trace_id: Optional[str]
+    execution_timestamp: Optional[datetime]
 
     @classmethod
     def from_message(cls, payload: Dict[str, Any]) -> "OrderExecutionEvent":
@@ -87,6 +89,22 @@ class OrderExecutionEvent:
         if side == "sell":
             qty = -qty
 
+        # Execution timestamp (Phase 9: used for conflict resolution)
+        ts_raw = (
+            order_data.get("executed_at")
+            or payload.get("executed_at")
+            or payload.get("timestamp")
+        )
+        execution_ts: Optional[datetime] = None
+        if isinstance(ts_raw, str):
+            try:
+                if ts_raw.endswith("Z"):
+                    execution_ts = datetime.fromisoformat(ts_raw[:-1])
+                else:
+                    execution_ts = datetime.fromisoformat(ts_raw)
+            except ValueError:
+                execution_ts = None
+
         return cls(
             asset=asset,
             mode=mode,
@@ -94,6 +112,7 @@ class OrderExecutionEvent:
             execution_price=px,
             execution_fees=fees,
             trace_id=trace_id,
+            execution_timestamp=execution_ts,
         )
 
 
@@ -127,6 +146,7 @@ class OrderPositionConsumer:
                 execution_price=event.execution_price,
                 execution_fees=event.execution_fees,
                 mode=event.mode,
+                execution_timestamp=event.execution_timestamp,
             )
 
             await message.ack()

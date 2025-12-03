@@ -58,6 +58,18 @@ class Settings(BaseSettings):
     position_manager_optimistic_lock_retries: int = Field(default=3, alias="POSITION_MANAGER_OPTIMISTIC_LOCK_RETRIES")
     position_manager_optimistic_lock_backoff_base: int = Field(default=100, alias="POSITION_MANAGER_OPTIMISTIC_LOCK_BACKOFF_BASE")
 
+    # Timestamp-based conflict resolution (Phase 9)
+    position_manager_enable_timestamp_resolution: bool = Field(
+        default=True,
+        alias="POSITION_MANAGER_ENABLE_TIMESTAMP_RESOLUTION",
+        description="Enable timestamp-based size conflict resolution between WebSocket and Order Manager updates.",
+    )
+    position_manager_timestamp_tolerance_seconds: int = Field(
+        default=0,
+        alias="POSITION_MANAGER_TIMESTAMP_TOLERANCE_SECONDS",
+        description="Optional tolerance window in seconds when comparing WebSocket and Order Manager timestamps.",
+    )
+
     # Rate Limiting
     position_manager_rate_limit_enabled: bool = Field(default=True, alias="POSITION_MANAGER_RATE_LIMIT_ENABLED")
     position_manager_rate_limit_default: int = Field(default=100, alias="POSITION_MANAGER_RATE_LIMIT_DEFAULT")
@@ -110,6 +122,14 @@ class Settings(BaseSettings):
         """Validate optimistic lock retries is positive."""
         if v <= 0:
             raise ValueError("Optimistic lock retries must be positive")
+        return v
+
+    @field_validator("position_manager_timestamp_tolerance_seconds")
+    @classmethod
+    def validate_timestamp_tolerance(cls, v: int) -> int:
+        """Validate timestamp tolerance is non-negative."""
+        if v < 0:
+            raise ValueError("Timestamp tolerance seconds must be non-negative")
         return v
 
     @property
