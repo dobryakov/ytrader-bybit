@@ -717,6 +717,211 @@
         ]
       },
       "pluginVersion": "10.0.0"
+    },
+    {
+      "id": 3,
+      "title": "Position Size Limits",
+      "type": "table",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 22
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "PostgreSQL"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "PostgreSQL"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT\n    all_assets.asset,\n    COALESCE(p.size, 0) as current_position_size,\n    2.0 as max_position_limit,\n    2.0 - ABS(COALESCE(p.size, 0)) as available_limit,\n    CASE\n        WHEN ABS(COALESCE(p.size, 0)) >= 2.0 THEN 'Limit Exceeded'\n        WHEN ABS(COALESCE(p.size, 0)) >= 1.8 THEN 'Near Limit'\n        WHEN ABS(COALESCE(p.size, 0)) > 0 THEN 'Has Position'\n        ELSE 'Available'\n    END as status\nFROM (\n    SELECT DISTINCT asset FROM positions WHERE asset IS NOT NULL\n    UNION\n    SELECT DISTINCT asset FROM trading_signals WHERE timestamp > NOW() - INTERVAL '24 hours' AND asset IS NOT NULL\n) all_assets\nLEFT JOIN positions p ON all_assets.asset = p.asset AND p.closed_at IS NULL\nWHERE all_assets.asset IS NOT NULL\nORDER BY all_assets.asset;",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": false,
+            "displayName": "asset"
+          }
+        ],
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": ["sum"],
+          "show": false
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "displayMode": "auto",
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "asset"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 100
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "current_position_size"
+            },
+            "properties": [
+              {
+                "id": "decimals",
+                "value": 8
+              },
+              {
+                "id": "custom.width",
+                "value": 150
+              },
+              {
+                "id": "unit",
+                "value": "short"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "max_position_limit"
+            },
+            "properties": [
+              {
+                "id": "decimals",
+                "value": 2
+              },
+              {
+                "id": "custom.width",
+                "value": 120
+              },
+              {
+                "id": "unit",
+                "value": "short"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "available_limit"
+            },
+            "properties": [
+              {
+                "id": "decimals",
+                "value": 8
+              },
+              {
+                "id": "custom.width",
+                "value": 150
+              },
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 0.2
+                    },
+                    {
+                      "color": "green",
+                      "value": 0.5
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.displayMode",
+                "value": "color-background"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "status"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 120
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "Limit Exceeded": {
+                        "color": "red",
+                        "index": 0,
+                        "text": "Limit Exceeded"
+                      },
+                      "Near Limit": {
+                        "color": "yellow",
+                        "index": 1,
+                        "text": "Near Limit"
+                      },
+                      "Has Position": {
+                        "color": "blue",
+                        "index": 2,
+                        "text": "Has Position"
+                      },
+                      "Available": {
+                        "color": "green",
+                        "index": 3,
+                        "text": "Available"
+                      }
+                    },
+                    "type": "value"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "pluginVersion": "10.0.0",
+      "transformations": []
     }
   ],
   "refresh": "30s",
