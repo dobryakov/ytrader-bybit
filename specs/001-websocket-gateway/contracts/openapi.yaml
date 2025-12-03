@@ -20,6 +20,8 @@ tags:
     description: Subscription management operations
   - name: health
     description: Health check and status endpoints
+  - name: balances
+    description: Balance and margin query operations
 
 paths:
   /health:
@@ -292,6 +294,156 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /api/v1/balances:
+    get:
+      tags:
+        - balances
+      summary: Get latest balances and margin summary
+      description: |
+        Return latest balance per coin from `account_balances` table and the latest
+        account-level margin balance from `account_margin_balances` table.
+      operationId: getLatestBalances
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: coin
+          in: query
+          required: false
+          description: Optional coin filter (e.g., 'USDT'). If omitted, returns latest balance per coin.
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of coins to return (default 100, max 1000).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 100
+        - name: offset
+          in: query
+          required: false
+          description: Offset for pagination over distinct coins.
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+      responses:
+        '200':
+          description: Latest balances and margin summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LatestBalancesResponse'
+        '401':
+          description: Authentication failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error while fetching balances
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/balances/history:
+    get:
+      tags:
+        - balances
+      summary: Get historical balance records
+      description: |
+        Return historical balance records from `account_balances` table with optional
+        coin and time range filters. Useful for analytics and debugging.
+      operationId: getBalanceHistory
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: coin
+          in: query
+          required: false
+          description: Optional coin filter (e.g., 'USDT').
+          schema:
+            type: string
+        - name: from
+          in: query
+          required: false
+          description: Start of time range filter (inclusive, event_timestamp).
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          required: false
+          description: End of time range filter (inclusive, event_timestamp).
+          schema:
+            type: string
+            format: date-time
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of records to return (default 100, max 1000).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 100
+        - name: offset
+          in: query
+          required: false
+          description: Offset for pagination.
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+      responses:
+        '200':
+          description: Historical balance records
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BalanceHistoryResponse'
+        '400':
+          description: Invalid time range
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Authentication failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error while fetching balance history
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/balances/sync:
+    post:
+      tags:
+        - balances
+      summary: Trigger immediate balance sync from Bybit REST API
+      description: |
+        Endpoint reserved for triggering a manual balance sync from Bybit REST API.
+        Currently returns HTTP 501 (Not Implemented) while server-side sync logic
+        is being finalized.
+      operationId: syncBalances
+      security:
+        - ApiKeyAuth: []
+      responses:
+        '501':
+          description: Balance sync not implemented
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
 components:
   securitySchemes:
     ApiKeyAuth:
@@ -417,4 +569,168 @@ components:
           type: object
           description: Additional error details
           additionalProperties: true
+
+    BalanceRecord:
+      type: object
+      required:
+        - id
+        - coin
+        - wallet_balance
+        - available_balance
+        - frozen
+        - event_timestamp
+        - received_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        coin:
+          type: string
+          description: Coin symbol (e.g., 'USDT', 'BTC')
+        wallet_balance:
+          type: string
+          description: Total wallet balance
+        available_balance:
+          type: string
+          description: Available balance (not frozen)
+        frozen:
+          type: string
+          description: Frozen balance
+        event_timestamp:
+          type: string
+          format: date-time
+          description: Timestamp from exchange event
+        received_at:
+          type: string
+          format: date-time
+          description: When gateway received the event
+        trace_id:
+          type: string
+          nullable: true
+          description: Trace ID for request flow tracking
+        equity:
+          type: string
+          nullable: true
+          description: Total equity for this coin, if available
+        usd_value:
+          type: string
+          nullable: true
+          description: USD value of this coin balance, if available
+        margin_collateral:
+          type: boolean
+          description: Whether this coin is used as margin collateral
+        total_order_im:
+          type: string
+          description: Total initial margin locked in orders for this coin
+        total_position_im:
+          type: string
+          description: Total initial margin locked in positions for this coin
+
+    LatestBalanceView:
+      type: object
+      required:
+        - coin
+        - wallet_balance
+        - available_balance
+        - frozen
+        - event_timestamp
+        - received_at
+      properties:
+        coin:
+          type: string
+        wallet_balance:
+          type: string
+        available_balance:
+          type: string
+        frozen:
+          type: string
+        equity:
+          type: string
+          nullable: true
+        usd_value:
+          type: string
+          nullable: true
+        margin_collateral:
+          type: boolean
+        total_order_im:
+          type: string
+        total_position_im:
+          type: string
+        event_timestamp:
+          type: string
+          format: date-time
+        received_at:
+          type: string
+          format: date-time
+
+    MarginBalanceView:
+      type: object
+      required:
+        - account_type
+        - total_equity
+        - total_wallet_balance
+        - total_margin_balance
+        - total_available_balance
+        - total_initial_margin
+        - total_maintenance_margin
+        - total_order_im
+        - base_currency
+        - event_timestamp
+        - received_at
+      properties:
+        account_type:
+          type: string
+        total_equity:
+          type: string
+        total_wallet_balance:
+          type: string
+        total_margin_balance:
+          type: string
+        total_available_balance:
+          type: string
+        total_initial_margin:
+          type: string
+        total_maintenance_margin:
+          type: string
+        total_order_im:
+          type: string
+        base_currency:
+          type: string
+        event_timestamp:
+          type: string
+          format: date-time
+        received_at:
+          type: string
+          format: date-time
+
+    LatestBalancesResponse:
+      type: object
+      required:
+        - balances
+        - total
+      properties:
+        balances:
+          type: array
+          items:
+            $ref: '#/components/schemas/LatestBalanceView'
+        margin_balance:
+          $ref: '#/components/schemas/MarginBalanceView'
+          nullable: true
+        total:
+          type: integer
+          description: Number of balance records returned
+
+    BalanceHistoryResponse:
+      type: object
+      required:
+        - balances
+        - total
+      properties:
+        balances:
+          type: array
+          items:
+            $ref: '#/components/schemas/BalanceRecord'
+        total:
+          type: integer
+          description: Number of balance history records returned
 

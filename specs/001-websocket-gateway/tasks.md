@@ -175,10 +175,11 @@ description: "Task list for WebSocket Gateway feature implementation"
 ### Implementation for Balance REST API
 
 - [ ] T139 [P] [Balance] Add balance response schemas in ws-gateway/src/api/v1/schemas.py to represent latest account balance and margin balance views (coin, wallet_balance, available_balance, frozen, margin fields, timestamps).
-- [ ] T140 [P] [Balance] Implement GET /api/v1/balances endpoint in ws-gateway/src/api/v1/balances.py that returns the latest balances from account_balances and account_margin_balance tables, with optional filters by coin and pagination.
-- [ ] T141 [Balance] Implement GET /api/v1/balances/history endpoint in ws-gateway/src/api/v1/balances.py that returns historical balance records with time range filters (from, to), coin filter, and pagination for analytics/debugging.
+- [X] T139 [P] [Balance] Add balance response schemas in ws-gateway/src/api/v1/schemas.py to represent latest account balance and margin balance views (coin, wallet_balance, available_balance, frozen, margin fields, timestamps).
+- [X] T140 [P] [Balance] Implement GET /api/v1/balances endpoint in ws-gateway/src/api/v1/balances.py that returns the latest balances from account_balances and account_margin_balance tables, with optional filters by coin and pagination.
+- [X] T141 [Balance] Implement GET /api/v1/balances/history endpoint in ws-gateway/src/api/v1/balances.py that returns historical balance records with time range filters (from, to), coin filter, and pagination for analytics/debugging.
 - [ ] T142 [Balance] Implement POST /api/v1/balances/sync endpoint in ws-gateway/src/api/v1/balances.py that triggers an immediate refresh from Bybit REST API (wallet/account endpoints), persists new records via balance_service, and returns a summary of updated coins.
-- [ ] T143 [P] [Balance] Update ws-gateway/README.md and specs/001-websocket-gateway/contracts/openapi.yaml to document balance REST endpoints with example curl commands for local usage and integration by Order Manager/Position Manager.
+- [X] T143 [P] [Balance] Update ws-gateway/README.md and specs/001-websocket-gateway/contracts/openapi.yaml to document balance REST endpoints with example curl commands for local usage and integration by Order Manager/Position Manager.
 
 ---
 

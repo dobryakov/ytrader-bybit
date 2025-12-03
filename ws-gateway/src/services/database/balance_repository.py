@@ -107,6 +107,8 @@ class BalanceRepository:
         coin: Optional[str] = None,
         limit: Optional[int] = None,
         offset: Optional[int] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None,
     ) -> List[AccountBalance]:
         """List balance records with optional filters.
 
@@ -114,6 +116,8 @@ class BalanceRepository:
             coin: Optional coin filter
             limit: Optional limit on number of records
             offset: Optional offset for pagination
+            start_time: Optional start of event_timestamp range filter
+            end_time: Optional end of event_timestamp range filter
 
         Returns:
             List of AccountBalance records
@@ -124,6 +128,14 @@ class BalanceRepository:
         if coin is not None:
             conditions.append(f"coin = ${len(params) + 1}")
             params.append(coin)
+
+        if start_time is not None:
+            conditions.append(f"event_timestamp >= ${len(params) + 1}")
+            params.append(start_time)
+
+        if end_time is not None:
+            conditions.append(f"event_timestamp <= ${len(params) + 1}")
+            params.append(end_time)
 
         where_clause = ""
         if conditions:
@@ -166,6 +178,84 @@ class BalanceRepository:
                     total_position_im=Decimal(str(row["total_position_im"])) if row["total_position_im"] is not None else Decimal("0"),
                 )
             )
+        return balances
+
+    @staticmethod
+    async def list_latest_balances(
+        coin: Optional[str] = None,
+        limit: Optional[int] = None,
+        offset: Optional[int] = None,
+    ) -> List[AccountBalance]:
+        """List latest balance per coin with optional filters.
+
+        Args:
+            coin: Optional coin filter
+            limit: Optional limit on number of coins
+            offset: Optional offset for pagination
+
+        Returns:
+            List of latest AccountBalance per coin, ordered by coin.
+        """
+        conditions: list[str] = []
+        params: list[object] = []
+
+        if coin is not None:
+            conditions.append(f"coin = ${len(params) + 1}")
+            params.append(coin)
+
+        where_clause = ""
+        if conditions:
+            where_clause = "WHERE " + " AND ".join(conditions)
+
+        limit_clause = ""
+        if limit is not None:
+            limit_clause = f"LIMIT {limit}"
+            if offset is not None:
+                limit_clause += f" OFFSET {offset}"
+
+        query = f"""
+            SELECT DISTINCT ON (coin)
+                   id,
+                   coin,
+                   wallet_balance,
+                   available_balance,
+                   frozen,
+                   event_timestamp,
+                   received_at,
+                   trace_id,
+                   equity,
+                   usd_value,
+                   margin_collateral,
+                   total_order_im,
+                   total_position_im
+            FROM account_balances
+            {where_clause}
+            ORDER BY coin, received_at DESC
+            {limit_clause}
+        """
+
+        rows = await DatabaseConnection.fetch(query, *params)
+
+        balances: list[AccountBalance] = []
+        for row in rows:
+            balances.append(
+                AccountBalance(
+                    id=row["id"],
+                    coin=row["coin"],
+                    wallet_balance=Decimal(str(row["wallet_balance"])),
+                    available_balance=Decimal(str(row["available_balance"])),
+                    frozen=Decimal(str(row["frozen"])),
+                    event_timestamp=row["event_timestamp"],
+                    received_at=row["received_at"],
+                    trace_id=row["trace_id"],
+                    equity=Decimal(str(row["equity"])) if row["equity"] is not None else None,
+                    usd_value=Decimal(str(row["usd_value"])) if row["usd_value"] is not None else None,
+                    margin_collateral=row["margin_collateral"] if row["margin_collateral"] is not None else False,
+                    total_order_im=Decimal(str(row["total_order_im"])) if row["total_order_im"] is not None else Decimal("0"),
+                    total_position_im=Decimal(str(row["total_position_im"])) if row["total_position_im"] is not None else Decimal("0"),
+                )
+            )
+
         return balances
 
     @staticmethod

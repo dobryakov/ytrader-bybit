@@ -6,7 +6,7 @@ from fastapi import FastAPI
 
 from .api.health import router as health_router
 from .api.middleware import APIKeyAuthMiddleware, RequestLoggingMiddleware
-from .api.v1 import subscriptions_router
+from .api.v1 import balances_router, subscriptions_router
 from .config.logging import get_logger, setup_logging
 from .config.settings import settings
 from .utils.tracing import generate_trace_id, set_trace_id
@@ -201,6 +201,7 @@ app.add_middleware(APIKeyAuthMiddleware)
 #
 app.include_router(health_router)
 app.include_router(subscriptions_router)
+app.include_router(balances_router)
 
 # Temporary test routers for subscriptions and data viewing
 try:

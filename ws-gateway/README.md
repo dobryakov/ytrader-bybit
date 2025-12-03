@@ -106,6 +106,15 @@ All subscription endpoints require API key authentication via `X-API-Key` header
 - `DELETE /api/v1/subscriptions/{subscription_id}` - Cancel a subscription
 - `DELETE /api/v1/subscriptions/by-service/{service_name}` - Cancel all subscriptions for a service
 
+### Balance & Margin API
+
+The balance API exposes latest and historical balances stored in PostgreSQL so that
+local tools and services can inspect account state without direct database access.
+
+- `GET /api/v1/balances` - Latest balance per coin + latest account-level margin view
+- `GET /api/v1/balances/history` - Historical balance records with time range filters
+- `POST /api/v1/balances/sync` - Reserved for future manual sync from Bybit REST API (currently returns 501)
+
 #### Subscription Examples
 
 **Subscribe to Public Channel (Ticker)**:
@@ -132,6 +141,54 @@ curl -X POST http://localhost:4400/api/v1/subscriptions \
   }'
 ```
 This automatically uses the private endpoint (requires Bybit API credentials).
+
+### Query Latest Balances and Margin Summary
+
+```bash
+curl -X GET "http://localhost:4400/api/v1/balances?limit=100" \
+  -H "X-API-Key: your-api-key"
+```
+
+Example response:
+
+```json
+{
+  "balances": [
+    {
+      "coin": "USDT",
+      "wallet_balance": "10000.0",
+      "available_balance": "9500.0",
+      "frozen": "500.0",
+      "event_timestamp": "2025-11-25T10:00:00Z",
+      "received_at": "2025-11-25T10:00:01Z"
+    }
+  ],
+  "margin_balance": {
+    "account_type": "UNIFIED",
+    "total_equity": "10000.0",
+    "total_wallet_balance": "10000.0",
+    "total_margin_balance": "8000.0",
+    "total_available_balance": "2000.0",
+    "total_initial_margin": "5000.0",
+    "total_maintenance_margin": "1000.0",
+    "total_order_im": "500.0",
+    "base_currency": "USDT",
+    "event_timestamp": "2025-11-25T10:00:00Z",
+    "received_at": "2025-11-25T10:00:01Z"
+  },
+  "total": 1
+}
+```
+
+### Query Balance History for Analytics/Debugging
+
+```bash
+curl -X GET "http://localhost:4400/api/v1/balances/history?coin=USDT&from=2025-11-25T00:00:00Z&to=2025-11-26T00:00:00Z&limit=100" \
+  -H "X-API-Key: your-api-key"
+```
+
+This returns individual balance records from `account_balances` for the given time
+range and coin, suitable for local analytics or debugging tools.
 
 See `specs/001-websocket-gateway/contracts/openapi.yaml` for detailed API documentation.
 

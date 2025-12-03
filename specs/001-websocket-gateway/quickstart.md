@@ -162,6 +162,32 @@ curl -X GET "http://localhost:4400/api/v1/subscriptions?is_active=true" \
   -H "X-API-Key: your-gateway-api-key"
 ```
 
+### Query Latest Balances and Margin Summary
+
+Retrieve latest balance per coin and account-level margin view:
+
+```bash
+curl -X GET "http://localhost:4400/api/v1/balances?limit=100" \
+  -H "X-API-Key: your-gateway-api-key"
+```
+
+Example use cases:
+
+- Local CLI inspecting current wallet and margin state
+- Order Manager / Position Manager validating margin before placing orders
+
+### Query Balance History
+
+Retrieve historical balance records for analytics/debugging:
+
+```bash
+curl -X GET "http://localhost:4400/api/v1/balances/history?coin=USDT&from=2025-11-25T00:00:00Z&to=2025-11-26T00:00:00Z&limit=100" \
+  -H "X-API-Key: your-gateway-api-key"
+```
+
+This returns rows from `account_balances` filtered by coin and time range, which can
+be consumed by local tools without direct database access.
+
 ### Consume Events from RabbitMQ
 
 Events are delivered to RabbitMQ queues. To consume events:
