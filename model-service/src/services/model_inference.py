@@ -356,17 +356,17 @@ class ModelInference:
                 # Calculate confidence as max probability
                 confidence = float(np.max(probabilities))
 
-                # For binary classification, map probabilities to buy/sell
-                if len(probabilities) == 2:
-                    # Assume: [class_0_prob, class_1_prob]
-                    # class_0 = sell, class_1 = buy (or vice versa depending on training)
-                    # For now, use class_1 probability as buy confidence
-                    buy_probability = float(probabilities[1])
-                    sell_probability = float(probabilities[0])
+                # For multi-class classification: [class_0_prob, class_1_prob]
+                # class_0 = buy (from label_generator._generate_multiclass_label)
+                # class_1 = sell (from label_generator._generate_multiclass_label)
+                if len(probabilities) >= 2:
+                    # Multi-class: class_0 = buy, class_1 = sell
+                    buy_probability = float(probabilities[0])
+                    sell_probability = float(probabilities[1])
                 else:
-                    # Multi-class: use max probability
-                    buy_probability = float(probabilities[1]) if len(probabilities) > 1 else 0.0
-                    sell_probability = float(probabilities[0]) if len(probabilities) > 0 else 0.0
+                    # Fallback for single class or unexpected format
+                    buy_probability = float(probabilities[0]) if len(probabilities) > 0 else 0.0
+                    sell_probability = 0.0
 
                 result = {
                     "prediction": int(prediction),

@@ -302,7 +302,7 @@ class TrainingOrchestrator:
                 execution_events=execution_events,
                 signal_market_data=signal_market_data if signal_market_data else None,
                 strategy_id=strategy_id,
-                label_type="binary",
+                label_type="multi_class",  # Changed from "binary" to "multi_class" to predict buy/sell directly
             )
 
             if not dataset:
