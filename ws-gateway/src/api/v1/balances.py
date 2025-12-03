@@ -12,6 +12,7 @@ from ...services.database.account_margin_balance_repository import (
     AccountMarginBalanceRepository,
 )
 from ...services.database.balance_repository import BalanceRepository
+from ...services.database.balance_service import BalanceService
 from .schemas import (
     BalanceHistoryResponse,
     LatestBalanceView,
@@ -188,18 +189,26 @@ async def get_balance_history(
     summary="Trigger immediate balance sync from Bybit REST API",
 )
 async def sync_balances():
-    """Placeholder endpoint for triggering balance sync from Bybit REST API.
+    """Trigger immediate balance sync from Bybit REST API.
 
-    NOTE: Full Bybit REST sync implementation will be added in a dedicated service.
-    For now this endpoint exists so that clients can integrate and will return
-    501 to indicate that server-side sync is not yet implemented.
+    Returns a summary of updated coins.
     """
-    raise HTTPException(
-        status_code=501,
-        detail={
-            "error": "Balance sync via REST API not yet implemented",
-            "code": "NOT_IMPLEMENTED",
-        },
-    )
+    try:
+        summary = await BalanceService.sync_from_rest()
+    except Exception as exc:
+        logger.error(
+            "balances_sync_error",
+            error=str(exc),
+            error_type=type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error": "Failed to sync balances from Bybit REST API",
+                "code": "BALANCE_SYNC_FAILED",
+            },
+        )
+
+    return summary
 
 

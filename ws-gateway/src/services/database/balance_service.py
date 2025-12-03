@@ -3,9 +3,16 @@
 from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
+
+import hashlib
+import hmac
+import time
+
+import httpx
 
 from ...config.logging import get_logger
+from ...config.settings import settings
 from ...exceptions import DatabaseError
 from ...models.account_balance import AccountBalance
 from ...models.account_margin_balance import AccountMarginBalance
@@ -484,4 +491,207 @@ class BalanceService:
                 error_type=type(e).__name__,
             )
             return None
+
+    #
+    # Bybit REST API sync (T142)
+    #
+
+    @staticmethod
+    def _get_bybit_rest_base_url() -> str:
+        """Return Bybit REST base URL based on environment."""
+        return (
+            "https://api.bybit.com"
+            if settings.bybit_environment == "mainnet"
+            else "https://api-testnet.bybit.com"
+        )
+
+    @staticmethod
+    def _generate_rest_signature(
+        params: Dict[str, Any],
+        timestamp: int,
+        api_key: str,
+        api_secret: str,
+        recv_window: str = "5000",
+    ) -> str:
+        """Generate HMAC-SHA256 signature for Bybit REST API v5."""
+        sorted_params = sorted(
+            [(k, str(v)) for k, v in params.items() if v is not None]
+        )
+        query_string = "&".join(f"{k}={v}" for k, v in sorted_params)
+        signature_string = f"{timestamp}{api_key}{recv_window}{query_string}"
+        signature = hmac.new(
+            api_secret.encode("utf-8"),
+            signature_string.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        return signature
+
+    @staticmethod
+    async def _fetch_wallet_balance_rest() -> Dict[str, Any]:
+        """Fetch wallet balance from Bybit REST API.
+
+        Returns raw JSON response.
+        Raises httpx.HTTPError or ValueError on failure.
+        """
+        base_url = BalanceService._get_bybit_rest_base_url()
+        endpoint = "/v5/account/wallet-balance"
+        params: Dict[str, Any] = {"accountType": "UNIFIED"}
+
+        timestamp = int(time.time() * 1000)
+        recv_window = "5000"
+        signature = BalanceService._generate_rest_signature(
+            params=params,
+            timestamp=timestamp,
+            api_key=settings.bybit_api_key,
+            api_secret=settings.bybit_api_secret,
+            recv_window=recv_window,
+        )
+
+        headers = {
+            "X-BAPI-API-KEY": settings.bybit_api_key,
+            "X-BAPI-TIMESTAMP": str(timestamp),
+            "X-BAPI-RECV-WINDOW": recv_window,
+            "X-BAPI-SIGN": signature,
+        }
+
+        async with httpx.AsyncClient(base_url=base_url, timeout=30.0) as client:
+            response = await client.get(endpoint, params=params, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+
+        if data.get("retCode") != 0:
+            raise ValueError(
+                f"Bybit REST error: retCode={data.get('retCode')}, retMsg={data.get('retMsg')}"
+            )
+        return data
+
+    @staticmethod
+    def _parse_wallet_response_to_balances(
+        response: Dict[str, Any],
+    ) -> Tuple[list[AccountBalance], Optional[AccountMarginBalance]]:
+        """Convert Bybit REST wallet response to AccountBalance and AccountMarginBalance models."""
+        result = response.get("result") or {}
+        account_list = result.get("list") or []
+        if not account_list:
+            return [], None
+
+        account_data = account_list[0]
+        coins = account_data.get("coin") or []
+
+        # Build pseudo-event wrapper to reuse existing parsing logic
+        event_payload = {"data": [account_data]}
+        fake_event = Event(
+            event_id=None,  # not used by parsing methods
+            event_type="balance",
+            topic="wallet.snapshot",
+            timestamp=datetime.utcnow(),
+            received_at=datetime.utcnow(),
+            payload=event_payload,
+            trace_id="balance-sync",
+        )
+
+        balances = BalanceService._parse_all_balances_from_event(fake_event)
+        margin_balance = BalanceService._parse_account_margin_balance_from_event(
+            fake_event
+        )
+
+        return balances, margin_balance
+
+    @staticmethod
+    async def sync_from_rest() -> Dict[str, Any]:
+        """Trigger immediate balance sync from Bybit REST API.
+
+        This method:
+        1. Calls Bybit REST wallet-balance endpoint
+        2. Parses response into AccountBalance and AccountMarginBalance models
+        3. Persists them via repositories with validation
+        4. Returns a summary of updated coins
+        """
+        from datetime import datetime  # local import to avoid top-of-file reordering
+
+        logger.info("balance_sync_rest_started", environment=settings.bybit_environment)
+
+        try:
+            raw = await BalanceService._fetch_wallet_balance_rest()
+        except Exception as exc:
+            logger.error(
+                "balance_sync_rest_fetch_error",
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+            raise
+
+        # Parse into models (reusing existing event-based parsers)
+        try:
+            balances, margin_balance = BalanceService._parse_wallet_response_to_balances(
+                raw
+            )
+        except Exception as exc:
+            logger.error(
+                "balance_sync_rest_parse_error",
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+            raise
+
+        updated_coins: list[str] = []
+        success_count = 0
+
+        # Persist margin balance first (best-effort)
+        if margin_balance:
+            try:
+                if margin_balance.validate():
+                    await AccountMarginBalanceRepository.create_margin_balance(
+                        margin_balance
+                    )
+                    logger.info(
+                        "balance_sync_rest_margin_persisted",
+                        account_type=margin_balance.account_type,
+                        base_currency=margin_balance.base_currency,
+                    )
+                else:
+                    logger.warning("balance_sync_rest_margin_validation_failed")
+            except Exception as exc:
+                logger.error(
+                    "balance_sync_rest_margin_persist_error",
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                )
+
+        # Persist per-coin balances
+        for balance in balances:
+            try:
+                if not BalanceService._validate_balance(balance):
+                    logger.warning(
+                        "balance_sync_rest_validation_failed",
+                        coin=balance.coin,
+                        wallet_balance=str(balance.wallet_balance),
+                        available_balance=str(balance.available_balance),
+                        frozen=str(balance.frozen),
+                    )
+                    continue
+
+                await BalanceRepository.create_balance(balance)
+                success_count += 1
+                if balance.coin not in updated_coins:
+                    updated_coins.append(balance.coin)
+            except Exception as exc:
+                logger.error(
+                    "balance_sync_rest_persist_error",
+                    coin=balance.coin,
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                )
+                continue
+
+        logger.info(
+            "balance_sync_rest_completed",
+            updated_coins=updated_coins,
+            success_count=success_count,
+        )
+
+        return {
+            "updated_coins": updated_coins,
+            "updated_count": success_count,
+        }
 

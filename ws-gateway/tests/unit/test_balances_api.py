@@ -124,12 +124,24 @@ def test_get_balance_history_invalid_range(monkeypatch):
 
 
 def test_sync_balances_not_implemented(monkeypatch):
+    async def fake_sync_from_rest():
+        return {"updated_coins": ["USDT"], "updated_count": 3}
+
+    from src.services.database.balance_service import BalanceService
+
+    monkeypatch.setattr(
+        BalanceService,
+        "sync_from_rest",
+        staticmethod(fake_sync_from_rest),
+    )
+
     client = _client()
     headers = {"X-API-Key": settings.ws_gateway_api_key}
 
     response = client.post("/api/v1/balances/sync", headers=headers)
-    assert response.status_code == 501
+    assert response.status_code == 200
     body = response.json()
-    assert body["detail"]["code"] == "NOT_IMPLEMENTED"
+    assert body["updated_coins"] == ["USDT"]
+    assert body["updated_count"] == 3
 
 
