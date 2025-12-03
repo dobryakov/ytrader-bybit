@@ -90,6 +90,7 @@ class Settings(BaseSettings):
     # Risk Management Configuration
     model_service_take_profit_pct: float = Field(default=3.0, alias="MODEL_SERVICE_TAKE_PROFIT_PCT")
     model_service_max_position_size_ratio: float = Field(default=0.8, alias="MODEL_SERVICE_MAX_POSITION_SIZE_RATIO")
+    order_manager_max_position_size: float = Field(default=2.0, alias="ORDERMANAGER_MAX_POSITION_SIZE")
 
     # Balance Adaptation & Sync Configuration
     balance_adaptation_safety_margin: float = Field(
@@ -320,6 +321,9 @@ class Settings(BaseSettings):
 
         if not 0.0 <= self.model_service_max_position_size_ratio <= 1.0:
             errors.append(f"MODEL_SERVICE_MAX_POSITION_SIZE_RATIO must be between 0.0 and 1.0, got {self.model_service_max_position_size_ratio}")
+
+        if self.order_manager_max_position_size <= 0:
+            errors.append(f"ORDERMANAGER_MAX_POSITION_SIZE must be positive, got {self.order_manager_max_position_size}")
 
         # Validate balance adaptation configuration
         if not 0.0 < self.balance_adaptation_safety_margin <= 1.0:

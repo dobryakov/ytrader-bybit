@@ -162,27 +162,20 @@ class IntelligentSignalGenerator:
 
             # Determine signal type from prediction
             signal_type = self._determine_signal_type(prediction_result)
-
-            # Risk Management: Check position size limit for BUY signals (before generating signal)
-            if signal_type.lower() == "buy":
-                position_size_check = await self._check_position_size_limit(asset, strategy_id, trace_id)
-                if position_size_check["should_skip"]:
-                    reason = position_size_check.get("reason", "position_size_limit")
-                    signal_skip_metrics.record_skip(
-                        asset=asset,
-                        strategy_id=strategy_id,
-                        reason=reason,
-                    )
-                    logger.info(
-                        "Skipping BUY signal due to position size limit",
-                        asset=asset,
-                        strategy_id=strategy_id,
-                        position_size_norm=position_size_check.get("position_size_norm"),
-                        max_ratio_threshold=position_size_check.get("max_ratio_threshold"),
-                        reason=reason,
-                        trace_id=trace_id,
-                    )
-                    return None
+            
+            # Log prediction probabilities for debugging
+            buy_probability = prediction_result.get("buy_probability", 0.0)
+            sell_probability = prediction_result.get("sell_probability", 0.0)
+            logger.info(
+                "Model prediction probabilities",
+                asset=asset,
+                strategy_id=strategy_id,
+                buy_probability=buy_probability,
+                sell_probability=sell_probability,
+                determined_signal_type=signal_type,
+                confidence=confidence,
+                trace_id=trace_id,
+            )
 
             # Check for opposite orders if configured (after determining signal_type)
             if settings.signal_generation_skip_if_open_order and settings.signal_generation_check_opposite_orders_only:
@@ -250,6 +243,52 @@ class IntelligentSignalGenerator:
                     adapted_amount=amount,
                     trace_id=trace_id,
                 )
+
+            # Risk Management: Check position size limit for BUY signals (after amount calculation)
+            if signal_type.lower() == "buy":
+                position_size_check = await self._check_position_size_limit(
+                    asset=asset,
+                    strategy_id=strategy_id,
+                    order_amount_usdt=amount,
+                    market_data_snapshot=market_data_snapshot,
+                    trace_id=trace_id,
+                )
+                if position_size_check["should_skip"]:
+                    # Try to adapt amount to fit within position limit
+                    adapted_amount = position_size_check.get("adapted_amount_usdt")
+                    if adapted_amount is not None and adapted_amount > 0:
+                        # Reduce amount to fit within limit
+                        logger.info(
+                            "Adapted signal amount to fit position size limit",
+                            asset=asset,
+                            strategy_id=strategy_id,
+                            original_amount=amount,
+                            adapted_amount=adapted_amount,
+                            current_position_size=position_size_check.get("current_position_size"),
+                            max_position_size=position_size_check.get("max_position_size"),
+                            trace_id=trace_id,
+                        )
+                        amount = adapted_amount
+                    else:
+                        # Cannot adapt - position already at or over limit
+                        reason = position_size_check.get("reason", "position_size_limit")
+                        signal_skip_metrics.record_skip(
+                            asset=asset,
+                            strategy_id=strategy_id,
+                            reason=reason,
+                        )
+                        logger.info(
+                            "Skipping BUY signal due to position size limit (cannot adapt)",
+                            asset=asset,
+                            strategy_id=strategy_id,
+                            current_position_size=position_size_check.get("current_position_size"),
+                            planned_order_quantity=position_size_check.get("planned_order_quantity"),
+                            new_position_size=position_size_check.get("new_position_size"),
+                            max_position_size=position_size_check.get("max_position_size"),
+                            reason=reason,
+                            trace_id=trace_id,
+                        )
+                        return None
 
             # Get model version string for signal
             if not model_version:
@@ -520,40 +559,114 @@ class IntelligentSignalGenerator:
         self,
         asset: str,
         strategy_id: str,
+        order_amount_usdt: float,
+        market_data_snapshot: MarketDataSnapshot,
         trace_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Check position size limit before generating BUY signal.
 
+        Checks if current position size + planned order quantity would exceed
+        ORDERMANAGER_MAX_POSITION_SIZE limit (same as order-manager uses).
+        
+        If limit would be exceeded, attempts to adapt order amount to fit within limit.
+        If position is already at/over limit, returns should_skip=True without adaptation.
+
         Args:
             asset: Trading pair symbol
             strategy_id: Trading strategy identifier
+            order_amount_usdt: Planned order amount in quote currency (USDT)
+            market_data_snapshot: Market data snapshot with current price
             trace_id: Trace ID for request flow tracking
 
         Returns:
             Dictionary with:
-                - should_skip: bool - whether to skip signal generation
+                - should_skip: bool - whether original amount exceeds limit
                 - reason: str - reason for skipping (if should_skip is True)
-                - position_size_norm: float - current position size normalized
-                - max_ratio_threshold: float - maximum allowed ratio
+                - current_position_size: float - current position size in base currency
+                - planned_order_quantity: float - planned order quantity in base currency
+                - new_position_size: float - new position size after order
+                - max_position_size: float - maximum allowed position size
+                - adapted_amount_usdt: Optional[float] - reduced amount that fits within limit (if available)
+                - adapted_order_quantity: Optional[float] - reduced quantity in base currency (if available)
         """
+        from decimal import Decimal
+
         try:
-            position_size_norm = await position_manager_client.get_position_size_norm(asset)
-            if position_size_norm is None:
-                # No position or error - allow signal generation
+            # Get current position size (absolute value in base currency)
+            current_position_size = await position_manager_client.get_position_size(asset)
+            if current_position_size is None:
+                # No position or error - treat as 0
+                current_position_size = 0.0
+
+            # Convert order amount (USDT) to order quantity (base currency)
+            if market_data_snapshot.price <= 0:
+                logger.warning(
+                    "Invalid market price for position size check",
+                    asset=asset,
+                    price=market_data_snapshot.price,
+                    trace_id=trace_id,
+                )
+                # On error, allow signal generation (fail open)
                 return {"should_skip": False}
 
-            max_ratio = settings.model_service_max_position_size_ratio
+            planned_order_quantity = Decimal(str(order_amount_usdt)) / Decimal(str(market_data_snapshot.price))
 
-            if position_size_norm > max_ratio:
-                return {
-                    "should_skip": True,
-                    "reason": "position_size_limit",
-                    "position_size_norm": position_size_norm,
-                    "max_ratio_threshold": max_ratio,
-                }
+            # Calculate new position size after order
+            current_size_decimal = Decimal(str(current_position_size))
+            new_position_size = current_size_decimal + planned_order_quantity
 
-            return {"should_skip": False}
+            # Get max position size limit (same as order-manager uses)
+            max_position_size = Decimal(str(settings.order_manager_max_position_size))
+
+            # Check if new position size would exceed limit
+            if abs(new_position_size) > max_position_size:
+                excess = abs(new_position_size) - max_position_size
+                excess_percentage = float((excess / abs(new_position_size)) * 100) if new_position_size != 0 else 0.0
+
+                # Calculate maximum allowed order quantity that fits within limit
+                max_allowed_quantity = max_position_size - abs(current_size_decimal)
+                
+                # If there's room for at least a minimal order (e.g., 0.001 of base currency)
+                min_order_quantity = Decimal("0.001")
+                if max_allowed_quantity >= min_order_quantity:
+                    # Calculate adapted amount in USDT
+                    adapted_order_quantity = max_allowed_quantity
+                    adapted_amount_usdt = float(adapted_order_quantity * Decimal(str(market_data_snapshot.price)))
+                    
+                    return {
+                        "should_skip": True,  # Original amount exceeds limit
+                        "reason": "position_size_limit",
+                        "current_position_size": float(current_position_size),
+                        "planned_order_quantity": float(planned_order_quantity),
+                        "new_position_size": float(new_position_size),
+                        "max_position_size": float(max_position_size),
+                        "excess": float(excess),
+                        "excess_percentage": excess_percentage,
+                        "adapted_amount_usdt": adapted_amount_usdt,  # Reduced amount that fits
+                        "adapted_order_quantity": float(adapted_order_quantity),
+                    }
+                else:
+                    # Position already at or over limit - cannot adapt
+                    return {
+                        "should_skip": True,
+                        "reason": "position_size_limit",
+                        "current_position_size": float(current_position_size),
+                        "planned_order_quantity": float(planned_order_quantity),
+                        "new_position_size": float(new_position_size),
+                        "max_position_size": float(max_position_size),
+                        "excess": float(excess),
+                        "excess_percentage": excess_percentage,
+                        "adapted_amount_usdt": None,  # Cannot adapt
+                    }
+
+            return {
+                "should_skip": False,
+                "current_position_size": float(current_position_size),
+                "planned_order_quantity": float(planned_order_quantity),
+                "new_position_size": float(new_position_size),
+                "max_position_size": float(max_position_size),
+            }
 
         except Exception as e:
             logger.error(
