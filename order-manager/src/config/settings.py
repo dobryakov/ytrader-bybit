@@ -99,6 +99,16 @@ class Settings(BaseSettings):
         default=3600, alias="ORDERMANAGER_INSTRUMENT_INFO_REFRESH_INTERVAL"
     )
 
+    # Pending Order Cancellation Configuration
+    order_manager_pending_order_timeout_minutes: int = Field(
+        default=5, alias="ORDERMANAGER_PENDING_ORDER_TIMEOUT_MINUTES",
+        description="Timeout in minutes after which pending orders will be automatically cancelled"
+    )
+    order_manager_pending_order_check_interval: int = Field(
+        default=60, alias="ORDERMANAGER_PENDING_ORDER_CHECK_INTERVAL",
+        description="Interval in seconds for checking pending orders that exceed timeout"
+    )
+
     # Order Cancellation Configuration
     order_manager_cancel_opposite_orders_only: bool = Field(
         default=False, alias="ORDERMANAGER_CANCEL_OPPOSITE_ORDERS_ONLY"

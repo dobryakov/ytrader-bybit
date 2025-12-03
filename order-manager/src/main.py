@@ -6,6 +6,7 @@ Handles service startup, dependency initialization, and graceful shutdown.
 import asyncio
 import signal
 from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import Optional
 
 import uvicorn
@@ -23,6 +24,7 @@ from .services.event_subscriber import EventSubscriber
 from .services.order_state_sync import OrderStateSync
 from .services.position_manager import PositionManager
 from .services.instrument_info_manager import InstrumentInfoRefreshTask
+from .services.order_executor import OrderExecutor
 
 # Configure logging first
 configure_logging()
@@ -225,6 +227,150 @@ class PositionValidationTask:
                 await asyncio.sleep(60)  # Wait before retrying
 
 
+class PendingOrderCancellationTask:
+    """Background task for cancelling pending orders that exceed timeout."""
+
+    def __init__(self):
+        """Initialize cancellation task."""
+        self._task: Optional[asyncio.Task] = None
+        self._should_run = False
+        self._order_executor = OrderExecutor()
+
+    async def start(self) -> None:
+        """Start the cancellation task."""
+        self._should_run = True
+        if self._task is None or self._task.done():
+            self._task = asyncio.create_task(self._cancellation_loop())
+        logger.info(
+            "pending_order_cancellation_task_started",
+            timeout_minutes=settings.order_manager_pending_order_timeout_minutes,
+            check_interval=settings.order_manager_pending_order_check_interval,
+        )
+
+    async def stop(self) -> None:
+        """Stop the cancellation task."""
+        self._should_run = False
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+            self._task = None
+        logger.info("pending_order_cancellation_task_stopped")
+
+    async def _cancellation_loop(self) -> None:
+        """Continuously check and cancel pending orders that exceed timeout."""
+        trace_id = generate_trace_id()
+        set_trace_id(trace_id)
+
+        while self._should_run:
+            try:
+                await asyncio.sleep(settings.order_manager_pending_order_check_interval)
+
+                if not self._should_run:
+                    break
+
+                # Query pending orders that exceed timeout
+                pool = await DatabaseConnection.get_pool()
+                timeout_minutes = settings.order_manager_pending_order_timeout_minutes
+                query = """
+                    SELECT id, order_id, asset, side, order_type, quantity, price, created_at
+                    FROM orders
+                    WHERE status = 'pending'
+                        AND created_at < NOW() - INTERVAL '1 minute' * $1
+                    ORDER BY created_at ASC
+                """
+                rows = await pool.fetch(query, timeout_minutes)
+
+                if not rows:
+                    continue
+
+                logger.info(
+                    "pending_orders_timeout_check",
+                    found_count=len(rows),
+                    timeout_minutes=timeout_minutes,
+                    trace_id=trace_id,
+                )
+
+                cancelled_count = 0
+                error_count = 0
+
+                for row in rows:
+                    try:
+                        order_id = row["order_id"]
+                        asset = row["asset"]
+                        order_age_minutes = (datetime.utcnow() - row["created_at"]).total_seconds() / 60
+
+                        logger.info(
+                            "cancelling_timeout_order",
+                            order_id=order_id,
+                            asset=asset,
+                            order_type=row["order_type"],
+                            age_minutes=round(order_age_minutes, 2),
+                            timeout_minutes=timeout_minutes,
+                            trace_id=trace_id,
+                        )
+
+                        # Cancel order via OrderExecutor
+                        success = await self._order_executor.cancel_order(
+                            order_id=order_id,
+                            asset=asset,
+                            trace_id=trace_id,
+                        )
+
+                        if success:
+                            cancelled_count += 1
+                            logger.info(
+                                "timeout_order_cancelled",
+                                order_id=order_id,
+                                asset=asset,
+                                age_minutes=round(order_age_minutes, 2),
+                                trace_id=trace_id,
+                            )
+                        else:
+                            error_count += 1
+                            logger.warning(
+                                "timeout_order_cancellation_failed",
+                                order_id=order_id,
+                                asset=asset,
+                                trace_id=trace_id,
+                            )
+
+                    except Exception as e:
+                        error_count += 1
+                        logger.error(
+                            "timeout_order_cancellation_error",
+                            order_id=row.get("order_id"),
+                            asset=row.get("asset"),
+                            error=str(e),
+                            trace_id=trace_id,
+                            exc_info=True,
+                        )
+
+                if cancelled_count > 0 or error_count > 0:
+                    logger.info(
+                        "pending_order_cancellation_completed",
+                        cancelled_count=cancelled_count,
+                        error_count=error_count,
+                        total_found=len(rows),
+                        trace_id=trace_id,
+                    )
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(
+                    "pending_order_cancellation_loop_error",
+                    error=str(e),
+                    error_type=type(e).__name__,
+                    trace_id=trace_id,
+                    exc_info=True,
+                )
+                # Continue loop even if error occurs
+                await asyncio.sleep(60)  # Wait before retrying
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager for startup and shutdown."""
@@ -314,6 +460,17 @@ async def lifespan(app: FastAPI):
             trace_id=trace_id,
         )
 
+        # Start background task for pending order cancellation
+        cancellation_task = PendingOrderCancellationTask()
+        await cancellation_task.start()
+        app.state.cancellation_task = cancellation_task
+        logger.info(
+            "pending_order_cancellation_task_started",
+            timeout_minutes=settings.order_manager_pending_order_timeout_minutes,
+            check_interval=settings.order_manager_pending_order_check_interval,
+            trace_id=trace_id,
+        )
+
         logger.info("application_started", port=settings.order_manager_port, trace_id=trace_id)
     except Exception as e:
         logger.error(
@@ -345,6 +502,11 @@ async def lifespan(app: FastAPI):
         if hasattr(app.state, "instrument_info_task"):
             await app.state.instrument_info_task.stop()
             logger.info("instrument_info_refresh_task_stopped")
+
+        # Stop pending order cancellation task
+        if hasattr(app.state, "cancellation_task"):
+            await app.state.cancellation_task.stop()
+            logger.info("pending_order_cancellation_task_stopped")
 
         # Stop event subscriber
         if hasattr(app.state, "event_subscriber") and app.state.event_subscriber is not None:
