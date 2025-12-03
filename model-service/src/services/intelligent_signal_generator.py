@@ -490,9 +490,40 @@ class IntelligentSignalGenerator:
             unrealized_pnl_pct = await position_manager_client.get_unrealized_pnl_pct(asset)
             if unrealized_pnl_pct is None:
                 # No position or error - continue with normal flow
+                logger.debug(
+                    "Take profit check: no position or error getting unrealized_pnl_pct",
+                    asset=asset,
+                    strategy_id=strategy_id,
+                    trace_id=trace_id,
+                )
                 return None
 
             take_profit_threshold = settings.model_service_take_profit_pct
+
+            # Validate unrealized_pnl_pct is reasonable (between -100% and 1000%)
+            unrealized_pnl_pct_float = float(unrealized_pnl_pct)
+            if unrealized_pnl_pct_float < -100.0 or unrealized_pnl_pct_float > 1000.0:
+                logger.warning(
+                    "Take profit check: unrealized_pnl_pct seems invalid, skipping take profit",
+                    asset=asset,
+                    strategy_id=strategy_id,
+                    unrealized_pnl_pct=unrealized_pnl_pct_float,
+                    take_profit_threshold=take_profit_threshold,
+                    trace_id=trace_id,
+                )
+                return None
+
+            # Log take profit check (INFO level for visibility)
+            logger.info(
+                "Take profit check",
+                asset=asset,
+                strategy_id=strategy_id,
+                unrealized_pnl_pct=unrealized_pnl_pct_float,
+                take_profit_threshold=take_profit_threshold,
+                threshold_exceeded=unrealized_pnl_pct_float > take_profit_threshold,
+                margin_to_threshold=take_profit_threshold - unrealized_pnl_pct_float,
+                trace_id=trace_id,
+            )
 
             if unrealized_pnl_pct > take_profit_threshold:
                 # Get position size to close

@@ -435,6 +435,29 @@ class PositionManager:
 
                     # Conflict resolution for average_entry_price
                     new_avg_price = self._resolve_avg_price(position.average_entry_price, avg_price)
+                    
+                    # Validate and fix average_entry_price if it seems invalid
+                    # (e.g., if it's more than 10x or less than 0.1x of current_price)
+                    if new_avg_price is not None and position.current_price is not None:
+                        current_price = position.current_price
+                        if new_avg_price > current_price * 10 or new_avg_price < current_price / 10:
+                            # Recalculate from unrealized_pnl if available
+                            if position.unrealized_pnl is not None and position.size != 0:
+                                recalculated = current_price - (position.unrealized_pnl / abs(position.size))
+                                if recalculated > 0:
+                                    logger.warning(
+                                        "avg_price_invalid_recalculated",
+                                        asset=asset,
+                                        mode=mode,
+                                        old_avg=str(new_avg_price),
+                                        recalculated_avg=str(recalculated),
+                                        current_price=str(current_price),
+                                        unrealized_pnl=str(position.unrealized_pnl),
+                                        size=str(position.size),
+                                        trace_id=trace_id,
+                                    )
+                                    new_avg_price = recalculated
+                    
                     if (
                         position.average_entry_price is not None
                         and avg_price is not None
