@@ -15,6 +15,7 @@ from ..models.signal import MarketDataSnapshot
 from ..consumers.market_data_consumer import market_data_cache
 from ..config.logging import get_logger
 from ..config.exceptions import ModelInferenceError
+from ..config.settings import settings
 
 logger = get_logger(__name__)
 
@@ -48,7 +49,11 @@ class ModelInference:
         """
         # Get market data snapshot if not provided
         if not market_data_snapshot:
-            market_data = market_data_cache.get_market_data(asset)
+            market_data = market_data_cache.get_market_data(
+                asset,
+                max_age_seconds=settings.market_data_max_age_seconds,
+                stale_warning_threshold_seconds=settings.market_data_stale_warning_threshold_seconds,
+            )
             if not market_data:
                 raise ModelInferenceError(f"Market data unavailable for asset {asset}")
 
@@ -400,7 +405,11 @@ class ModelInference:
         Returns:
             MarketDataSnapshot or None if data unavailable
         """
-        market_data = market_data_cache.get_market_data(asset)
+        market_data = market_data_cache.get_market_data(
+            asset,
+            max_age_seconds=settings.market_data_max_age_seconds,
+            stale_warning_threshold_seconds=settings.market_data_stale_warning_threshold_seconds,
+        )
         if not market_data:
             logger.warning("Market data unavailable", asset=asset)
             return None

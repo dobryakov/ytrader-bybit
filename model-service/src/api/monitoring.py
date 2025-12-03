@@ -17,6 +17,7 @@ from ..database.repositories.model_version_repo import ModelVersionRepository
 from ..database.connection import db_pool
 from ..config.logging import get_logger
 from ..services.signal_skip_metrics import signal_skip_metrics
+from ..services.signal_processing_metrics import signal_processing_metrics
 
 logger = get_logger(__name__)
 
@@ -69,6 +70,16 @@ class SignalSkipMetricsResponse(BaseModel):
     total_skips: int
     by_asset_strategy: dict
     by_reason: dict
+    last_reset: str
+
+
+class SignalProcessingDelayMetricsResponse(BaseModel):
+    """Signal processing delay metrics response."""
+
+    total_signals: int
+    average_delay_seconds: float
+    max_delay_seconds: float
+    bucket_counts: dict
     last_reset: str
 
 
@@ -343,4 +354,27 @@ async def get_signal_skip_metrics(
     except Exception as e:
         logger.error("Failed to get signal skip metrics", error=str(e), exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+
+@router.get("/monitoring/signals/processing-delay", response_model=SignalProcessingDelayMetricsResponse)
+async def get_signal_processing_delay_metrics() -> SignalProcessingDelayMetricsResponse:
+    """
+    Get metrics for signal processing delay between creation and publication.
+
+    Returns:
+        Signal processing delay metrics including averages, maximums, and bucket counts.
+    """
+    try:
+        metrics = signal_processing_metrics.get_metrics()
+        logger.info(
+            "Retrieved signal processing delay metrics",
+            total_signals=metrics["total_signals"],
+            average_delay_seconds=metrics["average_delay_seconds"],
+            max_delay_seconds=metrics["max_delay_seconds"],
+        )
+        return SignalProcessingDelayMetricsResponse(**metrics)
+    except Exception as e:
+        logger.error("Failed to get signal processing delay metrics", error=str(e), exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
 

@@ -5,7 +5,7 @@ Calculates maximum affordable amount for trading signals based on available bala
 """
 
 from typing import Optional
-from decimal import Decimal
+from datetime import datetime, timezone
 
 from ..database.repositories.account_balance_repo import AccountBalanceRepository
 from ..config.logging import get_logger
@@ -17,14 +17,18 @@ logger = get_logger(__name__)
 class BalanceCalculator:
     """Calculates signal amounts based on available balance."""
 
-    def __init__(self, safety_margin: float = 0.95):
+    def __init__(self, safety_margin: Optional[float] = None):
         """
         Initialize balance calculator.
 
         Args:
             safety_margin: Safety margin to leave (0.95 = use 95% of available balance)
         """
-        self.safety_margin = safety_margin
+        # Allow overriding safety margin for tests, otherwise use configuration
+        if safety_margin is not None:
+            self.safety_margin = safety_margin
+        else:
+            self.safety_margin = settings.balance_adaptation_safety_margin
         self.balance_repo = AccountBalanceRepository()
 
     def _extract_currencies(self, trading_pair: str) -> tuple[str, str]:
@@ -100,7 +104,7 @@ class BalanceCalculator:
         
         # Get latest balance for required currency
         balance_data = await self.balance_repo.get_latest_balance(required_currency)
-        
+
         if not balance_data:
             logger.warning(
                 "Balance data unavailable, cannot calculate affordable amount",
@@ -109,9 +113,47 @@ class BalanceCalculator:
                 required_currency=required_currency,
             )
             return None
-        
+
+        # Check balance data freshness
+        received_at = balance_data.get("received_at")
+        balance_age_seconds: Optional[float] = None
+        if received_at:
+            try:
+                now = datetime.now(timezone.utc)
+                if getattr(received_at, "tzinfo", None) is None:
+                    received_at = received_at.replace(tzinfo=timezone.utc)
+                balance_age_seconds = (now - received_at).total_seconds()
+                if balance_age_seconds > settings.balance_data_max_age_seconds:
+                    logger.warning(
+                        "Balance data is stale, skipping balance-based adaptation",
+                        trading_pair=trading_pair,
+                        signal_type=signal_type,
+                        required_currency=required_currency,
+                        balance_received_at=received_at.isoformat(),
+                        balance_age_seconds=balance_age_seconds,
+                        max_age_seconds=settings.balance_data_max_age_seconds,
+                    )
+                    return None
+            except Exception as e:
+                logger.warning(
+                    "Failed to evaluate balance data freshness, skipping adaptation",
+                    trading_pair=trading_pair,
+                    signal_type=signal_type,
+                    required_currency=required_currency,
+                    error=str(e),
+                )
+                return None
+        else:
+            logger.warning(
+                "Balance data missing received_at timestamp, cannot verify freshness",
+                trading_pair=trading_pair,
+                signal_type=signal_type,
+                required_currency=required_currency,
+            )
+            return None
+
         available_balance = float(balance_data["available_balance"])
-        
+
         # Apply safety margin
         usable_balance = available_balance * self.safety_margin
         
@@ -132,6 +174,7 @@ class BalanceCalculator:
                     requested_amount=requested_amount,
                     available_balance=available_balance,
                     usable_balance=usable_balance,
+                    balance_age_seconds=balance_age_seconds,
                 )
                 return requested_amount
             elif usable_balance > 0:
@@ -144,6 +187,7 @@ class BalanceCalculator:
                     adapted_amount=adapted_amount,
                     available_balance=available_balance,
                     usable_balance=usable_balance,
+                    balance_age_seconds=balance_age_seconds,
                 )
                 return round(adapted_amount, 2)
             else:
@@ -154,6 +198,7 @@ class BalanceCalculator:
                     requested_amount=requested_amount,
                     available_balance=available_balance,
                     usable_balance=usable_balance,
+                    balance_age_seconds=balance_age_seconds,
                 )
                 return None
         else:  # sell
@@ -163,7 +208,7 @@ class BalanceCalculator:
             # If we have base currency, we assume we can sell it
             base_currency, _ = self._extract_currencies(trading_pair)
             base_balance_data = await self.balance_repo.get_latest_balance(base_currency)
-            
+
             if not base_balance_data:
                 logger.warning(
                     "Base currency balance unavailable for sell order",
@@ -172,9 +217,47 @@ class BalanceCalculator:
                     requested_amount=requested_amount,
                 )
                 return None
-            
+
+            # Check base currency balance freshness separately
+            base_received_at = base_balance_data.get("received_at")
+            base_balance_age_seconds: Optional[float] = None
+            if base_received_at:
+                try:
+                    now = datetime.now(timezone.utc)
+                    if getattr(base_received_at, "tzinfo", None) is None:
+                        base_received_at = base_received_at.replace(tzinfo=timezone.utc)
+                    base_balance_age_seconds = (now - base_received_at).total_seconds()
+                    if base_balance_age_seconds > settings.balance_data_max_age_seconds:
+                        logger.warning(
+                            "Base currency balance data is stale, skipping balance-based adaptation",
+                            trading_pair=trading_pair,
+                            signal_type=signal_type,
+                            base_currency=base_currency,
+                            balance_received_at=base_received_at.isoformat(),
+                            balance_age_seconds=base_balance_age_seconds,
+                            max_age_seconds=settings.balance_data_max_age_seconds,
+                        )
+                        return None
+                except Exception as e:
+                    logger.warning(
+                        "Failed to evaluate base currency balance freshness, skipping adaptation",
+                        trading_pair=trading_pair,
+                        signal_type=signal_type,
+                        base_currency=base_currency,
+                        error=str(e),
+                    )
+                    return None
+            else:
+                logger.warning(
+                    "Base currency balance data missing received_at timestamp, cannot verify freshness",
+                    trading_pair=trading_pair,
+                    signal_type=signal_type,
+                    base_currency=base_currency,
+                )
+                return None
+
             base_available = float(base_balance_data["available_balance"])
-            
+
             # For sell orders, if we have base currency, we can proceed
             # The amount check is more complex (needs price conversion), but for now
             # we'll return requested_amount if we have any base currency
@@ -185,6 +268,7 @@ class BalanceCalculator:
                     base_currency=base_currency,
                     base_available=base_available,
                     requested_amount=requested_amount,
+                    balance_age_seconds=base_balance_age_seconds,
                 )
                 return requested_amount
             else:
@@ -194,6 +278,7 @@ class BalanceCalculator:
                     base_currency=base_currency,
                     base_available=base_available,
                     requested_amount=requested_amount,
+                    balance_age_seconds=base_balance_age_seconds,
                 )
                 return None
 

@@ -91,6 +91,26 @@ class Settings(BaseSettings):
     model_service_take_profit_pct: float = Field(default=3.0, alias="MODEL_SERVICE_TAKE_PROFIT_PCT")
     model_service_max_position_size_ratio: float = Field(default=0.8, alias="MODEL_SERVICE_MAX_POSITION_SIZE_RATIO")
 
+    # Balance Adaptation Configuration
+    balance_adaptation_safety_margin: float = Field(
+        default=0.95,
+        alias="BALANCE_ADAPTATION_SAFETY_MARGIN",
+    )
+    balance_data_max_age_seconds: int = Field(default=60, alias="BALANCE_DATA_MAX_AGE_SECONDS")
+
+    # Market Data Cache Freshness Configuration
+    market_data_max_age_seconds: int = Field(default=60, alias="MARKET_DATA_MAX_AGE_SECONDS")
+    market_data_stale_warning_threshold_seconds: int = Field(
+        default=30,
+        alias="MARKET_DATA_STALE_WARNING_THRESHOLD_SECONDS",
+    )
+
+    # Signal Processing Delay Monitoring
+    signal_processing_delay_alert_threshold_seconds: int = Field(
+        default=300,
+        alias="SIGNAL_PROCESSING_DELAY_ALERT_THRESHOLD_SECONDS",
+    )
+
     # Position Cache Configuration (for optimization)
     position_cache_enabled: bool = Field(default=True, alias="POSITION_CACHE_ENABLED")
     position_cache_ttl_seconds: int = Field(default=30, alias="POSITION_CACHE_TTL_SECONDS")
@@ -285,6 +305,42 @@ class Settings(BaseSettings):
 
         if not 0.0 <= self.model_service_max_position_size_ratio <= 1.0:
             errors.append(f"MODEL_SERVICE_MAX_POSITION_SIZE_RATIO must be between 0.0 and 1.0, got {self.model_service_max_position_size_ratio}")
+
+        # Validate balance adaptation configuration
+        if not 0.0 < self.balance_adaptation_safety_margin <= 1.0:
+            errors.append(
+                f"BALANCE_ADAPTATION_SAFETY_MARGIN must be between 0.0 (exclusive) and 1.0 (inclusive), "
+                f"got {self.balance_adaptation_safety_margin}"
+            )
+        if self.balance_data_max_age_seconds <= 0:
+            errors.append(
+                f"BALANCE_DATA_MAX_AGE_SECONDS must be positive, got {self.balance_data_max_age_seconds}"
+            )
+
+        # Validate market data cache freshness configuration
+        if self.market_data_max_age_seconds <= 0:
+            errors.append(
+                f"MARKET_DATA_MAX_AGE_SECONDS must be positive, got {self.market_data_max_age_seconds}"
+            )
+        if self.market_data_stale_warning_threshold_seconds <= 0:
+            errors.append(
+                "MARKET_DATA_STALE_WARNING_THRESHOLD_SECONDS must be positive, "
+                f"got {self.market_data_stale_warning_threshold_seconds}"
+            )
+        if self.market_data_stale_warning_threshold_seconds >= self.market_data_max_age_seconds:
+            errors.append(
+                "MARKET_DATA_STALE_WARNING_THRESHOLD_SECONDS must be less than "
+                "MARKET_DATA_MAX_AGE_SECONDS "
+                f"(got {self.market_data_stale_warning_threshold_seconds} "
+                f"and {self.market_data_max_age_seconds})"
+            )
+
+        # Validate signal processing delay alert threshold
+        if self.signal_processing_delay_alert_threshold_seconds <= 0:
+            errors.append(
+                "SIGNAL_PROCESSING_DELAY_ALERT_THRESHOLD_SECONDS must be positive, "
+                f"got {self.signal_processing_delay_alert_threshold_seconds}"
+            )
 
         # Validate position cache configuration
         if self.position_cache_enabled:

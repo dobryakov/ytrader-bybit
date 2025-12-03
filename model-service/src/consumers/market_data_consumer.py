@@ -9,7 +9,7 @@ import json
 import asyncio
 import threading
 from typing import Dict, Optional, Any
-from datetime import datetime
+from datetime import datetime, timezone
 from collections import defaultdict
 
 import aio_pika
@@ -81,7 +81,12 @@ class MarketDataCache:
             self._cache[symbol]["volatility"] = volatility
             self._cache[symbol]["last_updated"] = datetime.utcnow()
 
-    def get_market_data(self, symbol: str) -> Optional[Dict[str, Any]]:
+    def get_market_data(
+        self,
+        symbol: str,
+        max_age_seconds: Optional[int] = None,
+        stale_warning_threshold_seconds: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
         """
         Get latest market data for a symbol.
 
@@ -101,6 +106,53 @@ class MarketDataCache:
             if not all(field in data for field in required_fields):
                 return None
 
+            # Optionally enforce freshness based on last_updated timestamp
+            last_updated = data.get("last_updated")
+            age_seconds: Optional[float] = None
+            if max_age_seconds is not None:
+                if not last_updated:
+                    # Without a timestamp we cannot guarantee freshness; treat as stale
+                    logger.warning(
+                        "Market data missing last_updated timestamp, treating as stale",
+                        symbol=symbol,
+                        max_age_seconds=max_age_seconds,
+                    )
+                    return None
+
+                try:
+                    now = datetime.now(timezone.utc)
+                    if getattr(last_updated, "tzinfo", None) is None:
+                        last_updated = last_updated.replace(tzinfo=timezone.utc)
+                    age_seconds = (now - last_updated).total_seconds()
+
+                    if age_seconds > max_age_seconds:
+                        logger.warning(
+                            "Market data is stale, returning None",
+                            symbol=symbol,
+                            age_seconds=age_seconds,
+                            max_age_seconds=max_age_seconds,
+                        )
+                        return None
+
+                    if (
+                        stale_warning_threshold_seconds is not None
+                        and age_seconds > stale_warning_threshold_seconds
+                    ):
+                        logger.warning(
+                            "Market data approaching staleness threshold",
+                            symbol=symbol,
+                            age_seconds=age_seconds,
+                            max_age_seconds=max_age_seconds,
+                            warning_threshold_seconds=stale_warning_threshold_seconds,
+                        )
+                except Exception as e:
+                    logger.warning(
+                        "Failed to evaluate market data freshness, treating as stale",
+                        symbol=symbol,
+                        error=str(e),
+                    )
+                    return None
+
             return {
                 "price": data.get("price"),
                 "spread": data.get("spread"),
@@ -111,6 +163,7 @@ class MarketDataCache:
                     "ask_depth": data.get("ask_depth"),
                 } if "bid_depth" in data or "ask_depth" in data else None,
                 "last_updated": data.get("last_updated"),
+                "age_seconds": age_seconds,
             }
 
     def clear(self, symbol: Optional[str] = None) -> None:

@@ -60,8 +60,12 @@ class WarmUpSignalGenerator:
 
         logger.info("Generating warm-up signal", asset=asset, strategy_id=strategy_id)
 
-        # Retrieve market data snapshot
-        market_data = market_data_cache.get_market_data(asset)
+        # Retrieve market data snapshot with freshness checks
+        market_data = market_data_cache.get_market_data(
+            asset,
+            max_age_seconds=settings.market_data_max_age_seconds,
+            stale_warning_threshold_seconds=settings.market_data_stale_warning_threshold_seconds,
+        )
         if not market_data:
             logger.warning(
                 "Market data unavailable, skipping signal generation",
@@ -215,10 +219,12 @@ class WarmUpSignalGenerator:
         last_updated = market_data.get("last_updated")
         if last_updated:
             age_seconds = (datetime.utcnow() - last_updated).total_seconds()
-            # Reduce confidence if data is stale (>60 seconds)
-            if age_seconds > 60:
+            max_age = settings.market_data_max_age_seconds
+            warning_age = settings.market_data_stale_warning_threshold_seconds
+            # Reduce confidence if data is stale or approaching staleness
+            if age_seconds > max_age:
                 base_confidence *= 0.7
-            elif age_seconds > 30:
+            elif age_seconds > warning_age:
                 base_confidence *= 0.9
 
         # Add some randomness based on randomness level

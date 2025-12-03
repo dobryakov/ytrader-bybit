@@ -206,6 +206,38 @@ This endpoint provides:
 
 Skip events are also logged with structured logging including asset, strategy_id, existing_order_id, order_status, and reason.
 
+## Market Data & Balance Freshness, Signal Delay Monitoring
+
+The model service includes additional safeguards to avoid acting on stale data and to monitor end-to-end signal latency:
+
+- **`BALANCE_ADAPTATION_SAFETY_MARGIN`** (default: `0.95`):
+  - Fraction of available balance that can be used when adapting signal amounts.
+  - Example: `0.95` means at most 95% of available balance is used when adjusting order size.
+
+- **`BALANCE_DATA_MAX_AGE_SECONDS`** (default: `60`):
+  - Maximum acceptable age of balance snapshots from the `account_balances` table.
+  - If balance data is older than this threshold, balance-aware adaptation is skipped and the signal is not generated to avoid using stale balances.
+
+- **`MARKET_DATA_MAX_AGE_SECONDS`** (default: `60`):
+  - Maximum acceptable age of cached market data from `MarketDataCache`.
+  - If cached market data is older than this value, it is treated as stale and signal generation is skipped for the affected asset.
+
+- **`MARKET_DATA_STALE_WARNING_THRESHOLD_SECONDS`** (default: `30`):
+  - Warning threshold for market data staleness.
+  - When market data age exceeds this value but is still below `MARKET_DATA_MAX_AGE_SECONDS`, warnings are logged but data is still used.
+
+- **`SIGNAL_PROCESSING_DELAY_ALERT_THRESHOLD_SECONDS`** (default: `300`):
+  - Alert threshold (in seconds) for delay between signal creation time and publication time.
+  - When the delay exceeds this threshold, a warning is logged and the event is reflected in the signal processing delay metrics.
+
+Signal processing delay metrics can be queried via the monitoring API:
+
+```bash
+GET /api/v1/monitoring/signals/processing-delay
+```
+
+The response includes total signals, average delay, maximum delay, and histogram bucket counts useful for Grafana dashboards.
+
 ## API Endpoints
 
 All API endpoints (except `/health`) require authentication via the `X-API-Key` header. The API key is configured via the `MODEL_SERVICE_API_KEY` environment variable.

@@ -6,6 +6,7 @@ and persists them to PostgreSQL database for Grafana monitoring dashboard visibi
 """
 
 import json
+from datetime import datetime
 from typing import Optional
 
 import aio_pika
@@ -15,6 +16,8 @@ from ..config.rabbitmq import rabbitmq_manager
 from ..config.logging import get_logger, bind_context
 from ..config.exceptions import MessageQueueError
 from ..database.repositories.trading_signal_repo import TradingSignalRepository
+from ..config.settings import settings
+from ..services.signal_processing_metrics import signal_processing_metrics
 
 logger = get_logger(__name__)
 
@@ -63,6 +66,42 @@ class SignalPublisher:
             strategy_id=signal.strategy_id,
             trace_id=signal.trace_id,
         )
+
+        # Calculate processing delay between signal creation and publication attempt
+        try:
+            signal_creation_time = signal.timestamp
+            publication_time = datetime.utcnow()
+            processing_delay_seconds = (publication_time - signal_creation_time).total_seconds()
+
+            # Record metrics for monitoring
+            signal_processing_metrics.record_delay(processing_delay_seconds)
+
+            # Log structured delay information
+            logger.info(
+                "Signal processing delay measured",
+                signal_id=signal.signal_id,
+                strategy_id=signal.strategy_id,
+                signal_creation_time=signal_creation_time.isoformat() + "Z",
+                signal_publication_time=publication_time.isoformat() + "Z",
+                processing_delay_seconds=processing_delay_seconds,
+            )
+
+            # Emit warning if delay exceeds configured alert threshold
+            if processing_delay_seconds > settings.signal_processing_delay_alert_threshold_seconds:
+                logger.warning(
+                    "Signal processing delay exceeded alert threshold",
+                    signal_id=signal.signal_id,
+                    strategy_id=signal.strategy_id,
+                    processing_delay_seconds=processing_delay_seconds,
+                    alert_threshold_seconds=settings.signal_processing_delay_alert_threshold_seconds,
+                )
+        except Exception as e:
+            # Delay measurement issues should not block publishing
+            logger.warning(
+                "Failed to measure signal processing delay (continuing)",
+                signal_id=getattr(signal, \"signal_id\", None),
+                error=str(e),
+            )
 
         async def _publish_attempt():
             # Convert signal to dictionary
