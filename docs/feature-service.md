@@ -13,6 +13,18 @@ Feature Service — выделенный сервис для:
 
 ---
 
+## Clarifications
+
+### Session 2025-01-27
+
+- Q: Message queue naming convention for market data from ws-gateway → A: Use `ws-gateway.*` prefix to match existing pattern (e.g., `ws-gateway.orderbook`, `ws-gateway.trades`)
+- Q: Storage technology for raw Parquet data files → A: Local filesystem in container (mounted volumes)
+- Q: API authentication method for REST endpoints → A: API Key authentication (API key in header or query parameter)
+- Q: Minimum data retention period for raw data → A: 90 days (3 months) before archiving/deletion
+- Q: Position Manager data source priority (REST API vs events) → A: Events as primary, REST API as fallback (events for real-time updates, REST for initialization/recovery)
+
+---
+
 ## 2. Границы и обязанности
 
 Feature Service обязан:
@@ -31,15 +43,14 @@ Feature Service обязан:
 
 Сервис не подключается к Bybit сам; он подписывается на внутренние потоки:
 
-Через внутренние очереди/шину (имена абстрактные, NEEDS CLARIFICATION):
+Через внутренние очереди RabbitMQ (согласовано с ws-gateway):
 
-- market.orderbook.snapshot
-- market.orderbook.delta
-- market.trades
-- market.kline.1s / market.kline.1m
-- market.ticker
-- market.funding
-- (опционально) trading.executions — события исполнения собственных ордеров.
+- `ws-gateway.orderbook` — события стакана (snapshot и delta)
+- `ws-gateway.trades` — события сделок
+- `ws-gateway.kline` — свечные данные (1s, 1m и другие интервалы)
+- `ws-gateway.ticker` — данные тикера
+- `ws-gateway.funding` — данные funding rate
+- (опционально) `ws-gateway.order` или отдельная очередь для `trading.executions` — события исполнения собственных ордеров
 
 ### Требования к приёму
 
@@ -57,18 +68,19 @@ Feature Service обязан:
 Требования:
 
 - Формат: Parquet/Columnar (оптимально для оффлайн пересборки).
+- Хранилище: Локальная файловая система в контейнере (mounted volumes через docker-compose).
 
-Структуры:
+Структуры (каталоги/файлы Parquet):
 
-- raw_orderbook_snapshots
-- raw_orderbook_deltas
-- raw_trades
-- raw_kline
-- raw_ticker
-- raw_funding
-- raw_executions
+- `raw_orderbook_snapshots/` — файлы Parquet со snapshot стакана
+- `raw_orderbook_deltas/` — файлы Parquet с дельтами стакана
+- `raw_trades/` — файлы Parquet со сделками
+- `raw_kline/` — файлы Parquet со свечными данными
+- `raw_ticker/` — файлы Parquet с тикерами
+- `raw_funding/` — файлы Parquet с funding rate
+- `raw_executions/` — файлы Parquet с событиями исполнения ордеров
 
-Хранить минимум N дней (параметр в конфигурации); поддерживать архивирование.
+Хранить минимум 90 дней (3 месяца) — параметр конфигурируемый, по умолчанию 90 дней; поддерживать архивирование (перемещение старых файлов в архивный каталог или удаление после истечения срока хранения).
 
 ---
 
@@ -264,6 +276,13 @@ model-service должен:
 ## 9. API
 
 Public (внутренний) API Feature Service:
+
+### Аутентификация
+
+Все endpoints (кроме `/health`) требуют аутентификацию через API Key:
+
+- Header: `X-API-Key: <api_key>`
+- Query parameter: `?api_key=<api_key>` (альтернативный вариант)
 
 ### Online Features
 
@@ -586,9 +605,15 @@ model-service должен:
 
 **Online режим (realtime):**
 
-- **Position Manager REST API**: `GET /api/v1/positions/{asset}` для получения текущего состояния позиции
-- **Position Manager Events**: очередь `position-manager.position_updated` для получения обновлений в реальном времени
-- **Кэширование**: in-memory кэш с TTL для оптимизации запросов
+- **Position Manager Events (основной источник)**: очередь `position-manager.position_updated` для получения обновлений в реальном времени
+  - Подписка на события при старте сервиса
+  - Обновление кэша при каждом событии
+  - Обеспечивает минимальную латентность обновления position-признаков
+- **Position Manager REST API (резервный источник)**: `GET /api/v1/positions/{asset}` используется для:
+  - Инициализации при старте сервиса (получение текущего состояния)
+  - Восстановления после пропуска событий (если обнаружен gap в событиях)
+  - Периодической синхронизации (опционально, для проверки консистентности)
+- **Кэширование**: in-memory кэш с TTL ≤ 30 секунд для оптимизации запросов и обеспечения актуальности данных
 
 **Offline режим (пересборка датасетов):**
 
