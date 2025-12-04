@@ -9,6 +9,7 @@ Auto-generated from all feature plans. Last updated: 2025-11-25
 - Grafana (containerized, official Grafana image version 10.4.0 or latest stable) (001-grafana-monitoring)
 - Python 3.11+ + FastAPI, pydantic-settings, structlog, asyncpg (or SQLAlchemy async), aio-pika (RabbitMQ), httpx (for external API calls) (001-position-management)
 - PostgreSQL (shared database, tables `positions`, `position_snapshots`) (001-position-management)
+- Python 3.11+ (async/await support for message queue consumers and REST API) (005-feature-service)
 
 - Python 3.11+ (async/await support for WebSocket handling) (001-websocket-gateway)
 
@@ -28,9 +29,9 @@ cd src [ONLY COMMANDS FOR ACTIVE TECHNOLOGIES][ONLY COMMANDS FOR ACTIVE TECHNOLO
 Python 3.11+ (async/await support for WebSocket handling): Follow standard conventions
 
 ## Recent Changes
+- 005-feature-service: Added Python 3.11+ (async/await support for message queue consumers and REST API)
 - 001-position-management: Added Python 3.11+ + FastAPI, pydantic-settings, structlog, asyncpg (or SQLAlchemy async), aio-pika (RabbitMQ), httpx (for external API calls)
 - 001-grafana-monitoring: Added Grafana (containerized, official Grafana image version 10.4.0 or latest stable)
-- 004-order-manager: Added Python 3.11+ (async/await support for concurrent order processing and WebSocket event handling)
 
 
 <!-- MANUAL ADDITIONS START -->

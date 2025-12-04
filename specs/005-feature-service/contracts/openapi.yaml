@@ -1,0 +1,940 @@
+openapi: 3.0.3
+info:
+  title: Feature Service API
+  description: API for real-time feature computation, dataset building, Feature Registry management, and data quality reporting
+  version: 1.0.0
+  contact:
+    name: Feature Service
+servers:
+  - url: http://localhost:4500
+    description: Local development server
+  - url: https://api.ytrader.local/feature-service
+    description: Production server
+
+security:
+  - ApiKeyAuth: []
+
+tags:
+  - name: Features
+    description: Real-time feature computation and retrieval
+  - name: Datasets
+    description: Dataset building and management
+  - name: Model Evaluation
+    description: Model evaluation dataset preparation
+  - name: Feature Registry
+    description: Feature Registry configuration management
+  - name: Data Quality
+    description: Data quality monitoring and reporting
+  - name: Health
+    description: Health check endpoints
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: API key for authentication (required for all endpoints except health checks)
+
+  schemas:
+    FeatureVector:
+      type: object
+      required:
+        - timestamp
+        - symbol
+        - features
+        - feature_registry_version
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+          description: Timestamp when features were computed
+        symbol:
+          type: string
+          example: BTCUSDT
+          description: Trading pair symbol
+        features:
+          type: object
+          description: Computed feature values
+          properties:
+            # Price features
+            mid_price:
+              type: number
+              format: float
+            spread_abs:
+              type: number
+              format: float
+            spread_rel:
+              type: number
+              format: float
+            returns_1s:
+              type: number
+              format: float
+            returns_3s:
+              type: number
+              format: float
+            returns_1m:
+              type: number
+              format: float
+            vwap_3s:
+              type: number
+              format: float
+            vwap_15s:
+              type: number
+              format: float
+            vwap_1m:
+              type: number
+              format: float
+            volume_3s:
+              type: number
+              format: float
+            volume_15s:
+              type: number
+              format: float
+            volume_1m:
+              type: number
+              format: float
+            volatility_1m:
+              type: number
+              format: float
+            volatility_5m:
+              type: number
+              format: float
+            # Orderflow features
+            signed_volume_3s:
+              type: number
+              format: float
+            signed_volume_15s:
+              type: number
+              format: float
+            signed_volume_1m:
+              type: number
+              format: float
+            buy_sell_volume_ratio:
+              type: number
+              format: float
+            trade_count_3s:
+              type: integer
+            net_aggressor_pressure:
+              type: number
+              format: float
+            # Orderbook features
+            depth_bid_top5:
+              type: number
+              format: float
+            depth_bid_top10:
+              type: number
+              format: float
+            depth_ask_top5:
+              type: number
+              format: float
+            depth_ask_top10:
+              type: number
+              format: float
+            depth_imbalance_top5:
+              type: number
+              format: float
+            slope_bid:
+              type: number
+              format: float
+            slope_ask:
+              type: number
+              format: float
+            orderbook_churn_rate:
+              type: number
+              format: float
+            local_liquidity_density:
+              type: number
+              format: float
+            # Perpetual features
+            funding_rate:
+              type: number
+              format: float
+            time_to_funding:
+              type: number
+              format: float
+            # Temporal/meta features
+            time_of_day:
+              type: number
+              format: float
+              description: Numeric representation (0-24)
+            rolling_z_score:
+              type: number
+              format: float
+            # Position features
+            position_size:
+              type: number
+              format: float
+              description: Positive for long, negative for short
+            position_size_abs:
+              type: number
+              format: float
+            unrealized_pnl:
+              type: number
+              format: float
+            realized_pnl:
+              type: number
+              format: float
+            has_position:
+              type: integer
+              description: Binary: 1 if position exists, 0 otherwise
+            entry_price:
+              type: number
+              format: float
+            price_vs_entry:
+              type: number
+              format: float
+              description: Percentage deviation from entry price
+            total_exposure:
+              type: number
+              format: float
+            total_exposure_abs:
+              type: number
+              format: float
+        feature_registry_version:
+          type: string
+          description: Version of Feature Registry used
+        trace_id:
+          type: string
+          description: Trace ID for request flow tracking
+
+    DatasetBuildRequest:
+      type: object
+      required:
+        - symbol
+        - split_strategy
+        - target_config
+        - feature_registry_version
+      properties:
+        symbol:
+          type: string
+          example: BTCUSDT
+        split_strategy:
+          type: string
+          enum: [time_based, walk_forward]
+        # Time-based split configuration
+        train_period_start:
+          type: string
+          format: date-time
+        train_period_end:
+          type: string
+          format: date-time
+        validation_period_start:
+          type: string
+          format: date-time
+        validation_period_end:
+          type: string
+          format: date-time
+        test_period_start:
+          type: string
+          format: date-time
+        test_period_end:
+          type: string
+          format: date-time
+        # Walk-forward configuration
+        walk_forward_config:
+          type: object
+          properties:
+            train_window_days:
+              type: integer
+              example: 30
+            validation_window_days:
+              type: integer
+              example: 7
+            step_days:
+              type: integer
+              example: 7
+            start_date:
+              type: string
+              format: date-time
+            end_date:
+              type: string
+              format: date-time
+            min_train_samples:
+              type: integer
+              example: 1000
+        target_config:
+          type: object
+          required:
+            - type
+            - horizon
+          properties:
+            type:
+              type: string
+              enum: [regression, classification, risk_adjusted]
+            horizon:
+              type: string
+              enum: [1m, 5m, 15m, 1h]
+            threshold:
+              type: number
+              format: float
+              description: Threshold for classification (default 0.001 = 0.1%)
+        feature_registry_version:
+          type: string
+        data_leakage_check:
+          type: boolean
+          default: true
+        output_format:
+          type: string
+          enum: [parquet, csv, hdf5]
+          default: parquet
+
+    DatasetBuildResponse:
+      type: object
+      required:
+        - dataset_id
+        - status
+      properties:
+        dataset_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [building, ready, failed]
+        estimated_completion:
+          type: string
+          format: date-time
+        splits_info:
+          type: object
+          properties:
+            train:
+              type: object
+              properties:
+                records:
+                  type: integer
+                period_start:
+                  type: string
+                  format: date-time
+                period_end:
+                  type: string
+                  format: date-time
+            validation:
+              type: object
+              properties:
+                records:
+                  type: integer
+                period_start:
+                  type: string
+                  format: date-time
+                period_end:
+                  type: string
+                  format: date-time
+            test:
+              type: object
+              properties:
+                records:
+                  type: integer
+                period_start:
+                  type: string
+                  format: date-time
+                period_end:
+                  type: string
+                  format: date-time
+        error_message:
+          type: string
+
+    DatasetListItem:
+      type: object
+      properties:
+        dataset_id:
+          type: string
+          format: uuid
+        symbol:
+          type: string
+        status:
+          type: string
+          enum: [building, ready, failed]
+        split_strategy:
+          type: string
+          enum: [time_based, walk_forward]
+        train_records:
+          type: integer
+        validation_records:
+          type: integer
+        test_records:
+          type: integer
+        feature_registry_version:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+
+    DatasetMetadata:
+      type: object
+      properties:
+        dataset_id:
+          type: string
+          format: uuid
+        symbol:
+          type: string
+        status:
+          type: string
+          enum: [building, ready, failed]
+        split_strategy:
+          type: string
+          enum: [time_based, walk_forward]
+        train_period_start:
+          type: string
+          format: date-time
+        train_period_end:
+          type: string
+          format: date-time
+        validation_period_start:
+          type: string
+          format: date-time
+        validation_period_end:
+          type: string
+          format: date-time
+        test_period_start:
+          type: string
+          format: date-time
+        test_period_end:
+          type: string
+          format: date-time
+        walk_forward_config:
+          type: object
+        target_config:
+          type: object
+        feature_registry_version:
+          type: string
+        train_records:
+          type: integer
+        validation_records:
+          type: integer
+        test_records:
+          type: integer
+        output_format:
+          type: string
+        storage_path:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+
+    FeatureRegistry:
+      type: object
+      properties:
+        version:
+          type: string
+        config:
+          type: object
+          description: Feature Registry configuration (YAML converted to JSON)
+        is_active:
+          type: boolean
+        validated_at:
+          type: string
+          format: date-time
+        validation_errors:
+          type: array
+          items:
+            type: string
+        loaded_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+
+    FeatureRegistryValidationResponse:
+      type: object
+      properties:
+        is_valid:
+          type: boolean
+        validation_errors:
+          type: array
+          items:
+            type: string
+        warnings:
+          type: array
+          items:
+            type: string
+
+    DataQualityReport:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        symbol:
+          type: string
+        period_start:
+          type: string
+          format: date-time
+        period_end:
+          type: string
+          format: date-time
+        missing_rate:
+          type: number
+          format: float
+          description: Missing data rate (0.0 to 1.0)
+        anomaly_rate:
+          type: number
+          format: float
+          description: Anomaly detection rate (0.0 to 1.0)
+        sequence_gaps:
+          type: integer
+          description: Number of sequence gaps detected
+        desynchronization_events:
+          type: integer
+          description: Number of orderbook desynchronization events
+        anomaly_details:
+          type: object
+          description: Detailed anomaly information
+        sequence_gap_details:
+          type: object
+          description: Detailed sequence gap information
+        recommendations:
+          type: array
+          items:
+            type: string
+        created_at:
+          type: string
+          format: date-time
+
+    ModelEvaluateRequest:
+      type: object
+      required:
+        - dataset_id
+        - split
+        - model_version
+      properties:
+        dataset_id:
+          type: string
+          format: uuid
+        split:
+          type: string
+          enum: [test, validation]
+        model_version:
+          type: string
+        metrics_to_compute:
+          type: array
+          items:
+            type: string
+
+    ModelEvaluateResponse:
+      type: object
+      properties:
+        evaluation_id:
+          type: string
+          format: uuid
+        dataset_id:
+          type: string
+          format: uuid
+        split:
+          type: string
+        model_version:
+          type: string
+        metrics:
+          type: array
+          items:
+            type: string
+        prepared_dataset_url:
+          type: string
+        metadata:
+          type: object
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+        trace_id:
+          type: string
+
+    HealthCheck:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [healthy, unhealthy]
+        timestamp:
+          type: string
+          format: date-time
+        services:
+          type: object
+          properties:
+            database:
+              type: string
+              enum: [connected, disconnected]
+            message_queue:
+              type: string
+              enum: [connected, disconnected]
+            position_manager:
+              type: string
+              enum: [connected, disconnected]
+
+paths:
+  /health:
+    get:
+      tags:
+        - Health
+      summary: Health check endpoint
+      description: Returns service health status (no authentication required)
+      security: []
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthCheck'
+
+  /features/latest:
+    get:
+      tags:
+        - Features
+      summary: Get latest features for a symbol
+      description: Returns the latest computed feature vector for a symbol (FR-029)
+      operationId: getLatestFeatures
+      parameters:
+        - name: symbol
+          in: query
+          required: true
+          schema:
+            type: string
+            example: BTCUSDT
+          description: Trading pair symbol
+      responses:
+        '200':
+          description: Latest feature vector
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FeatureVector'
+        '404':
+          description: No features available for symbol
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /dataset/build:
+    post:
+      tags:
+        - Datasets
+      summary: Build a dataset for model training
+      description: Creates a dataset building request with time-based or walk-forward split configuration (FR-031, FR-032)
+      operationId: buildDataset
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DatasetBuildRequest'
+      responses:
+        '202':
+          description: Dataset building request accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DatasetBuildResponse'
+        '400':
+          description: Invalid request (overlapping periods, invalid configuration)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /dataset/list:
+    get:
+      tags:
+        - Datasets
+      summary: List available datasets
+      description: Returns list of available datasets with optional filters (FR-034)
+      operationId: listDatasets
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [building, ready, failed]
+          description: Filter by status
+        - name: symbol
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter by symbol
+      responses:
+        '200':
+          description: List of datasets
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/DatasetListItem'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /dataset/{dataset_id}:
+    get:
+      tags:
+        - Datasets
+      summary: Get dataset metadata
+      description: Returns detailed metadata for a dataset (FR-035)
+      operationId: getDatasetMetadata
+      parameters:
+        - name: dataset_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Dataset metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DatasetMetadata'
+        '404':
+          description: Dataset not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /dataset/{dataset_id}/download:
+    get:
+      tags:
+        - Datasets
+      summary: Download dataset split
+      description: Downloads a dataset split (train, validation, test, or all) (FR-036)
+      operationId: downloadDataset
+      parameters:
+        - name: dataset_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: split
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [train, validation, test, all]
+            default: all
+          description: Dataset split to download
+      responses:
+        '200':
+          description: Dataset file download
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '404':
+          description: Dataset or split not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /model/evaluate:
+    post:
+      tags:
+        - Model Evaluation
+      summary: Prepare dataset for model evaluation
+      description: Prepares a dataset for model evaluation with specified metrics (FR-038)
+      operationId: evaluateModel
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModelEvaluateRequest'
+      responses:
+        '200':
+          description: Evaluation dataset prepared
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelEvaluateResponse'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Dataset not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /feature-registry:
+    get:
+      tags:
+        - Feature Registry
+      summary: Get current Feature Registry
+      description: Returns the current active Feature Registry version and configuration (FR-039)
+      operationId: getFeatureRegistry
+      responses:
+        '200':
+          description: Feature Registry configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FeatureRegistry'
+        '404':
+          description: No active Feature Registry found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /feature-registry/reload:
+    post:
+      tags:
+        - Feature Registry
+      summary: Reload Feature Registry configuration
+      description: Reloads the Feature Registry configuration from storage (FR-040)
+      operationId: reloadFeatureRegistry
+      responses:
+        '200':
+          description: Feature Registry reloaded successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FeatureRegistry'
+        '400':
+          description: Invalid configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /feature-registry/validate:
+    get:
+      tags:
+        - Feature Registry
+      summary: Validate Feature Registry configuration
+      description: Validates the Feature Registry configuration for data leakage and temporal boundaries (FR-041)
+      operationId: validateFeatureRegistry
+      responses:
+        '200':
+          description: Validation results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FeatureRegistryValidationResponse'
+        '404':
+          description: No Feature Registry to validate
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /data-quality/report:
+    get:
+      tags:
+        - Data Quality
+      summary: Get data quality report
+      description: Returns data quality report for a symbol over a specified time period (FR-042)
+      operationId: getDataQualityReport
+      parameters:
+        - name: symbol
+          in: query
+          required: true
+          schema:
+            type: string
+            example: BTCUSDT
+          description: Trading pair symbol
+        - name: from
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date-time
+          description: Report period start
+        - name: to
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date-time
+          description: Report period end
+      responses:
+        '200':
+          description: Data quality report
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataQualityReport'
+        '400':
+          description: Invalid time period
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
