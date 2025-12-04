@@ -200,6 +200,32 @@ class MarketDataConsumer:
                 await asyncio.sleep(retry_delay)
                 retry_delay = min(retry_delay * 2, max_retry_delay)  # Exponential backoff
     
+    def _extract_symbol_from_topic(self, topic: str) -> Optional[str]:
+        """
+        Extract symbol from topic string.
+        
+        Examples:
+        - "tickers.BTCUSDT" -> "BTCUSDT"
+        - "orderbook.1.ETHUSDT" -> "ETHUSDT"
+        - "trade.BTCUSDT" -> "BTCUSDT"
+        
+        Args:
+            topic: Topic string from ws-gateway
+            
+        Returns:
+            Symbol string or None if not found
+        """
+        if not topic:
+            return None
+        
+        # Topic format: "channel.symbol" or "channel.param.symbol"
+        parts = topic.split(".")
+        if len(parts) >= 2:
+            # Last part is usually the symbol
+            return parts[-1]
+        
+        return None
+    
     async def _process_market_data_event(self, event: Dict, queue_name: str) -> None:
         """Process a market data event."""
         # Add internal timestamp and exchange timestamp to all received messages (T074)
@@ -221,11 +247,34 @@ class MarketDataConsumer:
             event["exchange_timestamp"] = now.isoformat()
         
         event_type = event.get("event_type")
-        symbol = event.get("symbol")
+        
+        # Extract symbol from event structure
+        # ws-gateway publishes events with payload containing symbol
+        # Symbol can be in: event.symbol, event.payload.symbol, event.payload.s, or extracted from topic
+        payload = event.get("payload", {})
+        topic = event.get("topic", "")
+        
+        symbol = (
+            event.get("symbol") or
+            (payload.get("symbol") if isinstance(payload, dict) else None) or
+            (payload.get("s") if isinstance(payload, dict) else None) or
+            self._extract_symbol_from_topic(topic)
+        )
         
         if not symbol:
-            logger.warning("event_missing_symbol", event_type=event_type, queue=queue_name)
+            logger.warning(
+                "event_missing_symbol",
+                event_type=event_type,
+                queue=queue_name,
+                topic=topic,
+                has_payload=bool(payload),
+                payload_keys=list(payload.keys()) if isinstance(payload, dict) else None,
+            )
             return
+        
+        # Add symbol to event if it was extracted from payload or topic
+        if "symbol" not in event:
+            event["symbol"] = symbol
         
         try:
             # Update feature computer state
