@@ -1,1 +1,8 @@
-../../../cursor-rules/en/rules/chat-language-rules.mdc
+---
+alwaysApply: true
+---
+
+# Use of Human Language
+
+* Use Russian when communicating with the user in chat.
+* Whenever possible, use Russian language writing documentation and specifications (*.md files).
