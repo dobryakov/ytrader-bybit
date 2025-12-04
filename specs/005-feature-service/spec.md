@@ -13,7 +13,6 @@
 - Q: Storage technology for raw Parquet data files → A: Local filesystem in container (mounted volumes)
 - Q: API authentication method for REST endpoints → A: API Key authentication (API key in header or query parameter)
 - Q: Minimum data retention period for raw data → A: 90 days (3 months) before archiving/deletion
-- Q: Position Manager data source priority (REST API vs events) → A: Events as primary, REST API as fallback (events for real-time updates, REST for initialization/recovery)
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -29,7 +28,7 @@ Model Service должен получать готовые признаки в �
 
 1. **Given** система получает поток маркет-данных (стакан, сделки, свечи), **When** Model Service запрашивает последние признаки для символа, **Then** система возвращает актуальный вектор признаков с задержкой не более 70 мс
 2. **Given** система получает обновления маркет-данных, **When** признаки вычисляются автоматически, **Then** обновленные признаки публикуются в очередь событий для подписчиков
-3. **Given** система получает маркет-данные, **When** запрашиваются признаки, включающие position features, **Then** система возвращает признаки с актуальной информацией о позициях (если позиция отсутствует, признаки имеют значения по умолчанию)
+3. **Given** система получает маркет-данные, **When** запрашиваются признаки, **Then** система возвращает полный вектор признаков со всеми вычисленными признаками
 
 ---
 
@@ -103,12 +102,11 @@ Model Service должен иметь возможность запросить 
 
 - **Недоступность ws-gateway**: Когда ws-gateway недоступен или отправляет неполные данные, система должна продолжать работать с последними доступными данными, логировать проблемы, и обновлять метрики качества данных. При восстановлении соединения система должна синхронизировать пропущенные данные если возможно. *(См. FR-019, FR-020)*
 - **Отсутствие данных для символа**: Когда запрашиваются признаки для символов, по которым нет данных, система должна возвращать ошибку 404 с описанием проблемы или использовать последние доступные значения с пометкой о устаревании данных. *(См. FR-005)*
-- **Опциональная очередь execution events**: Когда очередь ws-gateway.order недоступна (опциональная очередь для execution events), система должна продолжать работу без position features, вычисляемых из execution events, и логировать предупреждение. *(См. FR-001.2, FR-006)*
+- **Опциональная очередь execution events**: Когда очередь ws-gateway.order недоступна (опциональная очередь для execution events), система должна продолжать работу и логировать предупреждение. *(См. FR-001.2)*
 
 #### Качество данных и восстановление
 
 - **Рассинхронизация orderbook**: При обнаружении пропущенных delta-событий система должна автоматически запросить snapshot для восстановления корректного состояния orderbook, затем продолжить обработку с обновленного состояния. *(См. FR-001.3, FR-021)*
-- **Недоступность Position Manager**: Когда данные о позициях недоступны (Position Manager недоступен), система должна использовать значения по умолчанию (0 для большинства признаков, текущая цена для entry_price), логировать предупреждение, и продолжать вычисление других признаков. *(См. FR-025, FR-028)*
 
 #### Конфигурация и валидация
 
@@ -148,7 +146,6 @@ Model Service должен иметь возможность запросить 
 - **FR-003.6**: System MUST compute temporal/meta features: time_of_day (cyclic encoding using sin/cos components: sin(2π * hour / 24), cos(2π * hour / 24))
 - **FR-004**: System MUST publish computed features to message queue for Model Service subscribers
 - **FR-005**: System MUST provide REST API endpoint to retrieve latest features for a symbol with latency ≤ 70 ms
-- **FR-006**: ~~System MUST compute position features from Position Manager data~~ **REMOVED**: Position features are not included in the feature vector to maintain model universality and avoid look-ahead bias. Position-aware models can be implemented separately in Model Service if needed.
 - **FR-007**: System MUST support rebuilding features from historical data in offline/batch mode
 - **FR-008**: System MUST guarantee feature identity between online and offline computation modes (same calculation code and parameters)
 - **FR-009**: System MUST support dataset building with explicit train/validation/test period splits
@@ -172,10 +169,6 @@ Model Service должен иметь возможность запросить 
 - **FR-022**: System MUST validate Feature Registry configuration for data leakage prevention
 - **FR-023**: System MUST provide REST API to retrieve and reload Feature Registry configuration
 - **FR-024**: System MUST authenticate all API requests (except health checks) using API Key
-- **FR-025**: ~~System MUST handle missing position data~~ **REMOVED**: Position features are no longer computed
-- **FR-026**: ~~System MUST cache position data~~ **REMOVED**: Position features are no longer computed
-- **FR-027**: ~~System MUST subscribe to Position Manager events~~ **REMOVED**: Position features are no longer computed
-- **FR-028**: ~~System MUST support Position Manager REST API~~ **REMOVED**: Position features are no longer computed
 
 ### Key Entities
 
@@ -218,7 +211,7 @@ Model Service должен иметь возможность запросить 
 
 ## Feature Registry Configuration
 
-- **FR-043**: System MUST maintain Feature Registry configuration (YAML/JSON format) describing: feature name, input sources (trades/orderbook/kline/position_manager), lookback window (3s, 15s, 1m, etc.), normalization parameters, calculation order
+- **FR-043**: System MUST maintain Feature Registry configuration (YAML/JSON format) describing: feature name, input sources (trades/orderbook/kline), lookback window (3s, 15s, 1m, etc.), normalization parameters, calculation order
 - **FR-044**: System MUST require each feature in Feature Registry to explicitly specify: lookback_window (time window into past, e.g., "3s", "1m"), lookahead_forbidden: true flag, max_lookback_days for validation, data_sources list with timestamps
 - **FR-045**: System MUST validate Feature Registry at load time: check temporal boundaries, verify no future data usage in features, validate data source availability
 
@@ -227,7 +220,6 @@ Model Service должен иметь возможность запросить 
 - **FR-046**: System MUST support restoring orderbook state from snapshot + all deltas for any historical period
 - **FR-047**: System MUST support restoring all rolling windows (1s, 3s, 15s, 1m) for historical data
 - **FR-048**: System MUST compute features from historical data identically to online mode using same calculation code and Feature Registry
-- **FR-049**: System MUST reconstruct position state for each historical timestamp from execution events or historical position data in offline mode
 - **FR-050**: System MUST export datasets in structured format with metadata about train/validation/test splits, feature registry version, and target configuration
 
 ## Workflows
@@ -256,16 +248,12 @@ Model Service должен иметь возможность запросить 
 - **SC-005**: System completes dataset building requests within 2 hours for 1 month of historical data for a single symbol
 - **SC-006**: System detects and handles orderbook desynchronization within 1 second of detection, restoring correct orderbook state
 - **SC-007**: System provides data quality reports within 5 seconds of API request for any 24-hour period
-- **SC-008**: ~~System processes position updates~~ **REMOVED**: Position features are no longer computed
 - **SC-009**: System successfully builds datasets with explicit train/validation/test splits where test set contains data from period never seen during training (100% temporal separation)
-- **SC-010**: ~~System handles missing position data~~ **REMOVED**: Position features are no longer computed
 
 ## Assumptions
 
 - Market data is provided by ws-gateway service through internal message queues with `ws-gateway.*` naming convention
-- ~~Position data is provided by Position Manager service~~ **REMOVED**: Position features are no longer computed
 - Raw data storage uses local filesystem with mounted volumes (Parquet format) - storage capacity is sufficient for 90+ days of data
-- System has access to historical execution events for reconstructing position history in offline mode
 - Model Service is refactored to accept ready feature vectors and not compute features independently
 - API authentication uses API Key method (key in header or query parameter)
 - System operates in containerized environment with horizontal scaling capability by symbol
@@ -275,4 +263,3 @@ Model Service должен иметь возможность запросить 
 - System validates incoming data: missing values detection, anomaly detection (outliers, price spikes), sequence gap detection in orderbook, timestamp validation (internal timestamp vs exchange timestamp)
 - System supports strategies for handling problematic data: interpolation, forward fill, skipping records for missing values; requesting snapshots and rebuilding for orderbook desynchronization
 - System maintains automated tests for feature identity between online and offline modes (derivation tests)
-- ~~System supports reconstruction of position history~~ **REMOVED**: Position features are no longer computed
