@@ -168,6 +168,12 @@ class MarketDataConsumer:
                     async with message.process():
                         try:
                             body = json.loads(message.body.decode())
+                            logger.debug(
+                                "message_received",
+                                queue=queue_name,
+                                event_type=body.get("event_type"),
+                                topic=body.get("topic"),
+                            )
                             await self._process_market_data_event(body, queue_name)
                         except Exception as e:
                             logger.error(

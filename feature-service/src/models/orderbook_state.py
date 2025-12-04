@@ -35,12 +35,25 @@ class OrderbookState(BaseModel):
         asks = SortedDict()
         
         # Populate bids (descending order - highest first)
+        # Convert prices and quantities to float (Bybit sends them as strings)
         for price, quantity in snapshot.get("bids", []):
-            bids[price] = quantity
+            try:
+                price_float = float(price) if isinstance(price, str) else price
+                quantity_float = float(quantity) if isinstance(quantity, str) else quantity
+                bids[price_float] = quantity_float
+            except (ValueError, TypeError):
+                # Skip invalid entries
+                continue
         
         # Populate asks (ascending order - lowest first)
         for price, quantity in snapshot.get("asks", []):
-            asks[price] = quantity
+            try:
+                price_float = float(price) if isinstance(price, str) else price
+                quantity_float = float(quantity) if isinstance(quantity, str) else quantity
+                asks[price_float] = quantity_float
+            except (ValueError, TypeError):
+                # Skip invalid entries
+                continue
         
         return cls(
             symbol=snapshot["symbol"],
@@ -58,6 +71,13 @@ class OrderbookState(BaseModel):
         side = delta["side"]
         price = delta["price"]
         quantity = delta["quantity"]
+        
+        # Convert to float if strings (Bybit sends as strings)
+        try:
+            price = float(price) if isinstance(price, str) else price
+            quantity = float(quantity) if isinstance(quantity, str) else quantity
+        except (ValueError, TypeError):
+            return  # Skip invalid delta
         
         target = self.bids if side == "bid" else self.asks
         

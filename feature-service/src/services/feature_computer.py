@@ -185,9 +185,94 @@ class FeatureComputer:
             return
         
         event_type = event.get("event_type")
+        payload = event.get("payload", {})
         
         # Update orderbook
-        if event_type == "orderbook_snapshot":
+        # ws-gateway publishes events with event_type="orderbook"
+        # Payload contains data directly (s, b, a, seq, u) or nested in data field
+        if event_type == "orderbook":
+            # Extract data from payload (ws-gateway format)
+            # Data can be in payload.data or directly in payload
+            data = payload.get("data", payload) if isinstance(payload, dict) else {}
+            if not isinstance(data, dict):
+                data = payload if isinstance(payload, dict) else {}
+            
+            # Determine type: check payload.data.type, payload.type, or infer from structure
+            orderbook_type = data.get("type") or payload.get("type")
+            
+            # If no type field, check if it's a snapshot by structure (has bids/asks)
+            if orderbook_type is None:
+                if "b" in data or "a" in data or "bids" in data or "asks" in data:
+                    orderbook_type = "snapshot"
+                else:
+                    orderbook_type = "delta"
+            
+            logger.debug(
+                "processing_orderbook_event",
+                symbol=symbol,
+                orderbook_type=orderbook_type,
+                has_data=bool(data),
+            )
+            
+            if orderbook_type == "snapshot":
+                # Convert ws-gateway format to feature-service format
+                # Handle timestamp conversion
+                timestamp = event.get("timestamp") or event.get("exchange_timestamp")
+                if isinstance(timestamp, str):
+                    from dateutil.parser import parse
+                    timestamp = parse(timestamp)
+                elif timestamp is None:
+                    from datetime import datetime, timezone
+                    timestamp = datetime.now(timezone.utc)
+                elif not isinstance(timestamp, datetime):
+                    # Convert numeric timestamp to datetime
+                    if isinstance(timestamp, (int, float)):
+                        timestamp = datetime.fromtimestamp(
+                            timestamp / 1000 if timestamp > 1e10 else timestamp,
+                            tz=timezone.utc
+                        )
+                    else:
+                        timestamp = datetime.now(timezone.utc)
+                
+                snapshot_data = {
+                    "symbol": data.get("s") or symbol,
+                    "bids": data.get("b", []),
+                    "asks": data.get("a", []),
+                    "sequence": data.get("seq", data.get("u", 0)),
+                    "timestamp": timestamp,
+                }
+                logger.debug(
+                    "applying_orderbook_snapshot",
+                    symbol=snapshot_data["symbol"],
+                    bids_count=len(snapshot_data["bids"]),
+                    asks_count=len(snapshot_data["asks"]),
+                    sequence=snapshot_data["sequence"],
+                )
+                try:
+                    self._orderbook_manager.apply_snapshot(snapshot_data)
+                except Exception as e:
+                    logger.error(
+                        "orderbook_snapshot_apply_failed",
+                        symbol=symbol,
+                        error=str(e),
+                        exc_info=True,
+                    )
+            elif orderbook_type == "delta" or orderbook_type == "update":
+                # Convert ws-gateway format to feature-service format
+                delta_data = {
+                    "symbol": data.get("s") or symbol,
+                    "sequence": data.get("seq", data.get("u", 0)),
+                    "delta_type": "update",  # Bybit uses update for all changes
+                    "side": "bid",  # Will be determined from data
+                    "price": None,  # Will be extracted from data
+                    "quantity": None,  # Will be extracted from data
+                }
+                # Bybit delta format: data.b and data.a contain updates
+                # For now, we'll mark as needing snapshot if delta format is complex
+                # TODO: Implement proper delta parsing from Bybit format
+                if self._orderbook_manager.is_desynchronized(symbol):
+                    self._orderbook_manager.request_snapshot(symbol)
+        elif event_type == "orderbook_snapshot":
             self._orderbook_manager.apply_snapshot(event)
         elif event_type == "orderbook_delta":
             success = self._orderbook_manager.apply_delta(event)
@@ -199,8 +284,41 @@ class FeatureComputer:
         # Update rolling windows
         rolling_windows = self.get_rolling_windows(symbol)
         
-        if event_type == "trade":
-            rolling_windows.add_trade(event)
+        # Handle trades - ws-gateway may publish as "trade" or "trades"
+        if event_type == "trade" or event_type == "trades":
+            # Extract trade data from payload if present
+            trade_data = event.copy()
+            if isinstance(payload, dict) and "data" in payload:
+                # ws-gateway format: payload.data contains trade array
+                trade_list = payload.get("data", [])
+                if isinstance(trade_list, list) and len(trade_list) > 0:
+                    # Process first trade (or all trades if needed)
+                    trade_item = trade_list[0] if isinstance(trade_list[0], dict) else {}
+                    # Convert Bybit format to feature-service format
+                    trade_data.update({
+                        "price": trade_item.get("p") or trade_item.get("price"),
+                        "quantity": trade_item.get("v") or trade_item.get("quantity") or trade_item.get("volume"),
+                        "side": trade_item.get("S") or trade_item.get("side", "Buy"),
+                        "timestamp": trade_item.get("T") or trade_item.get("timestamp") or event.get("timestamp"),
+                    })
+                elif isinstance(trade_list, dict):
+                    # Single trade object
+                    trade_data.update({
+                        "price": trade_list.get("p") or trade_list.get("price"),
+                        "quantity": trade_list.get("v") or trade_list.get("quantity") or trade_list.get("volume"),
+                        "side": trade_list.get("S") or trade_list.get("side", "Buy"),
+                        "timestamp": trade_list.get("T") or trade_list.get("timestamp") or event.get("timestamp"),
+                    })
+            elif isinstance(payload, dict):
+                # Direct payload format
+                trade_data.update({
+                    "price": payload.get("p") or payload.get("price"),
+                    "quantity": payload.get("v") or payload.get("quantity") or payload.get("volume"),
+                    "side": payload.get("S") or payload.get("side", "Buy"),
+                    "timestamp": payload.get("T") or payload.get("timestamp") or event.get("timestamp"),
+                })
+            
+            rolling_windows.add_trade(trade_data)
         elif event_type == "kline":
             try:
                 rolling_windows.add_kline(event)
