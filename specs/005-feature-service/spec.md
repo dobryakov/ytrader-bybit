@@ -9,7 +9,7 @@
 
 ### Session 2025-01-27
 
-- Q: Message queue naming convention for market data from ws-gateway → A: Use `ws-gateway.*` prefix to match existing pattern (e.g., `ws-gateway.orderbook`, `ws-gateway.trades`)
+- Q: Message queue naming convention for market data from ws-gateway → A: Use `ws-gateway.*` prefix to match existing pattern (e.g., `ws-gateway.orderbook`, `ws-gateway.trade`)
 - Q: Storage technology for raw Parquet data files → A: Local filesystem in container (mounted volumes)
 - Q: API authentication method for REST endpoints → A: API Key authentication (API key in header or query parameter)
 - Q: Minimum data retention period for raw data → A: 90 days (3 months) before archiving/deletion
@@ -102,7 +102,7 @@ Model Service должен иметь возможность запросить 
 
 - **Недоступность ws-gateway**: Когда ws-gateway недоступен или отправляет неполные данные, система должна продолжать работать с последними доступными данными, логировать проблемы, и обновлять метрики качества данных. При восстановлении соединения система должна синхронизировать пропущенные данные если возможно. *(См. FR-019, FR-020)*
 - **Отсутствие данных для символа**: Когда запрашиваются признаки для символов, по которым нет данных, система должна возвращать ошибку 404 с описанием проблемы или использовать последние доступные значения с пометкой о устаревании данных. *(См. FR-005)*
-- **Опциональная очередь execution events**: Когда очередь ws-gateway.order недоступна (опциональная очередь для execution events), система должна продолжать работу и логировать предупреждение. *(См. FR-001.2)*
+- **Опциональная очередь execution events**: Когда очередь ws-gateway.order недоступна (опциональная очередь для execution events), система может использовать order-manager.order_events для получения enriched order execution events. Если обе очереди недоступны, система должна продолжать работу и логировать предупреждение. *(См. FR-001.2)*
 
 #### Качество данных и восстановление
 
@@ -129,8 +129,11 @@ Model Service должен иметь возможность запросить 
 ### Functional Requirements
 
 - **FR-001**: System MUST receive raw market data streams (orderbook, trades, klines, ticker, funding) from internal message queues
-- **FR-001.1**: System MUST receive data from queues: ws-gateway.orderbook (snapshots and deltas), ws-gateway.trades, ws-gateway.kline, ws-gateway.ticker, ws-gateway.funding
-- **FR-001.2**: System MUST optionally receive execution events from ws-gateway.order queue or trading.executions queue for own order executions
+- **FR-001.1**: System MUST receive data from queues: ws-gateway.orderbook (snapshots and deltas), ws-gateway.trade, ws-gateway.kline, ws-gateway.ticker, ws-gateway.funding
+- **FR-001.1.1**: System MUST subscribe to required WebSocket channels via ws-gateway REST API (`POST /api/v1/subscriptions`) on service startup for each configured symbol. Required channels: orderbook, trades, kline, ticker, funding
+- **FR-001.1.2**: System MUST manage subscriptions lifecycle: create subscriptions on startup, handle subscription failures gracefully (log and retry). Subscriptions MUST NOT be cancelled on service shutdown to allow events to accumulate in queues for processing after service restart
+- **FR-001.2**: System MUST optionally receive execution events from ws-gateway.order queue or order-manager.order_events queue for own order executions
+- **FR-001.2.1**: System MUST optionally subscribe to order execution events via ws-gateway REST API if ws-gateway.order queue is used
 - **FR-001.3**: System MUST handle orderbook sequence/order correctly: build snapshot + delta, handle desynchronization by requesting snapshot, store all deltas for offline reconstruction
 - **FR-001.4**: System MUST add internal timestamp and exchange timestamp to all received messages
 - **FR-002**: System MUST store raw market data in structured format for at least 90 days before archiving/deletion
@@ -252,7 +255,7 @@ Model Service должен иметь возможность запросить 
 
 ## Assumptions
 
-- Market data is provided by ws-gateway service through internal message queues with `ws-gateway.*` naming convention
+- Market data is provided by ws-gateway service through internal message queues with `ws-gateway.*` naming convention. Feature Service manages its own subscriptions to required WebSocket channels via ws-gateway REST API on startup
 - Raw data storage uses local filesystem with mounted volumes (Parquet format) - storage capacity is sufficient for 90+ days of data
 - Model Service is refactored to accept ready feature vectors and not compute features independently
 - API authentication uses API Key method (key in header or query parameter)

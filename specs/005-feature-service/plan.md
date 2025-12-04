@@ -220,6 +220,27 @@ feature-service/
 
 **Structure Decision**: Single project structure (microservice). The service is organized into clear modules: API layer (REST endpoints), services layer (business logic), models (data structures), consumers (message queue consumers), publishers (message queue publishers), features (feature computation modules), and storage (Parquet and PostgreSQL). This structure supports separation of concerns while maintaining a single deployable unit.
 
+## Service Dependencies
+
+### Model Service Refactoring Required
+
+**Critical Dependency**: Model Service must be refactored to work with Feature Service. This is a prerequisite for Feature Service to be fully operational.
+
+**Required Changes in Model Service**:
+- Model Service must accept ready feature vectors from Feature Service instead of computing features independently
+- Model Service must integrate with Feature Service API (`GET /features/latest`) or subscribe to `features.live` message queue
+- Model Service must use datasets from Feature Service for model training (via `POST /dataset/build` and download endpoints)
+- Model Service must remove its own feature computation logic to avoid duplication and ensure feature identity
+
+**Action Required**: During implementation of Feature Service (005-feature-service), tasks for Model Service refactoring MUST be explicitly added to Model Service's `tasks.md` file. These tasks should include:
+- Integration with Feature Service API for real-time feature retrieval
+- Integration with Feature Service message queues (`features.live`, `features.dataset.ready`)
+- Removal of duplicate feature computation code from Model Service
+- Update of Model Service workflows to use Feature Service datasets for training
+- Testing of Model Service with Feature Service integration
+
+**Note**: Model Service refactoring tasks should be tracked in Model Service's own specification directory (e.g., `specs/XXX-model-service/tasks.md`) and implemented in parallel or after Feature Service core functionality is complete.
+
 ## Complexity Tracking
 
 > **Fill ONLY if Constitution Check has violations that must be justified**
