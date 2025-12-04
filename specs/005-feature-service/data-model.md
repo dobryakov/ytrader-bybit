@@ -150,9 +150,20 @@ Represents the configuration that defines which features to compute, their data 
 | `validation_errors` | TEXT[] | NULL | Array of validation error messages (if any) |
 | `loaded_at` | TIMESTAMP | NULL | When configuration was loaded into service |
 | `created_at` | TIMESTAMP | NOT NULL, DEFAULT NOW() | When version was created |
+| `created_by` | VARCHAR(100) | NULL | User/service identifier who created this version (for audit trail) |
+| `activated_by` | VARCHAR(100) | NULL | User/service identifier who activated this version (for audit trail) |
+| `rollback_from` | VARCHAR(50) | NULL | Version identifier that was rolled back from (if this version is result of rollback) |
+| `previous_version` | VARCHAR(50) | NULL | Previous active version before this one (for rollback capability) |
+| `schema_version` | VARCHAR(50) | NULL | Schema version for compatibility checking (optional, for tracking breaking changes) |
+| `migration_script` | TEXT | NULL | Optional migration script or instructions for automatic schema migration |
+| `compatibility_warnings` | TEXT[] | NULL | Array of backward compatibility warnings (e.g., removed features, changed names) |
+| `breaking_changes` | TEXT[] | NULL | Array of breaking changes detected during compatibility check |
+| `activation_reason` | TEXT | NULL | Optional reason/message for version activation (for audit trail) |
 
 **Indexes**:
 - `idx_feature_registry_active` on `is_active` (for finding active version)
+- `idx_feature_registry_created_at` on `created_at` (for version history queries)
+- `idx_feature_registry_previous_version` on `previous_version` (for rollback queries)
 
 **Validation Rules**:
 - `config` must be valid JSONB containing feature definitions
@@ -167,10 +178,12 @@ Represents the configuration that defines which features to compute, their data 
 - Only one version can have `is_active=true` at a time
 
 **State Transitions**:
-- New version created → `is_active=false`, `validated_at=NULL`
-- Validation succeeds → `validated_at` set, `validation_errors=NULL`
+- New version created → `is_active=false`, `validated_at=NULL`, `previous_version` set to current active version
+- Validation succeeds → `validated_at` set, `validation_errors=NULL`, `compatibility_warnings` and `breaking_changes` populated if detected
 - Validation fails → `validation_errors` populated
-- Version activated → Previous active version set to `is_active=false`, new version set to `is_active=true`, `loaded_at` set
+- Version activated → Previous active version's `is_active` set to false, new version's `is_active` set to true, `loaded_at` set, `activated_by` set, automatic migration executed if schema changes detected
+- Activation fails → Automatic rollback: previous version's `is_active` restored to true, failed version's `rollback_from` set to previous version, validation/migration errors logged
+- Rollback triggered → Current active version's `is_active` set to false, previous version's `is_active` set to true, `rollback_from` set on current version, `activated_by` set on previous version
 
 **Configuration Structure** (YAML/JSON):
 

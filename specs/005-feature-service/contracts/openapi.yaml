@@ -414,6 +414,147 @@ components:
           items:
             type: string
 
+    FeatureRegistryVersionInfo:
+      type: object
+      properties:
+        version:
+          type: string
+          description: Feature Registry version identifier
+        is_active:
+          type: boolean
+          description: Whether this version is currently active
+        validated_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        usage_count:
+          type: integer
+          description: Number of datasets/computations using this version
+
+    FeatureRegistryVersion:
+      type: object
+      properties:
+        version:
+          type: string
+        config:
+          type: object
+          description: Feature Registry configuration (YAML converted to JSON)
+        is_active:
+          type: boolean
+        validated_at:
+          type: string
+          format: date-time
+          nullable: true
+        validation_errors:
+          type: array
+          items:
+            type: string
+          nullable: true
+        loaded_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        created_by:
+          type: string
+          nullable: true
+        activated_by:
+          type: string
+          nullable: true
+        previous_version:
+          type: string
+          nullable: true
+        schema_version:
+          type: string
+          nullable: true
+        compatibility_warnings:
+          type: array
+          items:
+            type: string
+          nullable: true
+        breaking_changes:
+          type: array
+          items:
+            type: string
+          nullable: true
+
+    FeatureRegistryActivationResponse:
+      type: object
+      properties:
+        version:
+          type: string
+        activated:
+          type: boolean
+        migration_applied:
+          type: boolean
+          description: Whether automatic schema migration was applied
+        compatibility_warnings:
+          type: array
+          items:
+            type: string
+        breaking_changes:
+          type: array
+          items:
+            type: string
+        previous_version:
+          type: string
+          nullable: true
+
+    FeatureRegistryRollbackResponse:
+      type: object
+      properties:
+        rolled_back_from:
+          type: string
+          description: Version that was rolled back from
+        rolled_back_to:
+          type: string
+          description: Version that was activated (previous version)
+        rollback_reason:
+          type: string
+          nullable: true
+          description: Reason for rollback (error message or user-provided reason)
+        rollback_timestamp:
+          type: string
+          format: date-time
+
+    FeatureRegistryVersionUsage:
+      type: object
+      properties:
+        version:
+          type: string
+        is_active:
+          type: boolean
+        active_datasets_count:
+          type: integer
+          description: Number of datasets built with this version
+        feature_computations_count:
+          type: integer
+          description: Number of feature computations using this version (last 24 hours)
+        can_delete:
+          type: boolean
+          description: Whether version can be deleted (false if in use)
+        usage_details:
+          type: object
+          properties:
+            datasets:
+              type: array
+              items:
+                type: object
+                properties:
+                  dataset_id:
+                    type: string
+                    format: uuid
+                  status:
+                    type: string
+            message:
+              type: string
+              description: Human-readable message about version usage
+
     DataQualityReport:
       type: object
       properties:
@@ -837,6 +978,233 @@ paths:
                 $ref: '#/components/schemas/FeatureRegistryValidationResponse'
         '404':
           description: No Feature Registry to validate
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /feature-registry/versions:
+    get:
+      tags:
+        - Feature Registry
+      summary: List all Feature Registry versions
+      description: Returns list of all Feature Registry versions with metadata (FR-058)
+      operationId: listFeatureRegistryVersions
+      responses:
+        '200':
+          description: List of Feature Registry versions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/FeatureRegistryVersionInfo'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /feature-registry/versions/{version}:
+    get:
+      tags:
+        - Feature Registry
+      summary: Get specific Feature Registry version
+      description: Returns specific Feature Registry version configuration and metadata (FR-059)
+      operationId: getFeatureRegistryVersion
+      parameters:
+        - name: version
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Feature Registry version identifier
+      responses:
+        '200':
+          description: Feature Registry version
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FeatureRegistryVersion'
+        '404':
+          description: Version not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /feature-registry/versions/{version}/activate:
+    post:
+      tags:
+        - Feature Registry
+      summary: Activate specific Feature Registry version
+      description: Activates specific version with automatic rollback capability on failure. Performs backward compatibility check and automatic schema migration if needed (FR-060)
+      operationId: activateFeatureRegistryVersion
+      parameters:
+        - name: version
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Feature Registry version identifier to activate
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                activation_reason:
+                  type: string
+                  description: Optional reason/message for activation (for audit trail)
+                created_by:
+                  type: string
+                  description: User/service identifier who activates this version (for audit trail)
+                acknowledge_breaking_changes:
+                  type: boolean
+                  default: false
+                  description: Must be true if breaking changes are detected to proceed with activation
+      responses:
+        '200':
+          description: Version activated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FeatureRegistryActivationResponse'
+        '400':
+          description: Invalid version or breaking changes not acknowledged
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Version not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: Activation failed, automatic rollback performed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FeatureRegistryRollbackResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /feature-registry/versions/{version}/usage:
+    get:
+      tags:
+        - Feature Registry
+      summary: Get Feature Registry version usage information
+      description: Returns information about version usage (active datasets count, feature computation references) to check if version can be deleted (FR-062)
+      operationId: getFeatureRegistryVersionUsage
+      parameters:
+        - name: version
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Feature Registry version identifier
+      responses:
+        '200':
+          description: Version usage information
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FeatureRegistryVersionUsage'
+        '404':
+          description: Version not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /feature-registry/versions/{version}:
+    delete:
+      tags:
+        - Feature Registry
+      summary: Delete Feature Registry version
+      description: Deletes version only if it is not used in any datasets or feature computations (FR-063)
+      operationId: deleteFeatureRegistryVersion
+      parameters:
+        - name: version
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Feature Registry version identifier to delete
+      responses:
+        '204':
+          description: Version deleted successfully
+        '400':
+          description: Version is in use and cannot be deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Version not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /feature-registry/rollback:
+    post:
+      tags:
+        - Feature Registry
+      summary: Rollback to previous Feature Registry version
+      description: Automatically rolls back to previous active version when current version fails validation or causes errors (FR-061)
+      operationId: rollbackFeatureRegistry
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                rollback_reason:
+                  type: string
+                  description: Optional reason/message for rollback (for audit trail)
+      responses:
+        '200':
+          description: Rollback performed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FeatureRegistryRollbackResponse'
+        '400':
+          description: No previous version available for rollback
           content:
             application/json:
               schema:

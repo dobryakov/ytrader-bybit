@@ -13,8 +13,12 @@
 - Q: Storage technology for raw Parquet data files → A: Local filesystem in container (mounted volumes)
 - Q: API authentication method for REST endpoints → A: API Key authentication (API key in header or query parameter)
 - Q: Minimum data retention period for raw data → A: 90 days (3 months) before archiving/deletion
-- Q: Why are FR-006, FR-025-028, FR-049 missing? → A: These requirement IDs were skipped during specification development. No functional gaps - all requirements are covered by other FR-XXX entries. ID sequence will be maintained for future additions.
+- Q: Why are FR-006, FR-025-028 missing? → A: These requirement IDs were skipped during specification development. No functional gaps - all requirements are covered by other FR-XXX entries. ID sequence will be maintained for future additions.
 - Q: Why are SC-008, SC-010 missing? → A: These success criteria IDs were skipped. All measurable outcomes are covered by existing SC-XXX entries.
+- Q: What version format is used for Feature Registry? → A: Arbitrary string format (e.g., "1.0.0", "v2", "2025-01-27"). No semantic versioning requirement, but recommended for clarity.
+- Q: Are schema migrations automatic or manual? → A: Automatic. System automatically detects schema changes and applies migrations when activating new version.
+- Q: When does automatic rollback occur? → A: Automatic rollback happens when new version activation fails (validation errors, migration errors, runtime errors during initial feature computation test).
+- Q: Is backward compatibility required? → A: Preferred but not mandatory. System checks for backward compatibility and warns about critical breaking changes (removed features, changed names, changed logic). Breaking changes are allowed but must be explicitly acknowledged.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -209,6 +213,12 @@ Model Service должен иметь возможность запросить 
 - **FR-039**: System MUST provide `GET /feature-registry` endpoint returning current Feature Registry version and configuration
 - **FR-040**: System MUST provide `POST /feature-registry/reload` endpoint for reloading feature configuration
 - **FR-041**: System MUST provide `GET /feature-registry/validate` endpoint for validating Feature Registry configuration for data leakage
+- **FR-058**: System MUST provide `GET /feature-registry/versions` endpoint returning list of all Feature Registry versions with metadata (version, is_active, validated_at, created_at, usage_count)
+- **FR-059**: System MUST provide `GET /feature-registry/versions/{version}` endpoint returning specific Feature Registry version configuration and metadata
+- **FR-060**: System MUST provide `POST /feature-registry/versions/{version}/activate` endpoint for activating specific version with automatic rollback capability on failure
+- **FR-061**: System MUST provide `POST /feature-registry/rollback` endpoint for automatic rollback to previous active version when current version fails validation or causes errors
+- **FR-062**: System MUST provide `GET /feature-registry/versions/{version}/usage` endpoint returning information about version usage (active datasets count, feature computation references, cannot delete if in use)
+- **FR-063**: System MUST provide `DELETE /feature-registry/versions/{version}` endpoint for deleting version only if it is not used in any datasets or feature computations
 
 ### Data Quality API
 
@@ -220,6 +230,11 @@ Model Service должен иметь возможность запросить 
 - **FR-043.1**: Normalization parameters MAY specify: `z_score` with `mean` and `std` values (standardization), `min_max` with `min` and `max` values (scaling to [0,1] range), or `none` (no normalization). Normalization is applied after feature computation and before publishing/exporting.
 - **FR-044**: System MUST require each feature in Feature Registry to explicitly specify: lookback_window (time window into past, e.g., "3s", "1m"), lookahead_forbidden: true flag, max_lookback_days for validation, data_sources list with timestamps
 - **FR-045**: System MUST validate Feature Registry at load time: check temporal boundaries, verify no future data usage in features, validate data source availability
+- **FR-064**: System MUST support automatic schema migration when activating new Feature Registry version with changed feature definitions
+- **FR-065**: System MUST validate backward compatibility when activating new version: check for breaking changes (removed features, changed feature names, changed calculation logic), warn about critical changes that may affect existing datasets
+- **FR-066**: System MUST automatically rollback to previous version when new version activation fails (validation errors, migration errors, runtime errors during initial feature computation)
+- **FR-067**: System MUST track version usage in datasets and feature computations to prevent deletion of in-use versions
+- **FR-068**: System MUST maintain audit trail of version changes: who activated/rolled back version, when, and reason (optional metadata field)
 
 ## Offline Feature Engine Requirements
 

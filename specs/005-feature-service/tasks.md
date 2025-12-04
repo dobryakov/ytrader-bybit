@@ -64,8 +64,11 @@
 ### Implementation for Foundational Phase
 
 - [ ] T023 Create database migration for datasets table in ws-gateway/migrations/XXX_create_datasets_table.sql
-- [ ] T024 Create database migration for feature_registry_versions table in ws-gateway/migrations/XXX_create_feature_registry_versions_table.sql
+- [ ] T023a Apply database migration for datasets table in ws-gateway container: `docker compose run --rm ws-gateway psql -h $POSTGRES_HOST -U $POSTGRES_USER -d $POSTGRES_DB -f migrations/XXX_create_datasets_table.sql`
+- [ ] T024 Create database migration for feature_registry_versions table in ws-gateway/migrations/XXX_create_feature_registry_versions_table.sql (includes all fields: version VARCHAR(50) PRIMARY KEY, config JSONB NOT NULL, is_active BOOLEAN NOT NULL DEFAULT false, validated_at TIMESTAMP, validation_errors TEXT[], loaded_at TIMESTAMP, created_at TIMESTAMP NOT NULL DEFAULT NOW(), created_by VARCHAR(100), activated_by VARCHAR(100), rollback_from VARCHAR(50), previous_version VARCHAR(50), schema_version VARCHAR(50), migration_script TEXT, compatibility_warnings TEXT[], breaking_changes TEXT[], activation_reason TEXT, indexes on is_active, created_at DESC, previous_version for version management and rollback queries). This table supports full version management capabilities from the start.
+- [ ] T024a Apply database migration for feature_registry_versions table in ws-gateway container: `docker compose run --rm ws-gateway psql -h $POSTGRES_HOST -U $POSTGRES_USER -d $POSTGRES_DB -f migrations/XXX_create_feature_registry_versions_table.sql`
 - [ ] T025 Create database migration for data_quality_reports table in ws-gateway/migrations/XXX_create_data_quality_reports_table.sql
+- [ ] T025a Apply database migration for data_quality_reports table in ws-gateway container: `docker compose run --rm ws-gateway psql -h $POSTGRES_HOST -U $POSTGRES_USER -d $POSTGRES_DB -f migrations/XXX_create_data_quality_reports_table.sql`
 - [ ] T026 [P] Create base configuration management in feature-service/src/config.py using pydantic-settings
 - [ ] T027 [P] Create base logging setup with structlog in feature-service/src/logging.py
 - [ ] T028 [P] Create database connection pool in feature-service/src/storage/metadata_storage.py using asyncpg
@@ -291,24 +294,43 @@
 - [ ] T161 [P] [US5] Create test fixtures for Feature Registry configurations (valid, invalid, with data leakage) in feature-service/tests/fixtures/feature_registry.py
 - [ ] T162 [P] [US5] Create unit tests for Feature Registry model in feature-service/tests/unit/test_feature_registry_model.py
 - [ ] T163 [P] [US5] Create unit tests for Feature Registry configuration validation in feature-service/tests/unit/test_feature_registry_validation.py
-- [ ] T164 [P] [US5] Create unit tests for Feature Registry version management in feature-service/tests/unit/test_feature_registry_versioning.py
-- [ ] T165 [P] [US5] Create unit tests for Feature Registry fallback to previous valid version in feature-service/tests/unit/test_feature_registry_fallback.py
+- [ ] T164 [P] [US5] Create unit tests for Feature Registry version management in feature-service/tests/unit/test_feature_registry_versioning.py (version storage, retrieval, activation, usage tracking, deletion prevention)
+- [ ] T165 [P] [US5] Create unit tests for Feature Registry automatic fallback/rollback in feature-service/tests/unit/test_feature_registry_rollback.py (automatic rollback on validation errors, migration errors, runtime errors)
+- [ ] T166a [P] [US5] Create unit tests for backward compatibility checking in feature-service/tests/unit/test_feature_registry_compatibility.py (detect removed features, changed names, changed logic, populate warnings/breaking_changes)
+- [ ] T166b [P] [US5] Create unit tests for automatic schema migration in feature-service/tests/unit/test_feature_registry_migration.py (automatic migration execution, migration script handling, rollback on migration failure)
 - [ ] T166 [US5] Create integration tests for Feature Registry loading and activation in feature-service/tests/integration/test_feature_registry_integration.py
 - [ ] T167 [US5] Create contract tests for GET /feature-registry endpoint in feature-service/tests/contract/test_feature_registry_api.py
 - [ ] T168 [US5] Create contract tests for POST /feature-registry/reload endpoint in feature-service/tests/contract/test_feature_registry_api.py
 - [ ] T169 [US5] Create contract tests for GET /feature-registry/validate endpoint in feature-service/tests/contract/test_feature_registry_api.py
+- [ ] T169a [US5] Create contract tests for GET /feature-registry/versions endpoint in feature-service/tests/contract/test_feature_registry_api.py
+- [ ] T169b [US5] Create contract tests for GET /feature-registry/versions/{version} endpoint in feature-service/tests/contract/test_feature_registry_api.py
+- [ ] T169c [US5] Create contract tests for POST /feature-registry/versions/{version}/activate endpoint in feature-service/tests/contract/test_feature_registry_api.py (test activation, automatic rollback on failure, breaking changes acknowledgment)
+- [ ] T169d [US5] Create contract tests for POST /feature-registry/rollback endpoint in feature-service/tests/contract/test_feature_registry_api.py
+- [ ] T169e [US5] Create contract tests for GET /feature-registry/versions/{version}/usage endpoint in feature-service/tests/contract/test_feature_registry_api.py
+- [ ] T169f [US5] Create contract tests for DELETE /feature-registry/versions/{version} endpoint in feature-service/tests/contract/test_feature_registry_api.py (test deletion prevention when version is in use)
 
 ### Implementation for User Story 5
 
 - [ ] T170 [P] [US5] Create Feature Registry model in feature-service/src/models/feature_registry.py
 - [ ] T171 [US5] Implement Feature Registry configuration validation in feature-service/src/services/feature_registry.py (temporal boundaries, data leakage prevention, max_lookback_days)
-- [ ] T172 [US5] Implement Feature Registry version management in feature-service/src/services/feature_registry.py
-- [ ] T173 [US5] Implement Feature Registry loading and activation with fallback to previous valid version on validation failure in feature-service/src/services/feature_registry.py
+- [ ] T172 [US5] Implement Feature Registry version management in feature-service/src/services/feature_registry.py (version storage, retrieval, activation tracking, usage tracking, deletion prevention if in use)
+- [ ] T173 [US5] Implement Feature Registry loading and activation with automatic fallback to previous valid version on validation failure in feature-service/src/services/feature_registry.py (automatic rollback on validation errors, migration errors, runtime errors during initial feature computation test)
 - [ ] T174 [US5] Integrate Feature Registry into feature computation (online and offline) in feature-service/src/services/feature_computer.py and feature-service/src/services/offline_engine.py
 - [ ] T175 [US5] Implement GET /feature-registry endpoint in feature-service/src/api/feature_registry.py
 - [ ] T176 [US5] Implement POST /feature-registry/reload endpoint in feature-service/src/api/feature_registry.py
 - [ ] T177 [US5] Implement GET /feature-registry/validate endpoint in feature-service/src/api/feature_registry.py
 - [ ] T178 [US5] Add logging for Feature Registry operations in feature-service/src/services/feature_registry.py
+- [ ] T208 [US5] Implement GET /feature-registry/versions endpoint in feature-service/src/api/feature_registry.py (FR-058: list all versions with metadata)
+- [ ] T209 [US5] Implement GET /feature-registry/versions/{version} endpoint in feature-service/src/api/feature_registry.py (FR-059: get specific version)
+- [ ] T210 [US5] Implement POST /feature-registry/versions/{version}/activate endpoint in feature-service/src/api/feature_registry.py (FR-060: activate version with automatic rollback on failure, acknowledge breaking changes parameter)
+- [ ] T211 [US5] Implement POST /feature-registry/rollback endpoint in feature-service/src/api/feature_registry.py (FR-061: automatic rollback to previous version)
+- [ ] T212 [US5] Implement GET /feature-registry/versions/{version}/usage endpoint in feature-service/src/api/feature_registry.py (FR-062: check version usage)
+- [ ] T213 [US5] Implement DELETE /feature-registry/versions/{version} endpoint in feature-service/src/api/feature_registry.py (FR-063: delete version only if not in use)
+- [ ] T214 [US5] Implement backward compatibility checking in feature-service/src/services/feature_registry.py (FR-065: detect breaking changes - removed features, changed names, changed logic, populate compatibility_warnings and breaking_changes fields)
+- [ ] T215 [US5] Implement automatic schema migration in feature-service/src/services/feature_registry.py (FR-064: automatic migration when activating new version with changed feature definitions, apply migration_script if provided)
+- [ ] T216 [US5] Implement version usage tracking in feature-service/src/services/feature_registry.py (FR-067: track version usage in datasets and feature computations, prevent deletion of in-use versions)
+- [ ] T217 [US5] Implement audit trail for version changes in feature-service/src/services/feature_registry.py (FR-068: track who activated/rolled back version, when, and reason - populate created_by, activated_by, activation_reason fields)
+- [ ] T218 [US5] Skip (fields already included in T024 migration) - Database migration for versioning fields is included in T024. This task serves as placeholder to ensure all versioning functionality is implemented in services layer.
 
 **Checkpoint**: At this point, all user stories should be independently functional. Feature Registry manages feature configuration with validation.
 
@@ -344,9 +366,13 @@
 ### Grafana Observability Dashboard
 
 - [ ] T196 [P] [Grafana] Create database migration for feature computation metrics table in ws-gateway/migrations/XXX_create_feature_computation_metrics_table.sql (feature_computation_metrics table with columns: id UUID PRIMARY KEY, symbol VARCHAR(20) NOT NULL, computation_timestamp TIMESTAMP NOT NULL, latency_ms DECIMAL(10,3) NOT NULL, feature_registry_version VARCHAR(50) NOT NULL, computation_interval VARCHAR(10) NOT NULL CHECK (computation_interval IN ('1s', '3s', '15s', '1m')), features_count INTEGER NOT NULL, error_count INTEGER DEFAULT 0, trace_id VARCHAR(100), created_at TIMESTAMP NOT NULL DEFAULT NOW(), indexes on computation_timestamp DESC, symbol, feature_registry_version for Grafana dashboard queries and time-series visualization)
+- [ ] T196a [P] [Grafana] Apply database migration for feature_computation_metrics table in ws-gateway container: `docker compose run --rm ws-gateway psql -h $POSTGRES_HOST -U $POSTGRES_USER -d $POSTGRES_DB -f migrations/XXX_create_feature_computation_metrics_table.sql`
 - [ ] T197 [P] [Grafana] Create database migration for data quality metrics table in ws-gateway/migrations/XXX_create_data_quality_metrics_table.sql (data_quality_metrics table with columns: id UUID PRIMARY KEY, symbol VARCHAR(20) NOT NULL, metric_timestamp TIMESTAMP NOT NULL, missing_rate DECIMAL(5,4) NOT NULL CHECK (missing_rate >= 0 AND missing_rate <= 1), anomaly_rate DECIMAL(5,4) NOT NULL CHECK (anomaly_rate >= 0 AND anomaly_rate <= 1), sequence_gaps_count INTEGER DEFAULT 0, desynchronization_events_count INTEGER DEFAULT 0, data_completeness_rate DECIMAL(5,4) NOT NULL CHECK (data_completeness_rate >= 0 AND data_completeness_rate <= 1), trace_id VARCHAR(100), created_at TIMESTAMP NOT NULL DEFAULT NOW(), indexes on metric_timestamp DESC, symbol for Grafana dashboard queries and time-series visualization)
+- [ ] T197a [P] [Grafana] Apply database migration for data_quality_metrics table in ws-gateway container: `docker compose run --rm ws-gateway psql -h $POSTGRES_HOST -U $POSTGRES_USER -d $POSTGRES_DB -f migrations/XXX_create_data_quality_metrics_table.sql`
 - [ ] T198 [P] [Grafana] Create database migration for dataset building metrics table in ws-gateway/migrations/XXX_create_dataset_building_metrics_table.sql (dataset_building_metrics table with columns: id UUID PRIMARY KEY, dataset_id UUID NOT NULL, symbol VARCHAR(20) NOT NULL, build_started_at TIMESTAMP NOT NULL, build_completed_at TIMESTAMP, build_status VARCHAR(20) NOT NULL CHECK (build_status IN ('building', 'ready', 'failed')), build_duration_seconds INTEGER, records_count INTEGER, train_records INTEGER, validation_records INTEGER, test_records INTEGER, feature_registry_version VARCHAR(50) NOT NULL, split_strategy VARCHAR(50), trace_id VARCHAR(100), created_at TIMESTAMP NOT NULL DEFAULT NOW(), indexes on build_started_at DESC, dataset_id, symbol, build_status for Grafana dashboard queries and performance tracking)
+- [ ] T198a [P] [Grafana] Apply database migration for dataset_building_metrics table in ws-gateway container: `docker compose run --rm ws-gateway psql -h $POSTGRES_HOST -U $POSTGRES_USER -d $POSTGRES_DB -f migrations/XXX_create_dataset_building_metrics_table.sql`
 - [ ] T199 [P] [Grafana] Create database migration for API endpoint metrics table in ws-gateway/migrations/XXX_create_api_endpoint_metrics_table.sql (api_endpoint_metrics table with columns: id UUID PRIMARY KEY, endpoint VARCHAR(200) NOT NULL, method VARCHAR(10) NOT NULL, response_time_ms DECIMAL(10,3) NOT NULL, status_code INTEGER NOT NULL, symbol VARCHAR(20), request_timestamp TIMESTAMP NOT NULL, trace_id VARCHAR(100), created_at TIMESTAMP NOT NULL DEFAULT NOW(), indexes on request_timestamp DESC, endpoint, method, status_code for Grafana dashboard queries and API performance monitoring)
+- [ ] T199a [P] [Grafana] Apply database migration for api_endpoint_metrics table in ws-gateway container: `docker compose run --rm ws-gateway psql -h $POSTGRES_HOST -U $POSTGRES_USER -d $POSTGRES_DB -f migrations/XXX_create_api_endpoint_metrics_table.sql`
 - [ ] T200 [Grafana] Implement feature computation metrics persistence in feature-service/src/services/feature_computer.py (log metrics to feature_computation_metrics table after each computation: symbol, computation_timestamp, latency_ms, feature_registry_version, computation_interval, features_count, error_count if any errors occurred, trace_id, handle database errors gracefully with logging and continue processing)
 - [ ] T201 [Grafana] Implement data quality metrics persistence in feature-service/src/services/data_quality.py (log metrics to data_quality_metrics table periodically (every 1 minute or configurable interval): symbol, metric_timestamp, missing_rate, anomaly_rate, sequence_gaps_count, desynchronization_events_count, data_completeness_rate, trace_id, handle database errors gracefully)
 - [ ] T202 [Grafana] Implement dataset building metrics persistence in feature-service/src/services/dataset_builder.py (log metrics to dataset_building_metrics table when dataset building starts, updates progress, and completes: dataset_id, symbol, build_started_at, build_completed_at, build_status, build_duration_seconds when completed, records_count, train_records, validation_records, test_records, feature_registry_version, split_strategy, trace_id, handle database errors gracefully)
@@ -497,15 +523,15 @@ With multiple developers:
 
 ## Task Summary
 
-- **Total Tasks**: 204 (added 9 Grafana observability tasks T196-T204: 4 database migrations, 4 metrics persistence, 1 health check extension). Dashboard creation tasks (3 tasks) are in `specs/001-grafana-monitoring/tasks.md`
+- **Total Tasks**: 228 (added 9 Grafana observability tasks T196-T204 + 4 migration application tasks T196a-T199a + 17 Feature Registry versioning tasks T208-T218, T166a-T166b, T169a-T169f: version management, backward compatibility, automatic migration, rollback, audit trail). Dashboard creation tasks (3 tasks) are in `specs/001-grafana-monitoring/tasks.md`
 - **Phase 1 (Setup)**: 10 tasks (added test structure setup)
-- **Phase 2 (Foundational)**: 26 tasks (12 tests + 14 implementation)
+- **Phase 2 (Foundational)**: 29 tasks (12 tests + 17 implementation: 3 migrations + 3 migration application tasks)
 - **Phase 3 (User Story 1)**: 43 tasks (20 tests + 23 implementation)
 - **Phase 4 (User Story 2)**: 45 tasks (25 tests + 23 implementation)
 - **Phase 5 (User Story 3)**: 14 tasks (7 tests + 7 implementation)
 - **Phase 6 (User Story 4)**: 22 tasks (11 tests + 11 implementation)
-- **Phase 7 (User Story 5)**: 18 tasks (9 tests + 9 implementation)
-- **Phase 8 (Polish)**: 20 tasks (5 additional tests + 12 implementation + 3 Grafana observability tasks: T196-T199 database migrations, T200-T203 metrics persistence, T204 health check extension). Grafana dashboard creation tasks (T205-T207) are in `specs/001-grafana-monitoring/tasks.md`
+- **Phase 7 (User Story 5)**: 35 tasks (15 tests + 20 implementation, including version management, backward compatibility, automatic migration, and rollback capabilities)
+- **Phase 8 (Polish)**: 24 tasks (5 additional tests + 12 implementation + 7 Grafana observability tasks: T196-T199 database migrations + T196a-T199a migration application, T200-T203 metrics persistence, T204 health check extension). Grafana dashboard creation tasks (T205-T207) are in `specs/001-grafana-monitoring/tasks.md`
 
 **Suggested MVP Scope**: Phase 1 + Phase 2 + Phase 3 (User Story 1) = 79 tasks
 
