@@ -48,38 +48,38 @@
 
 > **NOTE: Write these tests FIRST, ensure they FAIL before implementation**
 
-- [ ] T011 [P] Create test fixtures for database connection mocking in feature-service/tests/fixtures/database.py
-- [ ] T012 [P] Create test fixtures for RabbitMQ connection mocking in feature-service/tests/fixtures/rabbitmq.py
-- [ ] T013 [P] Create test fixtures for HTTP client mocking (ws-gateway API) in feature-service/tests/fixtures/http_client.py
-- [ ] T014 [P] Create unit tests for configuration management in feature-service/tests/unit/test_config.py
-- [ ] T015 [P] Create unit tests for logging setup in feature-service/tests/unit/test_logging.py
-- [ ] T016 [P] Create integration tests for database connection pool in feature-service/tests/integration/test_metadata_storage.py
-- [ ] T017 [P] Create integration tests for RabbitMQ connection manager in feature-service/tests/integration/test_mq_connection.py
-- [ ] T018 [P] Create unit tests for HTTP client setup in feature-service/tests/unit/test_http_client.py
-- [ ] T019 [P] Create unit tests for API authentication middleware in feature-service/tests/unit/test_auth_middleware.py
-- [ ] T020 [P] Create contract tests for health check endpoint in feature-service/tests/contract/test_health.py
-- [ ] T021 [P] Create test fixtures for market data events in feature-service/tests/fixtures/market_data.py
-- [ ] T022 [P] Create unit tests for Feature Registry configuration loader in feature-service/tests/unit/test_feature_registry_loader.py
+- [X] T011 [P] Create test fixtures for database connection mocking in feature-service/tests/fixtures/database.py
+- [X] T012 [P] Create test fixtures for RabbitMQ connection mocking in feature-service/tests/fixtures/rabbitmq.py
+- [X] T013 [P] Create test fixtures for HTTP client mocking (ws-gateway API) in feature-service/tests/fixtures/http_client.py
+- [X] T014 [P] Create unit tests for configuration management in feature-service/tests/unit/test_config.py
+- [X] T015 [P] Create unit tests for logging setup in feature-service/tests/unit/test_logging.py
+- [X] T016 [P] Create integration tests for database connection pool in feature-service/tests/integration/test_metadata_storage.py
+- [X] T017 [P] Create integration tests for RabbitMQ connection manager in feature-service/tests/integration/test_mq_connection.py
+- [X] T018 [P] Create unit tests for HTTP client setup in feature-service/tests/unit/test_http_client.py
+- [X] T019 [P] Create unit tests for API authentication middleware in feature-service/tests/unit/test_auth_middleware.py
+- [X] T020 [P] Create contract tests for health check endpoint in feature-service/tests/contract/test_health.py
+- [X] T021 [P] Create test fixtures for market data events in feature-service/tests/fixtures/market_data.py
+- [X] T022 [P] Create unit tests for Feature Registry configuration loader in feature-service/tests/unit/test_feature_registry_loader.py
 
 ### Implementation for Foundational Phase
 
-- [ ] T023 Create database migration for datasets table in ws-gateway/migrations/XXX_create_datasets_table.sql
-- [ ] T023a Apply database migration for datasets table in ws-gateway container: `docker compose run --rm ws-gateway psql -h $POSTGRES_HOST -U $POSTGRES_USER -d $POSTGRES_DB -f migrations/XXX_create_datasets_table.sql`
-- [ ] T024 Create database migration for feature_registry_versions table in ws-gateway/migrations/XXX_create_feature_registry_versions_table.sql (includes all fields: version VARCHAR(50) PRIMARY KEY, config JSONB NOT NULL, is_active BOOLEAN NOT NULL DEFAULT false, validated_at TIMESTAMP, validation_errors TEXT[], loaded_at TIMESTAMP, created_at TIMESTAMP NOT NULL DEFAULT NOW(), created_by VARCHAR(100), activated_by VARCHAR(100), rollback_from VARCHAR(50), previous_version VARCHAR(50), schema_version VARCHAR(50), migration_script TEXT, compatibility_warnings TEXT[], breaking_changes TEXT[], activation_reason TEXT, indexes on is_active, created_at DESC, previous_version for version management and rollback queries). This table supports full version management capabilities from the start.
-- [ ] T024a Apply database migration for feature_registry_versions table in ws-gateway container: `docker compose run --rm ws-gateway psql -h $POSTGRES_HOST -U $POSTGRES_USER -d $POSTGRES_DB -f migrations/XXX_create_feature_registry_versions_table.sql`
-- [ ] T025 Create database migration for data_quality_reports table in ws-gateway/migrations/XXX_create_data_quality_reports_table.sql
-- [ ] T025a Apply database migration for data_quality_reports table in ws-gateway container: `docker compose run --rm ws-gateway psql -h $POSTGRES_HOST -U $POSTGRES_USER -d $POSTGRES_DB -f migrations/XXX_create_data_quality_reports_table.sql`
-- [ ] T026 [P] Create base configuration management in feature-service/src/config.py using pydantic-settings
-- [ ] T027 [P] Create base logging setup with structlog in feature-service/src/logging.py
-- [ ] T028 [P] Create database connection pool in feature-service/src/storage/metadata_storage.py using asyncpg
-- [ ] T029 [P] Create RabbitMQ connection manager in feature-service/src/mq/connection.py using aio-pika
-- [ ] T030 [P] Create HTTP client setup for ws-gateway REST API integration in feature-service/src/http/client.py using httpx
-- [ ] T031 [P] Create base FastAPI application structure in feature-service/src/main.py
-- [ ] T032 [P] Create API authentication middleware in feature-service/src/api/middleware/auth.py
-- [ ] T033 [P] Create health check endpoint in feature-service/src/api/health.py
-- [ ] T034 Create base models for market data events in feature-service/src/models/market_data.py
-- [ ] T035 Create base Feature Registry configuration loader in feature-service/src/services/feature_registry.py (basic structure)
-- [ ] T036 Create default Feature Registry YAML configuration in feature-service/config/feature_registry.yaml
+- [X] T023 Create database migration for datasets table in ws-gateway/migrations/018_create_datasets_table.sql
+- [X] T023a Apply database migration for datasets table: Applied via `docker compose exec postgres psql -U ytrader -d ytrader -f /tmp/018_create_datasets_table.sql`
+- [X] T024 Create database migration for feature_registry_versions table in ws-gateway/migrations/019_create_feature_registry_versions_table.sql (includes all fields: version VARCHAR(50) PRIMARY KEY, config JSONB NOT NULL, is_active BOOLEAN NOT NULL DEFAULT false, validated_at TIMESTAMP, validation_errors TEXT[], loaded_at TIMESTAMP, created_at TIMESTAMP NOT NULL DEFAULT NOW(), created_by VARCHAR(100), activated_by VARCHAR(100), rollback_from VARCHAR(50), previous_version VARCHAR(50), schema_version VARCHAR(50), migration_script TEXT, compatibility_warnings TEXT[], breaking_changes TEXT[], activation_reason TEXT, indexes on is_active, created_at DESC, previous_version for version management and rollback queries). This table supports full version management capabilities from the start.
+- [X] T024a Apply database migration for feature_registry_versions table: Applied via `docker compose exec postgres psql -U ytrader -d ytrader -f /tmp/019_create_feature_registry_versions_table.sql`
+- [X] T025 Create database migration for data_quality_reports table in ws-gateway/migrations/020_create_data_quality_reports_table.sql
+- [X] T025a Apply database migration for data_quality_reports table: Applied via `docker compose exec postgres psql -U ytrader -d ytrader -f /tmp/020_create_data_quality_reports_table.sql`
+- [X] T026 [P] Create base configuration management in feature-service/src/config.py using pydantic-settings
+- [X] T027 [P] Create base logging setup with structlog in feature-service/src/logging.py
+- [X] T028 [P] Create database connection pool in feature-service/src/storage/metadata_storage.py using asyncpg
+- [X] T029 [P] Create RabbitMQ connection manager in feature-service/src/mq/connection.py using aio-pika
+- [X] T030 [P] Create HTTP client setup for ws-gateway REST API integration in feature-service/src/http/client.py using httpx
+- [X] T031 [P] Create base FastAPI application structure in feature-service/src/main.py
+- [X] T032 [P] Create API authentication middleware in feature-service/src/api/middleware/auth.py
+- [X] T033 [P] Create health check endpoint in feature-service/src/api/health.py
+- [X] T034 Create base models for market data events in feature-service/src/models/market_data.py
+- [X] T035 Create base Feature Registry configuration loader in feature-service/src/services/feature_registry.py (basic structure)
+- [X] T036 Create default Feature Registry YAML configuration in feature-service/config/feature_registry.yaml
 
 **Checkpoint**: Foundation ready - user story implementation can now begin in parallel
 

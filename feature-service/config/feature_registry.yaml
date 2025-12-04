@@ -8,8 +8,7 @@ features:
     data_sources:
       - source: "orderbook"
         timestamp_required: true
-    normalization: "none"
-
+  
   - name: "spread_abs"
     input_sources: ["orderbook"]
     lookback_window: "0s"
@@ -18,8 +17,7 @@ features:
     data_sources:
       - source: "orderbook"
         timestamp_required: true
-    normalization: "none"
-
+  
   - name: "spread_rel"
     input_sources: ["orderbook"]
     lookback_window: "0s"
@@ -28,28 +26,29 @@ features:
     data_sources:
       - source: "orderbook"
         timestamp_required: true
-    normalization: "none"
-
+  
   - name: "returns_1s"
-    input_sources: ["kline"]
+    input_sources: ["kline", "ticker"]
     lookback_window: "1s"
     lookahead_forbidden: true
     max_lookback_days: 1
     data_sources:
       - source: "kline"
         timestamp_required: true
-    normalization: "none"
-
+      - source: "ticker"
+        timestamp_required: true
+  
   - name: "returns_3s"
-    input_sources: ["kline"]
+    input_sources: ["kline", "ticker"]
     lookback_window: "3s"
     lookahead_forbidden: true
     max_lookback_days: 1
     data_sources:
       - source: "kline"
         timestamp_required: true
-    normalization: "none"
-
+      - source: "ticker"
+        timestamp_required: true
+  
   - name: "returns_1m"
     input_sources: ["kline"]
     lookback_window: "1m"
@@ -58,8 +57,7 @@ features:
     data_sources:
       - source: "kline"
         timestamp_required: true
-    normalization: "none"
-
+  
   - name: "vwap_3s"
     input_sources: ["trades"]
     lookback_window: "3s"
@@ -68,8 +66,7 @@ features:
     data_sources:
       - source: "trades"
         timestamp_required: true
-    normalization: "none"
-
+  
   - name: "vwap_15s"
     input_sources: ["trades"]
     lookback_window: "15s"
@@ -78,8 +75,7 @@ features:
     data_sources:
       - source: "trades"
         timestamp_required: true
-    normalization: "none"
-
+  
   - name: "vwap_1m"
     input_sources: ["trades"]
     lookback_window: "1m"
@@ -88,8 +84,34 @@ features:
     data_sources:
       - source: "trades"
         timestamp_required: true
-    normalization: "none"
-
+  
+  - name: "volume_3s"
+    input_sources: ["trades"]
+    lookback_window: "3s"
+    lookahead_forbidden: true
+    max_lookback_days: 1
+    data_sources:
+      - source: "trades"
+        timestamp_required: true
+  
+  - name: "volume_15s"
+    input_sources: ["trades"]
+    lookback_window: "15s"
+    lookahead_forbidden: true
+    max_lookback_days: 1
+    data_sources:
+      - source: "trades"
+        timestamp_required: true
+  
+  - name: "volume_1m"
+    input_sources: ["trades"]
+    lookback_window: "1m"
+    lookahead_forbidden: true
+    max_lookback_days: 1
+    data_sources:
+      - source: "trades"
+        timestamp_required: true
+  
   - name: "volatility_1m"
     input_sources: ["kline"]
     lookback_window: "1m"
@@ -98,8 +120,7 @@ features:
     data_sources:
       - source: "kline"
         timestamp_required: true
-    normalization: "none"
-
+  
   - name: "volatility_5m"
     input_sources: ["kline"]
     lookback_window: "5m"
@@ -108,8 +129,7 @@ features:
     data_sources:
       - source: "kline"
         timestamp_required: true
-    normalization: "none"
-
+  
   - name: "signed_volume_3s"
     input_sources: ["trades"]
     lookback_window: "3s"
@@ -118,8 +138,7 @@ features:
     data_sources:
       - source: "trades"
         timestamp_required: true
-    normalization: "none"
-
+  
   - name: "signed_volume_15s"
     input_sources: ["trades"]
     lookback_window: "15s"
@@ -128,8 +147,7 @@ features:
     data_sources:
       - source: "trades"
         timestamp_required: true
-    normalization: "none"
-
+  
   - name: "signed_volume_1m"
     input_sources: ["trades"]
     lookback_window: "1m"
@@ -138,18 +156,16 @@ features:
     data_sources:
       - source: "trades"
         timestamp_required: true
-    normalization: "none"
-
+  
   - name: "buy_sell_volume_ratio"
     input_sources: ["trades"]
-    lookback_window: "1m"
+    lookback_window: "3s"
     lookahead_forbidden: true
     max_lookback_days: 1
     data_sources:
       - source: "trades"
         timestamp_required: true
-    normalization: "none"
-
+  
   - name: "trade_count_3s"
     input_sources: ["trades"]
     lookback_window: "3s"
@@ -158,18 +174,16 @@ features:
     data_sources:
       - source: "trades"
         timestamp_required: true
-    normalization: "none"
-
+  
   - name: "net_aggressor_pressure"
     input_sources: ["trades"]
-    lookback_window: "1m"
+    lookback_window: "3s"
     lookahead_forbidden: true
     max_lookback_days: 1
     data_sources:
       - source: "trades"
         timestamp_required: true
-    normalization: "none"
-
+  
   - name: "depth_bid_top5"
     input_sources: ["orderbook"]
     lookback_window: "0s"
@@ -178,8 +192,7 @@ features:
     data_sources:
       - source: "orderbook"
         timestamp_required: true
-    normalization: "none"
-
+  
   - name: "depth_bid_top10"
     input_sources: ["orderbook"]
     lookback_window: "0s"
@@ -188,8 +201,7 @@ features:
     data_sources:
       - source: "orderbook"
         timestamp_required: true
-    normalization: "none"
-
+  
   - name: "depth_ask_top5"
     input_sources: ["orderbook"]
     lookback_window: "0s"
@@ -198,8 +210,7 @@ features:
     data_sources:
       - source: "orderbook"
         timestamp_required: true
-    normalization: "none"
-
+  
   - name: "depth_ask_top10"
     input_sources: ["orderbook"]
     lookback_window: "0s"
@@ -208,8 +219,7 @@ features:
     data_sources:
       - source: "orderbook"
         timestamp_required: true
-    normalization: "none"
-
+  
   - name: "depth_imbalance_top5"
     input_sources: ["orderbook"]
     lookback_window: "0s"
@@ -218,8 +228,7 @@ features:
     data_sources:
       - source: "orderbook"
         timestamp_required: true
-    normalization: "none"
-
+  
   - name: "funding_rate"
     input_sources: ["funding"]
     lookback_window: "0s"
@@ -228,8 +237,7 @@ features:
     data_sources:
       - source: "funding"
         timestamp_required: true
-    normalization: "none"
-
+  
   - name: "time_to_funding"
     input_sources: ["funding"]
     lookback_window: "0s"
@@ -238,25 +246,17 @@ features:
     data_sources:
       - source: "funding"
         timestamp_required: true
-    normalization: "none"
-
+  
   - name: "time_of_day_sin"
-    input_sources: ["ticker"]
+    input_sources: []
     lookback_window: "0s"
     lookahead_forbidden: true
     max_lookback_days: 0
-    data_sources:
-      - source: "ticker"
-        timestamp_required: true
-    normalization: "none"
-
+    data_sources: []
+  
   - name: "time_of_day_cos"
-    input_sources: ["ticker"]
+    input_sources: []
     lookback_window: "0s"
     lookahead_forbidden: true
     max_lookback_days: 0
-    data_sources:
-      - source: "ticker"
-        timestamp_required: true
-    normalization: "none"
-
+    data_sources: []
