@@ -143,17 +143,12 @@ Model Service должен иметь возможность запросить 
 - **FR-003.1**: System MUST compute features at intervals: every 1s, 3s, 15s, and 1m
 - **FR-003.2**: System MUST compute basic price/candlestick features: mid_price, spread_abs, spread_rel, returns (1s, 3s, 1m), VWAP (3s, 15s, 1m), volume (3s, 15s, 1m), volatility (1m, 5m)
 - **FR-003.3**: System MUST compute orderflow features: signed_volume (3s, 15s, 1m), buy/sell volume ratio, trade_count (3s), net_aggressor_pressure
-- **FR-003.4**: System MUST compute orderbook features: depth (bid/ask top5/top10), depth_imbalance (top5), slope (bid/ask), orderbook_churn_rate, local_liquidity_density
+- **FR-003.4**: System MUST compute orderbook features: depth (bid/ask top5/top10), depth_imbalance (top5)
 - **FR-003.5**: System MUST compute perpetual features: funding_rate, time_to_funding
-- **FR-003.6**: System MUST compute temporal/meta features: time_of_day (numeric), rolling z-score
+- **FR-003.6**: System MUST compute temporal/meta features: time_of_day (cyclic encoding using sin/cos components: sin(2π * hour / 24), cos(2π * hour / 24))
 - **FR-004**: System MUST publish computed features to message queue for Model Service subscribers
 - **FR-005**: System MUST provide REST API endpoint to retrieve latest features for a symbol with latency ≤ 70 ms
-- **FR-006**: System MUST compute position features from Position Manager data (position size, unrealized PnL, entry price, etc.)
-- **FR-006.1**: System MUST compute position_size (positive for long, negative for short) and position_size_abs (absolute value)
-- **FR-006.2**: System MUST compute unrealized_pnl and realized_pnl in absolute units
-- **FR-006.3**: System MUST compute has_position binary feature (1 if position exists, 0 otherwise)
-- **FR-006.4**: System MUST compute entry_price (average entry price) and price_vs_entry (percentage deviation from entry price)
-- **FR-006.5**: System MUST compute total_exposure and total_exposure_abs (including open orders)
+- **FR-006**: ~~System MUST compute position features from Position Manager data~~ **REMOVED**: Position features are not included in the feature vector to maintain model universality and avoid look-ahead bias. Position-aware models can be implemented separately in Model Service if needed.
 - **FR-007**: System MUST support rebuilding features from historical data in offline/batch mode
 - **FR-008**: System MUST guarantee feature identity between online and offline computation modes (same calculation code and parameters)
 - **FR-009**: System MUST support dataset building with explicit train/validation/test period splits
@@ -177,15 +172,15 @@ Model Service должен иметь возможность запросить 
 - **FR-022**: System MUST validate Feature Registry configuration for data leakage prevention
 - **FR-023**: System MUST provide REST API to retrieve and reload Feature Registry configuration
 - **FR-024**: System MUST authenticate all API requests (except health checks) using API Key
-- **FR-025**: System MUST handle missing position data by using default values (0 for most features, current price for entry_price)
-- **FR-026**: System MUST cache position data with TTL ≤ 30 seconds for performance optimization
-- **FR-027**: System MUST subscribe to Position Manager events for real-time position updates
-- **FR-028**: System MUST support Position Manager REST API as fallback for position data initialization and recovery
+- **FR-025**: ~~System MUST handle missing position data~~ **REMOVED**: Position features are no longer computed
+- **FR-026**: ~~System MUST cache position data~~ **REMOVED**: Position features are no longer computed
+- **FR-027**: ~~System MUST subscribe to Position Manager events~~ **REMOVED**: Position features are no longer computed
+- **FR-028**: ~~System MUST support Position Manager REST API~~ **REMOVED**: Position features are no longer computed
 
 ### Key Entities
 
 - **Raw Market Data**: Исторические сырые данные маркет-данных (orderbook snapshots/deltas, trades, klines, ticker, funding) хранятся в структурированном формате для последующей пересборки признаков
-- **Feature Vector**: Вектор вычисленных признаков для символа в конкретный момент времени, включающий ценовые признаки, orderflow признаки, orderbook признаки, position features и мета-признаки
+- **Feature Vector**: Вектор вычисленных признаков для символа в конкретный момент времени, включающий ценовые признаки, orderflow признаки, orderbook признаки и мета-признаки
 - **Feature Registry**: Конфигурация, определяющая какие признаки вычислять, их источники данных, временные окна, параметры расчета и правила предотвращения data leakage
 - **Dataset**: Структурированный набор данных для обучения моделей, содержащий признаковые векторы и целевые переменные, разделенный на train/validation/test периоды
 - **Target Variable**: Целевая переменная для обучения модели, вычисленная на основе будущих данных (returns, direction, risk-adjusted returns) для заданного горизонта предсказания
@@ -247,7 +242,7 @@ Model Service должен иметь возможность запросить 
 ### Inference Workflow
 
 - **FR-055**: System MUST support workflow where Model Service subscribes to `features.live` queue or polls `GET /features/latest` API for ready feature vectors
-- **FR-056**: System MUST ensure Model Service receives complete feature vector including all computed features (price, orderflow, orderbook, perpetual, temporal, position features)
+- **FR-056**: System MUST ensure Model Service receives complete feature vector including all computed features (price, orderflow, orderbook, perpetual, temporal features)
 - **FR-057**: System MUST support workflow where Model Service performs inference on received feature vector and generates trading signal based on prediction
 
 ## Success Criteria *(mandatory)*
@@ -261,14 +256,14 @@ Model Service должен иметь возможность запросить 
 - **SC-005**: System completes dataset building requests within 2 hours for 1 month of historical data for a single symbol
 - **SC-006**: System detects and handles orderbook desynchronization within 1 second of detection, restoring correct orderbook state
 - **SC-007**: System provides data quality reports within 5 seconds of API request for any 24-hour period
-- **SC-008**: System processes position updates and includes them in feature vectors within 100 ms of receiving position update event
+- **SC-008**: ~~System processes position updates~~ **REMOVED**: Position features are no longer computed
 - **SC-009**: System successfully builds datasets with explicit train/validation/test splits where test set contains data from period never seen during training (100% temporal separation)
-- **SC-010**: System handles missing position data gracefully, using default values without impacting feature computation (0 errors in feature vectors due to missing position data)
+- **SC-010**: ~~System handles missing position data~~ **REMOVED**: Position features are no longer computed
 
 ## Assumptions
 
 - Market data is provided by ws-gateway service through internal message queues with `ws-gateway.*` naming convention
-- Position data is provided by Position Manager service through events (primary) and REST API (fallback)
+- ~~Position data is provided by Position Manager service~~ **REMOVED**: Position features are no longer computed
 - Raw data storage uses local filesystem with mounted volumes (Parquet format) - storage capacity is sufficient for 90+ days of data
 - System has access to historical execution events for reconstructing position history in offline mode
 - Model Service is refactored to accept ready feature vectors and not compute features independently
@@ -280,4 +275,4 @@ Model Service должен иметь возможность запросить 
 - System validates incoming data: missing values detection, anomaly detection (outliers, price spikes), sequence gap detection in orderbook, timestamp validation (internal timestamp vs exchange timestamp)
 - System supports strategies for handling problematic data: interpolation, forward fill, skipping records for missing values; requesting snapshots and rebuilding for orderbook desynchronization
 - System maintains automated tests for feature identity between online and offline modes (derivation tests)
-- System supports reconstruction of position history from execution events in offline mode
+- ~~System supports reconstruction of position history~~ **REMOVED**: Position features are no longer computed

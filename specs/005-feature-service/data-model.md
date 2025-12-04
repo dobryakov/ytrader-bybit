@@ -6,7 +6,7 @@
 
 ## Overview
 
-This document defines the data models for the Feature Service. Metadata entities are persisted in the shared PostgreSQL database. Raw market data is stored in Parquet format on local filesystem. In-memory state includes orderbook state, rolling windows, and position cache.
+This document defines the data models for the Feature Service. Metadata entities are persisted in the shared PostgreSQL database. Raw market data is stored in Parquet format on local filesystem. In-memory state includes orderbook state and rolling windows.
 
 ## Core Entities
 
@@ -51,29 +51,14 @@ Represents a computed feature vector for a symbol at a specific timestamp. Featu
         "depth_ask_top5": float,
         "depth_ask_top10": float,
         "depth_imbalance_top5": float,
-        "slope_bid": float,
-        "slope_ask": float,
-        "orderbook_churn_rate": float,
-        "local_liquidity_density": float,
         
         # Perpetual features
         "funding_rate": float,
         "time_to_funding": float,
         
         # Temporal/meta features
-        "time_of_day": float,          # Numeric representation (0-24)
-        "rolling_z_score": float,
-        
-        # Position features
-        "position_size": float,        # Positive for long, negative for short
-        "position_size_abs": float,
-        "unrealized_pnl": float,
-        "realized_pnl": float,
-        "has_position": int,           # Binary: 1 if position exists, 0 otherwise
-        "entry_price": float,
-        "price_vs_entry": float,       # Percentage deviation from entry price
-        "total_exposure": float,
-        "total_exposure_abs": float
+        "time_of_day_sin": float,      # Cyclic encoding: sin(2π * hour / 24)
+        "time_of_day_cos": float       # Cyclic encoding: cos(2π * hour / 24)
     },
     "feature_registry_version": "string",  # Version of Feature Registry used
     "trace_id": "string"                  # Trace ID for request flow tracking
@@ -173,7 +158,7 @@ Represents the configuration that defines which features to compute, their data 
 - `config` must be valid JSONB containing feature definitions
 - Each feature in config must specify:
   - `name`: Feature name
-  - `input_sources`: List of data sources (trades/orderbook/kline/position_manager)
+  - `input_sources`: List of data sources (trades/orderbook/kline)
   - `lookback_window`: Time window into past (e.g., "3s", "1m")
   - `lookahead_forbidden`: Boolean flag (must be true)
   - `max_lookback_days`: Maximum lookback in days for validation
@@ -374,36 +359,6 @@ Represents rolling window state for time-based feature computations (1s, 3s, 15s
 
 ---
 
-### 8. Position Cache (In-Memory)
-
-Represents cached position data from Position Manager with TTL ≤ 30 seconds.
-
-**In-Memory Structure**:
-
-```python
-{
-    "symbol": "string",
-    "position": {
-        "position_size": float,
-        "unrealized_pnl": float,
-        "realized_pnl": float,
-        "entry_price": float,
-        "total_exposure": float
-    },
-    "cached_at": "datetime",           # When position was cached
-    "ttl_seconds": int,                # TTL (≤ 30 seconds)
-    "expires_at": "datetime"           # When cache expires
-}
-```
-
-**State Transitions**:
-- Position event received → Update cache, set `cached_at` and `expires_at`
-- Cache expired → Use default values (0 for most features, current price for entry_price)
-- Position Manager unavailable → Use default values, log warning
-
-**Storage**: Not persisted to database (in-memory only). Position data comes from Position Manager events or REST API fallback.
-
----
 
 ## Database Schema
 
@@ -493,7 +448,7 @@ CREATE INDEX idx_data_quality_created_at ON data_quality_reports(created_at);
 ### Feature Computation Flow
 
 1. **Receive Market Data**: Consumer receives market data from RabbitMQ queues (`ws-gateway.*`)
-2. **Update State**: Update orderbook state, rolling windows, position cache (if position event)
+2. **Update State**: Update orderbook state and rolling windows
 3. **Compute Features**: Compute features using Feature Registry configuration
 4. **Publish**: Publish feature vector to `features.live` queue
 5. **Store Raw Data**: Write raw market data to Parquet files (async, non-blocking)

@@ -13,7 +13,6 @@ This guide provides step-by-step instructions to set up and run the Feature Serv
 - Access to PostgreSQL database (shared database, managed by ws-gateway)
 - Access to RabbitMQ (for consuming market data and publishing features)
 - ws-gateway service running and publishing market data to queues
-- Position Manager service (optional, for position features)
 
 ## Quick Setup
 
@@ -57,10 +56,6 @@ FEATURE_SERVICE_LOG_LEVEL=INFO
 FEATURE_SERVICE_DATA_DIR=/data/feature-service  # Mounted volume for Parquet files
 FEATURE_SERVICE_RETENTION_DAYS=90  # Minimum retention period
 
-# Position Manager Integration (optional)
-POSITION_MANAGER_URL=http://position-manager:4300
-POSITION_MANAGER_API_KEY=your-position-manager-api-key
-POSITION_CACHE_TTL_SECONDS=30
 
 # Feature Registry
 FEATURE_REGISTRY_PATH=/app/config/feature_registry.yaml
@@ -125,7 +120,6 @@ Expected response:
   "services": {
     "database": "connected",
     "message_queue": "connected",
-    "position_manager": "connected"
   }
 }
 ```
@@ -156,8 +150,6 @@ Response:
     "returns_1m": 0.001,
     "vwap_3s": 50000.5,
     "volume_3s": 10.5,
-    "position_size": 0.1,
-    "unrealized_pnl": 50.0,
     ...
   },
   "feature_registry_version": "1.0.0",
@@ -490,24 +482,6 @@ docker compose exec rabbitmq rabbitmqadmin list exchanges
    docker compose logs feature-service | grep -i "dataset\|error"
    ```
 
-### Position Features Missing
-
-1. Check Position Manager connection:
-   ```bash
-   curl http://localhost:4500/health
-   # Check position_manager status
-   ```
-
-2. Verify Position Manager events are being received:
-   ```bash
-   docker compose logs feature-service | grep -i "position"
-   ```
-
-3. Check position cache:
-   ```bash
-   # Position cache is in-memory, check logs for cache hits/misses
-   docker compose logs feature-service | grep -i "position.*cache"
-   ```
 
 ### Orderbook Desynchronization
 

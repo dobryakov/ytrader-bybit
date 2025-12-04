@@ -134,18 +134,6 @@ components:
             depth_imbalance_top5:
               type: number
               format: float
-            slope_bid:
-              type: number
-              format: float
-            slope_ask:
-              type: number
-              format: float
-            orderbook_churn_rate:
-              type: number
-              format: float
-            local_liquidity_density:
-              type: number
-              format: float
             # Perpetual features
             funding_rate:
               type: number
@@ -154,43 +142,14 @@ components:
               type: number
               format: float
             # Temporal/meta features
-            time_of_day:
+            time_of_day_sin:
               type: number
               format: float
-              description: Numeric representation (0-24)
-            rolling_z_score:
+              description: Cyclic encoding: sin(2π * hour / 24)
+            time_of_day_cos:
               type: number
               format: float
-            # Position features
-            position_size:
-              type: number
-              format: float
-              description: Positive for long, negative for short
-            position_size_abs:
-              type: number
-              format: float
-            unrealized_pnl:
-              type: number
-              format: float
-            realized_pnl:
-              type: number
-              format: float
-            has_position:
-              type: integer
-              description: Binary: 1 if position exists, 0 otherwise
-            entry_price:
-              type: number
-              format: float
-            price_vs_entry:
-              type: number
-              format: float
-              description: Percentage deviation from entry price
-            total_exposure:
-              type: number
-              format: float
-            total_exposure_abs:
-              type: number
-              format: float
+              description: Cyclic encoding: cos(2π * hour / 24)
         feature_registry_version:
           type: string
           description: Version of Feature Registry used

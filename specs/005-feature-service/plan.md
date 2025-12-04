@@ -7,7 +7,7 @@
 
 ## Summary
 
-A microservice that receives market data streams from ws-gateway via RabbitMQ queues, computes real-time features (price, orderflow, orderbook, perpetual, temporal, position features) with latency ≤ 70ms, stores raw market data in Parquet format for 90+ days, and rebuilds features from historical data for model training datasets with explicit train/validation/test splits. The service provides REST API for feature retrieval, dataset building requests, Feature Registry management, and data quality reports. Built with Python using async message queue consumers, FastAPI for REST endpoints, time-series processing libraries for feature computation, and Parquet storage for raw data persistence. Ensures feature identity between online and offline computation modes using shared Feature Registry configuration.
+A microservice that receives market data streams from ws-gateway via RabbitMQ queues, computes real-time features (price, orderflow, orderbook, perpetual, temporal features) with latency ≤ 70ms, stores raw market data in Parquet format for 90+ days, and rebuilds features from historical data for model training datasets with explicit train/validation/test splits. The service provides REST API for feature retrieval, dataset building requests, Feature Registry management, and data quality reports. Built with Python using async message queue consumers, FastAPI for REST endpoints, time-series processing libraries for feature computation, and Parquet storage for raw data persistence. Ensures feature identity between online and offline computation modes using shared Feature Registry configuration.
 
 ## Technical Context
 
@@ -16,7 +16,7 @@ A microservice that receives market data streams from ws-gateway via RabbitMQ qu
 - REST API framework: `FastAPI>=0.104.0` (async support, OpenAPI generation)
 - Message queue: `aio-pika>=9.0.0` for RabbitMQ (async client for consuming market data streams)
 - Database: `asyncpg>=0.29.0` (fastest async PostgreSQL driver for metadata storage)
-- HTTP client: `httpx>=0.25.0` for Position Manager REST API calls (fallback)
+- HTTP client: `httpx>=0.25.0` (for future integrations if needed)
 - Configuration: `pydantic-settings>=2.0.0` for environment variable management
 - Logging: `structlog>=23.2.0` for structured logging with trace IDs
 - Time series processing: `pandas>=2.0.0` (standard library for time series, rolling windows, see research.md)
@@ -27,7 +27,7 @@ A microservice that receives market data streams from ws-gateway via RabbitMQ qu
 **Storage**: 
 - PostgreSQL (shared database for metadata: dataset metadata, Feature Registry version, data quality reports)
 - Local filesystem (mounted volumes) for raw Parquet data files organized by data type and date
-- In-memory state: orderbook state, rolling windows (1s, 3s, 15s, 1m), position cache with TTL ≤ 30s
+- In-memory state: orderbook state, rolling windows (1s, 3s, 15s, 1m)
 
 **Testing**: `pytest` with `pytest-asyncio` for async tests, `pytest-mock` for mocking, derivation tests for feature identity (online vs offline comparison using identical input data, see research.md)
 
@@ -39,14 +39,12 @@ A microservice that receives market data streams from ws-gateway via RabbitMQ qu
 - Feature computation latency: ≤ 70ms from market data update to feature availability (95th percentile)
 - Dataset building: complete within 2 hours for 1 month of historical data for a single symbol
 - Data quality report generation: ≤ 5 seconds for any 24-hour period
-- Position update processing: ≤ 100ms from receiving position event to feature vector update
 
 **Constraints**: 
 - Feature identity: 100% match between online and offline feature computation (same code and parameters)
 - Data leakage prevention: features use only data before time t, targets use only data after time t
 - Raw data retention: minimum 90 days before archiving/deletion
 - Orderbook desynchronization handling: detect and restore within 1 second
-- Position data fallback: use default values (0 for most features, current price for entry_price) when Position Manager unavailable
 
 **Scale/Scope**: 
 - Multiple symbols processed concurrently (horizontal scaling by symbol)
@@ -178,7 +176,6 @@ feature-service/
 │   │   ├── orderbook_manager.py # Orderbook state management (snapshot + delta)
 │   │   ├── data_storage.py     # Parquet file storage and retrieval
 │   │   ├── feature_registry.py # Feature Registry configuration management
-│   │   ├── position_integration.py # Position Manager integration (events + REST fallback)
 │   │   └── data_quality.py     # Data quality monitoring and reporting
 │   ├── models/
 │   │   ├── feature_vector.py   # Feature vector data models
@@ -187,17 +184,15 @@ feature-service/
 │   │   └── market_data.py      # Market data event models
 │   ├── consumers/
 │   │   ├── market_data_consumer.py # RabbitMQ consumer for market data streams
-│   │   └── position_consumer.py     # RabbitMQ consumer for position events
 │   ├── publishers/
 │   │   ├── feature_publisher.py    # Publish computed features to features.live queue
 │   │   └── dataset_publisher.py    # Publish dataset completion to features.dataset.ready queue
 │   ├── features/
 │   │   ├── price_features.py       # Price/candlestick features (mid_price, spread, returns, VWAP, volatility)
 │   │   ├── orderflow_features.py   # Orderflow features (signed_volume, buy/sell ratio, trade_count)
-│   │   ├── orderbook_features.py   # Orderbook features (depth, imbalance, slope, churn_rate)
+│   │   ├── orderbook_features.py   # Orderbook features (depth, imbalance)
 │   │   ├── perpetual_features.py   # Perpetual features (funding_rate, time_to_funding)
-│   │   ├── temporal_features.py    # Temporal/meta features (time_of_day, rolling z-score)
-│   │   └── position_features.py    # Position features (position_size, PnL, entry_price, exposure)
+│   │   ├── temporal_features.py    # Temporal/meta features (time_of_day with cyclic encoding)
 │   ├── storage/
 │   │   ├── parquet_storage.py      # Parquet file read/write operations
 │   │   └── metadata_storage.py     # PostgreSQL metadata storage
