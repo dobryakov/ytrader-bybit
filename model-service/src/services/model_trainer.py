@@ -90,6 +90,29 @@ class ModelTrainer:
 
         # Check for label diversity (critical for XGBoost with logistic loss)
         unique_labels = y.unique()
+        
+        # Calculate class weights for balancing (for classification tasks)
+        if task_type == "classification" and model_type == "xgboost" and len(unique_labels) > 1:
+            # Calculate class distribution
+            label_counts = y.value_counts()
+            # Calculate scale_pos_weight: ratio of negative class to positive class
+            # For binary classification: 0 (negative) vs 1 (positive)
+            if 0 in label_counts.index and 1 in label_counts.index:
+                negative_count = label_counts[0]
+                positive_count = label_counts[1]
+                if positive_count > 0:
+                    scale_pos_weight = negative_count / positive_count
+                    logger.info(
+                        "Calculated class balance for XGBoost",
+                        negative_count=int(negative_count),
+                        positive_count=int(positive_count),
+                        scale_pos_weight=float(scale_pos_weight),
+                    )
+                    # Add to hyperparameters if not already set (will be merged later)
+                    if hyperparameters is None:
+                        hyperparameters = {}
+                    if "scale_pos_weight" not in hyperparameters:
+                        hyperparameters["scale_pos_weight"] = scale_pos_weight
         if len(unique_labels) == 1:
             # All labels are the same - XGBoost will fail with logistic loss
             # For XGBoost, we need to handle this case
