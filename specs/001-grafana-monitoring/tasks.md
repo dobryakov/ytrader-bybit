@@ -241,6 +241,24 @@
 
 ---
 
+## Phase 12: Feature Service Observability Dashboard
+
+**Purpose**: Comprehensive observability dashboards for Feature Service monitoring feature computation, data quality, dataset building, and API performance
+
+**Prerequisites**: Feature Service must implement metrics persistence tasks (T196-T203 from feature-service/tasks.md) and create database tables: feature_computation_metrics, data_quality_metrics, dataset_building_metrics, api_endpoint_metrics
+
+- [ ] T082 [P] [Feature Service] Add Feature Service Health panel to System Health dashboard in grafana/dashboards/system-health-panel.json using Feature Service /health HTTP endpoint (display database_connected, queue_connected, feature_registry_loaded, latest_feature_computation_timestamp, average_latency_ms_last_5min, data_quality_ok, active_dataset_builds_count, last_dataset_build_duration_seconds)
+- [ ] T083 [P] [Feature Service] Create Feature Service HTTP data source provisioning entry in grafana/provisioning/datasources/datasources.yml with API key authentication for Feature Service REST API endpoints
+- [ ] T084 [P] [Feature Service] Create Feature Service Overview dashboard JSON configuration file in grafana/dashboards/feature-service-overview.json with panels: Feature Computation Latency (time-series panel showing p50/p95/p99 latency from feature_computation_metrics table, with threshold line at 70ms for SC-001), Feature Computation Throughput (stat panel showing features computed per second from feature_computation_metrics table), Data Quality Overview (gauge panels showing data_completeness_rate, missing_rate, anomaly_rate from data_quality_metrics table with thresholds: ≥99.9% for SC-004), Dataset Building Performance (time-series panel showing build_duration_seconds from dataset_building_metrics table with threshold line at 7200 seconds for SC-005), API Endpoint Response Times (time-series panel showing average response_time_ms by endpoint from api_endpoint_metrics table), Orderbook Desynchronization Events (stat panel showing count of desynchronization_events from data_quality_metrics table with alert if > 0), Active Dataset Builds (stat panel showing count of active builds from dataset_building_metrics table where build_status='building'), Feature Registry Version (stat panel showing current feature_registry_version from latest feature_computation_metrics entry)
+- [ ] T085 [P] [Feature Service] Create Feature Service Data Quality dashboard JSON configuration file in grafana/dashboards/feature-service-data-quality.json with detailed data quality panels: Missing Rate Over Time (time-series panel with symbol selector from data_quality_metrics table), Anomaly Detection Rate (time-series panel with symbol selector from data_quality_metrics table), Sequence Gaps Count (time-series panel from data_quality_metrics table), Desynchronization Events Timeline (time-series panel from data_quality_metrics table), Data Completeness by Symbol (table panel showing latest data_completeness_rate per symbol from data_quality_metrics table sorted by completeness rate), Data Quality Heatmap (heatmap panel showing missing_rate by symbol and time from data_quality_metrics table)
+- [ ] T086 [P] [Feature Service] Create Feature Service Performance dashboard JSON configuration file in grafana/dashboards/feature-service-performance.json with performance panels: Feature Computation Latency Distribution (histogram panel from feature_computation_metrics table showing latency distribution), Latency by Computation Interval (time-series panel grouped by computation_interval from feature_computation_metrics table), Throughput by Symbol (time-series panel showing features computed per second per symbol from feature_computation_metrics table), API Endpoint Latency Breakdown (bar gauge panel showing average response_time_ms by endpoint from api_endpoint_metrics table), Dataset Building Duration Trend (time-series panel showing build_duration_seconds over time from dataset_building_metrics table), Dataset Building Success Rate (stat panel showing percentage of successful builds from dataset_building_metrics table), Error Rate by Symbol (time-series panel showing error_count per symbol from feature_computation_metrics table)
+- [ ] T087 [P] [Feature Service] Add auto-refresh configuration to all Feature Service dashboards (feature-service-overview.json, feature-service-data-quality.json, feature-service-performance.json) with 60 seconds interval
+- [ ] T088 [P] [Feature Service] Configure dashboard time range presets (Last 1 hour, Last 24 hours, Last 7 days, Last 30 days) for all Feature Service dashboards
+
+**Checkpoint**: Feature Service observability provides comprehensive monitoring of feature computation, data quality, dataset building, and API performance metrics
+
+---
+
 ## Dependencies & Execution Order
 
 ### Phase Dependencies
@@ -252,6 +270,7 @@
   - Or sequentially in priority order (P1 → P2)
 - **Polish (Phase 10)**: Depends on all desired user stories being complete
 - **Enhanced Monitoring (Phase 11)**: Can proceed in parallel after core user stories are complete, independent of Phase 10
+- **Feature Service Observability (Phase 12)**: Depends on Feature Service implementing metrics persistence (T196-T203 from feature-service/tasks.md) and creating database tables (feature_computation_metrics, data_quality_metrics, dataset_building_metrics, api_endpoint_metrics)
 
 ### User Story Dependencies
 
@@ -362,7 +381,7 @@ With multiple developers:
 
 ## Task Summary
 
-- **Total Tasks**: 81
+- **Total Tasks**: 88 (added 7 Feature Service observability tasks T082-T088 in Phase 12)
 - **Setup Tasks**: 3
 - **Foundational Tasks**: 8
 - **User Story 1 Tasks**: 4
@@ -374,6 +393,7 @@ With multiple developers:
 - **User Story 7 Tasks**: 6
 - **Polish Tasks**: 12
 - **Enhanced Monitoring Tasks (Phase 11)**: 21
+- **Feature Service Observability Tasks (Phase 12)**: 7
 
 **Parallel Opportunities**:
 
@@ -386,7 +406,7 @@ With multiple developers:
 
 **Suggested MVP Scope**: User Stories 1, 2, and 5 (all P1 priorities) - provides trading signals, order execution, and system health monitoring
 
-**Enhanced Monitoring Scope**: Position Manager portfolio metrics, Model Service performance metrics, Signal Skip Metrics, Strategy Performance Time-Series, Order Manager enhanced metrics
+**Enhanced Monitoring Scope**: Position Manager portfolio metrics, Model Service performance metrics, Signal Skip Metrics, Strategy Performance Time-Series, Order Manager enhanced metrics, Feature Service observability (feature computation, data quality, dataset building, API performance)
 
 **Independent Test Criteria**:
 

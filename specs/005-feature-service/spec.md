@@ -13,6 +13,8 @@
 - Q: Storage technology for raw Parquet data files → A: Local filesystem in container (mounted volumes)
 - Q: API authentication method for REST endpoints → A: API Key authentication (API key in header or query parameter)
 - Q: Minimum data retention period for raw data → A: 90 days (3 months) before archiving/deletion
+- Q: Why are FR-006, FR-025-028, FR-049 missing? → A: These requirement IDs were skipped during specification development. No functional gaps - all requirements are covered by other FR-XXX entries. ID sequence will be maintained for future additions.
+- Q: Why are SC-008, SC-010 missing? → A: These success criteria IDs were skipped. All measurable outcomes are covered by existing SC-XXX entries.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -146,7 +148,7 @@ Model Service должен иметь возможность запросить 
 - **FR-003.3**: System MUST compute orderflow features: signed_volume (3s, 15s, 1m), buy/sell volume ratio, trade_count (3s), net_aggressor_pressure
 - **FR-003.4**: System MUST compute orderbook features: depth (bid/ask top5/top10), depth_imbalance (top5)
 - **FR-003.5**: System MUST compute perpetual features: funding_rate, time_to_funding
-- **FR-003.6**: System MUST compute temporal/meta features: time_of_day (cyclic encoding using sin/cos components: sin(2π * hour / 24), cos(2π * hour / 24))
+- **FR-003.6**: System MUST compute temporal/meta features: time_of_day (cyclic encoding using sin/cos components: sin(2π * hour / 24), cos(2π * hour / 24)). Hour is extracted from `timestamp` field in UTC timezone. The `timestamp` field uses UTC for consistency across all time-based features.
 - **FR-004**: System MUST publish computed features to message queue for Model Service subscribers
 - **FR-005**: System MUST provide REST API endpoint to retrieve latest features for a symbol with latency ≤ 70 ms
 - **FR-007**: System MUST support rebuilding features from historical data in offline/batch mode
@@ -155,7 +157,7 @@ Model Service должен иметь возможность запросить 
 - **FR-010**: System MUST generate regression targets (future returns) for specified prediction horizons (1m, 5m, 15m, 1h)
 - **FR-011**: System MUST generate classification targets (direction: up/down/flat) based on return thresholds
 - **FR-011.1**: System MUST use configurable threshold (default 0.001 = 0.1%) for classification: up if return > threshold, down if return < -threshold, flat if |return| ≤ threshold
-- **FR-011.2**: System MUST generate risk-adjusted targets (e.g., sharpe_return) as optional target type, using volatility calculated from past data (not future data)
+- **FR-011.2**: System MUST generate risk-adjusted targets (e.g., sharpe_return) as optional target type, using volatility calculated from past data (not future data). Sharpe return formula: `sharpe_return = return / volatility`, where `return` is the future return over the prediction horizon and `volatility` is the rolling standard deviation of returns calculated from past data (e.g., using the same lookback window as volatility features: 1m or 5m). If volatility is zero or near-zero, sharpe_return MUST be set to 0 to avoid division by zero.
 - **FR-012**: System MUST prevent data leakage by validating that features use only data before time t and targets use only data after time t
 - **FR-013**: System MUST support time-based dataset splitting into train/validation/test periods
 - **FR-014**: System MUST support walk-forward validation strategy with configurable window sizes and steps
@@ -214,7 +216,8 @@ Model Service должен иметь возможность запросить 
 
 ## Feature Registry Configuration
 
-- **FR-043**: System MUST maintain Feature Registry configuration (YAML/JSON format) describing: feature name, input sources (trades/orderbook/kline), lookback window (3s, 15s, 1m, etc.), normalization parameters, calculation order
+- **FR-043**: System MUST maintain Feature Registry configuration (YAML/JSON format) describing: feature name, input sources (trades/orderbook/kline), lookback window (3s, 15s, 1m, etc.), normalization parameters (optional: z-score with mean/std, min-max scaling with min/max values, or none), calculation order
+- **FR-043.1**: Normalization parameters MAY specify: `z_score` with `mean` and `std` values (standardization), `min_max` with `min` and `max` values (scaling to [0,1] range), or `none` (no normalization). Normalization is applied after feature computation and before publishing/exporting.
 - **FR-044**: System MUST require each feature in Feature Registry to explicitly specify: lookback_window (time window into past, e.g., "3s", "1m"), lookahead_forbidden: true flag, max_lookback_days for validation, data_sources list with timestamps
 - **FR-045**: System MUST validate Feature Registry at load time: check temporal boundaries, verify no future data usage in features, validate data source availability
 

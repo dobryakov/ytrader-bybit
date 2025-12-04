@@ -341,6 +341,20 @@
 - [ ] T194 [P] Security hardening (API key validation, input sanitization)
 - [ ] T195 [P] Add data handling strategies (interpolation, forward fill, skipping records for missing values)
 
+### Grafana Observability Dashboard
+
+- [ ] T196 [P] [Grafana] Create database migration for feature computation metrics table in ws-gateway/migrations/XXX_create_feature_computation_metrics_table.sql (feature_computation_metrics table with columns: id UUID PRIMARY KEY, symbol VARCHAR(20) NOT NULL, computation_timestamp TIMESTAMP NOT NULL, latency_ms DECIMAL(10,3) NOT NULL, feature_registry_version VARCHAR(50) NOT NULL, computation_interval VARCHAR(10) NOT NULL CHECK (computation_interval IN ('1s', '3s', '15s', '1m')), features_count INTEGER NOT NULL, error_count INTEGER DEFAULT 0, trace_id VARCHAR(100), created_at TIMESTAMP NOT NULL DEFAULT NOW(), indexes on computation_timestamp DESC, symbol, feature_registry_version for Grafana dashboard queries and time-series visualization)
+- [ ] T197 [P] [Grafana] Create database migration for data quality metrics table in ws-gateway/migrations/XXX_create_data_quality_metrics_table.sql (data_quality_metrics table with columns: id UUID PRIMARY KEY, symbol VARCHAR(20) NOT NULL, metric_timestamp TIMESTAMP NOT NULL, missing_rate DECIMAL(5,4) NOT NULL CHECK (missing_rate >= 0 AND missing_rate <= 1), anomaly_rate DECIMAL(5,4) NOT NULL CHECK (anomaly_rate >= 0 AND anomaly_rate <= 1), sequence_gaps_count INTEGER DEFAULT 0, desynchronization_events_count INTEGER DEFAULT 0, data_completeness_rate DECIMAL(5,4) NOT NULL CHECK (data_completeness_rate >= 0 AND data_completeness_rate <= 1), trace_id VARCHAR(100), created_at TIMESTAMP NOT NULL DEFAULT NOW(), indexes on metric_timestamp DESC, symbol for Grafana dashboard queries and time-series visualization)
+- [ ] T198 [P] [Grafana] Create database migration for dataset building metrics table in ws-gateway/migrations/XXX_create_dataset_building_metrics_table.sql (dataset_building_metrics table with columns: id UUID PRIMARY KEY, dataset_id UUID NOT NULL, symbol VARCHAR(20) NOT NULL, build_started_at TIMESTAMP NOT NULL, build_completed_at TIMESTAMP, build_status VARCHAR(20) NOT NULL CHECK (build_status IN ('building', 'ready', 'failed')), build_duration_seconds INTEGER, records_count INTEGER, train_records INTEGER, validation_records INTEGER, test_records INTEGER, feature_registry_version VARCHAR(50) NOT NULL, split_strategy VARCHAR(50), trace_id VARCHAR(100), created_at TIMESTAMP NOT NULL DEFAULT NOW(), indexes on build_started_at DESC, dataset_id, symbol, build_status for Grafana dashboard queries and performance tracking)
+- [ ] T199 [P] [Grafana] Create database migration for API endpoint metrics table in ws-gateway/migrations/XXX_create_api_endpoint_metrics_table.sql (api_endpoint_metrics table with columns: id UUID PRIMARY KEY, endpoint VARCHAR(200) NOT NULL, method VARCHAR(10) NOT NULL, response_time_ms DECIMAL(10,3) NOT NULL, status_code INTEGER NOT NULL, symbol VARCHAR(20), request_timestamp TIMESTAMP NOT NULL, trace_id VARCHAR(100), created_at TIMESTAMP NOT NULL DEFAULT NOW(), indexes on request_timestamp DESC, endpoint, method, status_code for Grafana dashboard queries and API performance monitoring)
+- [ ] T200 [Grafana] Implement feature computation metrics persistence in feature-service/src/services/feature_computer.py (log metrics to feature_computation_metrics table after each computation: symbol, computation_timestamp, latency_ms, feature_registry_version, computation_interval, features_count, error_count if any errors occurred, trace_id, handle database errors gracefully with logging and continue processing)
+- [ ] T201 [Grafana] Implement data quality metrics persistence in feature-service/src/services/data_quality.py (log metrics to data_quality_metrics table periodically (every 1 minute or configurable interval): symbol, metric_timestamp, missing_rate, anomaly_rate, sequence_gaps_count, desynchronization_events_count, data_completeness_rate, trace_id, handle database errors gracefully)
+- [ ] T202 [Grafana] Implement dataset building metrics persistence in feature-service/src/services/dataset_builder.py (log metrics to dataset_building_metrics table when dataset building starts, updates progress, and completes: dataset_id, symbol, build_started_at, build_completed_at, build_status, build_duration_seconds when completed, records_count, train_records, validation_records, test_records, feature_registry_version, split_strategy, trace_id, handle database errors gracefully)
+- [ ] T203 [Grafana] Implement API endpoint metrics persistence in feature-service/src/api/middleware/metrics.py (log metrics to api_endpoint_metrics table for all API requests: endpoint, method, response_time_ms, status_code, symbol if applicable, request_timestamp, trace_id, handle database errors gracefully, use async logging to avoid blocking request processing)
+- [ ] T204 [P] [Grafana] Extend health check endpoint for Grafana monitoring in feature-service/src/api/health.py (add flat fields to HealthResponse: database_connected boolean, queue_connected boolean, feature_registry_loaded boolean, latest_feature_computation_timestamp, average_latency_ms_last_5min, data_quality_ok boolean, active_dataset_builds_count, last_dataset_build_duration_seconds, in addition to existing checks object for backward compatibility, enable Grafana System Health dashboard panel to extract dependency status directly without nested JSON parsing)
+
+**Note**: Grafana dashboard creation tasks (T205-T207) are located in `specs/001-grafana-monitoring/tasks.md` as they belong to the Grafana monitoring service. See Phase 12: Feature Service Observability Dashboard tasks in that file.
+
 ---
 
 ## Dependencies & Execution Order
@@ -355,6 +369,7 @@
   - User stories can then proceed in parallel (if staffed)
   - Or sequentially in priority order (P1 → P2 → P3)
 - **Polish (Final Phase)**: Depends on all desired user stories being complete
+- **Grafana Observability Dashboard (Phase 8)**: Depends on US1 (feature computation), US2 (dataset building), US4 (data quality monitoring) for metrics collection, can run in parallel with other polish tasks once underlying services are implemented
 
 ### User Story Dependencies
 
@@ -386,6 +401,7 @@
 - All unit tests within a story marked [P] can run in parallel
 - All models within a story marked [P] can run in parallel
 - Different user stories can be worked on in parallel by different team members (respecting dependencies)
+- Grafana observability tasks (T196-T207) can run in parallel after corresponding services are implemented: T196-T199 (database migrations) can run in parallel, T200-T203 (metrics persistence) can run in parallel after services are ready, T204-T207 (dashboard creation) can run in parallel after metrics tables are created
 
 ---
 
@@ -481,7 +497,7 @@ With multiple developers:
 
 ## Task Summary
 
-- **Total Tasks**: 195
+- **Total Tasks**: 204 (added 9 Grafana observability tasks T196-T204: 4 database migrations, 4 metrics persistence, 1 health check extension). Dashboard creation tasks (3 tasks) are in `specs/001-grafana-monitoring/tasks.md`
 - **Phase 1 (Setup)**: 10 tasks (added test structure setup)
 - **Phase 2 (Foundational)**: 26 tasks (12 tests + 14 implementation)
 - **Phase 3 (User Story 1)**: 43 tasks (20 tests + 23 implementation)
@@ -489,7 +505,7 @@ With multiple developers:
 - **Phase 5 (User Story 3)**: 14 tasks (7 tests + 7 implementation)
 - **Phase 6 (User Story 4)**: 22 tasks (11 tests + 11 implementation)
 - **Phase 7 (User Story 5)**: 18 tasks (9 tests + 9 implementation)
-- **Phase 8 (Polish)**: 17 tasks (5 additional tests + 12 implementation)
+- **Phase 8 (Polish)**: 20 tasks (5 additional tests + 12 implementation + 3 Grafana observability tasks: T196-T199 database migrations, T200-T203 metrics persistence, T204 health check extension). Grafana dashboard creation tasks (T205-T207) are in `specs/001-grafana-monitoring/tasks.md`
 
 **Suggested MVP Scope**: Phase 1 + Phase 2 + Phase 3 (User Story 1) = 79 tasks
 
