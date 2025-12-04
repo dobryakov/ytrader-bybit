@@ -24,46 +24,141 @@ class RollingWindows(BaseModel):
         elif timestamp is None:
             timestamp = datetime.now(timezone.utc)
         
+        # Convert string values to float
+        def to_float(value, default=0.0):
+            if value is None:
+                return default
+            try:
+                return float(value)
+            except (ValueError, TypeError):
+                return default
+        
         trade_df = pd.DataFrame([{
             "timestamp": timestamp,
-            "price": trade["price"],
-            "volume": trade.get("quantity", trade.get("volume", 0.0)),
-            "side": trade["side"],
+            "price": to_float(trade.get("price")),
+            "volume": to_float(trade.get("quantity") or trade.get("volume"), 0.0),
+            "side": trade.get("side", "Buy"),
         }])
+        
+        # Ensure numeric columns are float type
+        numeric_cols = ["price", "volume"]
+        for col in numeric_cols:
+            if col in trade_df.columns:
+                trade_df[col] = pd.to_numeric(trade_df[col], errors='coerce').fillna(0.0)
         
         # Add to all windows
         for interval in ["1s", "3s", "15s", "1m"]:
             if interval not in self.windows:
                 self.windows[interval] = pd.DataFrame(columns=["timestamp", "price", "volume", "side"])
             
-            self.windows[interval] = pd.concat([self.windows[interval], trade_df], ignore_index=True)
+            # Avoid FutureWarning: check if DataFrame is empty before concat
+            if len(self.windows[interval]) == 0:
+                self.windows[interval] = trade_df.copy()
+            else:
+                self.windows[interval] = pd.concat([self.windows[interval], trade_df], ignore_index=True)
+            # Ensure types are correct after concat (existing data might have string types)
+            for col in numeric_cols:
+                if col in self.windows[interval].columns:
+                    # Convert entire column to numeric, handling any string values
+                    self.windows[interval][col] = pd.to_numeric(self.windows[interval][col], errors='coerce').astype(float).fillna(0.0)
         
         self.last_update = timestamp
         self.trim_old_data()
     
     def add_kline(self, kline: Dict) -> None:
         """Add kline/candlestick to rolling windows."""
+        # Extract kline data from payload if present
+        payload = kline.get("payload", {})
+        if not payload:
+            payload = kline
+        
+        # Handle timestamp - can be in event or payload
+        timestamp = kline.get("timestamp") or payload.get("timestamp") or payload.get("start")
+        if isinstance(timestamp, str):
+            from dateutil.parser import parse
+            try:
+                timestamp = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+            except (ValueError, AttributeError):
+                timestamp = parse(timestamp)
+        elif timestamp is None:
+            timestamp = datetime.now(timezone.utc)
+        elif not isinstance(timestamp, datetime):
+            # Convert numeric timestamp to datetime
+            if isinstance(timestamp, (int, float)):
+                timestamp = datetime.fromtimestamp(timestamp / 1000 if timestamp > 1e10 else timestamp, tz=timezone.utc)
+            else:
+                timestamp = datetime.now(timezone.utc)
+        
+        # Convert string values to float
+        def to_float(value, default=0.0):
+            if value is None:
+                return default
+            try:
+                return float(value)
+            except (ValueError, TypeError):
+                return default
+        
         kline_df = pd.DataFrame([{
-            "timestamp": kline["timestamp"],
-            "open": kline["open"],
-            "high": kline["high"],
-            "low": kline["low"],
-            "close": kline["close"],
-            "volume": kline["volume"],
+            "timestamp": timestamp,
+            "open": to_float(payload.get("open") or payload.get("openPrice")),
+            "high": to_float(payload.get("high") or payload.get("highPrice")),
+            "low": to_float(payload.get("low") or payload.get("lowPrice")),
+            "close": to_float(payload.get("close") or payload.get("closePrice")),
+            "volume": to_float(payload.get("volume") or payload.get("volume24h"), 0.0),
         }])
+        
+        # Ensure numeric columns are float type
+        numeric_cols = ["open", "high", "low", "close", "volume"]
+        for col in numeric_cols:
+            if col in kline_df.columns:
+                kline_df[col] = pd.to_numeric(kline_df[col], errors='coerce').fillna(0.0)
         
         # Add to 1m window (klines are typically 1m+ intervals)
         if "1m" not in self.windows:
             self.windows["1m"] = pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"])
         
-        self.windows["1m"] = pd.concat([self.windows["1m"], kline_df], ignore_index=True)
-        self.last_update = kline["timestamp"]
+        # Avoid FutureWarning: check if DataFrame is empty before concat
+        if len(self.windows["1m"]) == 0:
+            self.windows["1m"] = kline_df.copy()
+        else:
+            self.windows["1m"] = pd.concat([self.windows["1m"], kline_df], ignore_index=True)
+        # Ensure types are correct after concat (existing data might have string types)
+        # This is critical: convert ALL numeric columns to float, not just new ones
+        for col in numeric_cols:
+            if col in self.windows["1m"].columns:
+                # Convert entire column to numeric, handling any string values
+                self.windows["1m"][col] = pd.to_numeric(self.windows["1m"][col], errors='coerce').astype(float).fillna(0.0)
+        
+        # Ensure last_update is always a datetime object
+        if isinstance(timestamp, datetime):
+            self.last_update = timestamp
+        elif isinstance(timestamp, str):
+            from dateutil.parser import parse
+            try:
+                self.last_update = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+            except (ValueError, AttributeError):
+                self.last_update = parse(timestamp)
+        else:
+            self.last_update = datetime.now(timezone.utc)
         self.trim_old_data()
     
     def trim_old_data(self, window_seconds: Optional[int] = None) -> None:
         """Trim old data outside window boundaries."""
         from datetime import timezone
-        now = self.last_update if self.last_update else datetime.now(timezone.utc)
+        # Ensure now is always a datetime object
+        now = self.last_update
+        if isinstance(now, str):
+            from dateutil.parser import parse
+            try:
+                now = datetime.fromisoformat(now.replace("Z", "+00:00"))
+            except (ValueError, AttributeError):
+                now = parse(now)
+            # Update last_update to datetime object to prevent future issues
+            self.last_update = now
+        elif not isinstance(now, datetime):
+            now = datetime.now(timezone.utc)
+            # Update last_update to datetime object
+            self.last_update = now
         
         window_sizes = {
             "1s": 1,
@@ -98,7 +193,15 @@ class RollingWindows(BaseModel):
             return pd.DataFrame(columns=["timestamp", "price", "volume", "side"])
         
         mask = (df["timestamp"] >= start_time) & (df["timestamp"] <= end_time)
-        return df[mask].copy()
+        result_df = df[mask].copy()
+        
+        # Ensure numeric columns are float type (defensive conversion)
+        numeric_cols = ["price", "volume"]
+        for col in numeric_cols:
+            if col in result_df.columns:
+                result_df[col] = pd.to_numeric(result_df[col], errors='coerce').astype(float).fillna(0.0)
+        
+        return result_df
     
     def get_klines_for_window(self, interval: str, start_time: datetime, end_time: datetime) -> pd.DataFrame:
         """Get klines within time window."""
@@ -108,7 +211,15 @@ class RollingWindows(BaseModel):
             return pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"])
         
         mask = (df["timestamp"] >= start_time) & (df["timestamp"] <= end_time)
-        return df[mask].copy()
+        result_df = df[mask].copy()
+        
+        # Ensure numeric columns are float type (defensive conversion)
+        numeric_cols = ["open", "high", "low", "close", "volume"]
+        for col in numeric_cols:
+            if col in result_df.columns:
+                result_df[col] = pd.to_numeric(result_df[col], errors='coerce').astype(float).fillna(0.0)
+        
+        return result_df
     
     class Config:
         """Pydantic configuration."""

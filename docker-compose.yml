@@ -188,9 +188,11 @@ services:
       - DATA_QUALITY_REPORT_TIMEOUT_SECONDS=${DATA_QUALITY_REPORT_TIMEOUT_SECONDS:-5}
       - FEATURE_SERVICE_SYMBOLS=${FEATURE_SERVICE_SYMBOLS:-}
     volumes:
+      - ./feature-service/src:/app/src
+      - ./feature-service/config:/app/config
+      - ./feature-service/tests:/app/tests
       - feature_raw_data:/data/raw
       - feature_datasets:/data/datasets
-      - ./feature-service/tests:/app/tests
     depends_on:
       postgres:
         condition: service_healthy

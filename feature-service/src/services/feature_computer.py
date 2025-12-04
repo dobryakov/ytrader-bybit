@@ -202,7 +202,16 @@ class FeatureComputer:
         if event_type == "trade":
             rolling_windows.add_trade(event)
         elif event_type == "kline":
-            rolling_windows.add_kline(event)
+            try:
+                rolling_windows.add_kline(event)
+            except (KeyError, TypeError) as e:
+                logger.warning(
+                    "kline_processing_error",
+                    symbol=symbol,
+                    error=str(e),
+                    event_keys=list(event.keys()),
+                    payload_keys=list(event.get("payload", {}).keys()) if isinstance(event.get("payload"), dict) else None,
+                )
         elif event_type == "funding_rate":
             funding_rate = event.get("funding_rate")
             next_funding_time = event.get("next_funding_time")

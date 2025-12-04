@@ -3,6 +3,7 @@ Feature publisher for publishing computed features to RabbitMQ queue.
 """
 import json
 from typing import Optional
+from datetime import datetime
 import structlog
 import aio_pika
 
@@ -39,7 +40,16 @@ class FeaturePublisher:
         
         try:
             # Serialize feature vector
-            data = feature_vector.model_dump()
+            # Use mode='json' to automatically convert datetime to ISO string
+            # This handles all datetime fields, not just timestamp
+            try:
+                data = feature_vector.model_dump(mode='json')
+            except TypeError:
+                # Fallback for Pydantic v1 or if mode='json' is not supported
+                data = feature_vector.model_dump()
+                # Manually convert datetime to ISO string
+                if isinstance(data.get("timestamp"), datetime):
+                    data["timestamp"] = data["timestamp"].isoformat()
             message_body = json.dumps(data).encode()
             
             # Publish message

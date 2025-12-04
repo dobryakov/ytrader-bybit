@@ -4,10 +4,21 @@ Price features computation module.
 from typing import Dict, Optional
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from src.models.orderbook_state import OrderbookState
 from src.models.rolling_windows import RollingWindows
+
+
+def _ensure_datetime(value) -> datetime:
+    """Ensure value is a datetime object."""
+    if isinstance(value, datetime):
+        return value
+    elif isinstance(value, str):
+        from dateutil.parser import parse
+        return parse(value)
+    else:
+        return datetime.now(timezone.utc)
 
 
 def compute_mid_price(orderbook: Optional[OrderbookState]) -> Optional[float]:
@@ -43,7 +54,7 @@ def compute_returns(
     if current_price is None:
         return None
     
-    now = rolling_windows.last_update
+    now = _ensure_datetime(rolling_windows.last_update)
     start_time = now - timedelta(seconds=window_seconds)
     
     # Get price data from window
@@ -56,13 +67,13 @@ def compute_returns(
     if len(window_data_sorted) == 0:
         return None
     
-    first_price = window_data_sorted.iloc[0]["price"]
-    
-    if first_price == 0:
+    # Ensure price is numeric (convert from string if needed)
+    first_price = pd.to_numeric(window_data_sorted.iloc[0]["price"], errors='coerce')
+    if pd.isna(first_price) or first_price == 0:
         return None
     
     # Compute return: (current - first) / first
-    return (current_price - first_price) / first_price
+    return float((current_price - first_price) / first_price)
 
 
 def compute_vwap(
@@ -70,7 +81,7 @@ def compute_vwap(
     window_seconds: int,
 ) -> Optional[float]:
     """Compute Volume-Weighted Average Price (VWAP) over specified window."""
-    now = rolling_windows.last_update
+    now = _ensure_datetime(rolling_windows.last_update)
     start_time = now - timedelta(seconds=window_seconds)
     
     # Get trades for window
@@ -82,9 +93,13 @@ def compute_vwap(
     if "price" not in trades.columns or "volume" not in trades.columns:
         return None
     
+    # Ensure numeric types (convert from string if needed)
+    prices = pd.to_numeric(trades["price"], errors='coerce').fillna(0.0)
+    volumes = pd.to_numeric(trades["volume"], errors='coerce').fillna(0.0)
+    
     # VWAP = sum(price * volume) / sum(volume)
-    total_value = (trades["price"] * trades["volume"]).sum()
-    total_volume = trades["volume"].sum()
+    total_value = (prices * volumes).sum()
+    total_volume = volumes.sum()
     
     if total_volume == 0:
         return None
@@ -97,7 +112,7 @@ def compute_volume(
     window_seconds: int,
 ) -> Optional[float]:
     """Compute total volume over specified window."""
-    now = rolling_windows.last_update
+    now = _ensure_datetime(rolling_windows.last_update)
     start_time = now - timedelta(seconds=window_seconds)
     
     # Get trades for window
@@ -109,7 +124,9 @@ def compute_volume(
     if "volume" not in trades.columns:
         return 0.0
     
-    return trades["volume"].sum()
+    # Ensure numeric type (convert from string if needed)
+    volumes = pd.to_numeric(trades["volume"], errors='coerce').fillna(0.0)
+    return float(volumes.sum())
 
 
 def compute_volatility(
@@ -117,7 +134,7 @@ def compute_volatility(
     window_seconds: int,
 ) -> Optional[float]:
     """Compute volatility (standard deviation of returns) over specified window."""
-    now = rolling_windows.last_update
+    now = _ensure_datetime(rolling_windows.last_update)
     start_time = now - timedelta(seconds=window_seconds)
     
     # Get klines for window
@@ -130,8 +147,39 @@ def compute_volatility(
         return None
     
     # Compute returns from close prices
-    closes = klines["close"].values
-    returns = np.diff(closes) / closes[:-1]
+    # Ensure closes are numeric (convert from string if needed)
+    # First, get the close column and convert to numeric
+    close_col = klines["close"]
+    
+    # Convert to numeric, handling any string values
+    closes_series = pd.to_numeric(close_col, errors='coerce')
+    
+    # Fill NaN with 0.0 and convert to float
+    closes_series = closes_series.fillna(0.0).astype(float)
+    
+    # Convert to numpy array with explicit float dtype
+    closes = np.array(closes_series.values, dtype=float)
+    
+    # Additional safety check: ensure we have a proper float array
+    if closes.dtype != np.float64:
+        closes = closes.astype(float)
+    
+    if len(closes) < 2:
+        return None
+    
+    # Filter out zero values to avoid division by zero
+    closes = closes[closes > 0]
+    
+    # Ensure dtype is still float after filtering
+    if len(closes) > 0 and closes.dtype != np.float64:
+        closes = closes.astype(float)
+    
+    if len(closes) < 2:
+        return None
+    
+    # Compute returns with explicit float conversion
+    closes_float = closes.astype(float)
+    returns = np.diff(closes_float) / closes_float[:-1]
     
     if len(returns) == 0:
         return None
