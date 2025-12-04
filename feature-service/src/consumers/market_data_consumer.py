@@ -157,7 +157,12 @@ class MarketDataConsumer:
         while self._running:
             try:
                 channel = await self._mq_manager.get_channel()
-                queue = await channel.declare_queue(queue_name, durable=True)
+                # Use passive=True to use existing queue with its parameters (TTL, etc.)
+                # ws-gateway queues have x-message-ttl: 86400000 (24 hours)
+                # We must use passive=True to avoid PRECONDITION_FAILED errors
+                # NOTE: When using passive=True, do NOT specify durable or any other arguments
+                # - queue already exists with specific parameters set by ws-gateway
+                queue = await channel.declare_queue(queue_name, passive=True)
                 
                 async def process_message(message: IncomingMessage):
                     async with message.process():

@@ -1,7 +1,7 @@
 """
 Rolling Windows model for managing time-based rolling windows.
 """
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
 import pandas as pd
 from pydantic import BaseModel, Field
@@ -16,10 +16,18 @@ class RollingWindows(BaseModel):
     
     def add_trade(self, trade: Dict) -> None:
         """Add trade to all relevant rolling windows."""
+        # Parse timestamp if it's a string
+        timestamp = trade.get("timestamp")
+        if isinstance(timestamp, str):
+            from dateutil.parser import parse
+            timestamp = parse(timestamp)
+        elif timestamp is None:
+            timestamp = datetime.now(timezone.utc)
+        
         trade_df = pd.DataFrame([{
-            "timestamp": trade["timestamp"],
+            "timestamp": timestamp,
             "price": trade["price"],
-            "volume": trade["quantity"],
+            "volume": trade.get("quantity", trade.get("volume", 0.0)),
             "side": trade["side"],
         }])
         
@@ -30,7 +38,7 @@ class RollingWindows(BaseModel):
             
             self.windows[interval] = pd.concat([self.windows[interval], trade_df], ignore_index=True)
         
-        self.last_update = trade["timestamp"]
+        self.last_update = timestamp
         self.trim_old_data()
     
     def add_kline(self, kline: Dict) -> None:
