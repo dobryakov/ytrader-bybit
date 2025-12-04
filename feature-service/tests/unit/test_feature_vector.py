@@ -3,7 +3,7 @@ Unit tests for Feature Vector model.
 """
 import pytest
 from datetime import datetime, timezone
-from feature_service.tests.fixtures.feature_vectors import (
+from tests.fixtures.feature_vectors import (
     sample_feature_vector,
     sample_feature_vector_minimal,
     sample_feature_vector_sequence,

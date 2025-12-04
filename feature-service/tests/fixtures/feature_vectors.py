@@ -86,7 +86,7 @@ def sample_feature_vector_sequence():
             "trace_id": "test-trace-1",
         },
         {
-            "timestamp": base_time.replace(microsecond=1000000),
+            "timestamp": base_time.replace(second=base_time.second + 1),
             "symbol": "BTCUSDT",
             "features": {
                 "mid_price": 50001.0,
@@ -96,7 +96,7 @@ def sample_feature_vector_sequence():
             "trace_id": "test-trace-2",
         },
         {
-            "timestamp": base_time.replace(microsecond=2000000),
+            "timestamp": base_time.replace(second=base_time.second + 2),
             "symbol": "BTCUSDT",
             "features": {
                 "mid_price": 50002.0,

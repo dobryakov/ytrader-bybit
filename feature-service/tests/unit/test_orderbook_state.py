@@ -2,9 +2,9 @@
 Unit tests for Orderbook State model.
 """
 import pytest
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from sortedcontainers import SortedDict
-from feature_service.tests.fixtures.orderbook import (
+from tests.fixtures.orderbook import (
     sample_orderbook_state,
     sample_orderbook_snapshot,
     sample_orderbook_deltas,
@@ -169,7 +169,7 @@ class TestOrderbookState:
         
         state = OrderbookState(**sample_orderbook_state)
         state.delta_count = 1000  # High delta count
-        state.last_snapshot_at = datetime.now(timezone.utc).replace(second=-10)  # Old snapshot
+        state.last_snapshot_at = datetime.now(timezone.utc).replace(second=0) - timedelta(seconds=70)  # Old snapshot (>60s)
         
         is_desync = state.is_desynchronized(max_delta_count=500, max_age_seconds=5)
         
