@@ -16,13 +16,26 @@ class RollingWindows(BaseModel):
     
     def add_trade(self, trade: Dict) -> None:
         """Add trade to all relevant rolling windows."""
-        # Parse timestamp if it's a string
+        # Parse timestamp - handle string, int (Unix ms), float, or None
         timestamp = trade.get("timestamp")
-        if isinstance(timestamp, str):
+        if isinstance(timestamp, (int, float)):
+            # Convert numeric timestamp (Unix milliseconds) to datetime
+            timestamp = datetime.fromtimestamp(
+                timestamp / 1000 if timestamp > 1e10 else timestamp,
+                tz=timezone.utc
+            )
+        elif isinstance(timestamp, str):
             from dateutil.parser import parse
             timestamp = parse(timestamp)
+            # Ensure timezone-aware datetime
+            if timestamp.tzinfo is None:
+                timestamp = timestamp.replace(tzinfo=timezone.utc)
         elif timestamp is None:
             timestamp = datetime.now(timezone.utc)
+        
+        # Ensure timestamp is timezone-aware
+        if isinstance(timestamp, datetime) and timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
         
         # Convert string values to float
         def to_float(value, default=0.0):
@@ -145,7 +158,7 @@ class RollingWindows(BaseModel):
     def trim_old_data(self, window_seconds: Optional[int] = None) -> None:
         """Trim old data outside window boundaries."""
         from datetime import timezone
-        # Ensure now is always a datetime object
+        # Ensure now is always a timezone-aware datetime object
         now = self.last_update
         if isinstance(now, str):
             from dateutil.parser import parse
@@ -153,11 +166,18 @@ class RollingWindows(BaseModel):
                 now = datetime.fromisoformat(now.replace("Z", "+00:00"))
             except (ValueError, AttributeError):
                 now = parse(now)
+            # Ensure timezone-aware
+            if now.tzinfo is None:
+                now = now.replace(tzinfo=timezone.utc)
             # Update last_update to datetime object to prevent future issues
             self.last_update = now
         elif not isinstance(now, datetime):
             now = datetime.now(timezone.utc)
             # Update last_update to datetime object
+            self.last_update = now
+        elif now.tzinfo is None:
+            # Make timezone-aware if naive
+            now = now.replace(tzinfo=timezone.utc)
             self.last_update = now
         
         window_sizes = {
@@ -179,6 +199,15 @@ class RollingWindows(BaseModel):
             
             # Keep only data within window
             if "timestamp" in df.columns:
+                # Normalize timestamp column to timezone-aware datetime if needed
+                df = df.copy()
+                if df["timestamp"].dtype in ['int64', 'float64', 'int32', 'float32']:
+                    df["timestamp"] = pd.to_datetime(df["timestamp"], unit='ms', utc=True)
+                elif df["timestamp"].dtype == 'object':
+                    df["timestamp"] = pd.to_datetime(df["timestamp"], errors='coerce', utc=True)
+                # Ensure all timestamps are timezone-aware
+                if df["timestamp"].dtype.name.startswith('datetime'):
+                    df["timestamp"] = df["timestamp"].dt.tz_localize(None).dt.tz_localize(timezone.utc) if df["timestamp"].dt.tz is None else df["timestamp"]
                 self.windows[interval] = df[df["timestamp"] >= cutoff_time].copy()
     
     def get_window_data(self, interval: str) -> pd.DataFrame:
@@ -191,6 +220,26 @@ class RollingWindows(BaseModel):
         
         if len(df) == 0 or "timestamp" not in df.columns:
             return pd.DataFrame(columns=["timestamp", "price", "volume", "side"])
+        
+        # Normalize timestamp column to timezone-aware datetime if needed
+        df = df.copy()
+        if df["timestamp"].dtype in ['int64', 'float64', 'int32', 'float32']:
+            # Convert Unix timestamp (milliseconds) to datetime
+            df["timestamp"] = pd.to_datetime(df["timestamp"], unit='ms', utc=True)
+        elif df["timestamp"].dtype == 'object':
+            # Try to convert string or mixed types to datetime
+            df["timestamp"] = pd.to_datetime(df["timestamp"], errors='coerce', utc=True)
+        
+        # Ensure start_time and end_time are timezone-aware
+        if start_time.tzinfo is None:
+            start_time = start_time.replace(tzinfo=timezone.utc)
+        if end_time.tzinfo is None:
+            end_time = end_time.replace(tzinfo=timezone.utc)
+        
+        # Ensure all timestamps in DataFrame are timezone-aware
+        if df["timestamp"].dtype.name.startswith('datetime'):
+            if df["timestamp"].dt.tz is None:
+                df["timestamp"] = df["timestamp"].dt.tz_localize(timezone.utc)
         
         mask = (df["timestamp"] >= start_time) & (df["timestamp"] <= end_time)
         result_df = df[mask].copy()

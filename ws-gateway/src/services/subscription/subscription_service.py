@@ -45,7 +45,8 @@ class SubscriptionService:
         if channel_type == "trades":
             if not symbol:
                 raise ValidationError("Symbol is required for trades channel")
-            return f"trade.{symbol}"
+            # Bybit v5 WebSocket API uses "publicTrade.{symbol}" format for trades
+            return f"publicTrade.{symbol}"
         if channel_type == "ticker":
             if not symbol:
                 raise ValidationError("Symbol is required for ticker channel")
