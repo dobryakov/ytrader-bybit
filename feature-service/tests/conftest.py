@@ -4,6 +4,43 @@ Shared test fixtures for Feature Service tests.
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
+# Import all fixtures from fixtures modules so pytest can discover them
+from tests.fixtures.market_data import (
+    sample_orderbook_snapshot,
+    sample_orderbook_delta,
+    sample_trade,
+    sample_kline,
+    sample_ticker,
+    sample_funding_rate,
+    sample_market_data_sequence,
+)
+from tests.fixtures.orderbook import (
+    sample_orderbook_state,
+    sample_orderbook_deltas,
+    sample_orderbook_desynchronized,
+    sample_orderbook_empty,
+)
+from tests.fixtures.rolling_windows import (
+    sample_rolling_windows,
+    sample_rolling_windows_empty,
+    sample_rolling_windows_trades,
+    sample_rolling_windows_klines,
+)
+from tests.fixtures.feature_vectors import (
+    sample_feature_vector,
+    sample_feature_vector_minimal,
+    sample_feature_vector_sequence,
+    sample_feature_vector_multiple_symbols,
+)
+from tests.fixtures.market_data_streams import (
+    sample_orderbook_stream,
+    sample_trades_stream,
+    sample_klines_stream,
+    sample_ticker_stream,
+    sample_funding_stream,
+    sample_mixed_market_data_stream,
+)
+
 
 @pytest.fixture
 def mock_logger():

@@ -46,6 +46,10 @@ class TestOrderbookManager:
         manager = OrderbookManager()
         manager.apply_snapshot(sample_orderbook_snapshot)
         
+        # First apply update delta (1001) to get sequence in sync
+        manager.apply_delta(sample_orderbook_deltas[0])
+        
+        # Then apply insert delta (1002)
         delta = sample_orderbook_deltas[1]  # insert delta
         result = manager.apply_delta(delta)
         
@@ -58,6 +62,11 @@ class TestOrderbookManager:
         manager = OrderbookManager()
         manager.apply_snapshot(sample_orderbook_snapshot)
         
+        # First apply update (1001) and insert (1002) deltas to get sequence in sync
+        manager.apply_delta(sample_orderbook_deltas[0])
+        manager.apply_delta(sample_orderbook_deltas[1])
+        
+        # Then apply delete delta (1003)
         delta = sample_orderbook_deltas[2]  # delete delta
         result = manager.apply_delta(delta)
         

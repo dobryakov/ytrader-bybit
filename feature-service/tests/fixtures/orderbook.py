@@ -34,10 +34,11 @@ def sample_orderbook_state():
 @pytest.fixture
 def sample_orderbook_snapshot():
     """Sample orderbook snapshot for initialization."""
+    now = datetime.now(timezone.utc)
     return {
         "event_type": "orderbook_snapshot",
         "symbol": "BTCUSDT",
-        "timestamp": datetime.now(timezone.utc),
+        "timestamp": now,
         "sequence": 1000,
         "bids": [
             [50000.0, 1.5],
@@ -51,8 +52,8 @@ def sample_orderbook_snapshot():
             [50003.0, 1.8],
             [50004.0, 0.8],
         ],
-        "internal_timestamp": datetime.now(timezone.utc),
-        "exchange_timestamp": datetime.now(timezone.utc),
+        "internal_timestamp": now,
+        "exchange_timestamp": now,
     }
 
 
