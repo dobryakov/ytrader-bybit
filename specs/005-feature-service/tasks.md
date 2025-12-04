@@ -95,52 +95,52 @@
 
 > **NOTE: Write these tests FIRST, ensure they FAIL before implementation**
 
-- [ ] T037 [P] [US1] Create test fixtures for feature vectors in feature-service/tests/fixtures/feature_vectors.py
-- [ ] T038 [P] [US1] Create test fixtures for orderbook state (snapshots and deltas) in feature-service/tests/fixtures/orderbook.py
-- [ ] T039 [P] [US1] Create test fixtures for rolling windows data in feature-service/tests/fixtures/rolling_windows.py
-- [ ] T040 [P] [US1] Create test fixtures for market data streams (orderbook, trades, klines, ticker, funding) in feature-service/tests/fixtures/market_data_streams.py
-- [ ] T041 [P] [US1] Create unit tests for Feature Vector model in feature-service/tests/unit/test_feature_vector.py
-- [ ] T042 [P] [US1] Create unit tests for Orderbook State model in feature-service/tests/unit/test_orderbook_state.py
-- [ ] T043 [P] [US1] Create unit tests for Rolling Windows model in feature-service/tests/unit/test_rolling_windows.py
-- [ ] T044 [P] [US1] Create unit tests for Orderbook Manager service in feature-service/tests/unit/test_orderbook_manager.py (snapshot + delta reconstruction, desynchronization)
-- [ ] T045 [P] [US1] Create unit tests for price features computation in feature-service/tests/unit/test_price_features.py
-- [ ] T046 [P] [US1] Create unit tests for orderflow features computation in feature-service/tests/unit/test_orderflow_features.py
-- [ ] T047 [P] [US1] Create unit tests for orderbook features computation in feature-service/tests/unit/test_orderbook_features.py
-- [ ] T048 [P] [US1] Create unit tests for perpetual features computation in feature-service/tests/unit/test_perpetual_features.py
-- [ ] T049 [P] [US1] Create unit tests for temporal features computation in feature-service/tests/unit/test_temporal_features.py
-- [ ] T050 [US1] Create unit tests for Feature Computer service in feature-service/tests/unit/test_feature_computer.py
-- [ ] T051 [US1] Create integration tests for market data consumer in feature-service/tests/integration/test_market_data_consumer.py (with mocked RabbitMQ)
+- [X] T037 [P] [US1] Create test fixtures for feature vectors in feature-service/tests/fixtures/feature_vectors.py
+- [X] T038 [P] [US1] Create test fixtures for orderbook state (snapshots and deltas) in feature-service/tests/fixtures/orderbook.py
+- [X] T039 [P] [US1] Create test fixtures for rolling windows data in feature-service/tests/fixtures/rolling_windows.py
+- [X] T040 [P] [US1] Create test fixtures for market data streams (orderbook, trades, klines, ticker, funding) in feature-service/tests/fixtures/market_data_streams.py
+- [X] T041 [P] [US1] Create unit tests for Feature Vector model in feature-service/tests/unit/test_feature_vector.py
+- [X] T042 [P] [US1] Create unit tests for Orderbook State model in feature-service/tests/unit/test_orderbook_state.py
+- [X] T043 [P] [US1] Create unit tests for Rolling Windows model in feature-service/tests/unit/test_rolling_windows.py
+- [X] T044 [P] [US1] Create unit tests for Orderbook Manager service in feature-service/tests/unit/test_orderbook_manager.py (snapshot + delta reconstruction, desynchronization)
+- [X] T045 [P] [US1] Create unit tests for price features computation in feature-service/tests/unit/test_price_features.py
+- [X] T046 [P] [US1] Create unit tests for orderflow features computation in feature-service/tests/unit/test_orderflow_features.py
+- [X] T047 [P] [US1] Create unit tests for orderbook features computation in feature-service/tests/unit/test_orderbook_features.py
+- [X] T048 [P] [US1] Create unit tests for perpetual features computation in feature-service/tests/unit/test_perpetual_features.py
+- [X] T049 [P] [US1] Create unit tests for temporal features computation in feature-service/tests/unit/test_temporal_features.py
+- [X] T050 [US1] Create unit tests for Feature Computer service in feature-service/tests/unit/test_feature_computer.py
+- [X] T051 [US1] Create integration tests for market data consumer in feature-service/tests/integration/test_market_data_consumer.py (with mocked RabbitMQ)
 - [ ] T052 [US1] Create integration tests for subscription management in feature-service/tests/integration/test_subscription_management.py (with mocked ws-gateway API)
-- [ ] T053 [US1] Create integration tests for feature publisher in feature-service/tests/integration/test_feature_publisher.py (with mocked RabbitMQ)
-- [ ] T054 [US1] Create contract tests for GET /features/latest endpoint in feature-service/tests/contract/test_features_api.py
+- [X] T053 [US1] Create integration tests for feature publisher in feature-service/tests/integration/test_feature_publisher.py (with mocked RabbitMQ)
+- [X] T054 [US1] Create contract tests for GET /features/latest endpoint in feature-service/tests/contract/test_features_api.py
 - [ ] T055 [US1] Create integration tests for feature computation latency (≤70ms) in feature-service/tests/integration/test_feature_latency.py
 - [ ] T056 [US1] Create integration tests for ws-gateway unavailability handling in feature-service/tests/integration/test_ws_gateway_resilience.py
 
 ### Implementation for User Story 1
 
-- [ ] T057 [P] [US1] Create Feature Vector model in feature-service/src/models/feature_vector.py
-- [ ] T058 [P] [US1] Create Orderbook State model in feature-service/src/models/orderbook_state.py
-- [ ] T059 [P] [US1] Create Rolling Windows model in feature-service/src/models/rolling_windows.py
-- [ ] T060 [US1] Implement Orderbook Manager service in feature-service/src/services/orderbook_manager.py (snapshot + delta reconstruction)
-- [ ] T061 [US1] Implement price features computation in feature-service/src/features/price_features.py (mid_price, spread, returns, VWAP, volatility)
-- [ ] T062 [US1] Implement orderflow features computation in feature-service/src/features/orderflow_features.py (signed_volume, buy/sell ratio, trade_count, net_aggressor_pressure)
-- [ ] T063 [US1] Implement orderbook features computation in feature-service/src/features/orderbook_features.py (depth, imbalance)
-- [ ] T064 [US1] Implement perpetual features computation in feature-service/src/features/perpetual_features.py (funding_rate, time_to_funding)
-- [ ] T065 [US1] Implement temporal features computation in feature-service/src/features/temporal_features.py (time_of_day with cyclic encoding)
-- [ ] T066 [US1] Implement Feature Computer service in feature-service/src/services/feature_computer.py (orchestrates all feature computations)
-- [ ] T067 [US1] Implement market data consumer in feature-service/src/consumers/market_data_consumer.py (consumes from ws-gateway.* queues)
-- [ ] T068 [US1] Implement subscription management for WebSocket channels via ws-gateway REST API in feature-service/src/consumers/market_data_consumer.py
-- [ ] T069 [US1] Implement subscription lifecycle management (create on startup, handle failures gracefully with retry, don't cancel on shutdown) in feature-service/src/consumers/market_data_consumer.py
+- [X] T057 [P] [US1] Create Feature Vector model in feature-service/src/models/feature_vector.py
+- [X] T058 [P] [US1] Create Orderbook State model in feature-service/src/models/orderbook_state.py
+- [X] T059 [P] [US1] Create Rolling Windows model in feature-service/src/models/rolling_windows.py
+- [X] T060 [US1] Implement Orderbook Manager service in feature-service/src/services/orderbook_manager.py (snapshot + delta reconstruction)
+- [X] T061 [US1] Implement price features computation in feature-service/src/features/price_features.py (mid_price, spread, returns, VWAP, volatility)
+- [X] T062 [US1] Implement orderflow features computation in feature-service/src/features/orderflow_features.py (signed_volume, buy/sell ratio, trade_count, net_aggressor_pressure)
+- [X] T063 [US1] Implement orderbook features computation in feature-service/src/features/orderbook_features.py (depth, imbalance)
+- [X] T064 [US1] Implement perpetual features computation in feature-service/src/features/perpetual_features.py (funding_rate, time_to_funding)
+- [X] T065 [US1] Implement temporal features computation in feature-service/src/features/temporal_features.py (time_of_day with cyclic encoding)
+- [X] T066 [US1] Implement Feature Computer service in feature-service/src/services/feature_computer.py (orchestrates all feature computations)
+- [X] T067 [US1] Implement market data consumer in feature-service/src/consumers/market_data_consumer.py (consumes from ws-gateway.* queues)
+- [X] T068 [US1] Implement subscription management for WebSocket channels via ws-gateway REST API in feature-service/src/consumers/market_data_consumer.py
+- [X] T069 [US1] Implement subscription lifecycle management (create on startup, handle failures gracefully with retry, don't cancel on shutdown) in feature-service/src/consumers/market_data_consumer.py
 - [ ] T070 [US1] Implement optional execution events consumer from ws-gateway.order or order-manager.order_events queues in feature-service/src/consumers/market_data_consumer.py
 - [ ] T071 [US1] Implement optional subscription to order execution events via ws-gateway REST API in feature-service/src/consumers/market_data_consumer.py
-- [ ] T072 [US1] Implement feature publisher in feature-service/src/publishers/feature_publisher.py (publishes to features.live queue)
-- [ ] T073 [US1] Implement GET /features/latest endpoint in feature-service/src/api/features.py with 404 handling for missing symbols
-- [ ] T074 [US1] Add internal timestamp and exchange timestamp to all received messages in feature-service/src/consumers/market_data_consumer.py
-- [ ] T075 [US1] Implement feature computation scheduling at intervals (1s, 3s, 15s, 1m) in feature-service/src/services/feature_computer.py
-- [ ] T076 [US1] Add logging for feature computation operations in feature-service/src/services/feature_computer.py
-- [ ] T077 [US1] Add latency monitoring and metrics for feature computation in feature-service/src/services/feature_computer.py
-- [ ] T078 [US1] Implement handling of ws-gateway unavailability (continue with last available data, log issues, update quality metrics) in feature-service/src/consumers/market_data_consumer.py
-- [ ] T079 [US1] Implement latency warning when computation exceeds 70ms threshold in feature-service/src/services/feature_computer.py
+- [X] T072 [US1] Implement feature publisher in feature-service/src/publishers/feature_publisher.py (publishes to features.live queue)
+- [X] T073 [US1] Implement GET /features/latest endpoint in feature-service/src/api/features.py with 404 handling for missing symbols
+- [X] T074 [US1] Add internal timestamp and exchange timestamp to all received messages in feature-service/src/consumers/market_data_consumer.py
+- [X] T075 [US1] Implement feature computation scheduling at intervals (1s, 3s, 15s, 1m) in feature-service/src/services/feature_scheduler.py
+- [X] T076 [US1] Add logging for feature computation operations in feature-service/src/services/feature_computer.py
+- [X] T077 [US1] Add latency monitoring and metrics for feature computation in feature-service/src/services/feature_computer.py
+- [X] T078 [US1] Implement handling of ws-gateway unavailability (continue with last available data, log issues, update quality metrics) in feature-service/src/consumers/market_data_consumer.py
+- [X] T079 [US1] Implement latency warning when computation exceeds 70ms threshold in feature-service/src/services/feature_computer.py
 
 **Checkpoint**: At this point, User Story 1 should be fully functional and testable independently. Features are computed in real-time and available via API and message queue.
 
