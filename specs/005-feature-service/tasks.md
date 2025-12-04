@@ -25,16 +25,16 @@
 
 **Purpose**: Project initialization and basic structure
 
-- [ ] T001 Create project structure per implementation plan in feature-service/
-- [ ] T002 Initialize Python project with dependencies in feature-service/requirements.txt (include pytest, pytest-asyncio, pytest-mock)
-- [ ] T003 [P] Create Dockerfile in feature-service/Dockerfile
-- [ ] T004 [P] Create docker-compose.yml service configuration for feature-service
-- [ ] T005 [P] Create env.example with all required environment variables in feature-service/env.example
-- [ ] T006 [P] Configure linting and formatting tools (black, ruff) in feature-service/
-- [ ] T007 Create README.md in feature-service/README.md
-- [ ] T008 [P] Create test directory structure (tests/unit/, tests/integration/, tests/contract/, tests/fixtures/) in feature-service/
-- [ ] T009 [P] Create pytest configuration file (pytest.ini or pyproject.toml) in feature-service/
-- [ ] T010 [P] Create conftest.py with shared test fixtures in feature-service/tests/conftest.py
+- [X] T001 Create project structure per implementation plan in feature-service/
+- [X] T002 Initialize Python project with dependencies in feature-service/requirements.txt (include pytest, pytest-asyncio, pytest-mock)
+- [X] T003 [P] Create Dockerfile in feature-service/Dockerfile
+- [X] T004 [P] Create docker-compose.yml service configuration for feature-service
+- [X] T005 [P] Create env.example with all required environment variables in feature-service/env.example
+- [X] T006 [P] Configure linting and formatting tools (black, ruff) in feature-service/
+- [X] T007 Create README.md in feature-service/README.md
+- [X] T008 [P] Create test directory structure (tests/unit/, tests/integration/, tests/contract/, tests/fixtures/) in feature-service/
+- [X] T009 [P] Create pytest configuration file (pytest.ini or pyproject.toml) in feature-service/
+- [X] T010 [P] Create conftest.py with shared test fixtures in feature-service/tests/conftest.py
 
 ---
 

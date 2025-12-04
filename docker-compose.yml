@@ -154,6 +154,60 @@ services:
       retries: 3
       start_period: 40s
 
+  feature-service:
+    build:
+      context: ./feature-service
+      dockerfile: Dockerfile
+    container_name: feature-service
+    ports:
+      - "${FEATURE_SERVICE_PORT:-4900}:4900"
+    environment:
+      - POSTGRES_HOST=${POSTGRES_HOST:-postgres}
+      - POSTGRES_PORT=${POSTGRES_PORT:-5432}
+      - POSTGRES_DB=${POSTGRES_DB:-ytrader}
+      - POSTGRES_USER=${POSTGRES_USER:-ytrader}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - RABBITMQ_HOST=${RABBITMQ_HOST:-rabbitmq}
+      - RABBITMQ_PORT=${RABBITMQ_PORT:-5672}
+      - RABBITMQ_USER=${RABBITMQ_USER:-guest}
+      - RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD:-guest}
+      - FEATURE_SERVICE_PORT=${FEATURE_SERVICE_PORT:-4900}
+      - FEATURE_SERVICE_API_KEY=${FEATURE_SERVICE_API_KEY}
+      - FEATURE_SERVICE_LOG_LEVEL=${FEATURE_SERVICE_LOG_LEVEL:-INFO}
+      - FEATURE_SERVICE_SERVICE_NAME=${FEATURE_SERVICE_SERVICE_NAME:-feature-service}
+      - WS_GATEWAY_HOST=${WS_GATEWAY_HOST:-ws-gateway}
+      - WS_GATEWAY_PORT=${WS_GATEWAY_PORT:-4400}
+      - WS_GATEWAY_API_KEY=${WS_GATEWAY_API_KEY}
+      - RAW_DATA_STORAGE_PATH=${RAW_DATA_STORAGE_PATH:-/data/raw}
+      - RAW_DATA_RETENTION_DAYS=${RAW_DATA_RETENTION_DAYS:-90}
+      - DATASET_STORAGE_PATH=${DATASET_STORAGE_PATH:-/data/datasets}
+      - FEATURE_REGISTRY_CONFIG_PATH=${FEATURE_REGISTRY_CONFIG_PATH:-/app/config/feature_registry.yaml}
+      - FEATURE_COMPUTATION_INTERVALS=${FEATURE_COMPUTATION_INTERVALS:-1s,3s,15s,1m}
+      - FEATURE_COMPUTATION_LATENCY_WARNING_MS=${FEATURE_COMPUTATION_LATENCY_WARNING_MS:-70}
+      - DATA_QUALITY_MONITORING_ENABLED=${DATA_QUALITY_MONITORING_ENABLED:-true}
+      - DATA_QUALITY_REPORT_TIMEOUT_SECONDS=${DATA_QUALITY_REPORT_TIMEOUT_SECONDS:-5}
+      - FEATURE_SERVICE_SYMBOLS=${FEATURE_SERVICE_SYMBOLS:-}
+    volumes:
+      - feature_raw_data:/data/raw
+      - feature_datasets:/data/datasets
+      - ./feature-service/tests:/app/tests
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      ws-gateway:
+        condition: service_started
+    networks:
+      - ytrader-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4900/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
   order-manager:
     build:
       context: ./order-manager
@@ -382,4 +436,6 @@ volumes:
   model_storage:
   grafana_data:
   redis_data:
+  feature_raw_data:
+  feature_datasets:
 
