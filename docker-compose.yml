@@ -6,6 +6,11 @@ services:
     container_name: ws-gateway
     ports:
       - "${WS_GATEWAY_PORT:-4400}:4400"
+    volumes:
+      - ./ws-gateway/src:/app/src
+      - ./ws-gateway/migrations:/app/migrations
+      - ./ws-gateway/tests:/app/tests
+      - ./ws-gateway/compare_balances.py:/app/compare_balances.py
     environment:
       - BYBIT_API_KEY=${BYBIT_API_KEY}
       - BYBIT_API_SECRET=${BYBIT_API_SECRET}
@@ -137,6 +142,8 @@ services:
       - BALANCE_SYNC_TIMEOUT_SECONDS=${BALANCE_SYNC_TIMEOUT_SECONDS:-5.0}
     volumes:
       - model_storage:/models
+      - ./model-service/src:/app/src
+      - ./model-service/tests:/app/tests
     depends_on:
       postgres:
         condition: service_healthy
@@ -266,6 +273,7 @@ services:
       - REDIS_PORT=${REDIS_PORT:-6379}
       - REDIS_PASSWORD=${REDIS_PASSWORD:-}
     volumes:
+      - ./order-manager/src:/app/src
       - ./order-manager/scripts:/app/scripts
       - ./order-manager/tests:/app/tests
     depends_on:
@@ -322,6 +330,7 @@ services:
       - WS_GATEWAY_URL=${WS_GATEWAY_URL:-http://ws-gateway:4400}
       - WS_GATEWAY_API_KEY=${WS_GATEWAY_API_KEY}
     volumes:
+      - ./position-manager/src:/app/src
       - ./position-manager/tests:/app/tests
     depends_on:
       postgres:
