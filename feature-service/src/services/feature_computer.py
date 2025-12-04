@@ -286,39 +286,30 @@ class FeatureComputer:
         
         # Handle trades - ws-gateway may publish as "trade" or "trades"
         if event_type == "trade" or event_type == "trades":
-            # Extract trade data from payload if present
-            trade_data = event.copy()
-            if isinstance(payload, dict) and "data" in payload:
-                # ws-gateway format: payload.data contains trade array
-                trade_list = payload.get("data", [])
-                if isinstance(trade_list, list) and len(trade_list) > 0:
-                    # Process first trade (or all trades if needed)
-                    trade_item = trade_list[0] if isinstance(trade_list[0], dict) else {}
-                    # Convert Bybit format to feature-service format
-                    trade_data.update({
-                        "price": trade_item.get("p") or trade_item.get("price"),
-                        "quantity": trade_item.get("v") or trade_item.get("quantity") or trade_item.get("volume"),
-                        "side": trade_item.get("S") or trade_item.get("side", "Buy"),
-                        "timestamp": trade_item.get("T") or trade_item.get("timestamp") or event.get("timestamp"),
-                    })
-                elif isinstance(trade_list, dict):
-                    # Single trade object
-                    trade_data.update({
-                        "price": trade_list.get("p") or trade_list.get("price"),
-                        "quantity": trade_list.get("v") or trade_list.get("quantity") or trade_list.get("volume"),
-                        "side": trade_list.get("S") or trade_list.get("side", "Buy"),
-                        "timestamp": trade_list.get("T") or trade_list.get("timestamp") or event.get("timestamp"),
-                    })
-            elif isinstance(payload, dict):
-                # Direct payload format
-                trade_data.update({
+            # ws-gateway creates one event per trade item, payload contains the trade directly
+            # Payload format: { "p": price, "v": volume, "S": side, "T": timestamp, "s": symbol, ... }
+            if isinstance(payload, dict):
+                # Payload is the trade object itself (not wrapped in "data")
+                trade_data = {
                     "price": payload.get("p") or payload.get("price"),
                     "quantity": payload.get("v") or payload.get("quantity") or payload.get("volume"),
                     "side": payload.get("S") or payload.get("side", "Buy"),
-                    "timestamp": payload.get("T") or payload.get("timestamp") or event.get("timestamp"),
-                })
-            
-            rolling_windows.add_trade(trade_data)
+                    "timestamp": payload.get("T") or payload.get("timestamp") or event.get("timestamp") or event.get("exchange_timestamp"),
+                    "symbol": payload.get("s") or symbol,
+                }
+                rolling_windows.add_trade(trade_data)
+            elif isinstance(payload, list) and len(payload) > 0:
+                # If payload is a list (shouldn't happen with current ws-gateway, but handle it)
+                for trade_item in payload:
+                    if isinstance(trade_item, dict):
+                        trade_data = {
+                            "price": trade_item.get("p") or trade_item.get("price"),
+                            "quantity": trade_item.get("v") or trade_item.get("quantity") or trade_item.get("volume"),
+                            "side": trade_item.get("S") or trade_item.get("side", "Buy"),
+                            "timestamp": trade_item.get("T") or trade_item.get("timestamp") or event.get("timestamp") or event.get("exchange_timestamp"),
+                            "symbol": trade_item.get("s") or symbol,
+                        }
+                        rolling_windows.add_trade(trade_data)
         elif event_type == "kline":
             try:
                 rolling_windows.add_kline(event)
