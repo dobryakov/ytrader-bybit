@@ -13,6 +13,32 @@ A microservice that trains ML models from market data, generates trading signals
 - **Real-time Processing**: Async message queue processing with RabbitMQ
 - **Observability**: Structured logging with trace IDs for request flow tracking
 
+## Quick Start: Retraining Models for Feature Service
+
+**If you see warnings about missing features (e.g., `spread_percent`):**
+
+Your model was trained before Feature Service integration and expects old feature names. **Retrain the model** to use Feature Service features directly:
+
+```bash
+# 1. Trigger training (will request dataset from Feature Service)
+curl -X POST http://localhost:4500/api/v1/training/trigger \
+  -H "X-API-Key: your-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{"strategy_id": "test-strategy", "symbol": "ETHUSDT"}'
+
+# 2. Check training status
+curl -X GET "http://localhost:4500/api/v1/training/status" \
+  -H "X-API-Key: your-api-key"
+
+# 3. Activate new model (if quality threshold met, auto-activation occurs)
+curl -X POST "http://localhost:4500/api/v1/models/{new_version}/activate" \
+  -H "X-API-Key: your-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{"strategy_id": "test-strategy"}'
+```
+
+**Temporary workaround** (not recommended): Set `FEATURE_SERVICE_LEGACY_FEATURE_COMPATIBILITY=true` to enable automatic feature name mapping. This is only for temporary compatibility - models should be retrained.
+
 ## Technology Stack
 
 - **Language**: Python 3.11+
@@ -91,6 +117,12 @@ FEATURE_SERVICE_FEATURE_CACHE_TTL_SECONDS=30
 FEATURE_SERVICE_DATASET_BUILD_TIMEOUT_SECONDS=3600
 FEATURE_SERVICE_DATASET_POLL_INTERVAL_SECONDS=60
 FEATURE_SERVICE_DATASET_STORAGE_PATH=/datasets
+
+# Legacy Feature Compatibility (for models trained before Feature Service integration)
+# Set to 'true' only if you have old models that require legacy feature names (e.g., spread_percent)
+# New models should be trained on Feature Service features directly (set to 'false')
+# WARNING: This is a temporary workaround. Models should be retrained on Feature Service features.
+FEATURE_SERVICE_LEGACY_FEATURE_COMPATIBILITY=false
 
 # Signal Generation Configuration
 SIGNAL_GENERATION_RATE_LIMIT=60
@@ -486,18 +518,63 @@ Manually trigger training for a strategy.
 **Request Body:**
 ```json
 {
-  "strategy_id": "momentum_v1"
+  "strategy_id": "momentum_v1",
+  "symbol": "BTCUSDT"
 }
 ```
+
+**Query Parameters:**
+- `strategy_id` (optional): Trading strategy identifier
+- `symbol` (optional): Trading pair symbol (e.g., 'BTCUSDT'). If not provided, uses default symbol.
 
 **Response:**
 ```json
 {
   "triggered": true,
-  "message": "Training triggered successfully",
+  "message": "Training triggered successfully. Dataset build requested from Feature Service. Training will start when dataset is ready.",
   "strategy_id": "momentum_v1"
 }
 ```
+
+**Note**: Training uses market data from Feature Service (not execution_events). The system will:
+1. Request dataset build from Feature Service with time-based periods
+2. Wait for dataset.ready notification
+3. Download dataset and start training automatically
+
+#### Request Dataset Build
+
+```bash
+POST /api/v1/training/dataset/build
+```
+
+Explicitly request dataset build from Feature Service without immediately triggering training. Training will start automatically when dataset.ready notification is received.
+
+**Request Body:**
+```json
+{
+  "strategy_id": "momentum_v1",
+  "symbol": "BTCUSDT"
+}
+```
+
+**Query Parameters:**
+- `strategy_id` (optional): Trading strategy identifier
+- `symbol` (optional): Trading pair symbol (e.g., 'BTCUSDT'). If not provided, uses default symbol.
+
+**Response:**
+```json
+{
+  "dataset_id": "550e8400-e29b-41d4-a716-446655440000",
+  "message": "Dataset build requested successfully. Dataset ID: 550e8400-e29b-41d4-a716-446655440000. Training will start automatically when dataset is ready.",
+  "strategy_id": "momentum_v1",
+  "symbol": "BTCUSDT"
+}
+```
+
+**Use Cases:**
+- Pre-build datasets before scheduled training
+- Test dataset building without triggering training
+- Build datasets for multiple symbols/strategies in advance
 
 ### Monitoring
 
@@ -623,11 +700,55 @@ Model Service integrates with Feature Service to receive ready feature vectors f
 - **Ready Features**: Feature engineering is handled by Feature Service, Model Service receives pre-computed features
 - **Dataset Building**: Training datasets are built by Feature Service with explicit train/validation/test periods
 - **Time-based Retraining**: Training is triggered by scheduled time intervals instead of execution event accumulation
+- **Backward Compatibility**: Automatic feature name mapping for models trained before Feature Service integration
 
 ### Feature Service Workflow
 
 1. **Inference**: Model Service requests latest features from Feature Service (via queue or REST API) for signal generation
 2. **Training**: Model Service requests dataset build from Feature Service with time-based periods, waits for dataset.ready notification, downloads and trains on ready dataset
+
+### Feature Name Compatibility and Model Retraining
+
+**Important**: Models trained before Feature Service integration expect different feature names (e.g., `spread_percent` instead of `spread_rel`). 
+
+**Recommended Approach**: Retrain all models using Feature Service datasets to use the new feature names directly. This ensures:
+- Models use the exact features provided by Feature Service
+- No feature name mapping or computation overhead
+- Better model performance with properly computed features
+
+**Legacy Compatibility Mode** (temporary workaround):
+- Set `FEATURE_SERVICE_LEGACY_FEATURE_COMPATIBILITY=true` to enable automatic computation of legacy features
+- This mode computes old feature names (e.g., `spread_percent`) from new Feature Service features
+- **Warning**: This is a temporary solution. Models should be retrained on Feature Service features.
+
+**How to Retrain a Model**:
+
+1. **Request dataset build and trigger training**:
+   ```bash
+   curl -X POST http://localhost:4500/api/v1/training/trigger \
+     -H "X-API-Key: your-api-key" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "strategy_id": "test-strategy",
+       "symbol": "ETHUSDT"
+     }'
+   ```
+
+2. **Wait for training to complete** (check status):
+   ```bash
+   curl -X GET "http://localhost:4500/api/v1/training/status" \
+     -H "X-API-Key: your-api-key"
+   ```
+
+3. **Activate the new model** (if quality meets threshold, it activates automatically, otherwise activate manually):
+   ```bash
+   curl -X POST "http://localhost:4500/api/v1/models/{new_version}/activate" \
+     -H "X-API-Key: your-api-key" \
+     -H "Content-Type: application/json" \
+     -d '{"strategy_id": "test-strategy"}'
+   ```
+
+The new model will use Feature Service feature names directly (e.g., `spread_rel`, `mid_price`, `returns_1m`) instead of legacy names.
 
 ### Configuration
 

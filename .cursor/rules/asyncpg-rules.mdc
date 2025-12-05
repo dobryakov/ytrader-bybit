@@ -1,0 +1,5 @@
+---
+alwaysApply: true
+---
+
+**Причина:** asyncpg при кодировании параметров сравнивает все datetime в запросе; смешивание timezone-naive и timezone-aware вызывает ошибку "can't subtract offset-naive and offset-aware datetimes", даже если все datetime нормализованы. **Решение:** Нормализация всех datetime к timezone-aware UTC перед запросом и workaround с явным приведением типов в SQL (`$4::timestamptz`), чтобы обойти внутреннее сравнение asyncpg. Для JSONB полей — конвертация dict в JSON-строки, а datetime внутри JSONB — в ISO-строки перед сериализацией.

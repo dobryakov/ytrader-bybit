@@ -25,16 +25,34 @@ class TrainingStatusResponse(BaseModel):
     current_training: Optional[dict] = None
     last_training: Optional[dict] = None
     next_scheduled_training: Optional[str] = None
-    buffered_events_count: int = 0
     queue_size: int = 0
     queue_wait_time_seconds: Optional[float] = None
     next_queued_training_strategy_id: Optional[str] = None
+    next_queued_training_dataset_id: Optional[str] = None
+    pending_dataset_builds: int = 0
 
 
 class TrainingTriggerRequest(BaseModel):
     """Training trigger request model."""
 
     strategy_id: Optional[str] = Field(None, description="Trading strategy identifier")
+    symbol: Optional[str] = Field(None, description="Trading pair symbol (e.g., 'BTCUSDT'). If not provided, uses default.")
+
+
+class DatasetBuildRequest(BaseModel):
+    """Dataset build request model."""
+
+    strategy_id: Optional[str] = Field(None, description="Trading strategy identifier")
+    symbol: Optional[str] = Field(None, description="Trading pair symbol (e.g., 'BTCUSDT'). If not provided, uses default.")
+
+
+class DatasetBuildResponse(BaseModel):
+    """Dataset build response model."""
+
+    dataset_id: str
+    message: str
+    strategy_id: Optional[str] = None
+    symbol: Optional[str] = None
 
 
 class TrainingTriggerResponse(BaseModel):
@@ -59,8 +77,8 @@ async def get_training_status() -> TrainingStatusResponse:
         logger.info(
             "Retrieved training status",
             is_training=status["is_training"],
-            buffered_events_count=status["buffered_events_count"],
             queue_size=status["queue_size"],
+            pending_dataset_builds=status["pending_dataset_builds"],
         )
 
         return TrainingStatusResponse(
@@ -68,10 +86,11 @@ async def get_training_status() -> TrainingStatusResponse:
             current_training=None,
             last_training=None,
             next_scheduled_training=None,
-            buffered_events_count=status["buffered_events_count"],
             queue_size=status["queue_size"],
             queue_wait_time_seconds=status["queue_next_wait_time_seconds"],
             next_queued_training_strategy_id=status["next_queued_training_strategy_id"],
+            next_queued_training_dataset_id=status.get("next_queued_training_dataset_id"),
+            pending_dataset_builds=status["pending_dataset_builds"],
         )
     except Exception as e:
         logger.error("Failed to get training status", error=str(e), exc_info=True)
@@ -83,8 +102,12 @@ async def trigger_training(request: Optional[TrainingTriggerRequest] = None) -> 
     """
     Manually trigger training for a strategy.
 
+    This will request dataset build from Feature Service and start training
+    when dataset is ready. Training uses market data from Feature Service,
+    not execution events.
+
     Args:
-        request: Optional training trigger request with strategy_id
+        request: Optional training trigger request with strategy_id and symbol
 
     Returns:
         Training trigger response
@@ -94,28 +117,67 @@ async def trigger_training(request: Optional[TrainingTriggerRequest] = None) -> 
     """
     try:
         strategy_id = request.strategy_id if request else None
+        symbol = request.symbol if request else None
 
-        # Check if there are enough events to train
-        if len(training_orchestrator._execution_events_buffer) == 0:
-            logger.warning("No execution events available for training", strategy_id=strategy_id)
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="No execution events available for training. Wait for more events to accumulate.",
-            )
+        # Trigger training (will request dataset build from Feature Service)
+        await training_orchestrator.check_and_trigger_training(strategy_id=strategy_id, symbol=symbol)
 
-        # Trigger training
-        await training_orchestrator.check_and_trigger_training(strategy_id)
-
-        logger.info("Training triggered manually", strategy_id=strategy_id)
+        logger.info("Training triggered manually", strategy_id=strategy_id, symbol=symbol)
 
         return TrainingTriggerResponse(
             triggered=True,
-            message="Training triggered successfully",
+            message="Training triggered successfully. Dataset build requested from Feature Service. Training will start when dataset is ready.",
             strategy_id=strategy_id,
         )
     except HTTPException:
         raise
     except Exception as e:
         logger.error("Failed to trigger training", error=str(e), exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+
+@router.post("/training/dataset/build", response_model=DatasetBuildResponse)
+async def request_dataset_build(request: Optional[DatasetBuildRequest] = None) -> DatasetBuildResponse:
+    """
+    Manually request dataset build from Feature Service.
+
+    This endpoint allows you to explicitly request a dataset build without
+    triggering training immediately. Training will start automatically when
+    dataset.ready notification is received.
+
+    Args:
+        request: Optional dataset build request with strategy_id and symbol
+
+    Returns:
+        Dataset build response with dataset_id
+
+    Raises:
+        HTTPException: If dataset build request fails
+    """
+    try:
+        strategy_id = request.strategy_id if request else None
+        symbol = request.symbol if request else None
+
+        # Request dataset build from Feature Service
+        dataset_id = await training_orchestrator.request_dataset_build(strategy_id=strategy_id, symbol=symbol)
+
+        if not dataset_id:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to request dataset build from Feature Service. Check Feature Service availability and logs.",
+            )
+
+        logger.info("Dataset build requested manually", dataset_id=str(dataset_id), strategy_id=strategy_id, symbol=symbol)
+
+        return DatasetBuildResponse(
+            dataset_id=str(dataset_id),
+            message=f"Dataset build requested successfully. Dataset ID: {dataset_id}. Training will start automatically when dataset is ready.",
+            strategy_id=strategy_id,
+            symbol=symbol,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to request dataset build", error=str(e), exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 

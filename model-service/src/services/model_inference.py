@@ -145,12 +145,126 @@ class ModelInference:
 
         return position_features
 
+    def _compute_legacy_features(self, features: pd.DataFrame) -> pd.DataFrame:
+        """
+        Compute legacy feature names from Feature Service features for backward compatibility.
+        
+        This function maps Feature Service feature names to old feature names that models
+        were trained with before Feature Service integration.
+        
+        Args:
+            features: DataFrame with features from Feature Service
+            
+        Returns:
+            DataFrame with additional legacy features computed
+        """
+        # Feature name mappings: old_name -> computation from new features
+        # spread_percent: can be computed from spread_rel or spread_abs / price * 100
+        if "spread_percent" not in features.columns:
+            if "spread_rel" in features.columns:
+                # spread_rel is relative spread - typically in decimal format (0.001 = 0.1%)
+                # Convert to percentage by multiplying by 100
+                # If values are already > 1, assume they're already in percentage format
+                spread_rel = features["spread_rel"]
+                # Check if values are likely in percentage format (typical spread_percent is 0.01-1.0%)
+                # If spread_rel values are > 1, they're likely already in percentage
+                max_val = spread_rel.abs().max() if len(spread_rel) > 0 else 0.0
+                if max_val > 1.0:
+                    # Already in percentage format
+                    features["spread_percent"] = spread_rel
+                    logger.debug("spread_rel appears to be in percentage format, using directly")
+                else:
+                    # Decimal format (0.001 = 0.1%), convert to percentage
+                    features["spread_percent"] = spread_rel * 100.0
+                    logger.debug("spread_rel converted from decimal to percentage")
+            elif "spread_abs" in features.columns:
+                # Compute spread_percent from absolute spread and price
+                price_col = None
+                for price_name in ["mid_price", "price", "close_price", "last_price"]:
+                    if price_name in features.columns:
+                        price_col = price_name
+                        break
+                
+                if price_col:
+                    price = features[price_col]
+                    spread_abs = features["spread_abs"]
+                    # Avoid division by zero and handle inf/nan
+                    features["spread_percent"] = (
+                        (spread_abs / price * 100.0)
+                        .fillna(0.0)
+                        .replace([float('inf'), float('-inf')], 0.0)
+                    )
+                    logger.debug(f"spread_percent computed from spread_abs and {price_col}")
+                else:
+                    features["spread_percent"] = 0.0
+                    logger.debug("Could not compute spread_percent: spread_abs available but no price column found")
+            elif "bid_ask_spread" in features.columns:
+                # Alternative: use bid_ask_spread if available
+                price_col = None
+                for price_name in ["mid_price", "price", "close_price", "last_price"]:
+                    if price_name in features.columns:
+                        price_col = price_name
+                        break
+                
+                if price_col:
+                    price = features[price_col]
+                    spread = features["bid_ask_spread"]
+                    features["spread_percent"] = (
+                        (spread / price * 100.0)
+                        .fillna(0.0)
+                        .replace([float('inf'), float('-inf')], 0.0)
+                    )
+                    logger.debug(f"spread_percent computed from bid_ask_spread and {price_col}")
+                else:
+                    features["spread_percent"] = 0.0
+                    logger.debug("Could not compute spread_percent: bid_ask_spread available but no price column found")
+            else:
+                # Fallback: set to 0 if cannot compute
+                features["spread_percent"] = 0.0
+                logger.debug("Could not compute spread_percent, using default 0.0")
+        
+        # Map other common legacy features
+        # volume_24h: may be named differently in Feature Service
+        if "volume_24h" not in features.columns:
+            if "volume_24h_usdt" in features.columns:
+                features["volume_24h"] = features["volume_24h_usdt"]
+            elif "volume_24h_base" in features.columns:
+                features["volume_24h"] = features["volume_24h_base"]
+            else:
+                # Try to get from any volume feature
+                volume_cols = [col for col in features.columns if "volume" in col.lower()]
+                if volume_cols:
+                    features["volume_24h"] = features[volume_cols[0]]
+                else:
+                    features["volume_24h"] = 0.0
+        
+        # volatility: may be named differently
+        if "volatility" not in features.columns:
+            if "realized_volatility" in features.columns:
+                features["volatility"] = features["realized_volatility"]
+            elif "volatility_1h" in features.columns:
+                features["volatility"] = features["volatility_1h"]
+            else:
+                features["volatility"] = 0.0
+        
+        # price: map from mid_price or close_price
+        if "price" not in features.columns:
+            if "mid_price" in features.columns:
+                features["price"] = features["mid_price"]
+            elif "close_price" in features.columns:
+                features["price"] = features["close_price"]
+            elif "last_price" in features.columns:
+                features["price"] = features["last_price"]
+        
+        return features
+
     def _align_features(self, features: pd.DataFrame, model: Any) -> pd.DataFrame:
         """
         Align features with model's expected features.
 
         Performs feature alignment: validates that all required features are present,
-        adds missing features with default values, removes extra features, and preserves order.
+        adds missing features with default values or computes them from available features,
+        removes extra features, and preserves order.
 
         Args:
             features: DataFrame with features from Feature Service + position features
@@ -162,6 +276,11 @@ class ModelInference:
         Raises:
             ModelInferenceError: If critical features are missing
         """
+        # Optionally compute legacy features for backward compatibility with old models
+        # This should be disabled for new models trained on Feature Service features
+        if settings.feature_service_legacy_feature_compatibility:
+            features = self._compute_legacy_features(features)
+        
         # Get expected feature names from model (what it was trained with)
         # XGBoost models store feature names in different places depending on version
         expected_feature_names = None
@@ -207,6 +326,21 @@ class ModelInference:
                 logger.error("Feature alignment failed - critical features missing", missing_features=missing_critical)
                 raise ModelInferenceError(error_msg)
             
+            # Check if model requires legacy features (old model trained before Feature Service integration)
+            legacy_feature_patterns = ["spread_percent", "volume_24h", "volatility", "price"]
+            has_legacy_features = any(
+                any(pattern in feature_name.lower() for pattern in legacy_feature_patterns)
+                for feature_name in missing_features
+            )
+            
+            if has_legacy_features and not settings.feature_service_legacy_feature_compatibility:
+                logger.warning(
+                    "Model requires legacy features but legacy compatibility is disabled",
+                    missing_features=list(missing_features),
+                    recommendation="Either enable FEATURE_SERVICE_LEGACY_FEATURE_COMPATIBILITY=true or retrain model on Feature Service features",
+                    event="Legacy features required but compatibility disabled",
+                )
+            
             # Add missing features with default values
             for feature_name in missing_features:
                 # Use appropriate default based on feature name
@@ -222,6 +356,7 @@ class ModelInference:
                     "Missing feature in inference, using default",
                     feature_name=feature_name,
                     default_value=default_value,
+                    event="Missing feature in inference, using default",
                 )
         
         # Remove extra features that model doesn't expect

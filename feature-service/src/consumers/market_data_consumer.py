@@ -49,18 +49,22 @@ class MarketDataConsumer:
         self._symbols = symbols or []
         self._subscriptions: Set[str] = set()
         self._consumers: List[asyncio.Task] = []
+        self._subscription_retry_task: Optional[asyncio.Task] = None
         self._running = False
     
     async def start(self) -> None:
         """Start consuming market data."""
         logger.info("Starting market data consumer", service_name=self._service_name)
         
-        # Create subscriptions via ws-gateway REST API
-        await self._create_subscriptions()
-        
-        # Start consuming from queues
+        # Start consuming from queues (can work without subscriptions initially)
         self._running = True
         await self._start_consumers()
+        
+        # Try to create subscriptions (non-blocking, will retry in background)
+        await self._create_subscriptions()
+        
+        # Start background task for retrying failed subscriptions
+        self._subscription_retry_task = asyncio.create_task(self._retry_subscriptions_loop())
         
         logger.info("Market data consumer started")
     
@@ -69,6 +73,14 @@ class MarketDataConsumer:
         logger.info("Stopping market data consumer")
         
         self._running = False
+        
+        # Cancel subscription retry task
+        if self._subscription_retry_task:
+            self._subscription_retry_task.cancel()
+            try:
+                await self._subscription_retry_task
+            except asyncio.CancelledError:
+                pass
         
         # Cancel all consumer tasks
         for task in self._consumers:
@@ -80,7 +92,7 @@ class MarketDataConsumer:
         logger.info("Market data consumer stopped")
     
     async def _create_subscriptions(self) -> None:
-        """Create subscriptions via ws-gateway REST API."""
+        """Create subscriptions via ws-gateway REST API with retry logic."""
         channels = [
             {"channel_type": "orderbook", "symbol": symbol}
             for symbol in self._symbols
@@ -99,6 +111,28 @@ class MarketDataConsumer:
         ]
         
         for channel_config in channels:
+            await self._create_single_subscription(channel_config)
+    
+    async def _create_single_subscription(
+        self, 
+        channel_config: Dict, 
+        max_retries: int = 3,
+        initial_retry_delay: float = 1.0
+    ) -> bool:
+        """
+        Create a single subscription with retry logic.
+        
+        Args:
+            channel_config: Channel configuration dict
+            max_retries: Maximum number of retry attempts
+            initial_retry_delay: Initial delay between retries in seconds
+            
+        Returns:
+            True if subscription was created successfully, False otherwise
+        """
+        retry_delay = initial_retry_delay
+        
+        for attempt in range(max_retries):
             try:
                 response = await self._http_client.post(
                     "/api/v1/subscriptions",
@@ -119,7 +153,9 @@ class MarketDataConsumer:
                             subscription_id=subscription_id,
                             channel_type=channel_config["channel_type"],
                             symbol=channel_config.get("symbol"),
+                            attempt=attempt + 1,
                         )
+                        return True
                 else:
                     # Log response body for debugging 422 errors
                     try:
@@ -133,24 +169,87 @@ class MarketDataConsumer:
                         symbol=channel_config.get("symbol"),
                         status_code=response.status_code,
                         error_body=error_body,
+                        attempt=attempt + 1,
                     )
+                    
+                    # Don't retry on 4xx errors (except 429)
+                    if 400 <= response.status_code < 500 and response.status_code != 429:
+                        return False
+                    
             except Exception as e:
-                # Handle ws-gateway unavailability (T078): continue with last available data, log issues
+                # Handle ws-gateway unavailability (T078): retry with exponential backoff
+                if attempt < max_retries - 1:
+                    logger.warning(
+                        "subscription_error_retrying",
+                        channel_type=channel_config["channel_type"],
+                        symbol=channel_config.get("symbol"),
+                        error=str(e),
+                        attempt=attempt + 1,
+                        max_retries=max_retries,
+                        retry_delay=retry_delay,
+                    )
+                    await asyncio.sleep(retry_delay)
+                    retry_delay = min(retry_delay * 2, 60.0)  # Exponential backoff, max 60s
+                else:
+                    logger.error(
+                        "subscription_error_ws_gateway_unavailable",
+                        channel_type=channel_config["channel_type"],
+                        symbol=channel_config.get("symbol"),
+                        error=str(e),
+                        message="ws-gateway unavailable, will retry subscription later",
+                        exc_info=True,
+                    )
+        
+        return False
+    
+    async def _retry_subscriptions_loop(self) -> None:
+        """
+        Background task to periodically retry failed subscriptions.
+        
+        This ensures that subscriptions are created even if ws-gateway
+        becomes available after service startup.
+        """
+        retry_interval = 30  # Retry every 30 seconds
+        
+        while self._running:
+            try:
+                await asyncio.sleep(retry_interval)
+                
+                # Only retry if we have symbols configured
+                if not self._symbols:
+                    continue
+                
+                # Check if we have all expected subscriptions
+                expected_count = len(self._symbols) * 5  # 5 channel types per symbol
+                if len(self._subscriptions) < expected_count:
+                    logger.info(
+                        "retrying_failed_subscriptions",
+                        current_subscriptions=len(self._subscriptions),
+                        expected_subscriptions=expected_count,
+                        symbols_count=len(self._symbols),
+                    )
+                    
+                    # Recreate all subscriptions (idempotent - existing ones will be skipped)
+                    await self._create_subscriptions()
+                    
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
                 logger.error(
-                    "subscription_error_ws_gateway_unavailable",
-                    channel_type=channel_config["channel_type"],
-                    symbol=channel_config.get("symbol"),
+                    "subscription_retry_loop_error",
                     error=str(e),
-                    message="ws-gateway unavailable, will retry subscription later",
                     exc_info=True,
                 )
-                # Continue processing - service will work with last available data
     
     async def _start_consumers(self) -> None:
         """Start consuming from all relevant queues."""
+        # Queue names must match ws-gateway event types
+        # ws-gateway uses channel_type="trades" (plural) which becomes event_type="trades"
+        # See ws-gateway/src/services/websocket/event_parser.py: event_type=subscription.channel_type
+        # Queue name format: ws-gateway.{event_type}
         queues = [
             "ws-gateway.orderbook",
-            "ws-gateway.trades",
+            "ws-gateway.trades",  # Note: plural, matches channel_type from subscription API
             "ws-gateway.ticker",
             "ws-gateway.kline",
             "ws-gateway.funding",

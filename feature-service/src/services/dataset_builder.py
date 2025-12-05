@@ -81,17 +81,28 @@ class DatasetBuilder:
         Returns:
             Dataset ID (UUID string)
         """
+        # Normalize datetime objects to timezone-aware UTC before storing
+        # This prevents asyncpg from mixing timezone-aware and timezone-naive datetimes
+        def normalize_dt(dt: Optional[datetime]) -> Optional[datetime]:
+            if dt is None:
+                return None
+            if not isinstance(dt, datetime):
+                return dt
+            if dt.tzinfo is None:
+                return dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc)
+        
         # Create dataset record
         dataset_data = {
             "symbol": symbol,
             "status": DatasetStatus.BUILDING.value,
             "split_strategy": split_strategy.value,
-            "train_period_start": train_period_start,
-            "train_period_end": train_period_end,
-            "validation_period_start": validation_period_start,
-            "validation_period_end": validation_period_end,
-            "test_period_start": test_period_start,
-            "test_period_end": test_period_end,
+            "train_period_start": normalize_dt(train_period_start),
+            "train_period_end": normalize_dt(train_period_end),
+            "validation_period_start": normalize_dt(validation_period_start),
+            "validation_period_end": normalize_dt(validation_period_end),
+            "test_period_start": normalize_dt(test_period_start),
+            "test_period_end": normalize_dt(test_period_end),
             "walk_forward_config": walk_forward_config,
             "target_config": target_config.model_dump(),
             "feature_registry_version": self._feature_registry_version,
@@ -137,8 +148,21 @@ class DatasetBuilder:
             else:
                 # Walk-forward: use config dates
                 wf_config = dataset["walk_forward_config"]
-                start_date = datetime.fromisoformat(wf_config["start_date"])
-                end_date = datetime.fromisoformat(wf_config["end_date"])
+                # Normalize datetime from ISO format to timezone-aware UTC
+                # fromisoformat may return timezone-naive datetime if string doesn't contain timezone
+                start_date_str = wf_config["start_date"]
+                end_date_str = wf_config["end_date"]
+                start_date = datetime.fromisoformat(start_date_str)
+                end_date = datetime.fromisoformat(end_date_str)
+                # Ensure timezone-aware UTC
+                if start_date.tzinfo is None:
+                    start_date = start_date.replace(tzinfo=timezone.utc)
+                else:
+                    start_date = start_date.astimezone(timezone.utc)
+                if end_date.tzinfo is None:
+                    end_date = end_date.replace(tzinfo=timezone.utc)
+                else:
+                    end_date = end_date.astimezone(timezone.utc)
             
             # Check data availability
             available_period = await self._check_data_availability(symbol, start_date, end_date)
@@ -623,8 +647,21 @@ class DatasetBuilder:
         test_days = wf_config["test_window_days"]
         step_days = wf_config["step_days"]
         
-        start_date = datetime.fromisoformat(wf_config["start_date"])
-        end_date = datetime.fromisoformat(wf_config["end_date"])
+        # Normalize datetime from ISO format to timezone-aware UTC
+        # fromisoformat may return timezone-naive datetime if string doesn't contain timezone
+        start_date_str = wf_config["start_date"]
+        end_date_str = wf_config["end_date"]
+        start_date = datetime.fromisoformat(start_date_str)
+        end_date = datetime.fromisoformat(end_date_str)
+        # Ensure timezone-aware UTC
+        if start_date.tzinfo is None:
+            start_date = start_date.replace(tzinfo=timezone.utc)
+        else:
+            start_date = start_date.astimezone(timezone.utc)
+        if end_date.tzinfo is None:
+            end_date = end_date.replace(tzinfo=timezone.utc)
+        else:
+            end_date = end_date.astimezone(timezone.utc)
         
         # For simplicity, use the first fold
         # In production, would generate multiple folds

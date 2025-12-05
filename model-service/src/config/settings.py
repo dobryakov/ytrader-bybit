@@ -149,6 +149,11 @@ class Settings(BaseSettings):
     feature_service_dataset_build_timeout_seconds: int = Field(default=3600, alias="FEATURE_SERVICE_DATASET_BUILD_TIMEOUT_SECONDS")
     feature_service_dataset_poll_interval_seconds: int = Field(default=60, alias="FEATURE_SERVICE_DATASET_POLL_INTERVAL_SECONDS")
     feature_service_dataset_storage_path: str = Field(default="/datasets", alias="FEATURE_SERVICE_DATASET_STORAGE_PATH")
+    
+    # Legacy Feature Compatibility (for models trained before Feature Service integration)
+    # Set to true only if you have old models that require legacy feature names (e.g., spread_percent)
+    # New models should be trained on Feature Service features directly
+    feature_service_legacy_feature_compatibility: bool = Field(default=False, alias="FEATURE_SERVICE_LEGACY_FEATURE_COMPATIBILITY")
 
     # Exit Strategy Configuration
     exit_strategy_enabled: bool = Field(default=True, alias="EXIT_STRATEGY_ENABLED")

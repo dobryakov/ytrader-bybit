@@ -180,7 +180,7 @@ Response:
 
 ### Trigger Manual Model Training
 
-Trigger training for a strategy:
+Trigger training for a strategy. This will request dataset build from Feature Service:
 
 ```bash
 curl -X POST http://localhost:4500/api/v1/training/trigger \
@@ -188,7 +188,7 @@ curl -X POST http://localhost:4500/api/v1/training/trigger \
   -H "Content-Type: application/json" \
   -d '{
     "strategy_id": "momentum_v1",
-    "training_type": "full"
+    "symbol": "BTCUSDT"
   }'
 ```
 
@@ -196,11 +196,43 @@ Response:
 
 ```json
 {
-  "status": "triggered",
-  "training_id": "550e8400-e29b-41d4-a716-446655440000",
-  "message": "Training started for strategy momentum_v1"
+  "triggered": true,
+  "message": "Training triggered successfully. Dataset build requested from Feature Service. Training will start when dataset is ready.",
+  "strategy_id": "momentum_v1"
 }
 ```
+
+**Note**: Training will start automatically when Feature Service completes dataset building and sends dataset.ready notification.
+
+### Request Dataset Build Explicitly
+
+You can also request dataset build without immediately triggering training:
+
+```bash
+curl -X POST http://localhost:4500/api/v1/training/dataset/build \
+  -H "X-API-Key: your-model-service-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "strategy_id": "momentum_v1",
+    "symbol": "BTCUSDT"
+  }'
+```
+
+Response:
+
+```json
+{
+  "dataset_id": "550e8400-e29b-41d4-a716-446655440000",
+  "message": "Dataset build requested successfully. Dataset ID: 550e8400-e29b-41d4-a716-446655440000. Training will start automatically when dataset is ready.",
+  "strategy_id": "momentum_v1",
+  "symbol": "BTCUSDT"
+}
+```
+
+This is useful for:
+- Pre-building datasets before scheduled training
+- Testing dataset building without triggering training
+- Building datasets for multiple symbols/strategies in advance
 
 ### List Model Versions
 

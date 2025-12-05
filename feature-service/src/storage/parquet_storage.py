@@ -2,7 +2,9 @@
 Parquet storage service for reading and writing market data.
 """
 import asyncio
+import os
 import shutil
+import tempfile
 from pathlib import Path
 from typing import Optional, List
 from datetime import datetime, date
@@ -239,34 +241,82 @@ class ParquetStorage:
         except Exception as table_error:
             raise IOError(f"Failed to convert DataFrame to PyArrow table: {file_path}: {table_error}") from table_error
         
-        # Write directly to final file (we already handled corrupted files above)
-        # Using direct write is simpler and more reliable than temp file + move
+        # Write to temporary file first, then atomically rename
+        # This ensures file integrity and proper filesystem sync
         file_path_str = str(file_path)
+        temp_file = None
+        
         try:
-            # Write table to Parquet file
-            pq.write_table(table, file_path_str, compression='snappy')
+            # Create temporary file in the same directory for atomic rename
+            temp_fd, temp_path = tempfile.mkstemp(
+                suffix='.parquet',
+                dir=file_path.parent,
+                prefix=f'.{file_path.name}.tmp.'
+            )
+            temp_file = Path(temp_path)
+            os.close(temp_fd)  # Close file descriptor, we'll use PyArrow's writer
             
-            # Small delay to ensure filesystem sync
-            import time
-            time.sleep(0.01)
+            # Write table to temporary file
+            pq.write_table(table, str(temp_file), compression='snappy')
             
-            logger.debug(f"Successfully wrote Parquet file {file_path_str}")
+            # Force filesystem sync - open file and sync to ensure data is on disk
+            # PyArrow should have closed the file, so we open it for reading to sync
+            with open(temp_file, 'rb') as temp_file_handle:
+                os.fsync(temp_file_handle.fileno())
+            
+            # Also sync the parent directory to ensure directory entry is written
+            try:
+                dir_fd = os.open(file_path.parent, os.O_DIRECTORY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+            except (OSError, AttributeError):
+                # Some filesystems don't support directory sync, ignore
+                pass
+            
+            # Verify temporary file was created and has content
+            if not temp_file.exists():
+                raise IOError(
+                    f"Temporary file {temp_file} was not created after write. "
+                    f"Table has {len(table)} rows, {len(table.column_names)} columns."
+                )
+            
+            temp_file_size = temp_file.stat().st_size
+            if temp_file_size == 0:
+                raise IOError(
+                    f"Temporary file {temp_file} is empty after write. "
+                    f"Table has {len(table)} rows, {len(table.column_names)} columns."
+                )
+            
+            # Atomically rename temporary file to final location
+            temp_file.replace(file_path)
+            
+            # Verify final file exists and has content
+            if not file_path.exists():
+                raise IOError(
+                    f"File {file_path} was not created after atomic rename. "
+                    f"Table has {len(table)} rows, {len(table.column_names)} columns."
+                )
+            
+            file_size = file_path.stat().st_size
+            if file_size == 0:
+                raise IOError(
+                    f"File {file_path} is empty after write. "
+                    f"Table has {len(table)} rows, {len(table.column_names)} columns."
+                )
+            
+            logger.debug(f"Successfully wrote Parquet file {file_path_str} ({file_size} bytes)")
+            
         except Exception as write_error:
+            # Clean up temporary file if it exists
+            if temp_file and temp_file.exists():
+                try:
+                    temp_file.unlink()
+                except Exception as cleanup_error:
+                    logger.warning(f"Failed to cleanup temporary file {temp_file}: {cleanup_error}")
+            
             raise IOError(f"Failed to write Parquet file {file_path_str}: {write_error}") from write_error
-        
-        # Verify file was created and has content
-        if not file_path.exists():
-            raise IOError(
-                f"File {file_path} was not created after write. "
-                f"Table has {len(table)} rows, {len(table.column_names)} columns."
-            )
-        
-        file_size = file_path.stat().st_size
-        if file_size == 0:
-            raise IOError(
-                f"File {file_path} is empty after write. "
-                f"Table has {len(table)} rows, {len(table.column_names)} columns."
-            )
     
     async def read_orderbook_snapshots(
         self,
