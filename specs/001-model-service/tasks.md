@@ -228,6 +228,7 @@
   - User stories can then proceed in parallel (if staffed)
   - Or sequentially in priority order (P1 → P2 → P3 → P4)
 - **Polish (Phase 7)**: Depends on all desired user stories being complete
+- **Feature Service Integration (Phase 10)**: Depends on Feature Service being deployed and providing features.live queue, REST API endpoints (/features/latest, /dataset/build, /dataset/{id}/download), and features.dataset.ready queue. Can be implemented after Phase 3-6 are complete. **CRITICAL**: Feature Service must be available before Phase 10 can be completed.
 
 ### User Story Dependencies
 
@@ -295,6 +296,27 @@
 - **T097** (cache configuration): Can be done independently, must complete before T095 and T096 (cache service needs configuration values)
 - **T096** (cache integration with client): Depends on T095 (position_cache exists) and T097 (configuration exists), must complete after T052c and T052d (risk management rules use PositionManagerClient)
 - **T094** (position update consumer): Depends on T095 (position_cache exists for invalidation), must complete after T096 (cache integration is working). Consumer invalidates cache when position updates are received from Position Manager via RabbitMQ events (`position-manager.position_updated` queue)
+
+### Task Dependencies for Feature Service Integration (T145-T163)
+
+- **T145** (Feature Service HTTP client): Can be done independently, must complete before T149, T152 (services need client to request features and datasets)
+- **T146** (Feature Vector model): Can be done independently, must complete before T147, T148 (consumer and inference need model)
+- **T147** (feature consumer): Depends on T146 (Feature Vector model exists), must complete before T150 (main app integration)
+- **T148** (ModelInference update): Depends on T146 (Feature Vector model exists), must complete before T149 (IntelligentSignalGenerator uses updated inference)
+- **T149** (IntelligentSignalGenerator update): Depends on T145 (HTTP client exists), T148 (updated inference exists), must complete before T150 (main app integration)
+- **T150** (main app integration): Depends on T147 (feature consumer exists), T149 (updated signal generator exists), T145 (HTTP client exists)
+- **T151** (dataset ready consumer): Can be done independently, must complete before T152 (training orchestrator needs consumer)
+- **T152** (TrainingOrchestrator update): Depends on T145 (HTTP client exists), T151 (dataset consumer exists), must complete after T044 (training orchestrator exists)
+- **T153** (remove FeatureEngineer): Can be done independently, but should complete after T148, T149, T152 (ensure all feature engineering code is replaced)
+- **T154** (remove market data subscriber): Can be done independently, but should complete after T149 (signal generator no longer needs market data subscription)
+- **T155** (remove market data consumer): Can be done independently, but should complete after T147 (feature consumer replaces market data consumer)
+- **T156** (Feature Service configuration): Can be done independently, must complete before T145, T147, T149, T152 (services need configuration values)
+- **T157** (feature alignment validation): Depends on T148 (ModelInference update exists), can be done in parallel with T149
+- **T158** (dataset builder integration): Depends on T152 (TrainingOrchestrator update exists)
+- **T159** (dataset building configuration): Can be done independently, must complete before T152, T158 (services need configuration values)
+- **T160** (REST API fallback): Depends on T145 (HTTP client exists), T149 (signal generator exists), can be done in parallel with T161
+- **T161** (structured logging): Can be done independently, but should complete after T145-T160 (to log all integration operations)
+- **T162, T163** (documentation updates): Can be done independently, but should complete after T145-T161 (to document implemented integration)
 
 ---
 
@@ -405,7 +427,7 @@ With multiple developers:
 
 ## Task Summary
 
-- **Total Tasks**: 157 tasks (added T052c, T052d, T052e for risk management rules, T094-T097 for position cache optimization, T098-T116 for position-based exit strategy, T123-T140 for training orchestrator improvements, T141 for balance adaptation investigation and fixes, T142-T144 for market data cache freshness and signal delay monitoring)
+- **Total Tasks**: 163 tasks (added T052c, T052d, T052e for risk management rules, T094-T097 for position cache optimization, T098-T116 for position-based exit strategy, T123-T140 for training orchestrator improvements, T141 for balance adaptation investigation and fixes, T142-T144 for market data cache freshness and signal delay monitoring, T145-T163 for Feature Service integration)
 - **Phase 1 (Setup)**: 9 tasks
 - **Phase 2 (Foundational)**: 12 tasks
 - **Phase 3 (User Story 1 - MVP)**: 15 tasks (added T030a, T030b, T030c, T030d)
@@ -415,6 +437,7 @@ With multiple developers:
 - **Phase 7 (Polish)**: 35 tasks (added T091, T092, T093, T094-T097 for position cache optimization, T117-T122 for automatic asset selection, T141 for balance adaptation investigation and fixes, T142-T144 for market data cache freshness and signal delay monitoring)
 - **Phase 8 (User Story 5)**: 19 tasks (position-based exit strategy)
 - **Phase 9 (Training Orchestrator Improvements)**: 18 tasks (T123-T140 for persistent buffer, training queue, and additional improvements)
+- **Phase 10 (Feature Service Integration)**: 19 tasks (T145-T163 for integrating with Feature Service, removing feature engineering code, using ready features for inference and training)
 
 ### Task Count per User Story
 
@@ -553,123 +576,32 @@ Note: Take profit threshold uses MODEL_SERVICE_TAKE_PROFIT_PCT (unified with int
 
 ---
 
-## Phase 10: Model and Signal Generator Responsibilities (Architecture Clarification)
+## Phase 10: Feature Service Integration (Priority: P1)
 
-**Purpose**: Define clear boundaries of responsibility between ML Model, Signal Generator, and Feature Service
+**Goal**: Integrate Model Service with Feature Service to receive ready feature vectors instead of computing features internally. Remove feature engineering code from Model Service and use Feature Service for both inference and training datasets.
 
-### ML Model Responsibilities
+**Independent Test**: Can be fully tested by verifying that Model Service receives features from Feature Service (via queue or REST API), performs inference on ready features, and trains models on datasets provided by Feature Service. All feature engineering code should be removed from Model Service.
 
-**The ML model MUST:**
+### Implementation for Feature Service Integration
 
-1. **Accept feature vectors and produce predictions**
-   - Receive complete feature vectors from Feature Service (via queue `features.live` or REST API `/features/latest`)
-   - Output prediction: direction (buy/sell/hold) and confidence score (0-1)
-   - Output class probabilities: `buy_probability`, `sell_probability` for classification models
-   - Handle feature alignment: automatically align provided features with model's expected features (from `feature_names_in_` or `get_booster().feature_names`)
+- [ ] T145 [P] [US3] Create Feature Service HTTP client in model-service/src/services/feature_service_client.py (httpx client for REST API calls to Feature Service, methods: get_latest_features(symbol) -> FeatureVector, build_dataset(request) -> dataset_id, get_dataset(dataset_id) -> Dataset, download_dataset(dataset_id, split) -> file_path, handle API errors gracefully with retry logic, support API key authentication via X-API-Key header)
+- [ ] T146 [P] [US3] Create Feature Vector data model in model-service/src/models/feature_vector.py (timestamp, symbol, features: Dict[str, float], feature_registry_version, trace_id, matches Feature Service FeatureVector structure)
+- [ ] T147 [US3] Create feature consumer in model-service/src/consumers/feature_consumer.py (subscribe to RabbitMQ queue features.live, parse FeatureVector messages, cache latest features per symbol with TTL, handle message parsing errors gracefully, log feature reception with trace_id)
+- [ ] T148 [US3] Update ModelInference service in model-service/src/services/model_inference.py (remove feature calculation logic from prepare_features method, replace with feature alignment: receive FeatureVector from Feature Service, extract features dict, align feature names with model's expected features from feature_names_in_ or get_booster().feature_names, handle missing features with default values or error, handle extra features by ignoring them, preserve feature order matching model training)
+- [ ] T149 [US3] Update IntelligentSignalGenerator in model-service/src/services/intelligent_signal_generator.py (replace market data subscription with Feature Service integration: request features via feature_service_client.get_latest_features(symbol) or get from feature_consumer cache, pass ready FeatureVector to ModelInference, remove market data snapshot collection logic, keep business rules and risk management unchanged)
+- [ ] T150 [US3] Integrate feature consumer into main application in model-service/src/main.py (start feature consumer on service startup, initialize feature service client, connect feature consumer to intelligent signal generator)
+- [ ] T151 [US2] Create dataset request consumer in model-service/src/consumers/dataset_ready_consumer.py (subscribe to RabbitMQ queue features.dataset.ready, parse dataset completion notifications, trigger model training when dataset is ready, handle message parsing errors gracefully)
+- [ ] T152 [US2] Update TrainingOrchestrator in model-service/src/services/training_orchestrator.py (replace dataset building with Feature Service integration: request dataset build via feature_service_client.build_dataset(request) with train/val/test periods, wait for dataset.ready notification from dataset_ready_consumer, download dataset via feature_service_client.download_dataset(dataset_id, split), load dataset from downloaded Parquet file, remove feature engineering from dataset preparation, use ready features from dataset)
+- [ ] T153 [US2] Remove FeatureEngineer class in model-service/src/services/feature_engineer.py (delete file, all feature engineering moved to Feature Service)
+- [ ] T154 [US1] Remove market data subscription service in model-service/src/services/market_data_subscriber.py (delete file, market data now comes from Feature Service via features)
+- [ ] T155 [US1] Remove market data consumer in model-service/src/consumers/market_data_consumer.py (delete file or remove ws-gateway subscription logic, market data now comes from Feature Service via features)
+- [ ] T156 [P] [US3] Add configuration for Feature Service integration in model-service/src/config/settings.py (FEATURE_SERVICE_HOST, FEATURE_SERVICE_PORT, FEATURE_SERVICE_API_KEY, FEATURE_SERVICE_USE_QUEUE=true/false to enable/disable queue subscription vs REST API polling, FEATURE_SERVICE_FEATURE_CACHE_TTL_SECONDS=30 for feature cache TTL, default: use queue for real-time features)
+- [ ] T157 [US3] Add feature alignment validation in model-service/src/services/model_inference.py (validate that all required features from model are present in FeatureVector, log warnings for missing features, log errors if critical features are missing and fail inference, support feature name mapping if Feature Service uses different names)
+- [ ] T158 [US2] Update dataset builder integration in model-service/src/services/training_orchestrator.py (add support for Feature Service dataset request format: symbol, split_strategy, train/val/test periods, target_config, feature_registry_version, handle dataset build status polling if needed, support walk-forward validation strategy)
+- [ ] T159 [P] [US2] Add configuration for dataset building in model-service/src/config/settings.py (FEATURE_SERVICE_DATASET_BUILD_TIMEOUT_SECONDS=3600 for maximum wait time, FEATURE_SERVICE_DATASET_POLL_INTERVAL_SECONDS=60 for status polling interval, FEATURE_SERVICE_DATASET_STORAGE_PATH for downloaded dataset files)
+- [ ] T160 [US3] Add fallback to REST API if queue unavailable in model-service/src/services/intelligent_signal_generator.py (if feature_consumer cache is empty or stale, fallback to feature_service_client.get_latest_features(symbol), log fallback usage, handle API errors gracefully)
+- [ ] T161 [US3] Add structured logging for Feature Service integration in model-service/src/services/ (log feature requests, feature reception, feature alignment operations, dataset build requests, dataset downloads, include trace_id for request flow tracking)
+- [ ] T162 [P] Update documentation in model-service/README.md (document Feature Service integration, remove references to feature engineering, update API examples to show Feature Service usage, document configuration options)
+- [ ] T163 [P] Update quickstart.md in specs/001-model-service/ (synchronize with Feature Service integration, update examples to show Feature Service workflow)
 
-2. **Use all provided features for decision-making**
-   - Consider all market features (price, volume, volatility, technical indicators)
-   - Consider all position features (position_size, unrealized_pnl, price_vs_entry, total_exposure)
-   - Learn patterns from historical data that include position context
-   - Make predictions based on learned patterns, not business rules
-
-3. **Provide confidence scores**
-   - Calculate confidence based on model's internal certainty
-   - Return confidence as max probability for classification models
-   - Return normalized confidence for regression models
-
-**The ML model MUST NOT:**
-
-- Make business decisions (position limits, risk rules, take profit/stop loss)
-- Adapt confidence thresholds based on position state
-- Generate trading signals directly
-- Manage position sizes or portfolio allocation
-- Know about business rules or risk management policies
-
-### IntelligentSignalGenerator Responsibilities
-
-**The IntelligentSignalGenerator MUST:**
-
-1. **Orchestrate model inference and business logic**
-   - Request features from Feature Service (via queue `features.live` or REST API `/features/latest`)
-   - Call model inference with prepared features
-   - Apply business rules and risk management policies
-   - Generate final trading signals
-
-2. **Apply business rules and risk management**
-   - **Position size limits**: Check `position_size_norm` before generating BUY signals (skip if exceeds `MODEL_SERVICE_MAX_POSITION_SIZE_RATIO`)
-   - **Take profit rules**: Check `unrealized_pnl_pct` before model inference (force SELL if exceeds `MODEL_SERVICE_TAKE_PROFIT_PCT`)
-   - **Stop loss rules**: Check `unrealized_pnl_pct` for stop loss triggers (force SELL if below threshold)
-   - **Rate limiting**: Enforce signal generation frequency limits
-   - **Open orders check**: Skip signal generation if opposite orders exist
-   - **Balance validation**: Check available balance and adapt signal amount
-
-3. **Transform model predictions into trading signals**
-   - Convert model prediction (buy/sell/hold) to `TradingSignal` object
-   - Calculate order amount based on:
-     - Model confidence score (higher confidence → larger amount)
-     - Current position size (reduce amount if large position exists)
-     - Available balance (adapt to affordable amount)
-   - Apply confidence threshold (`min_confidence_threshold`) to filter low-confidence predictions
-   - Set signal metadata (model_version, confidence, reasoning)
-
-4. **Adaptive confidence thresholds (business logic)**
-   - Dynamically adjust `min_confidence_threshold` based on:
-     - Current position state (require higher confidence if already have position)
-     - Market volatility (require higher confidence in volatile markets)
-     - Recent performance (require higher confidence after losses)
-   - This is business logic, not model responsibility
-
-5. **Position management decisions**
-   - Interpret model predictions in context of current position:
-     - If model predicts "buy" but already have large position → reduce amount or skip
-     - If model predicts "sell" but no position → skip signal
-     - If model predicts "hold" → no signal generated
-   - Decide on partial position management:
-     - Increase position size if model confidence is high and position is small
-     - Decrease position size if model confidence is low and position is large
-     - Close position entirely if risk rules trigger
-
-**The IntelligentSignalGenerator MUST NOT:**
-
-- Engineer features (this is Feature Service responsibility)
-- Train models (this is separate training pipeline)
-- Store historical data (this is Feature Service responsibility)
-- Calculate technical indicators (this is Feature Service responsibility)
-
-### Integration with Feature Service
-
-**When Feature Service is implemented:**
-
-1. **Model Service receives ready features**
-   - Subscribe to queue `features.live` for real-time features
-   - Or call REST API `GET /features/latest?symbol=BTCUSDT` for on-demand features
-   - Features include: market data, position data, order data, technical indicators
-   - All features are pre-calculated and validated by Feature Service
-
-2. **Model Service removes feature engineering code**
-   - Remove `FeatureEngineer` class (moved to Feature Service)
-   - Remove feature calculation logic from `ModelInference.prepare_features()`
-   - Keep only feature alignment logic (matching model's expected features)
-
-3. **Training uses Feature Service datasets**
-   - Request dataset build: `POST /dataset/build` with train/val/test periods
-   - Receive notification: queue `features.dataset.ready` when dataset is ready
-   - Download dataset: `GET /dataset/{dataset_id}/download?split=train`
-   - Train model on provided dataset (no feature engineering in Model Service)
-
-### Current State (Before Feature Service)
-
-**Temporary responsibilities (to be removed when Feature Service is implemented):**
-
-- `FeatureEngineer`: Currently engineers features in Model Service (will move to Feature Service)
-- `ModelInference.prepare_features()`: Currently calculates features for inference (will receive ready features from Feature Service)
-- Market data collection: Currently subscribes to ws-gateway (will receive features from Feature Service)
-
-**Permanent responsibilities (stay in Model Service):**
-
-- Model inference and prediction
-- Business rules and risk management
-- Signal generation and publishing
-- Model training (on datasets from Feature Service)
-- Model versioning and quality tracking
+**Checkpoint**: At this point, Model Service should be fully integrated with Feature Service. All feature engineering code is removed, and Model Service receives ready features for both inference and training.
