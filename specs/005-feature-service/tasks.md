@@ -219,23 +219,23 @@
 
 > **NOTE: Write these tests FIRST, ensure they FAIL before implementation**
 
-- [ ] T125 [P] [US3] Create test fixtures for raw market data (orderbook snapshots, deltas, trades, klines, ticker, funding, execution events) in feature-service/tests/fixtures/raw_data.py
-- [ ] T126 [P] [US3] Create unit tests for raw data storage service in feature-service/tests/unit/test_data_storage.py
-- [ ] T127 [P] [US3] Create unit tests for data organization by type in feature-service/tests/unit/test_data_organization.py
-- [ ] T128 [P] [US3] Create unit tests for data retention policy enforcement in feature-service/tests/unit/test_data_retention.py
-- [ ] T129 [P] [US3] Create unit tests for automatic archiving/deletion in feature-service/tests/unit/test_data_archiving.py
-- [ ] T130 [US3] Create integration tests for raw data storage workflow in feature-service/tests/integration/test_data_storage_workflow.py
-- [ ] T131 [US3] Create integration tests for data retrieval for dataset rebuilding in feature-service/tests/integration/test_data_retrieval.py
+- [X] T125 [P] [US3] Create test fixtures for raw market data (orderbook snapshots, deltas, trades, klines, ticker, funding, execution events) in feature-service/tests/fixtures/raw_data.py
+- [X] T126 [P] [US3] Create unit tests for raw data storage service in feature-service/tests/unit/test_data_storage.py
+- [X] T127 [P] [US3] Create unit tests for data organization by type in feature-service/tests/unit/test_data_organization.py
+- [X] T128 [P] [US3] Create unit tests for data retention policy enforcement in feature-service/tests/unit/test_data_retention.py
+- [X] T129 [P] [US3] Create unit tests for automatic archiving/deletion in feature-service/tests/unit/test_data_archiving.py
+- [X] T130 [US3] Create integration tests for raw data storage workflow in feature-service/tests/integration/test_data_storage_workflow.py
+- [X] T131 [US3] Create integration tests for data retrieval for dataset rebuilding in feature-service/tests/integration/test_data_retrieval.py
 
 ### Implementation for User Story 3
 
-- [ ] T132 [US3] Implement raw data storage service in feature-service/src/services/data_storage.py (writes to Parquet files organized by type and date)
-- [ ] T133 [US3] Implement data organization by type (orderbook snapshots, deltas, trades, klines, ticker, funding, execution events) in feature-service/src/services/data_storage.py
-- [ ] T134 [US3] Implement storage of all orderbook deltas for offline reconstruction in feature-service/src/services/data_storage.py
-- [ ] T135 [US3] Integrate raw data storage into market data consumer in feature-service/src/consumers/market_data_consumer.py
-- [ ] T136 [US3] Implement data retention policy enforcement in feature-service/src/services/data_storage.py (90 days default, configurable)
-- [ ] T137 [US3] Implement automatic archiving/deletion of expired data with archive recovery support in feature-service/src/services/data_storage.py
-- [ ] T138 [US3] Add logging for data storage operations in feature-service/src/services/data_storage.py
+- [X] T132 [US3] Implement raw data storage service in feature-service/src/services/data_storage.py (writes to Parquet files organized by type and date)
+- [X] T133 [US3] Implement data organization by type (orderbook snapshots, deltas, trades, klines, ticker, funding, execution events) in feature-service/src/services/data_storage.py
+- [X] T134 [US3] Implement storage of all orderbook deltas for offline reconstruction in feature-service/src/services/data_storage.py
+- [X] T135 [US3] Integrate raw data storage into market data consumer in feature-service/src/consumers/market_data_consumer.py
+- [X] T136 [US3] Implement data retention policy enforcement in feature-service/src/services/data_storage.py (90 days default, configurable)
+- [X] T137 [US3] Implement automatic archiving/deletion of expired data with archive recovery support in feature-service/src/services/data_storage.py
+- [X] T138 [US3] Add logging for data storage operations in feature-service/src/services/data_storage.py
 
 **Checkpoint**: At this point, User Stories 1, 2, AND 3 should all work independently. Raw data is stored and available for dataset rebuilding.
 

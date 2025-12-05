@@ -26,6 +26,7 @@ from src.services.feature_scheduler import FeatureScheduler
 from src.storage.metadata_storage import MetadataStorage
 from src.storage.parquet_storage import ParquetStorage
 from src.services.dataset_builder import DatasetBuilder
+from src.services.data_storage import DataStorageService
 
 # Setup logging
 setup_logging(level=config.feature_service_log_level)
@@ -48,6 +49,7 @@ feature_publisher: FeaturePublisher = None
 feature_scheduler: FeatureScheduler = None
 metadata_storage: MetadataStorage = None
 dataset_builder: DatasetBuilder = None
+data_storage: DataStorageService = None
 
 # Include routers
 app.include_router(health_router)
@@ -85,7 +87,7 @@ async def startup():
     """Application startup event."""
     global mq_manager, http_client, orderbook_manager, feature_computer
     global feature_registry_loader, market_data_consumer, feature_publisher, feature_scheduler
-    global metadata_storage, dataset_builder
+    global metadata_storage, dataset_builder, data_storage
     
     logger.info("Feature Service starting up")
     
@@ -138,12 +140,13 @@ async def startup():
         if config.feature_service_symbols:
             symbols = [s.strip() for s in config.feature_service_symbols.split(',') if s.strip()]
         
-        # Initialize Consumer
+        # Initialize Consumer (with data storage integration)
         market_data_consumer = MarketDataConsumer(
             mq_manager=mq_manager,
             http_client=http_client,
             feature_computer=feature_computer,
             orderbook_manager=orderbook_manager,
+            data_storage=data_storage,  # T135: Integrate raw data storage
             service_name=config.feature_service_service_name,
             symbols=symbols,
         )
@@ -176,7 +179,7 @@ async def startup():
 @app.on_event("shutdown")
 async def shutdown():
     """Application shutdown event."""
-    global market_data_consumer, feature_scheduler, mq_manager
+    global market_data_consumer, feature_scheduler, mq_manager, data_storage
     
     logger.info("Feature Service shutting down")
     
@@ -188,6 +191,10 @@ async def shutdown():
         # Stop consumer (doesn't cancel subscriptions per T069)
         if market_data_consumer:
             await market_data_consumer.stop()
+        
+        # Stop data storage service
+        if data_storage:
+            await data_storage.stop()
         
         # Close connections
         if mq_manager:

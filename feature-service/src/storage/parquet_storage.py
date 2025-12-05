@@ -172,10 +172,33 @@ class ParquetStorage:
         logger.debug(f"Written funding rate to {file_path}")
     
     def _write_parquet(self, file_path: Path, data: pd.DataFrame) -> None:
-        """Write DataFrame to Parquet file (synchronous)."""
+        """Write DataFrame to Parquet file (synchronous). Appends to existing file if it exists."""
         if data.empty:
             logger.warning(f"Attempting to write empty DataFrame to {file_path}")
             return
+        
+        # If file exists, read existing data and append
+        if file_path.exists():
+            try:
+                existing_table = pq.read_table(file_path)
+                existing_df = existing_table.to_pandas()
+                # Combine data
+                combined_df = pd.concat([existing_df, data], ignore_index=True)
+                
+                # Determine duplicate key based on available columns
+                # For orderbook deltas, use sequence if available, otherwise timestamp
+                if 'sequence' in combined_df.columns:
+                    # Use sequence for orderbook deltas (more unique)
+                    combined_df = combined_df.drop_duplicates(subset=['sequence'], keep='last')
+                else:
+                    # Use timestamp for other data types
+                    combined_df = combined_df.drop_duplicates(subset=['timestamp'], keep='last')
+                
+                # Sort by timestamp
+                combined_df = combined_df.sort_values('timestamp').reset_index(drop=True)
+                data = combined_df
+            except Exception as e:
+                logger.warning(f"Error reading existing file {file_path}, will overwrite: {e}")
         
         table = pa.Table.from_pandas(data)
         pq.write_table(table, file_path)

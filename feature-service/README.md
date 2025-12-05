@@ -150,7 +150,7 @@ feature-service/
 
 ## Testing
 
-Run tests inside Docker container:
+Run tests inside Docker container with **ONLY** this command:
 
 ```bash
 docker compose run --rm feature-service pytest tests/ -v

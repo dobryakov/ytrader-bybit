@@ -65,6 +65,19 @@ from tests.fixtures.targets import (
     sample_targets_with_leakage,
     sample_targets_no_leakage,
 )
+from tests.fixtures.raw_data import (
+    raw_orderbook_snapshot,
+    raw_orderbook_delta,
+    raw_orderbook_delta_insert,
+    raw_orderbook_delta_delete,
+    raw_trade,
+    raw_kline,
+    raw_ticker,
+    raw_funding_rate,
+    raw_execution_event,
+    raw_market_data_batch,
+    raw_orderbook_deltas_sequence,
+)
 
 
 @pytest.fixture

@@ -13,6 +13,7 @@ from src.mq.connection import MQConnectionManager
 from src.http.client import HTTPClient
 from src.services.feature_computer import FeatureComputer
 from src.services.orderbook_manager import OrderbookManager
+from src.services.data_storage import DataStorageService
 from src.models.market_data import (
     OrderbookSnapshot,
     OrderbookDelta,
@@ -34,6 +35,7 @@ class MarketDataConsumer:
         http_client: HTTPClient,
         feature_computer: FeatureComputer,
         orderbook_manager: OrderbookManager,
+        data_storage: Optional[DataStorageService] = None,
         service_name: str = "feature-service",
         symbols: Optional[List[str]] = None,
     ):
@@ -42,6 +44,7 @@ class MarketDataConsumer:
         self._http_client = http_client
         self._feature_computer = feature_computer
         self._orderbook_manager = orderbook_manager
+        self._data_storage = data_storage
         self._service_name = service_name
         self._symbols = symbols or []
         self._subscriptions: Set[str] = set()
@@ -285,6 +288,11 @@ class MarketDataConsumer:
         try:
             # Update feature computer state
             self._feature_computer.update_market_data(event)
+            
+            # Store raw data (T135: Integrate raw data storage into market data consumer)
+            if self._data_storage:
+                # Store asynchronously (non-blocking) to avoid impacting feature computation latency
+                asyncio.create_task(self._data_storage.store_market_data_event(event))
             
             # Handle orderbook snapshot requests
             if event_type == "orderbook_snapshot" and self._orderbook_manager.is_desynchronized(symbol):

@@ -72,6 +72,7 @@ def sample_feature_vector_minimal():
 @pytest.fixture
 def sample_feature_vector_sequence():
     """Sequence of feature vectors over time."""
+    from datetime import timedelta
     base_time = datetime.now(timezone.utc)
     
     return [
@@ -86,7 +87,7 @@ def sample_feature_vector_sequence():
             "trace_id": "test-trace-1",
         },
         {
-            "timestamp": base_time.replace(second=base_time.second + 1),
+            "timestamp": base_time + timedelta(seconds=1),
             "symbol": "BTCUSDT",
             "features": {
                 "mid_price": 50001.0,
@@ -96,7 +97,7 @@ def sample_feature_vector_sequence():
             "trace_id": "test-trace-2",
         },
         {
-            "timestamp": base_time.replace(second=base_time.second + 2),
+            "timestamp": base_time + timedelta(seconds=2),
             "symbol": "BTCUSDT",
             "features": {
                 "mid_price": 50002.0,
