@@ -348,6 +348,52 @@
 - [ ] T182 [P] Create performance tests for dataset building performance in feature-service/tests/performance/test_dataset_building_performance.py
 - [ ] T183 [P] Create load tests for concurrent API requests in feature-service/tests/performance/test_api_load.py
 
+### Statistics API Endpoints
+
+**Purpose**: Provide HTTP API endpoints for service statistics and monitoring, equivalent to check_feature_service_data.py script functionality
+
+#### Tests for Statistics API
+
+- [ ] T219 [P] Create test fixtures for statistics data (storage, processing, rolling windows, subscriptions) in feature-service/tests/fixtures/statistics.py
+- [ ] T220 [P] Create unit tests for Storage Statistics model in feature-service/tests/unit/test_storage_statistics.py
+- [ ] T221 [P] Create unit tests for Processing Statistics model in feature-service/tests/unit/test_processing_statistics.py
+- [ ] T222 [P] Create unit tests for Rolling Windows Statistics model in feature-service/tests/unit/test_rolling_windows_statistics.py
+- [ ] T223 [P] Create unit tests for Statistics Service in feature-service/tests/unit/test_statistics_service.py
+- [ ] T224 [US1] Create integration tests for GET /stats/storage endpoint in feature-service/tests/integration/test_stats_storage_api.py
+- [ ] T225 [US1] Create integration tests for GET /stats/processing endpoint in feature-service/tests/integration/test_stats_processing_api.py
+- [ ] T226 [US1] Create integration tests for GET /stats/rolling-windows endpoint in feature-service/tests/integration/test_stats_rolling_windows_api.py
+- [ ] T227 [US1] Create integration tests for GET /stats/subscriptions endpoint in feature-service/tests/integration/test_stats_subscriptions_api.py
+- [ ] T228 [US1] Create integration tests for GET /stats/service endpoint in feature-service/tests/integration/test_stats_service_api.py
+- [ ] T229 [US1] Create contract tests for GET /stats/storage endpoint in feature-service/tests/contract/test_stats_api.py
+- [ ] T230 [US1] Create contract tests for GET /stats/processing endpoint in feature-service/tests/contract/test_stats_api.py
+- [ ] T231 [US1] Create contract tests for GET /stats/rolling-windows endpoint in feature-service/tests/contract/test_stats_api.py
+- [ ] T232 [US1] Create contract tests for GET /stats/subscriptions endpoint in feature-service/tests/contract/test_stats_api.py
+- [ ] T233 [US1] Create contract tests for GET /stats/service endpoint in feature-service/tests/contract/test_stats_api.py
+- [ ] T234 [US1] Create contract tests for GET /stats endpoint (aggregated statistics) in feature-service/tests/contract/test_stats_api.py
+
+#### Implementation for Statistics API
+
+- [ ] T235 [P] [US1] Create Storage Statistics model in feature-service/src/models/storage_statistics.py (raw_data_storage: size_bytes, file_count; dataset_storage: size_bytes, file_count)
+- [ ] T236 [P] [US1] Create Processing Statistics model in feature-service/src/models/processing_statistics.py (features_computed_1h, features_computed_24h, events_processed_1h, events_processed_24h, computed_at timestamp)
+- [ ] T237 [P] [US1] Create Rolling Windows Statistics model in feature-service/src/models/rolling_windows_statistics.py (symbol, intervals: dict with counts per interval "1s", "3s", "15s", "1m", total_trades_count, total_klines_count, memory_usage_bytes_estimate, last_update timestamp)
+- [ ] T238 [P] [US1] Create Subscription Statistics model in feature-service/src/models/subscription_statistics.py (queue_name, messages_in_queue, active_consumers, subscription_status)
+- [ ] T239 [P] [US1] Create Service Statistics model in feature-service/src/models/service_statistics.py (tracked_symbols: list, service_status, last_health_check)
+- [ ] T240 [P] [US1] Create Aggregated Statistics model in feature-service/src/models/statistics.py (storage, processing, rolling_windows: list per symbol, subscriptions: list, service, collected_at timestamp)
+- [ ] T241 [US1] Implement Statistics Service in feature-service/src/services/statistics_service.py (collects all statistics: storage stats from filesystem, processing stats from logs/metrics, rolling windows stats from feature_computer, subscription stats from RabbitMQ connection, service stats from config and health)
+- [ ] T242 [US1] Implement storage statistics collection (raw data and dataset storage sizes, file counts) in feature-service/src/services/statistics_service.py
+- [ ] T243 [US1] Implement processing statistics collection (features computed count, events processed count from logs or metrics) in feature-service/src/services/statistics_service.py
+- [ ] T244 [US1] Implement rolling windows statistics collection (per symbol: trade/klines counts per interval, memory usage estimate) in feature-service/src/services/statistics_service.py
+- [ ] T245 [US1] Implement subscription statistics collection (queue status from RabbitMQ connection manager) in feature-service/src/services/statistics_service.py
+- [ ] T246 [US1] Implement service statistics collection (tracked symbols from config, service status) in feature-service/src/services/statistics_service.py
+- [ ] T247 [US1] Implement GET /stats/storage endpoint in feature-service/src/api/statistics.py (returns Storage Statistics with raw_data and dataset storage info)
+- [ ] T248 [US1] Implement GET /stats/processing endpoint in feature-service/src/api/statistics.py (returns Processing Statistics with computation and event processing counts for 1h and 24h periods)
+- [ ] T249 [US1] Implement GET /stats/rolling-windows endpoint in feature-service/src/api/statistics.py (returns list of Rolling Windows Statistics, one per tracked symbol, with optional symbol query parameter to filter)
+- [ ] T250 [US1] Implement GET /stats/subscriptions endpoint in feature-service/src/api/statistics.py (returns list of Subscription Statistics for all ws-gateway.* queues)
+- [ ] T251 [US1] Implement GET /stats/service endpoint in feature-service/src/api/statistics.py (returns Service Statistics with tracked symbols and service status)
+- [ ] T252 [US1] Implement GET /stats endpoint (aggregated statistics) in feature-service/src/api/statistics.py (returns Aggregated Statistics combining all statistics in single response)
+- [ ] T253 [US1] Add error handling for statistics collection failures (graceful degradation, return partial data with error flags) in feature-service/src/services/statistics_service.py
+- [ ] T254 [US1] Add logging for statistics API requests in feature-service/src/api/statistics.py
+
 ### Implementation
 
 - [ ] T184 [P] Update README.md with complete usage examples in feature-service/README.md
@@ -523,7 +569,7 @@ With multiple developers:
 
 ## Task Summary
 
-- **Total Tasks**: 228 (added 9 Grafana observability tasks T196-T204 + 4 migration application tasks T196a-T199a + 17 Feature Registry versioning tasks T208-T218, T166a-T166b, T169a-T169f: version management, backward compatibility, automatic migration, rollback, audit trail). Dashboard creation tasks (3 tasks) are in `specs/001-grafana-monitoring/tasks.md`
+- **Total Tasks**: 264 (added 9 Grafana observability tasks T196-T204 + 4 migration application tasks T196a-T199a + 17 Feature Registry versioning tasks T208-T218, T166a-T166b, T169a-T169f: version management, backward compatibility, automatic migration, rollback, audit trail + 36 Statistics API tasks T219-T254: HTTP API endpoints for service statistics and monitoring). Dashboard creation tasks (3 tasks) are in `specs/001-grafana-monitoring/tasks.md`
 - **Phase 1 (Setup)**: 10 tasks (added test structure setup)
 - **Phase 2 (Foundational)**: 29 tasks (12 tests + 17 implementation: 3 migrations + 3 migration application tasks)
 - **Phase 3 (User Story 1)**: 43 tasks (20 tests + 23 implementation)
@@ -531,18 +577,18 @@ With multiple developers:
 - **Phase 5 (User Story 3)**: 14 tasks (7 tests + 7 implementation)
 - **Phase 6 (User Story 4)**: 22 tasks (11 tests + 11 implementation)
 - **Phase 7 (User Story 5)**: 35 tasks (15 tests + 20 implementation, including version management, backward compatibility, automatic migration, and rollback capabilities)
-- **Phase 8 (Polish)**: 24 tasks (5 additional tests + 12 implementation + 7 Grafana observability tasks: T196-T199 database migrations + T196a-T199a migration application, T200-T203 metrics persistence, T204 health check extension). Grafana dashboard creation tasks (T205-T207) are in `specs/001-grafana-monitoring/tasks.md`
+- **Phase 8 (Polish)**: 60 tasks (5 additional tests + 12 implementation + 7 Grafana observability tasks: T196-T199 database migrations + T196a-T199a migration application, T200-T203 metrics persistence, T204 health check extension + 36 Statistics API tasks T219-T254: 16 tests + 20 implementation). Grafana dashboard creation tasks (T205-T207) are in `specs/001-grafana-monitoring/tasks.md`
 
 **Suggested MVP Scope**: Phase 1 + Phase 2 + Phase 3 (User Story 1) = 79 tasks
 
 **Test Tasks Breakdown**:
 
-- **Test Fixtures/Mocks/Stubs**: 25 tasks
-- **Unit Tests**: 45 tasks
-- **Integration Tests**: 20 tasks
-- **Contract Tests**: 15 tasks
+- **Test Fixtures/Mocks/Stubs**: 26 tasks (added 1 Statistics API fixture: T219)
+- **Unit Tests**: 49 tasks (added 4 Statistics API unit tests: T220-T223)
+- **Integration Tests**: 25 tasks (added 5 Statistics API integration tests: T224-T228)
+- **Contract Tests**: 21 tasks (added 6 Statistics API contract tests: T229-T234)
 - **E2E/Performance Tests**: 5 tasks
-- **Total Test Tasks**: 110 tasks
+- **Total Test Tasks**: 126 tasks (added 16 Statistics API test tasks)
 
 **Parallel Opportunities**:
 
