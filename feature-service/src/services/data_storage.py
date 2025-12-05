@@ -117,7 +117,107 @@ class DataStorageService:
             return
         
         try:
-            if event_type == "orderbook_snapshot":
+            # Handle orderbook events from ws-gateway (event_type="orderbook")
+            # Need to determine if it's a snapshot or delta
+            if event_type == "orderbook":
+                payload = event.get("payload", {})
+                data = payload.get("data", payload) if isinstance(payload, dict) else {}
+                if not isinstance(data, dict):
+                    data = payload if isinstance(payload, dict) else {}
+                
+                # Determine type: check payload.data.type, payload.type, or infer from structure
+                orderbook_type = data.get("type") or payload.get("type")
+                
+                # If no type field, check if it's a snapshot by structure (has bids/asks)
+                if orderbook_type is None:
+                    if "b" in data or "a" in data or "bids" in data or "asks" in data:
+                        orderbook_type = "snapshot"
+                    else:
+                        orderbook_type = "delta"
+                
+                # Convert to normalized event format for storage
+                if orderbook_type == "snapshot":
+                    # Create normalized snapshot event
+                    timestamp = event.get("timestamp") or event.get("exchange_timestamp")
+                    if isinstance(timestamp, str):
+                        from dateutil.parser import parse
+                        timestamp = parse(timestamp)
+                    elif timestamp is None:
+                        timestamp = datetime.now(timezone.utc)
+                    elif not isinstance(timestamp, datetime):
+                        if isinstance(timestamp, (int, float)):
+                            timestamp = datetime.fromtimestamp(
+                                timestamp / 1000 if timestamp > 1e10 else timestamp,
+                                tz=timezone.utc
+                            )
+                        else:
+                            timestamp = datetime.now(timezone.utc)
+                    
+                    snapshot_event = {
+                        **event,
+                        "event_type": "orderbook_snapshot",
+                        "symbol": data.get("s") or symbol,
+                        "bids": data.get("b", []),
+                        "asks": data.get("a", []),
+                        "sequence": data.get("seq", data.get("u", 0)),
+                        "timestamp": timestamp.isoformat() if isinstance(timestamp, datetime) else timestamp,
+                    }
+                    await self.store_orderbook_snapshot(snapshot_event)
+                elif orderbook_type == "delta" or orderbook_type == "update":
+                    # For deltas, we need to extract individual updates
+                    # Bybit sends updates in data.b (bids) and data.a (asks)
+                    # Each update is [price, quantity] or [price, quantity, action]
+                    bids = data.get("b", [])
+                    asks = data.get("a", [])
+                    sequence = data.get("seq", data.get("u", 0))
+                    
+                    timestamp = event.get("timestamp") or event.get("exchange_timestamp")
+                    if isinstance(timestamp, str):
+                        from dateutil.parser import parse
+                        timestamp = parse(timestamp)
+                    elif timestamp is None:
+                        timestamp = datetime.now(timezone.utc)
+                    elif not isinstance(timestamp, datetime):
+                        if isinstance(timestamp, (int, float)):
+                            timestamp = datetime.fromtimestamp(
+                                timestamp / 1000 if timestamp > 1e10 else timestamp,
+                                tz=timezone.utc
+                            )
+                        else:
+                            timestamp = datetime.now(timezone.utc)
+                    
+                    # Store each bid update
+                    for bid_update in bids:
+                        if isinstance(bid_update, list) and len(bid_update) >= 2:
+                            delta_event = {
+                                **event,
+                                "event_type": "orderbook_delta",
+                                "symbol": data.get("s") or symbol,
+                                "sequence": sequence,
+                                "delta_type": "update",
+                                "side": "bid",
+                                "price": float(bid_update[0]) if isinstance(bid_update[0], str) else bid_update[0],
+                                "quantity": float(bid_update[1]) if isinstance(bid_update[1], str) else bid_update[1],
+                                "timestamp": timestamp.isoformat() if isinstance(timestamp, datetime) else timestamp,
+                            }
+                            await self.store_orderbook_delta(delta_event)
+                    
+                    # Store each ask update
+                    for ask_update in asks:
+                        if isinstance(ask_update, list) and len(ask_update) >= 2:
+                            delta_event = {
+                                **event,
+                                "event_type": "orderbook_delta",
+                                "symbol": data.get("s") or symbol,
+                                "sequence": sequence,
+                                "delta_type": "update",
+                                "side": "ask",
+                                "price": float(ask_update[0]) if isinstance(ask_update[0], str) else ask_update[0],
+                                "quantity": float(ask_update[1]) if isinstance(ask_update[1], str) else ask_update[1],
+                                "timestamp": timestamp.isoformat() if isinstance(timestamp, datetime) else timestamp,
+                            }
+                            await self.store_orderbook_delta(delta_event)
+            elif event_type == "orderbook_snapshot":
                 await self.store_orderbook_snapshot(event)
             elif event_type == "orderbook_delta":
                 await self.store_orderbook_delta(event)

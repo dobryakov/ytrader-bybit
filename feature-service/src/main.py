@@ -122,6 +122,14 @@ async def startup():
         # Initialize Parquet Storage
         parquet_storage = ParquetStorage(base_path=config.feature_service_raw_data_path)
         
+        # Initialize Data Storage Service (T135: Integrate raw data storage)
+        data_storage = DataStorageService(
+            base_path=config.feature_service_raw_data_path,
+            parquet_storage=parquet_storage,
+            retention_days=config.feature_service_retention_days,
+        )
+        await data_storage.start()
+        
         # Initialize Dataset Builder
         dataset_builder = DatasetBuilder(
             metadata_storage=metadata_storage,
