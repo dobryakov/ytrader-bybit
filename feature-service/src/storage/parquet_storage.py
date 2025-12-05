@@ -2,6 +2,7 @@
 Parquet storage service for reading and writing market data.
 """
 import asyncio
+import shutil
 from pathlib import Path
 from typing import Optional, List
 from datetime import datetime, date
@@ -177,31 +178,95 @@ class ParquetStorage:
             logger.warning(f"Attempting to write empty DataFrame to {file_path}")
             return
         
+        # Validate data before writing
+        if data is None:
+            raise ValueError(f"Cannot write None data to {file_path}")
+        
+        # Log data info for debugging
+        logger.debug(
+            f"Writing Parquet file {file_path}: {len(data)} rows, columns: {list(data.columns)}"
+        )
+        
         # If file exists, read existing data and append
         if file_path.exists():
-            try:
-                existing_table = pq.read_table(file_path)
-                existing_df = existing_table.to_pandas()
-                # Combine data
-                combined_df = pd.concat([existing_df, data], ignore_index=True)
-                
-                # Determine duplicate key based on available columns
-                # For orderbook deltas, use sequence if available, otherwise timestamp
-                if 'sequence' in combined_df.columns:
-                    # Use sequence for orderbook deltas (more unique)
-                    combined_df = combined_df.drop_duplicates(subset=['sequence'], keep='last')
-                else:
-                    # Use timestamp for other data types
-                    combined_df = combined_df.drop_duplicates(subset=['timestamp'], keep='last')
-                
-                # Sort by timestamp
-                combined_df = combined_df.sort_values('timestamp').reset_index(drop=True)
-                data = combined_df
-            except Exception as e:
-                logger.warning(f"Error reading existing file {file_path}, will overwrite: {e}")
+            # Check file size - Parquet files should be at least 8 bytes (minimum footer size)
+            file_size = file_path.stat().st_size
+            if file_size < 8:
+                logger.warning(
+                    f"Existing file {file_path} is too small ({file_size} bytes), will overwrite"
+                )
+                file_path.unlink()  # Delete corrupted file
+            else:
+                try:
+                    existing_table = pq.read_table(file_path)
+                    existing_df = existing_table.to_pandas()
+                    # Combine data
+                    combined_df = pd.concat([existing_df, data], ignore_index=True)
+                    
+                    # Determine duplicate key based on available columns
+                    # For orderbook deltas, use sequence if available, otherwise timestamp
+                    if 'sequence' in combined_df.columns:
+                        # Use sequence for orderbook deltas (more unique)
+                        combined_df = combined_df.drop_duplicates(subset=['sequence'], keep='last')
+                    else:
+                        # Use timestamp for other data types
+                        combined_df = combined_df.drop_duplicates(subset=['timestamp'], keep='last')
+                    
+                    # Sort by timestamp
+                    combined_df = combined_df.sort_values('timestamp').reset_index(drop=True)
+                    data = combined_df
+                except Exception as e:
+                    logger.warning(f"Error reading existing file {file_path}, will overwrite: {e}")
+                    # Delete corrupted file before overwriting
+                    try:
+                        file_path.unlink()
+                    except Exception as delete_error:
+                        logger.warning(f"Failed to delete corrupted file {file_path}: {delete_error}")
         
-        table = pa.Table.from_pandas(data)
-        pq.write_table(table, file_path)
+        # Ensure parent directory exists
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Convert DataFrame to PyArrow table
+        try:
+            # Clean data: replace inf with NaN, then drop rows with all NaN
+            data_clean = data.replace([float('inf'), float('-inf')], None)
+            
+            table = pa.Table.from_pandas(data_clean)
+            logger.debug(
+                f"Converted DataFrame to PyArrow table for {file_path}: "
+                f"{len(table)} rows, {len(table.column_names)} columns"
+            )
+        except Exception as table_error:
+            raise IOError(f"Failed to convert DataFrame to PyArrow table: {file_path}: {table_error}") from table_error
+        
+        # Write directly to final file (we already handled corrupted files above)
+        # Using direct write is simpler and more reliable than temp file + move
+        file_path_str = str(file_path)
+        try:
+            # Write table to Parquet file
+            pq.write_table(table, file_path_str, compression='snappy')
+            
+            # Small delay to ensure filesystem sync
+            import time
+            time.sleep(0.01)
+            
+            logger.debug(f"Successfully wrote Parquet file {file_path_str}")
+        except Exception as write_error:
+            raise IOError(f"Failed to write Parquet file {file_path_str}: {write_error}") from write_error
+        
+        # Verify file was created and has content
+        if not file_path.exists():
+            raise IOError(
+                f"File {file_path} was not created after write. "
+                f"Table has {len(table)} rows, {len(table.column_names)} columns."
+            )
+        
+        file_size = file_path.stat().st_size
+        if file_size == 0:
+            raise IOError(
+                f"File {file_path} is empty after write. "
+                f"Table has {len(table)} rows, {len(table.column_names)} columns."
+            )
     
     async def read_orderbook_snapshots(
         self,

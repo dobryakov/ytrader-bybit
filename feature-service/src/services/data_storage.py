@@ -221,7 +221,8 @@ class DataStorageService:
                 await self.store_orderbook_snapshot(event)
             elif event_type == "orderbook_delta":
                 await self.store_orderbook_delta(event)
-            elif event_type == "trade":
+            elif event_type == "trade" or event_type == "trades":
+                # ws-gateway may publish as "trade" or "trades"
                 await self.store_trade(event)
             elif event_type == "kline":
                 await self.store_kline(event)
