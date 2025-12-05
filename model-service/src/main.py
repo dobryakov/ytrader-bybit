@@ -7,6 +7,8 @@ Initializes FastAPI application with routing, middleware, and startup/shutdown h
 import asyncio
 import signal
 from contextlib import asynccontextmanager
+from typing import Optional
+from uuid import UUID
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
@@ -22,6 +24,8 @@ from .services.market_data_subscriber import MarketDataSubscriber
 from .consumers.market_data_consumer import market_data_consumer
 from .consumers.execution_event_consumer import ExecutionEventConsumer
 from .consumers.position_update_consumer import position_update_consumer
+from .consumers.feature_consumer import feature_consumer
+from .consumers.dataset_ready_consumer import DatasetReadyConsumer
 from .publishers.signal_publisher import signal_publisher
 from .services.warmup_orchestrator import warmup_orchestrator
 from .services.intelligent_orchestrator import intelligent_orchestrator
@@ -94,7 +98,20 @@ async def lifespan(app: FastAPI):
                 )
                 # Continue anyway - can work with fallback values
 
-        # Start market data consumer (needed for both modes)
+        # Start feature consumer if queue is enabled (for Feature Service integration)
+        if settings.feature_service_use_queue:
+            try:
+                await feature_consumer.start()
+                logger.info("Feature consumer started")
+            except Exception as e:
+                logger.error(
+                    "Failed to start feature consumer",
+                    error=str(e),
+                    exc_info=True,
+                )
+                # Continue anyway - can fallback to REST API
+
+        # Start market data consumer (needed for both modes - TODO: will be removed in Phase 10 cleanup)
         try:
             await market_data_consumer.start()
             logger.info("Market data consumer started")
@@ -217,6 +234,39 @@ async def lifespan(app: FastAPI):
             logger.error("Failed to start quality monitor", error=str(e), exc_info=True)
             # Continue anyway - quality evaluation can be triggered manually
 
+        # Start dataset ready consumer for Feature Service dataset notifications
+        async def handle_dataset_ready(dataset_id: UUID, symbol: Optional[str], trace_id: Optional[str]):
+            """Handle dataset ready notification from Feature Service."""
+            try:
+                logger.info(
+                    "Dataset ready notification received",
+                    dataset_id=str(dataset_id),
+                    symbol=symbol,
+                    trace_id=trace_id,
+                )
+                # Trigger training with ready dataset
+                # Note: Full integration with TrainingOrchestrator requires additional work (T152)
+                # For now, just log the notification
+                # TODO: Complete integration in T152
+            except Exception as e:
+                logger.error(
+                    "Error handling dataset ready notification",
+                    dataset_id=str(dataset_id),
+                    symbol=symbol,
+                    error=str(e),
+                    trace_id=trace_id,
+                    exc_info=True,
+                )
+
+        dataset_ready_consumer = DatasetReadyConsumer(dataset_ready_callback=handle_dataset_ready)
+        app.state.dataset_ready_consumer = dataset_ready_consumer  # Store for shutdown
+        try:
+            await dataset_ready_consumer.start()
+            logger.info("Dataset ready consumer started")
+        except Exception as e:
+            logger.error("Failed to start dataset ready consumer", error=str(e), exc_info=True)
+            # Continue anyway - training can be triggered manually or via polling
+
         logger.info("Model service started successfully")
     except Exception as e:
         logger.error("Failed to start model service", error=str(e), exc_info=True)
@@ -321,6 +371,19 @@ async def lifespan(app: FastAPI):
 
         shutdown_tasks.append(stop_warmup_orchestrator())
 
+        # Stop feature consumer
+        async def stop_feature_consumer():
+            try:
+                if settings.feature_service_use_queue:
+                    await asyncio.wait_for(feature_consumer.stop(), timeout=5.0)
+                    logger.info("Feature consumer stopped")
+            except asyncio.TimeoutError:
+                logger.warning("Feature consumer stop timed out")
+            except Exception as e:
+                logger.error("Error stopping feature consumer", error=str(e), exc_info=True)
+
+        shutdown_tasks.append(stop_feature_consumer())
+
         # Stop market data consumer
         async def stop_market_data_consumer():
             try:
@@ -332,6 +395,19 @@ async def lifespan(app: FastAPI):
                 logger.error("Error stopping market data consumer", error=str(e), exc_info=True)
 
         shutdown_tasks.append(stop_market_data_consumer())
+
+        # Stop dataset ready consumer
+        async def stop_dataset_ready_consumer():
+            try:
+                if hasattr(app.state, "dataset_ready_consumer"):
+                    await asyncio.wait_for(app.state.dataset_ready_consumer.stop(), timeout=5.0)
+                    logger.info("Dataset ready consumer stopped")
+            except asyncio.TimeoutError:
+                logger.warning("Dataset ready consumer stop timed out")
+            except Exception as e:
+                logger.error("Error stopping dataset ready consumer", error=str(e), exc_info=True)
+
+        shutdown_tasks.append(stop_dataset_ready_consumer())
 
         # Execute shutdown tasks in parallel with overall timeout
         try:

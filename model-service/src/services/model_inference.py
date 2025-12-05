@@ -1,9 +1,8 @@
 """
 Model inference service.
 
-Prepares features from order/position state and market data,
+Prepares features from Feature Service feature vectors and order/position state,
 runs model prediction, and generates confidence scores.
-MUST capture market data snapshot at inference time for inclusion in generated signals.
 """
 
 from typing import Optional, Dict, Any, List
@@ -11,11 +10,9 @@ import pandas as pd
 import numpy as np
 
 from ..models.position_state import OrderPositionState
-from ..models.signal import MarketDataSnapshot
-from ..consumers.market_data_consumer import market_data_cache
+from ..models.feature_vector import FeatureVector
 from ..config.logging import get_logger
 from ..config.exceptions import ModelInferenceError
-from ..config.settings import settings
 
 logger = get_logger(__name__)
 
@@ -29,17 +26,20 @@ class ModelInference:
 
     def prepare_features(
         self,
-        asset: str,
+        feature_vector: FeatureVector,
         order_position_state: Optional[OrderPositionState] = None,
-        market_data_snapshot: Optional[MarketDataSnapshot] = None,
+        asset: Optional[str] = None,
     ) -> pd.DataFrame:
         """
-        Prepare features for model inference from current state.
+        Prepare features for model inference from Feature Service feature vector.
+
+        Receives ready FeatureVector from Feature Service, extracts features dict,
+        adds position features if available, and performs feature alignment with model's expected features.
 
         Args:
-            asset: Trading pair symbol (e.g., 'BTCUSDT')
-            order_position_state: Current order and position state
-            market_data_snapshot: Market data snapshot at inference time
+            feature_vector: FeatureVector from Feature Service
+            order_position_state: Optional current order and position state (for position features)
+            asset: Optional asset symbol (defaults to feature_vector.symbol)
 
         Returns:
             DataFrame with features (single row)
@@ -47,214 +47,203 @@ class ModelInference:
         Raises:
             ModelInferenceError: If required data is missing
         """
-        # Get market data snapshot if not provided
-        if not market_data_snapshot:
-            market_data = market_data_cache.get_market_data(
-                asset,
-                max_age_seconds=settings.market_data_max_age_seconds,
-                stale_warning_threshold_seconds=settings.market_data_stale_warning_threshold_seconds,
-            )
-            if not market_data:
-                raise ModelInferenceError(f"Market data unavailable for asset {asset}")
+        asset = asset or feature_vector.symbol
 
-            market_data_snapshot = MarketDataSnapshot(
-                price=market_data["price"],
-                spread=market_data["spread"],
-                volume_24h=market_data["volume_24h"],
-                volatility=market_data["volatility"],
-                orderbook_depth=market_data.get("orderbook_depth"),
-                technical_indicators=market_data.get("technical_indicators"),
-            )
+        # Start with features from Feature Service
+        features = feature_vector.features.copy()
 
-        # Engineer features
-        features = self._engineer_inference_features(asset, order_position_state, market_data_snapshot)
+        # Add position features if order_position_state is available
+        # These features are computed locally as they depend on current state
+        if order_position_state:
+            position_features = self._add_position_features(asset, order_position_state, features)
+            features.update(position_features)
 
         # Convert to DataFrame (single row)
         features_df = pd.DataFrame([features])
-        
-        # Note: Feature alignment with model's expected features will be done in predict() method
-        # based on the actual model's feature_names_in_ attribute. This ensures compatibility
-        # with models trained with different feature sets (e.g., with or without position features).
         
         logger.debug(
             "Prepared features for inference",
             asset=asset,
             feature_count=len(features_df.columns),
+            feature_registry_version=feature_vector.feature_registry_version,
+            trace_id=feature_vector.trace_id,
         )
         return features_df
 
-    def _engineer_inference_features(
+    def _add_position_features(
         self,
         asset: str,
-        order_position_state: Optional[OrderPositionState],
-        market_snapshot: MarketDataSnapshot,
-    ) -> Dict[str, Any]:
+        order_position_state: OrderPositionState,
+        existing_features: Dict[str, float],
+    ) -> Dict[str, float]:
         """
-        Engineer features for inference from current state.
+        Add position and order features to existing features from Feature Service.
+
+        These features are computed locally as they depend on current order/position state
+        which is not included in Feature Service feature vectors.
 
         Args:
             asset: Trading pair symbol
             order_position_state: Current order and position state
-            market_snapshot: Market data snapshot at inference time
+            existing_features: Existing features from Feature Service
 
         Returns:
-            Dictionary of feature names to values
+            Dictionary of additional position/order feature names to values
         """
-        features = {}
+        position_features = {}
 
-        # Price features (from market snapshot at inference time)
-        features["price"] = market_snapshot.price
-        features["price_log"] = np.log(market_snapshot.price) if market_snapshot.price > 0 else 0.0
+        # Extract current price from existing features (should be in FeatureVector)
+        current_price = existing_features.get("mid_price", existing_features.get("price", 0.0))
 
-        # Spread features
-        features["spread"] = market_snapshot.spread
-        features["spread_percent"] = (
-            (market_snapshot.spread / market_snapshot.price * 100) if market_snapshot.price > 0 else 0.0
-        )
-
-        # Volume features
-        features["volume_24h"] = market_snapshot.volume_24h
-        features["volume_24h_log"] = np.log(market_snapshot.volume_24h + 1)  # +1 to avoid log(0)
-
-        # Volatility features
-        features["volatility"] = market_snapshot.volatility
-        features["volatility_squared"] = market_snapshot.volatility**2
-
-        # Order book depth features (if available)
-        if market_snapshot.orderbook_depth:
-            features["bid_depth"] = market_snapshot.orderbook_depth.get("bid_depth", 0.0)
-            features["ask_depth"] = market_snapshot.orderbook_depth.get("ask_depth", 0.0)
-            features["depth_imbalance"] = (
-                (features["bid_depth"] - features["ask_depth"]) / (features["bid_depth"] + features["ask_depth"] + 1e-10)
-            )
-        else:
-            features["bid_depth"] = 0.0
-            features["ask_depth"] = 0.0
-            features["depth_imbalance"] = 0.0
-
-        # Technical indicators (if available)
-        if market_snapshot.technical_indicators:
-            indicators = market_snapshot.technical_indicators
-            features["rsi"] = indicators.get("rsi", 50.0)  # Default to neutral
-            features["macd"] = indicators.get("macd", 0.0)
-            features["macd_signal"] = indicators.get("macd_signal", 0.0)
-            features["macd_histogram"] = indicators.get("macd_histogram", 0.0)
-            features["moving_average_20"] = indicators.get("moving_average_20", market_snapshot.price)
-            features["moving_average_50"] = indicators.get("moving_average_50", market_snapshot.price)
-            features["bollinger_upper"] = indicators.get("bollinger_upper", market_snapshot.price)
-            features["bollinger_lower"] = indicators.get("bollinger_lower", market_snapshot.price)
-            features["bollinger_width"] = (
-                (features["bollinger_upper"] - features["bollinger_lower"]) / market_snapshot.price
-                if market_snapshot.price > 0
-                else 0.0
-            )
-        else:
-            # Default values when technical indicators not available
-            features["rsi"] = 50.0
-            features["macd"] = 0.0
-            features["macd_signal"] = 0.0
-            features["macd_histogram"] = 0.0
-            features["moving_average_20"] = market_snapshot.price
-            features["moving_average_50"] = market_snapshot.price
-            features["bollinger_upper"] = market_snapshot.price
-            features["bollinger_lower"] = market_snapshot.price
-            features["bollinger_width"] = 0.0
-
-        # Open orders features (must match feature_engineer logic for consistency)
-        if order_position_state:
-            asset_orders = [
-                order
-                for order in order_position_state.orders
-                if order.asset == asset and order.status in ("pending", "partially_filled")
-            ]
-            features["open_orders_count"] = len(asset_orders)
-            features["pending_buy_orders"] = len([o for o in asset_orders if o.side.upper() == "BUY"])
-            features["pending_sell_orders"] = len([o for o in asset_orders if o.side.upper() == "SELL"])
-        else:
-            # No order/position state available
-            features["open_orders_count"] = 0
-            features["pending_buy_orders"] = 0
-            features["pending_sell_orders"] = 0
+        # Open orders features (must match training dataset features for consistency)
+        asset_orders = [
+            order
+            for order in order_position_state.orders
+            if order.asset == asset and order.status in ("pending", "partially_filled")
+        ]
+        position_features["open_orders_count"] = float(len(asset_orders))
+        position_features["pending_buy_orders"] = float(len([o for o in asset_orders if o.side.upper() == "BUY"]))
+        position_features["pending_sell_orders"] = float(len([o for o in asset_orders if o.side.upper() == "SELL"]))
 
         # Position features (from order/position state)
-        # Must match feature_engineer logic for consistency
-        if order_position_state:
-            position = order_position_state.get_position(asset)
-            if position:
-                features["position_size"] = float(position.size)
-                features["position_size_abs"] = abs(float(position.size))
-                features["unrealized_pnl"] = float(position.unrealized_pnl)
-                features["realized_pnl"] = float(position.realized_pnl)
-                features["has_position"] = 1 if position.size != 0 else 0
-                if position.average_entry_price:
-                    features["entry_price"] = float(position.average_entry_price)
-                    features["price_vs_entry"] = (
-                        (market_snapshot.price - float(position.average_entry_price)) / float(position.average_entry_price) * 100
-                        if position.average_entry_price > 0
-                        else 0.0
-                    )
-                else:
-                    features["entry_price"] = market_snapshot.price
-                    features["price_vs_entry"] = 0.0
+        position = order_position_state.get_position(asset)
+        if position:
+            position_features["position_size"] = float(position.size)
+            position_features["position_size_abs"] = abs(float(position.size))
+            position_features["unrealized_pnl"] = float(position.unrealized_pnl)
+            position_features["realized_pnl"] = float(position.realized_pnl)
+            position_features["has_position"] = 1.0 if position.size != 0 else 0.0
+            if position.average_entry_price and position.average_entry_price > 0:
+                position_features["entry_price"] = float(position.average_entry_price)
+                position_features["price_vs_entry"] = (
+                    (current_price - float(position.average_entry_price)) / float(position.average_entry_price) * 100
+                )
             else:
-                # No position for this asset
-                features["position_size"] = 0.0
-                features["position_size_abs"] = 0.0
-                features["unrealized_pnl"] = 0.0
-                features["realized_pnl"] = 0.0
-                features["has_position"] = 0
-                features["entry_price"] = market_snapshot.price
-                features["price_vs_entry"] = 0.0
-
-            # Total exposure
-            total_exposure = order_position_state.get_total_exposure(asset)
-            features["total_exposure"] = float(total_exposure)
-            features["total_exposure_abs"] = abs(float(total_exposure))
+                position_features["entry_price"] = current_price
+                position_features["price_vs_entry"] = 0.0
         else:
-            # No order/position state available (should not happen at inference time, but handle gracefully)
-            features["position_size"] = 0.0
-            features["position_size_abs"] = 0.0
-            features["unrealized_pnl"] = 0.0
-            features["realized_pnl"] = 0.0
-            features["has_position"] = 0
-            features["entry_price"] = market_snapshot.price
-            features["price_vs_entry"] = 0.0
-            features["total_exposure"] = 0.0
-            features["total_exposure_abs"] = 0.0
+            # No position for this asset
+            position_features["position_size"] = 0.0
+            position_features["position_size_abs"] = 0.0
+            position_features["unrealized_pnl"] = 0.0
+            position_features["realized_pnl"] = 0.0
+            position_features["has_position"] = 0.0
+            position_features["entry_price"] = current_price
+            position_features["price_vs_entry"] = 0.0
+
+        # Total exposure
+        total_exposure = order_position_state.get_total_exposure(asset)
+        position_features["total_exposure"] = float(total_exposure)
+        position_features["total_exposure_abs"] = abs(float(total_exposure))
 
         # Asset features (categorical - hash encoding)
-        features["asset_hash"] = hash(asset) % 1000
+        position_features["asset_hash"] = float(hash(asset) % 1000)
 
         # Strategy features (categorical - will be set by caller if available)
         # Default to 0 if not provided
-        features["strategy_hash"] = 0
+        position_features["strategy_hash"] = 0.0
 
-        # Execution features (not available at inference time, set to defaults)
-        features["execution_price"] = market_snapshot.price  # Use current price as proxy
-        features["execution_quantity"] = 0.0
-        features["execution_fees"] = 0.0
-        features["execution_value"] = 0.0
-        features["slippage"] = 0.0
-        features["slippage_percent"] = 0.0
-        features["price_change"] = 0.0
-        features["price_change_percent"] = 0.0
-        features["execution_delay_seconds"] = 0.0
-        features["execution_delay_minutes"] = 0.0
+        return position_features
 
-        # Side features (not known at inference time, set to defaults)
-        features["side_buy"] = 0
-        features["side_sell"] = 0
+    def _align_features(self, features: pd.DataFrame, model: Any) -> pd.DataFrame:
+        """
+        Align features with model's expected features.
 
-        # Market context features (from inference time market snapshot)
-        features["execution_spread"] = market_snapshot.spread
-        features["execution_volume_24h"] = market_snapshot.volume_24h
-        features["execution_volatility"] = market_snapshot.volatility
+        Performs feature alignment: validates that all required features are present,
+        adds missing features with default values, removes extra features, and preserves order.
 
-        # Market change features (no change at inference time)
-        features["spread_change"] = 0.0
-        features["volume_change"] = 0.0
-        features["volatility_change"] = 0.0
+        Args:
+            features: DataFrame with features from Feature Service + position features
+            model: Trained model object
 
+        Returns:
+            DataFrame with aligned features matching model's expected features
+
+        Raises:
+            ModelInferenceError: If critical features are missing
+        """
+        # Get expected feature names from model (what it was trained with)
+        # XGBoost models store feature names in different places depending on version
+        expected_feature_names = None
+        
+        # Try feature_names_in_ first (newer XGBoost versions)
+        if hasattr(model, "feature_names_in_") and model.feature_names_in_ is not None:
+            expected_feature_names = list(model.feature_names_in_)
+            logger.debug("Using feature_names_in_ from model", count=len(expected_feature_names))
+        
+        # Try get_booster().feature_names (older XGBoost versions or when feature_names_in_ is None)
+        if expected_feature_names is None and hasattr(model, "get_booster"):
+            try:
+                booster = model.get_booster()
+                if hasattr(booster, "feature_names") and booster.feature_names:
+                    expected_feature_names = list(booster.feature_names)
+                    logger.debug("Using feature_names from booster", count=len(expected_feature_names))
+            except Exception as e:
+                logger.warning("Failed to get feature names from booster", error=str(e))
+        
+        # Fallback: use provided features (should not happen, but handle gracefully)
+        if expected_feature_names is None or len(expected_feature_names) == 0:
+            logger.warning(
+                "Could not determine model's expected features, using provided features",
+                provided_count=len(features.columns),
+            )
+            expected_feature_names = list(features.columns)
+        
+        logger.debug(
+            "Features before alignment",
+            feature_count=len(features.columns),
+            model_expected_count=len(expected_feature_names),
+        )
+        
+        # Define critical features that must be present (can be customized)
+        critical_features = []  # Empty list means no features are critical - all can use defaults
+        
+        # Validate and align features
+        missing_features = set(expected_feature_names) - set(features.columns)
+        if missing_features:
+            missing_critical = missing_features.intersection(critical_features)
+            if missing_critical:
+                error_msg = f"Critical features missing from FeatureVector: {missing_critical}"
+                logger.error("Feature alignment failed - critical features missing", missing_features=missing_critical)
+                raise ModelInferenceError(error_msg)
+            
+            # Add missing features with default values
+            for feature_name in missing_features:
+                # Use appropriate default based on feature name
+                if "hash" in feature_name.lower():
+                    default_value = 0
+                elif "count" in feature_name.lower() or "has_" in feature_name.lower():
+                    default_value = 0.0
+                else:
+                    default_value = 0.0
+                
+                features[feature_name] = default_value
+                logger.warning(
+                    "Missing feature in inference, using default",
+                    feature_name=feature_name,
+                    default_value=default_value,
+                )
+        
+        # Remove extra features that model doesn't expect
+        extra_features = set(features.columns) - set(expected_feature_names)
+        if extra_features:
+            logger.debug(
+                "Removing extra features not expected by model",
+                extra_features=list(extra_features),
+                model_expected_count=len(expected_feature_names),
+                provided_count=len(features.columns),
+            )
+            features = features.drop(columns=list(extra_features))
+        
+        # Reorder columns to match model's expected order
+        features = features[expected_feature_names]
+        
+        logger.debug(
+            "Features after alignment",
+            feature_count=len(features.columns),
+            aligned=True,
+        )
+        
         return features
 
     def predict(
@@ -276,73 +265,8 @@ class ModelInference:
             - probabilities: Class probabilities (for classification)
         """
         try:
-            # Get expected feature names from model (what it was trained with)
-            # XGBoost models store feature names in different places depending on version
-            expected_feature_names = None
-            
-            # Try feature_names_in_ first (newer XGBoost versions)
-            if hasattr(model, "feature_names_in_") and model.feature_names_in_ is not None:
-                expected_feature_names = list(model.feature_names_in_)
-                logger.debug("Using feature_names_in_ from model", count=len(expected_feature_names))
-            
-            # Try get_booster().feature_names (older XGBoost versions or when feature_names_in_ is None)
-            if expected_feature_names is None and hasattr(model, "get_booster"):
-                try:
-                    booster = model.get_booster()
-                    if hasattr(booster, "feature_names") and booster.feature_names:
-                        expected_feature_names = list(booster.feature_names)
-                        logger.debug("Using feature_names from booster", count=len(expected_feature_names))
-                except Exception as e:
-                    logger.warning("Failed to get feature names from booster", error=str(e))
-            
-            # Fallback: use provided features (should not happen, but handle gracefully)
-            if expected_feature_names is None or len(expected_feature_names) == 0:
-                logger.warning(
-                    "Could not determine model's expected features, using provided features",
-                    provided_count=len(features.columns),
-                )
-                expected_feature_names = list(features.columns)
-            
-            logger.info(
-                "Features before alignment",
-                feature_count=len(features.columns),
-                model_expected_count=len(expected_feature_names),
-                provided_features=list(features.columns),
-                expected_features=expected_feature_names,
-            )
-            
-            # Align features with model's expected features
-            # Add missing features with default values
-            for feature_name in expected_feature_names:
-                if feature_name not in features.columns:
-                    default_value = 0.0 if "hash" not in feature_name else 0
-                    features[feature_name] = default_value
-                    logger.warning(
-                        "Missing feature in inference, using default",
-                        feature_name=feature_name,
-                        default_value=default_value,
-                    )
-            
-            # Remove extra features that model doesn't expect
-            extra_features = set(features.columns) - set(expected_feature_names)
-            if extra_features:
-                logger.warning(
-                    "Removing extra features not expected by model",
-                    extra_features=list(extra_features),
-                    model_expected_count=len(expected_feature_names),
-                    provided_count=len(features.columns),
-                )
-                features = features.drop(columns=list(extra_features))
-            
-            # Reorder columns to match model's expected order
-            features = features[expected_feature_names]
-            
-            # Log feature names after alignment
-            logger.info(
-                "Features after alignment",
-                feature_count=len(features.columns),
-                feature_names=list(features.columns),
-            )
+            # Perform feature alignment with model's expected features
+            features = self._align_features(features, model)
             
             # Handle missing values
             features = features.fillna(features.mean())
@@ -394,34 +318,6 @@ class ModelInference:
         except Exception as e:
             logger.error("Model prediction failed", error=str(e), exc_info=True)
             raise ModelInferenceError(f"Model prediction failed: {e}") from e
-
-    def get_market_data_snapshot(self, asset: str) -> Optional[MarketDataSnapshot]:
-        """
-        Get current market data snapshot for an asset.
-
-        Args:
-            asset: Trading pair symbol
-
-        Returns:
-            MarketDataSnapshot or None if data unavailable
-        """
-        market_data = market_data_cache.get_market_data(
-            asset,
-            max_age_seconds=settings.market_data_max_age_seconds,
-            stale_warning_threshold_seconds=settings.market_data_stale_warning_threshold_seconds,
-        )
-        if not market_data:
-            logger.warning("Market data unavailable", asset=asset)
-            return None
-
-        return MarketDataSnapshot(
-            price=market_data["price"],
-            spread=market_data["spread"],
-            volume_24h=market_data["volume_24h"],
-            volatility=market_data["volatility"],
-            orderbook_depth=market_data.get("orderbook_depth"),
-            technical_indicators=market_data.get("technical_indicators"),
-        )
 
 
 # Global model inference instance

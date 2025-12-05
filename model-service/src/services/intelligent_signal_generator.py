@@ -11,12 +11,16 @@ from decimal import Decimal
 
 from ..models.signal import TradingSignal, MarketDataSnapshot
 from ..models.position_state import OrderPositionState
+from ..models.feature_vector import FeatureVector
 from ..services.model_loader import model_loader
 from ..services.model_inference import model_inference
 from ..services.signal_validator import signal_validator
 from ..services.rate_limiter import rate_limiter
 from ..services.balance_calculator import balance_calculator
 from ..services.position_manager_client import position_manager_client
+from ..services.feature_service_client import feature_service_client
+from ..services.feature_cache import feature_cache
+from ..consumers.feature_consumer import feature_consumer
 from ..database.repositories.position_state_repo import PositionStateRepository
 from ..config.settings import settings
 from ..config.logging import get_logger, bind_context
@@ -132,17 +136,17 @@ class IntelligentSignalGenerator:
                 logger.warning("No active model available", asset=asset, strategy_id=strategy_id, model_version=model_version)
                 return None
 
-            # Get market data snapshot at inference time
-            market_data_snapshot = model_inference.get_market_data_snapshot(asset)
-            if not market_data_snapshot:
-                logger.warning("Market data unavailable, skipping signal generation", asset=asset, strategy_id=strategy_id)
+            # Get feature vector from Feature Service (via cache or REST API)
+            feature_vector = await self._get_feature_vector(asset, trace_id)
+            if not feature_vector:
+                logger.warning("Features unavailable, skipping signal generation", asset=asset, strategy_id=strategy_id, trace_id=trace_id)
                 return None
 
-            # Prepare features
+            # Prepare features from FeatureVector
             features_df = model_inference.prepare_features(
-                asset=asset,
+                feature_vector=feature_vector,
                 order_position_state=order_position_state,
-                market_data_snapshot=market_data_snapshot,
+                asset=asset,
             )
 
             # Run model prediction
@@ -205,12 +209,17 @@ class IntelligentSignalGenerator:
                     )
                     return None
 
+            # Extract price from feature vector for calculations
+            current_price = float(feature_vector.features.get("mid_price", feature_vector.features.get("price", 0.0)))
+            if current_price <= 0:
+                logger.warning("Invalid price in feature vector, skipping signal generation", asset=asset, strategy_id=strategy_id, price=current_price)
+                return None
+
             # Calculate order amount from model
-            model_amount = self._calculate_amount(asset, order_position_state, market_data_snapshot, confidence)
+            model_amount = self._calculate_amount(asset, order_position_state, current_price, confidence)
             
             # Check available balance and adapt amount
             # For SELL signals, pass current_price to convert quote currency to base currency
-            current_price = float(market_data_snapshot.price) if market_data_snapshot.price else None
             adapted_amount = await balance_calculator.calculate_affordable_amount(
                 trading_pair=asset,
                 signal_type=signal_type,
@@ -253,7 +262,7 @@ class IntelligentSignalGenerator:
                     asset=asset,
                     strategy_id=strategy_id,
                     order_amount_usdt=amount,
-                    market_data_snapshot=market_data_snapshot,
+                    current_price=current_price,
                     trace_id=trace_id,
                 )
                 if position_size_check["should_skip"]:
@@ -301,6 +310,9 @@ class IntelligentSignalGenerator:
                 active_model = await model_version_repo.get_active_by_strategy(strategy_id)
                 model_version = active_model["version"] if active_model else None
 
+            # Create market data snapshot from feature vector for signal metadata
+            market_data_snapshot = self._create_market_data_snapshot_from_features(feature_vector)
+
             # Create signal
             signal = TradingSignal(
                 signal_type=signal_type,
@@ -319,6 +331,7 @@ class IntelligentSignalGenerator:
                         "sell_probability": prediction_result.get("sell_probability"),
                     },
                     "model_version": model_version,
+                    "feature_registry_version": feature_vector.feature_registry_version,
                     "inference_timestamp": datetime.utcnow().isoformat() + "Z",
                 },
                 trace_id=trace_id,
@@ -435,7 +448,7 @@ class IntelligentSignalGenerator:
         self,
         asset: str,
         order_position_state: OrderPositionState,
-        market_data_snapshot: MarketDataSnapshot,
+        current_price: float,
         confidence: float,
     ) -> float:
         """
@@ -444,7 +457,7 @@ class IntelligentSignalGenerator:
         Args:
             asset: Trading pair symbol
             order_position_state: Current order and position state
-            market_data_snapshot: Market data snapshot
+            current_price: Current market price
             confidence: Signal confidence score
 
         Returns:
@@ -539,11 +552,14 @@ class IntelligentSignalGenerator:
                     )
                     return None
 
-                # Get market data snapshot
-                market_data_snapshot = model_inference.get_market_data_snapshot(asset)
-                if not market_data_snapshot:
-                    logger.warning("Market data unavailable for take profit signal", asset=asset)
+                # Get feature vector for market data snapshot
+                feature_vector = await self._get_feature_vector(asset, trace_id)
+                if not feature_vector:
+                    logger.warning("Features unavailable for take profit signal", asset=asset, trace_id=trace_id)
                     return None
+
+                # Create market data snapshot from feature vector
+                market_data_snapshot = self._create_market_data_snapshot_from_features(feature_vector)
 
                 # Force generate SELL signal to close position
                 signal = TradingSignal(
@@ -594,7 +610,7 @@ class IntelligentSignalGenerator:
         asset: str,
         strategy_id: str,
         order_amount_usdt: float,
-        market_data_snapshot: MarketDataSnapshot,
+        current_price: float,
         trace_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
@@ -610,7 +626,7 @@ class IntelligentSignalGenerator:
             asset: Trading pair symbol
             strategy_id: Trading strategy identifier
             order_amount_usdt: Planned order amount in quote currency (USDT)
-            market_data_snapshot: Market data snapshot with current price
+            current_price: Current market price
             trace_id: Trace ID for request flow tracking
 
         Returns:
@@ -634,17 +650,17 @@ class IntelligentSignalGenerator:
                 current_position_size = 0.0
 
             # Convert order amount (USDT) to order quantity (base currency)
-            if market_data_snapshot.price <= 0:
+            if current_price <= 0:
                 logger.warning(
                     "Invalid market price for position size check",
                     asset=asset,
-                    price=market_data_snapshot.price,
+                    price=current_price,
                     trace_id=trace_id,
                 )
                 # On error, allow signal generation (fail open)
                 return {"should_skip": False}
 
-            planned_order_quantity = Decimal(str(order_amount_usdt)) / Decimal(str(market_data_snapshot.price))
+            planned_order_quantity = Decimal(str(order_amount_usdt)) / Decimal(str(current_price))
 
             # Calculate new position size after order
             current_size_decimal = Decimal(str(current_position_size))
@@ -666,7 +682,7 @@ class IntelligentSignalGenerator:
                 if max_allowed_quantity >= min_order_quantity:
                     # Calculate adapted amount in USDT
                     adapted_order_quantity = max_allowed_quantity
-                    adapted_amount_usdt = float(adapted_order_quantity * Decimal(str(market_data_snapshot.price)))
+                    adapted_amount_usdt = float(adapted_order_quantity * Decimal(str(current_price)))
                     
                     return {
                         "should_skip": True,  # Original amount exceeds limit
@@ -712,6 +728,82 @@ class IntelligentSignalGenerator:
             )
             # On error, allow signal generation (fail open)
             return {"should_skip": False}
+
+    async def _get_feature_vector(self, asset: str, trace_id: Optional[str] = None) -> Optional[FeatureVector]:
+        """
+        Get feature vector from Feature Service (via cache or REST API with fallback).
+
+        Args:
+            asset: Trading pair symbol
+            trace_id: Optional trace ID for request flow tracking
+
+        Returns:
+            FeatureVector or None if unavailable
+        """
+        # Try cache first if queue is enabled
+        if settings.feature_service_use_queue:
+            cached_feature = await feature_cache.get(asset, max_age_seconds=settings.feature_service_feature_cache_ttl_seconds)
+            if cached_feature:
+                logger.debug("Using cached feature vector", asset=asset, trace_id=trace_id)
+                return cached_feature
+
+        # Fallback to REST API
+        logger.debug("Cache miss or queue disabled, fetching from REST API", asset=asset, trace_id=trace_id)
+        feature_vector = await feature_service_client.get_latest_features(asset, trace_id=trace_id)
+        
+        if feature_vector:
+            # Cache the result for future use
+            if settings.feature_service_use_queue:
+                await feature_cache.set(asset, feature_vector)
+            logger.debug("Retrieved feature vector from REST API", asset=asset, trace_id=trace_id)
+        
+        return feature_vector
+
+    def _create_market_data_snapshot_from_features(self, feature_vector: FeatureVector) -> MarketDataSnapshot:
+        """
+        Create MarketDataSnapshot from FeatureVector for signal metadata.
+
+        Args:
+            feature_vector: FeatureVector from Feature Service
+
+        Returns:
+            MarketDataSnapshot created from feature vector
+        """
+        features = feature_vector.features
+        
+        # Extract price (mid_price is the standard name in Feature Service)
+        price = features.get("mid_price", features.get("price", 0.0))
+        
+        # Extract spread
+        spread = features.get("spread_abs", features.get("spread", 0.0))
+        
+        # Extract volume
+        volume_24h = features.get("volume_1m", features.get("volume_24h", 0.0))
+        
+        # Extract volatility
+        volatility = features.get("volatility_1m", features.get("volatility", 0.0))
+        
+        # Extract orderbook depth if available
+        orderbook_depth = None
+        if "depth_bid_top5" in features or "depth_ask_top5" in features:
+            orderbook_depth = {
+                "bid_depth": features.get("depth_bid_top5", 0.0),
+                "ask_depth": features.get("depth_ask_top5", 0.0),
+            }
+        
+        # Extract technical indicators if available
+        technical_indicators = None
+        # Note: Feature Service may not include all technical indicators in feature vector
+        # This is a simplified extraction - can be enhanced based on actual feature names
+        
+        return MarketDataSnapshot(
+            price=float(price),
+            spread=float(spread),
+            volume_24h=float(volume_24h),
+            volatility=float(volatility),
+            orderbook_depth=orderbook_depth,
+            technical_indicators=technical_indicators,
+        )
 
     async def generate_signals_for_strategies(
         self,

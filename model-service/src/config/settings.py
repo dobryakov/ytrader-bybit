@@ -132,6 +132,18 @@ class Settings(BaseSettings):
     position_cache_ttl_seconds: int = Field(default=30, alias="POSITION_CACHE_TTL_SECONDS")
     position_cache_max_size: int = Field(default=1000, alias="POSITION_CACHE_MAX_SIZE")
 
+    # Feature Service Configuration
+    feature_service_host: str = Field(default="feature-service", alias="FEATURE_SERVICE_HOST")
+    feature_service_port: int = Field(default=4900, alias="FEATURE_SERVICE_PORT")
+    feature_service_api_key: str = Field(..., alias="FEATURE_SERVICE_API_KEY")
+    feature_service_use_queue: bool = Field(default=True, alias="FEATURE_SERVICE_USE_QUEUE")
+    feature_service_feature_cache_ttl_seconds: int = Field(default=30, alias="FEATURE_SERVICE_FEATURE_CACHE_TTL_SECONDS")
+    
+    # Feature Service Dataset Building Configuration
+    feature_service_dataset_build_timeout_seconds: int = Field(default=3600, alias="FEATURE_SERVICE_DATASET_BUILD_TIMEOUT_SECONDS")
+    feature_service_dataset_poll_interval_seconds: int = Field(default=60, alias="FEATURE_SERVICE_DATASET_POLL_INTERVAL_SECONDS")
+    feature_service_dataset_storage_path: str = Field(default="/datasets", alias="FEATURE_SERVICE_DATASET_STORAGE_PATH")
+
     # Exit Strategy Configuration
     exit_strategy_enabled: bool = Field(default=True, alias="EXIT_STRATEGY_ENABLED")
     exit_strategy_rate_limit: int = Field(default=10, alias="EXIT_STRATEGY_RATE_LIMIT")
@@ -257,6 +269,11 @@ class Settings(BaseSettings):
         return f"http://{self.position_manager_host}:{self.position_manager_port}"
 
     @property
+    def feature_service_url(self) -> str:
+        """Get Feature Service base URL."""
+        return f"http://{self.feature_service_host}:{self.feature_service_port}"
+
+    @property
     def trading_strategy_list(self) -> List[str]:
         """Parse trading strategies from comma-separated string."""
         if not self.trading_strategies:
@@ -377,6 +394,16 @@ class Settings(BaseSettings):
             if self.position_cache_max_size <= 0:
                 errors.append(f"POSITION_CACHE_MAX_SIZE must be positive, got {self.position_cache_max_size}")
 
+        # Validate Feature Service configuration
+        if not 1 <= self.feature_service_port <= 65535:
+            errors.append(f"Feature Service port must be between 1 and 65535, got {self.feature_service_port}")
+        if self.feature_service_feature_cache_ttl_seconds <= 0:
+            errors.append(f"FEATURE_SERVICE_FEATURE_CACHE_TTL_SECONDS must be positive, got {self.feature_service_feature_cache_ttl_seconds}")
+        if self.feature_service_dataset_build_timeout_seconds <= 0:
+            errors.append(f"FEATURE_SERVICE_DATASET_BUILD_TIMEOUT_SECONDS must be positive, got {self.feature_service_dataset_build_timeout_seconds}")
+        if self.feature_service_dataset_poll_interval_seconds <= 0:
+            errors.append(f"FEATURE_SERVICE_DATASET_POLL_INTERVAL_SECONDS must be positive, got {self.feature_service_dataset_poll_interval_seconds}")
+
         # Validate API key is not empty
         if not self.model_service_api_key or len(self.model_service_api_key.strip()) == 0:
             errors.append("MODEL_SERVICE_API_KEY is required and cannot be empty")
@@ -386,6 +413,9 @@ class Settings(BaseSettings):
 
         if not self.position_manager_api_key or len(self.position_manager_api_key.strip()) == 0:
             errors.append("POSITION_MANAGER_API_KEY is required and cannot be empty")
+
+        if not self.feature_service_api_key or len(self.feature_service_api_key.strip()) == 0:
+            errors.append("FEATURE_SERVICE_API_KEY is required and cannot be empty")
 
         # Validate database credentials
         if not self.postgres_db or len(self.postgres_db.strip()) == 0:
@@ -443,6 +473,11 @@ class Settings(BaseSettings):
             pm_url = self.position_manager_url
             if not pm_url.startswith("http://") and not pm_url.startswith("https://"):
                 errors.append(f"Invalid Position Manager URL format: {pm_url}")
+
+            # Test Feature Service URL format
+            fs_url = self.feature_service_url
+            if not fs_url.startswith("http://") and not fs_url.startswith("https://"):
+                errors.append(f"Invalid Feature Service URL format: {fs_url}")
         except Exception as e:
             errors.append(f"Error validating URL formats: {e}")
 
