@@ -94,7 +94,7 @@ class MarketDataConsumer:
             {"channel_type": "kline", "symbol": symbol}
             for symbol in self._symbols
         ] + [
-            {"channel_type": "funding_rate", "symbol": symbol}
+            {"channel_type": "funding", "symbol": symbol}
             for symbol in self._symbols
         ]
         
@@ -110,7 +110,8 @@ class MarketDataConsumer:
                 
                 if response.status_code == 200 or response.status_code == 201:
                     data = response.json()
-                    subscription_id = data.get("subscription_id")
+                    # API returns "id" not "subscription_id"
+                    subscription_id = data.get("id") or data.get("subscription_id")
                     if subscription_id:
                         self._subscriptions.add(subscription_id)
                         logger.info(
@@ -120,11 +121,18 @@ class MarketDataConsumer:
                             symbol=channel_config.get("symbol"),
                         )
                 else:
+                    # Log response body for debugging 422 errors
+                    try:
+                        error_body = response.json()
+                    except Exception:
+                        error_body = response.text
+                    
                     logger.warning(
                         "subscription_failed",
                         channel_type=channel_config["channel_type"],
                         symbol=channel_config.get("symbol"),
                         status_code=response.status_code,
+                        error_body=error_body,
                     )
             except Exception as e:
                 # Handle ws-gateway unavailability (T078): continue with last available data, log issues

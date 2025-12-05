@@ -321,9 +321,46 @@ class FeatureComputer:
                     event_keys=list(event.keys()),
                     payload_keys=list(event.get("payload", {}).keys()) if isinstance(event.get("payload"), dict) else None,
                 )
-        elif event_type == "funding_rate":
-            funding_rate = event.get("funding_rate")
-            next_funding_time = event.get("next_funding_time")
-            if funding_rate is not None:
-                self.update_funding_rate(symbol, funding_rate, next_funding_time or 0)
+        elif event_type == "funding":
+            # ws-gateway publishes funding events with payload containing fundingRate and nextFundingTime
+            # Payload can have camelCase (fundingRate, nextFundingTime) or snake_case (funding_rate, next_funding_time)
+            payload = event.get("payload", {})
+            if isinstance(payload, dict):
+                funding_rate = payload.get("fundingRate") or payload.get("funding_rate")
+                next_funding_time = payload.get("nextFundingTime") or payload.get("next_funding_time")
+                
+                # Convert funding_rate to float if it's a string
+                if funding_rate is not None:
+                    try:
+                        funding_rate = float(funding_rate) if isinstance(funding_rate, str) else funding_rate
+                    except (ValueError, TypeError):
+                        logger.warning(
+                            "invalid_funding_rate",
+                            symbol=symbol,
+                            funding_rate=funding_rate,
+                            funding_rate_type=type(funding_rate).__name__,
+                        )
+                        funding_rate = None
+                
+                # Convert next_funding_time to int if it's a string
+                if next_funding_time is not None:
+                    try:
+                        next_funding_time = int(next_funding_time) if isinstance(next_funding_time, str) else next_funding_time
+                    except (ValueError, TypeError):
+                        logger.warning(
+                            "invalid_next_funding_time",
+                            symbol=symbol,
+                            next_funding_time=next_funding_time,
+                            next_funding_time_type=type(next_funding_time).__name__,
+                        )
+                        next_funding_time = 0
+                
+                if funding_rate is not None:
+                    self.update_funding_rate(symbol, funding_rate, next_funding_time or 0)
+                    logger.debug(
+                        "funding_rate_updated",
+                        symbol=symbol,
+                        funding_rate=funding_rate,
+                        next_funding_time=next_funding_time,
+                    )
 
