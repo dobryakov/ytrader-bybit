@@ -2,6 +2,7 @@
 Unit tests for price features computation.
 """
 import pytest
+import pandas as pd
 from datetime import datetime, timezone
 from unittest.mock import Mock
 
@@ -68,7 +69,8 @@ class TestPriceFeatures:
         returns = compute_returns(rw, 3, current_price)
         
         # Returns should be computed if data available
-        assert returns is not None or len(rw.windows.get("3s", [])) == 0
+        window_data = rw.windows.get("3s", pd.DataFrame())
+        assert returns is not None or len(window_data) == 0
     
     def test_compute_vwap(self, sample_rolling_windows):
         """Test computing VWAP."""
@@ -79,7 +81,8 @@ class TestPriceFeatures:
         vwap = compute_vwap(rw, 3)
         
         # VWAP should be computed if trades available
-        assert vwap is not None or len(rw.windows.get("3s", [])) == 0
+        window_data = rw.windows.get("3s", pd.DataFrame())
+        assert vwap is not None or len(window_data) == 0
     
     def test_compute_volume(self, sample_rolling_windows):
         """Test computing volume."""

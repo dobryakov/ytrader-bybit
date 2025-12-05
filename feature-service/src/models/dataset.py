@@ -1,10 +1,10 @@
 """
 Dataset model for training datasets.
 """
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Any, Optional, Literal
 from uuid import UUID
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator, ConfigDict
 from enum import Enum
 
 
@@ -105,7 +105,7 @@ class Dataset(BaseModel):
     )
     
     created_at: datetime = Field(
-        default_factory=lambda: datetime.now(datetime.now().astimezone().tzinfo),
+        default_factory=lambda: datetime.now(timezone.utc),
         description="When dataset build was requested"
     )
     completed_at: Optional[datetime] = Field(
@@ -126,7 +126,11 @@ class Dataset(BaseModel):
     def validate_status(cls, v):
         """Validate status enum."""
         if isinstance(v, str):
-            return DatasetStatus(v)
+            try:
+                return DatasetStatus(v)
+            except ValueError:
+                # Let Pydantic handle the ValidationError
+                raise
         return v
     
     @field_validator("split_strategy", mode="before")
@@ -134,10 +138,23 @@ class Dataset(BaseModel):
     def validate_split_strategy(cls, v):
         """Validate split strategy enum."""
         if isinstance(v, str):
-            return SplitStrategy(v)
+            try:
+                return SplitStrategy(v)
+            except ValueError:
+                # Let Pydantic handle the ValidationError
+                raise
         return v
     
-    def model_post_init(self, __context):
+    @field_validator("target_config", mode="before")
+    @classmethod
+    def validate_target_config(cls, v):
+        """Validate target config - convert dict to TargetConfig if needed."""
+        if isinstance(v, dict):
+            return TargetConfig(**v)
+        return v
+    
+    @model_validator(mode='after')
+    def validate_periods(self):
         """Validate periods after initialization."""
         if self.split_strategy == SplitStrategy.TIME_BASED:
             # Validate periods are specified
@@ -154,12 +171,16 @@ class Dataset(BaseModel):
                 )
             
             # Validate chronological order
-            if not (
-                self.train_period_start < self.train_period_end <
-                self.validation_period_start < self.validation_period_end <
-                self.test_period_start < self.test_period_end
-            ):
-                raise ValueError("Periods must be in chronological order")
+            try:
+                if not (
+                    self.train_period_start < self.train_period_end <
+                    self.validation_period_start < self.validation_period_end <
+                    self.test_period_start < self.test_period_end
+                ):
+                    raise ValueError("Periods must be in chronological order")
+            except TypeError:
+                # Handle case where periods might be None or wrong type
+                raise ValueError("All periods must be valid datetime objects")
         
         elif self.split_strategy == SplitStrategy.WALK_FORWARD:
             # Validate walk-forward config is specified
@@ -167,11 +188,11 @@ class Dataset(BaseModel):
                 raise ValueError(
                     "walk_forward_config must be specified for walk_forward split strategy"
                 )
+        
+        return self
     
-    class Config:
-        """Pydantic configuration."""
-        json_encoders = {
-            datetime: lambda v: v.isoformat(),
-            UUID: lambda v: str(v),
-        }
-        use_enum_values = True
+    model_config = ConfigDict(
+        use_enum_values=True,
+        # Note: json_encoders deprecated in Pydantic v2, but kept for backward compatibility
+        # In production, use model_serializer instead
+    )

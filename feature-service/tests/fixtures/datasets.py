@@ -11,16 +11,17 @@ from uuid import uuid4
 def sample_dataset_metadata():
     """Sample dataset metadata with time-based split."""
     base_time = datetime.now(timezone.utc)
+    dataset_id = uuid4()
     
     return {
-        "id": str(uuid4()),
+        "id": dataset_id,
         "symbol": "BTCUSDT",
         "status": "ready",
         "split_strategy": "time_based",
         "train_period_start": base_time - timedelta(days=30),
-        "train_period_end": base_time - timedelta(days=10),
+        "train_period_end": base_time - timedelta(days=11),
         "validation_period_start": base_time - timedelta(days=10),
-        "validation_period_end": base_time - timedelta(days=5),
+        "validation_period_end": base_time - timedelta(days=6),
         "test_period_start": base_time - timedelta(days=5),
         "test_period_end": base_time,
         "walk_forward_config": None,
@@ -46,9 +47,10 @@ def sample_dataset_metadata():
 def sample_dataset_metadata_walk_forward():
     """Sample dataset metadata with walk-forward split."""
     base_time = datetime.now(timezone.utc)
+    dataset_id = uuid4()
     
     return {
-        "id": str(uuid4()),
+        "id": dataset_id,
         "symbol": "BTCUSDT",
         "status": "ready",
         "split_strategy": "walk_forward",
@@ -88,16 +90,17 @@ def sample_dataset_metadata_walk_forward():
 def sample_dataset_metadata_building():
     """Sample dataset metadata with building status."""
     base_time = datetime.now(timezone.utc)
+    dataset_id = uuid4()
     
     return {
-        "id": str(uuid4()),
+        "id": dataset_id,
         "symbol": "ETHUSDT",
         "status": "building",
         "split_strategy": "time_based",
         "train_period_start": base_time - timedelta(days=20),
-        "train_period_end": base_time - timedelta(days=7),
+        "train_period_end": base_time - timedelta(days=8),
         "validation_period_start": base_time - timedelta(days=7),
-        "validation_period_end": base_time - timedelta(days=3),
+        "validation_period_end": base_time - timedelta(days=4),
         "test_period_start": base_time - timedelta(days=3),
         "test_period_end": base_time,
         "walk_forward_config": None,
@@ -123,16 +126,17 @@ def sample_dataset_metadata_building():
 def sample_dataset_metadata_failed():
     """Sample dataset metadata with failed status."""
     base_time = datetime.now(timezone.utc)
+    dataset_id = uuid4()
     
     return {
-        "id": str(uuid4()),
+        "id": dataset_id,
         "symbol": "BTCUSDT",
         "status": "failed",
         "split_strategy": "time_based",
         "train_period_start": base_time - timedelta(days=30),
-        "train_period_end": base_time - timedelta(days=10),
+        "train_period_end": base_time - timedelta(days=11),
         "validation_period_start": base_time - timedelta(days=10),
-        "validation_period_end": base_time - timedelta(days=5),
+        "validation_period_end": base_time - timedelta(days=6),
         "test_period_start": base_time - timedelta(days=5),
         "test_period_end": base_time,
         "walk_forward_config": None,
@@ -161,14 +165,14 @@ def sample_dataset_list():
     
     return [
         {
-            "id": str(uuid4()),
+            "id": uuid4(),
             "symbol": "BTCUSDT",
             "status": "ready",
             "split_strategy": "time_based",
             "train_period_start": base_time - timedelta(days=30),
-            "train_period_end": base_time - timedelta(days=10),
+            "train_period_end": base_time - timedelta(days=11),
             "validation_period_start": base_time - timedelta(days=10),
-            "validation_period_end": base_time - timedelta(days=5),
+            "validation_period_end": base_time - timedelta(days=6),
             "test_period_start": base_time - timedelta(days=5),
             "test_period_end": base_time,
             "walk_forward_config": None,
@@ -186,7 +190,7 @@ def sample_dataset_list():
             "completed_at": base_time - timedelta(days=30),
         },
         {
-            "id": str(uuid4()),
+            "id": uuid4(),
             "symbol": "BTCUSDT",
             "status": "ready",
             "split_strategy": "walk_forward",
@@ -217,14 +221,14 @@ def sample_dataset_list():
             "completed_at": base_time - timedelta(days=39),
         },
         {
-            "id": str(uuid4()),
+            "id": uuid4(),
             "symbol": "ETHUSDT",
             "status": "building",
             "split_strategy": "time_based",
             "train_period_start": base_time - timedelta(days=20),
-            "train_period_end": base_time - timedelta(days=7),
+            "train_period_end": base_time - timedelta(days=8),
             "validation_period_start": base_time - timedelta(days=7),
-            "validation_period_end": base_time - timedelta(days=3),
+            "validation_period_end": base_time - timedelta(days=4),
             "test_period_start": base_time - timedelta(days=3),
             "test_period_end": base_time,
             "walk_forward_config": None,

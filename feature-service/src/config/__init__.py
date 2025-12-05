@@ -1,7 +1,7 @@
 """
 Configuration management using pydantic-settings.
 """
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional
 
@@ -53,13 +53,17 @@ class Config(BaseSettings):
         extra="ignore"
     )
     
-    def validate_port(self, value: int) -> int:
+    @field_validator("postgres_port", "rabbitmq_port", "feature_service_port", "ws_gateway_port")
+    @classmethod
+    def validate_port(cls, value: int) -> int:
         """Validate port range."""
         if not (1 <= value <= 65535):
             raise ValueError(f"Port must be between 1 and 65535, got {value}")
         return value
     
-    def validate_retention_days(self, value: int) -> int:
+    @field_validator("feature_service_retention_days")
+    @classmethod
+    def validate_retention_days(cls, value: int) -> int:
         """Validate retention days."""
         if value < 0:
             raise ValueError(f"Retention days must be non-negative, got {value}")

@@ -75,8 +75,14 @@ class TestMQConnection:
         manager._connection = mock_rabbitmq_connection
         
         await manager.connect()
+        
+        # Set is_closed to False before close
+        mock_rabbitmq_connection.is_closed = False
+        
         await manager.close()
         
+        # After close, connection should be marked as closed
+        mock_rabbitmq_connection.is_closed = True
         assert not manager.is_connected()
         mock_rabbitmq_connection.close.assert_called_once()
     

@@ -3,7 +3,7 @@ Feature Vector model.
 """
 from datetime import datetime
 from typing import Dict, Any, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 
 class FeatureVector(BaseModel):
@@ -15,9 +15,7 @@ class FeatureVector(BaseModel):
     feature_registry_version: str = Field(description="Version of Feature Registry used")
     trace_id: Optional[str] = Field(default=None, description="Trace ID for request flow tracking")
     
-    class Config:
-        """Pydantic configuration."""
-        json_encoders = {
-            datetime: lambda v: v.isoformat(),
-        }
+    model_config = ConfigDict()
+    # Note: json_encoders deprecated in Pydantic v2
+    # datetime serialization handled automatically by Pydantic
 

@@ -4,7 +4,7 @@ Rolling Windows model for managing time-based rolling windows.
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
 import pandas as pd
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 
 class RollingWindows(BaseModel):
@@ -270,11 +270,10 @@ class RollingWindows(BaseModel):
         
         return result_df
     
-    class Config:
-        """Pydantic configuration."""
-        arbitrary_types_allowed = True  # Allow pandas DataFrame
-        json_encoders = {
-            datetime: lambda v: v.isoformat(),
-            pd.DataFrame: lambda v: v.to_dict("records"),
-        }
+    model_config = ConfigDict(
+        arbitrary_types_allowed=True,  # Allow pandas DataFrame
+        # Note: json_encoders deprecated in Pydantic v2
+        # datetime serialization handled automatically by Pydantic
+        # DataFrame serialization should use custom serializer if needed
+    )
 

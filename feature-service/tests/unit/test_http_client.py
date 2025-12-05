@@ -14,17 +14,21 @@ class TestHTTPClient:
         """Test that HTTP client initializes correctly."""
         from src.http.client import HTTPClient
         
-        client = HTTPClient(base_url="http://localhost:8080")
+        # Use test URL that won't conflict with real services
+        test_url = "http://test-ws-gateway:4400"
+        client = HTTPClient(base_url=test_url)
         
         assert client is not None
-        assert client.base_url == "http://localhost:8080"
+        assert client._base_url == test_url
     
     @pytest.mark.asyncio
     async def test_http_client_makes_get_request(self, mock_http_client):
         """Test that HTTP client makes GET requests."""
         from src.http.client import HTTPClient
         
-        client = HTTPClient(base_url="http://localhost:8080")
+        # Use test URL that won't conflict with real services
+        test_url = "http://test-ws-gateway:4400"
+        client = HTTPClient(base_url=test_url)
         client._client = mock_http_client
         
         response = await client.get("/api/test")
@@ -37,7 +41,9 @@ class TestHTTPClient:
         """Test that HTTP client makes POST requests."""
         from src.http.client import HTTPClient
         
-        client = HTTPClient(base_url="http://localhost:8080")
+        # Use test URL that won't conflict with real services
+        test_url = "http://test-ws-gateway:4400"
+        client = HTTPClient(base_url=test_url)
         client._client = mock_http_client
         
         response = await client.post("/api/test", json={"key": "value"})
@@ -53,7 +59,9 @@ class TestHTTPClient:
         # Configure mock to raise an error
         mock_http_client.get.side_effect = Exception("Connection error")
         
-        client = HTTPClient(base_url="http://localhost:8080")
+        # Use test URL that won't conflict with real services
+        test_url = "http://test-ws-gateway:4400"
+        client = HTTPClient(base_url=test_url)
         client._client = mock_http_client
         
         with pytest.raises(Exception):
@@ -64,7 +72,9 @@ class TestHTTPClient:
         """Test that HTTP client closes connection properly."""
         from src.http.client import HTTPClient
         
-        client = HTTPClient(base_url="http://localhost:8080")
+        # Use test URL that won't conflict with real services
+        test_url = "http://test-ws-gateway:4400"
+        client = HTTPClient(base_url=test_url)
         client._client = mock_http_client
         
         await client.close()
@@ -76,8 +86,10 @@ class TestHTTPClient:
         """Test that HTTP client sets headers correctly."""
         from src.http.client import HTTPClient
         
+        # Use test URL that won't conflict with real services
+        test_url = "http://test-ws-gateway:4400"
         client = HTTPClient(
-            base_url="http://localhost:8080",
+            base_url=test_url,
             api_key="test-api-key"
         )
         client._client = mock_http_client

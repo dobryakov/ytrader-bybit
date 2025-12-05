@@ -4,7 +4,7 @@ Orderbook State model for managing in-memory orderbook state.
 from datetime import datetime, timezone
 from typing import Dict, Optional
 from sortedcontainers import SortedDict
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 
 
 class OrderbookState(BaseModel):
@@ -209,11 +209,9 @@ class OrderbookState(BaseModel):
         
         return False
     
-    class Config:
-        """Pydantic configuration."""
-        arbitrary_types_allowed = True  # Allow SortedDict
-        json_encoders = {
-            datetime: lambda v: v.isoformat(),
-            SortedDict: lambda v: dict(v),
-        }
+    model_config = ConfigDict(
+        arbitrary_types_allowed=True,  # Allow SortedDict
+        # Note: json_encoders deprecated in Pydantic v2
+        # datetime serialization handled automatically by Pydantic
+    )
 

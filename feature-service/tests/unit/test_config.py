@@ -25,6 +25,8 @@ def sample_env_vars():
         "FEATURE_SERVICE_DATA_DIR": "/data/feature-service",
         "FEATURE_SERVICE_RETENTION_DAYS": "90",
         "FEATURE_REGISTRY_PATH": "/app/config/feature_registry.yaml",
+        "WS_GATEWAY_HOST": "ws-gateway",
+        "WS_GATEWAY_PORT": "4400",
     }
 
 
@@ -52,16 +54,44 @@ class TestConfig:
             assert config.feature_service_retention_days == 90
             assert config.feature_registry_path == "/app/config/feature_registry.yaml"
     
-    def test_config_uses_defaults_when_missing(self):
+    def test_config_uses_defaults_when_missing(self, sample_env_vars):
         """Test that configuration uses defaults when environment variables are missing."""
-        with patch.dict("os.environ", {}, clear=True):
+        # Add only required fields, check that defaults are used for optional ones
+        minimal_env_vars = {
+            "POSTGRES_HOST": sample_env_vars["POSTGRES_HOST"],
+            "POSTGRES_PORT": sample_env_vars["POSTGRES_PORT"],
+            "POSTGRES_DB": sample_env_vars["POSTGRES_DB"],
+            "POSTGRES_USER": sample_env_vars["POSTGRES_USER"],
+            "POSTGRES_PASSWORD": sample_env_vars["POSTGRES_PASSWORD"],
+            "RABBITMQ_HOST": sample_env_vars["RABBITMQ_HOST"],
+            "RABBITMQ_PORT": sample_env_vars["RABBITMQ_PORT"],
+            "RABBITMQ_USER": sample_env_vars["RABBITMQ_USER"],
+            "RABBITMQ_PASSWORD": sample_env_vars["RABBITMQ_PASSWORD"],
+            "FEATURE_SERVICE_PORT": sample_env_vars["FEATURE_SERVICE_PORT"],
+            "FEATURE_SERVICE_API_KEY": sample_env_vars["FEATURE_SERVICE_API_KEY"],
+            "WS_GATEWAY_HOST": "ws-gateway",
+            "WS_GATEWAY_PORT": "4400",
+            # Explicitly set optional fields to empty to test defaults
+            "FEATURE_SERVICE_SYMBOLS": "",
+        }
+        
+        with patch.dict("os.environ", minimal_env_vars, clear=False):
+            # Remove any existing FEATURE_SERVICE_SYMBOLS if present
+            import os
+            if "FEATURE_SERVICE_SYMBOLS" in os.environ:
+                del os.environ["FEATURE_SERVICE_SYMBOLS"]
+            
             from src.config import Config
             
             config = Config()
             
-            # Check that defaults are used (if defined in Config class)
-            # This test will need to be adjusted based on actual default values
-            assert config is not None
+            # Check that defaults are used for optional fields
+            assert config.feature_service_log_level == "INFO"
+            assert config.feature_service_data_dir == "/data/feature-service"
+            assert config.feature_service_retention_days == 90
+            assert config.feature_service_service_name == "feature-service"
+            assert config.feature_service_symbols == ""
+            assert config.feature_registry_path == "/app/config/feature_registry.yaml"
     
     def test_config_validates_required_fields(self):
         """Test that configuration validates required fields."""

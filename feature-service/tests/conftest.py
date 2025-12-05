@@ -82,13 +82,11 @@ def mock_db_pool():
     return pool
 
 
-@pytest.fixture
-def mock_rabbitmq_connection():
-    """Mock RabbitMQ connection."""
-    connection = AsyncMock()
-    channel = AsyncMock()
-    connection.channel = AsyncMock(return_value=channel)
-    return connection, channel
+# Import RabbitMQ fixtures from fixtures module
+from tests.fixtures.rabbitmq import (
+    mock_rabbitmq_connection,
+    mock_rabbitmq_connection_and_channel,
+)
 
 
 @pytest.fixture

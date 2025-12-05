@@ -11,14 +11,14 @@ from unittest.mock import AsyncMock
 
 @pytest.mark.asyncio
 async def test_dataset_publisher_publishes_completion(
-    mock_rabbitmq_connection,
+    mock_rabbitmq_connection_and_channel,
 ):
     """Test dataset publisher publishes completion notification."""
     # This test will fail until DatasetPublisher is implemented
     # from src.publishers.dataset_publisher import DatasetPublisher
     # from uuid import uuid4
     
-    # connection, channel = mock_rabbitmq_connection
+    connection, channel = mock_rabbitmq_connection_and_channel
     # publisher = DatasetPublisher(connection)
     # 
     # dataset_id = str(uuid4())
@@ -40,21 +40,20 @@ async def test_dataset_publisher_publishes_completion(
     # assert call_args[1]["routing_key"] == "features.dataset.ready"
     
     # Placeholder assertion
-    connection, channel = mock_rabbitmq_connection
     assert connection is not None
     assert channel is not None
 
 
 @pytest.mark.asyncio
 async def test_dataset_publisher_message_format(
-    mock_rabbitmq_connection,
+    mock_rabbitmq_connection_and_channel,
 ):
     """Test dataset publisher message format is correct."""
     # This test will fail until DatasetPublisher is implemented
     # from src.publishers.dataset_publisher import DatasetPublisher
     # import json
     
-    # connection, channel = mock_rabbitmq_connection
+    connection, channel = mock_rabbitmq_connection_and_channel
     # publisher = DatasetPublisher(connection)
     # 
     # dataset_id = str(uuid4())
@@ -79,5 +78,5 @@ async def test_dataset_publisher_message_format(
     # assert "test_records" in message_data
     
     # Placeholder assertion
-    connection, channel = mock_rabbitmq_connection
     assert connection is not None
+    assert channel is not None

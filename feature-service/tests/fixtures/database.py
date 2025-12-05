@@ -3,27 +3,36 @@ Test fixtures for database connection mocking.
 """
 import pytest
 from unittest.mock import AsyncMock, MagicMock
+from contextlib import asynccontextmanager
 import asyncpg
 
 
 @pytest.fixture
 def mock_db_pool():
     """Mock asyncpg connection pool."""
-    pool = AsyncMock(spec=asyncpg.Pool)
-    
-    # Mock connection context manager
+    # Mock connection
     mock_conn = AsyncMock(spec=asyncpg.Connection)
     mock_conn.fetch = AsyncMock(return_value=[])
     mock_conn.fetchrow = AsyncMock(return_value=None)
     mock_conn.fetchval = AsyncMock(return_value=None)
     mock_conn.execute = AsyncMock(return_value="INSERT 0 1")
     mock_conn.executemany = AsyncMock(return_value="INSERT 0 1")
-    mock_conn.transaction = AsyncMock()
     
-    async def acquire():
-        return mock_conn
+    # Mock transaction context manager
+    @asynccontextmanager
+    async def mock_transaction():
+        yield mock_conn
     
-    pool.acquire = AsyncMock(side_effect=acquire)
+    mock_conn.transaction = MagicMock(return_value=mock_transaction())
+    
+    # Mock acquire as async context manager
+    @asynccontextmanager
+    async def mock_acquire():
+        yield mock_conn
+    
+    # Create pool with proper acquire mock
+    pool = MagicMock(spec=asyncpg.Pool)
+    pool.acquire = MagicMock(return_value=mock_acquire())
     pool.release = AsyncMock()
     pool.close = AsyncMock()
     
