@@ -43,6 +43,36 @@ async def process_events(events: List[Event]) -> None:
             if event.event_type == "position":
                 success = await PositionEventNormalizer.normalize_and_publish(event)
                 queue_name = get_queue_name_for_event(event)
+            elif event.event_type == "funding":
+                # Funding rate events: parse and validate funding rate value and next funding timestamp
+                # Bybit funding rate event payload structure:
+                # {
+                #   "symbol": "BTCUSDT",
+                #   "fundingRate": "0.0001",  # Funding rate value
+                #   "fundingRateTimestamp": "1234567890000",  # Current funding rate timestamp (ms)
+                #   "nextFundingTime": "1234567890000"  # Next funding time (ms)
+                # }
+                # The payload is already parsed by event_parser, we just ensure it's published correctly
+                queue_name = get_queue_name_for_event(event)
+                
+                # Extract key fields for logging
+                payload = event.payload
+                symbol = payload.get("symbol", "unknown")
+                funding_rate = payload.get("fundingRate") or payload.get("funding_rate")
+                next_funding_time = payload.get("nextFundingTime") or payload.get("next_funding_time")
+                
+                logger.info(
+                    "funding_rate_event_processing",
+                    event_id=str(event.event_id),
+                    symbol=symbol,
+                    funding_rate=funding_rate,
+                    next_funding_time=next_funding_time,
+                    topic=event.topic,
+                    trace_id=event.trace_id,
+                )
+                
+                # Publish event to queue
+                success = await publisher.publish_event(event, queue_name)
             else:
                 # Determine target queue based on event class
                 queue_name = get_queue_name_for_event(event)

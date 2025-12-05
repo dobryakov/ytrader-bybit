@@ -7,6 +7,7 @@ PUBLIC_CHANNELS = {
     "orderbook",   # orderbook.1.BTCUSDT
     "kline",       # kline.1.BTCUSDT
     "liquidation",  # liquidation
+    "funding",     # fundingRate.BTCUSDT
 }
 
 # Private channels that require /v5/private endpoint (authentication required)

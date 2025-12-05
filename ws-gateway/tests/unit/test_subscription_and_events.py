@@ -56,6 +56,7 @@ def test_event_create_sets_timestamps_and_ids():
         ("orderbook", "BTCUSDT", "orderbook.1.BTCUSDT"),
         ("balance", None, "wallet"),
         ("order", None, "order"),
+        ("funding", "BTCUSDT", "fundingRate.BTCUSDT"),
     ],
 )
 def test_subscription_service_build_topic(channel_type, symbol, expected_topic):
@@ -192,5 +193,89 @@ async def test_position_event_normalizer_normalizes_and_publishes(monkeypatch):
     assert normalized_event.payload["mode"] == 1
     # Timestamp must be available for conflict resolution
     assert normalized_event.payload["timestamp"] == event.timestamp.isoformat()
+
+
+def test_event_parser_builds_funding_event_from_message():
+    """Test that funding rate events are parsed correctly from Bybit messages."""
+    sub = Subscription.create(
+        channel_type="funding",
+        topic="fundingRate.BTCUSDT",
+        requesting_service="test-service",
+        symbol="BTCUSDT",
+    )
+    ts_ms = int(dt.datetime.utcnow().timestamp() * 1000)
+    message = {
+        "topic": "fundingRate.BTCUSDT",
+        "ts": ts_ms,
+        "data": [
+            {
+                "symbol": "BTCUSDT",
+                "fundingRate": "0.0001",
+                "fundingRateTimestamp": str(ts_ms),
+                "nextFundingTime": str(ts_ms + 3600000),  # 1 hour later
+            }
+        ],
+    }
+
+    events = parse_events_from_message(
+        message=message,
+        subscription_lookup={sub.topic: sub},
+        trace_id="trace-funding-1",
+    )
+
+    assert len(events) == 1
+    event = events[0]
+    assert event.event_type == "funding"
+    assert event.topic == "fundingRate.BTCUSDT"
+    # Payload should contain funding rate data
+    assert event.payload["symbol"] == "BTCUSDT"
+    assert event.payload["fundingRate"] == "0.0001"
+    assert event.payload["nextFundingTime"] == str(ts_ms + 3600000)
+    assert event.trace_id == "trace-funding-1"
+
+
+@pytest.mark.asyncio
+async def test_funding_event_processing(monkeypatch):
+    """Test that funding rate events are processed and published correctly."""
+    ts = dt.datetime.utcnow()
+    event = Event.create(
+        event_type="funding",
+        topic="fundingRate.BTCUSDT",
+        timestamp=ts,
+        payload={
+            "symbol": "BTCUSDT",
+            "fundingRate": "0.0001",
+            "fundingRateTimestamp": str(int(ts.timestamp() * 1000)),
+            "nextFundingTime": str(int(ts.timestamp() * 1000) + 3600000),
+        },
+        trace_id="trace-funding-2",
+    )
+
+    published_events = []
+
+    class DummyPublisher:
+        async def publish_event(self, event_arg, queue_name):
+            published_events.append((event_arg, queue_name))
+            return True
+
+    async def dummy_get_publisher():
+        return DummyPublisher()
+
+    monkeypatch.setattr(
+        "src.services.websocket.event_processor.get_publisher",
+        dummy_get_publisher,
+    )
+
+    from src.services.websocket.event_processor import process_event
+
+    await process_event(event)
+
+    assert len(published_events) == 1
+    published_event, queue_name = published_events[0]
+    assert queue_name == "ws-gateway.funding"
+    assert published_event.event_type == "funding"
+    assert published_event.payload["symbol"] == "BTCUSDT"
+    assert published_event.payload["fundingRate"] == "0.0001"
+    assert "nextFundingTime" in published_event.payload
 
 

@@ -19,6 +19,7 @@ ChannelType = Literal[
     "position",
     "kline",
     "liquidation",
+    "funding",
 ]
 
 
@@ -33,7 +34,7 @@ class CreateSubscriptionRequest(BaseModel):
         default=None,
         description=(
             "Trading pair symbol (e.g., 'BTCUSDT'). Required for symbol-specific "
-            "channels (trades, ticker, orderbook, order, kline)."
+            "channels (trades, ticker, orderbook, order, kline, funding)."
         ),
     )
     requesting_service: str = Field(

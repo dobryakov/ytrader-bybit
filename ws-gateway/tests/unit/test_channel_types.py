@@ -18,6 +18,7 @@ def test_public_channels_are_classified_correctly():
     assert is_public_channel("orderbook")
     assert is_public_channel("kline")
     assert is_public_channel("liquidation")
+    assert is_public_channel("funding")
 
 
 def test_private_channels_are_classified_correctly():
@@ -33,6 +34,7 @@ def test_public_channels_not_private():
     assert not is_private_channel("orderbook")
     assert not is_private_channel("kline")
     assert not is_private_channel("liquidation")
+    assert not is_private_channel("funding")
 
 
 def test_private_channels_not_public():
@@ -48,6 +50,7 @@ def test_get_endpoint_type_for_public_channels():
     assert get_endpoint_type_for_channel("orderbook") == "public"
     assert get_endpoint_type_for_channel("kline") == "public"
     assert get_endpoint_type_for_channel("liquidation") == "public"
+    assert get_endpoint_type_for_channel("funding") == "public"
 
 
 def test_get_endpoint_type_for_private_channels():
@@ -64,13 +67,13 @@ def test_get_endpoint_type_for_unknown_channel():
 
 def test_public_channels_set_contents():
     """Test that PUBLIC_CHANNELS set contains expected channels."""
-    expected_public = {"trades", "ticker", "orderbook", "kline", "liquidation"}
+    expected_public = {"trades", "ticker", "orderbook", "kline", "liquidation", "funding"}
     assert PUBLIC_CHANNELS == expected_public
 
 
 def test_private_channels_set_contents():
     """Test that PRIVATE_CHANNELS set contains expected channels."""
-    expected_private = {"balance", "order"}
+    expected_private = {"balance", "order", "position"}
     assert PRIVATE_CHANNELS == expected_private
 
 

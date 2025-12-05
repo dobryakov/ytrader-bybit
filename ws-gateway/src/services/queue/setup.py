@@ -27,6 +27,7 @@ SUPPORTED_EVENT_TYPES: Set[EventType] = {
     "position",
     "kline",
     "liquidation",
+    "funding",
 }
 
 

@@ -31,6 +31,7 @@ class SubscriptionService:
         "position",
         "kline",
         "liquidation",
+        "funding",
     ]
 
     @classmethod
@@ -63,6 +64,11 @@ class SubscriptionService:
             return f"kline.1.{symbol}"
         if channel_type == "liquidation":
             return "liquidation"
+        if channel_type == "funding":
+            if not symbol:
+                raise ValidationError("Symbol is required for funding channel")
+            # Bybit v5 WebSocket API uses "fundingRate.{symbol}" format for funding rate
+            return f"fundingRate.{symbol}"
         raise ValidationError(f"Unsupported channel_type: {channel_type}")
 
     @classmethod
@@ -241,7 +247,7 @@ class SubscriptionService:
             msg = build_subscribe_message([subscription])
             await connection.send(msg)
             
-            endpoint_type = "public" if channel_type in {"trades", "ticker", "orderbook", "kline", "liquidation"} else "private"
+            endpoint_type = "public" if channel_type in {"trades", "ticker", "orderbook", "kline", "liquidation", "funding"} else "private"
             logger.info(
                 "subscription_sent_to_websocket",
                 subscription_id=str(subscription.id),
@@ -253,7 +259,7 @@ class SubscriptionService:
         except Exception as e:
             # Log error but don't fail subscription creation
             # Subscription will be sent on reconnection
-            endpoint_type = "public" if channel_type in {"trades", "ticker", "orderbook", "kline", "liquidation"} else "private"
+            endpoint_type = "public" if channel_type in {"trades", "ticker", "orderbook", "kline", "liquidation", "funding"} else "private"
             logger.warning(
                 "subscription_connection_failed_will_retry",
                 subscription_id=str(subscription.id),

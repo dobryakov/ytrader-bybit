@@ -562,16 +562,16 @@ With multiple developers:
 
 **Implementation Tasks**:
 
-- [ ] T139 [US4] Add 'funding' to supported channel types in ws-gateway/src/services/subscription/subscription_service.py
-- [ ] T140 [US4] Add 'funding' to EventType in ws-gateway/src/models/event.py
-- [ ] T141 [US4] Add 'funding' to SUPPORTED_EVENT_TYPES in ws-gateway/src/services/queue/setup.py
-- [ ] T142 [US4] Implement funding rate event parsing in ws-gateway/src/services/websocket/event_processor.py (parse funding rate value, next funding timestamp)
-- [ ] T143 [US4] Add funding channel topic generation logic in ws-gateway/src/services/subscription/subscription_service.py (e.g., 'funding.BTCUSDT')
-- [ ] T144 [US4] Update database migration to include 'funding' in channel_type constraint in ws-gateway/migrations/001_create_subscriptions_table.sql
-- [ ] T145 [US4] Update API schema validation to accept 'funding' channel type in ws-gateway/src/api/v1/schemas.py
-- [ ] T146 [US4] Add funding rate event structure documentation in ws-gateway/src/services/websocket/event_processor.py (funding rate, next funding time, symbol)
-- [ ] T147 [US4] Add logging for funding rate events in ws-gateway/src/services/websocket/event_processor.py
-- [ ] T148 [US4] Add tests for funding rate channel subscription and event processing in ws-gateway/tests/
+- [X] T139 [US4] Add 'funding' to supported channel types in ws-gateway/src/services/subscription/subscription_service.py
+- [X] T140 [US4] Add 'funding' to EventType in ws-gateway/src/models/event.py
+- [X] T141 [US4] Add 'funding' to SUPPORTED_EVENT_TYPES in ws-gateway/src/services/queue/setup.py
+- [X] T142 [US4] Implement funding rate event parsing in ws-gateway/src/services/websocket/event_processor.py (parse funding rate value, next funding timestamp)
+- [X] T143 [US4] Add funding channel topic generation logic in ws-gateway/src/services/subscription/subscription_service.py (e.g., 'funding.BTCUSDT')
+- [X] T144 [US4] Update database migration to include 'funding' in channel_type constraint in ws-gateway/migrations/001_create_subscriptions_table.sql
+- [X] T145 [US4] Update API schema validation to accept 'funding' channel type in ws-gateway/src/api/v1/schemas.py
+- [X] T146 [US4] Add funding rate event structure documentation in ws-gateway/src/services/websocket/event_processor.py (funding rate, next funding time, symbol)
+- [X] T147 [US4] Add logging for funding rate events in ws-gateway/src/services/websocket/event_processor.py
+- [X] T148 [US4] Add tests for funding rate channel subscription and event processing in ws-gateway/tests/
 
 **Checkpoint**: At this point, funding rate events should be received from Bybit, parsed, and published to ws-gateway.funding queue for Feature Service consumption.
 

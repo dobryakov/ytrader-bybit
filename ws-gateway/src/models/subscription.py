@@ -17,6 +17,7 @@ ChannelType = Literal[
     "position",
     "kline",
     "liquidation",
+    "funding",
 ]
 
 
