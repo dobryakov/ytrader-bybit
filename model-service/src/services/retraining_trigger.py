@@ -30,38 +30,26 @@ class RetrainingTrigger:
     async def should_retrain(
         self,
         strategy_id: Optional[str] = None,
-        execution_event_count: int = 0,
-        current_dataset_size: int = 0,
     ) -> bool:
         """
         Check if model should be retrained.
 
+        Uses time-based or scheduled retraining triggers. No longer depends on execution_events accumulation.
+
         Args:
             strategy_id: Trading strategy identifier
-            execution_event_count: Number of new execution events since last training
-            current_dataset_size: Current size of accumulated dataset
 
         Returns:
             True if retraining should be triggered
         """
-        # Check scheduled periodic retraining
-        # But only if we have enough data (otherwise wait for more events)
+        # Check scheduled periodic retraining (if configured)
         if await self._check_scheduled_retraining(strategy_id):
-            min_dataset_size = settings.model_training_min_dataset_size
-            if current_dataset_size >= min_dataset_size:
-                logger.info("Scheduled retraining triggered", strategy_id=strategy_id, dataset_size=current_dataset_size)
-                return True
-            else:
-                logger.debug(
-                    "Scheduled retraining skipped - insufficient data",
-                    strategy_id=strategy_id,
-                    dataset_size=current_dataset_size,
-                    min_dataset_size=min_dataset_size,
-                )
+            logger.info("Scheduled retraining triggered", strategy_id=strategy_id)
+            return True
 
-        # Check data accumulation threshold
-        if await self._check_data_accumulation_threshold(current_dataset_size, execution_event_count):
-            logger.info("Data accumulation threshold reached", strategy_id=strategy_id, dataset_size=current_dataset_size)
+        # Check time-based retraining (interval-based)
+        if await self._check_time_based_retraining(strategy_id):
+            logger.info("Time-based retraining triggered", strategy_id=strategy_id)
             return True
 
         # Check quality degradation
@@ -109,28 +97,38 @@ class RetrainingTrigger:
             logger.warning("Complex cron schedule not fully supported", schedule=schedule)
             return False
 
-    async def _check_data_accumulation_threshold(self, current_dataset_size: int, new_event_count: int) -> bool:
+    async def _check_time_based_retraining(self, strategy_id: Optional[str] = None) -> bool:
         """
-        Check if data accumulation threshold is reached.
+        Check if time-based retraining should occur.
 
-        Triggers training when buffer size reaches the minimum dataset size (every 100 events by default).
+        Triggers training when configured interval (days) has passed since last training.
 
         Args:
-            current_dataset_size: Current size of accumulated dataset (buffer size)
-            new_event_count: Number of new execution events (unused, kept for API compatibility)
+            strategy_id: Trading strategy identifier
 
         Returns:
-            True if threshold is reached
+            True if time-based retraining should occur
         """
-        min_dataset_size = settings.model_training_min_dataset_size
+        interval_days = settings.model_retraining_interval_days
 
-        # Trigger training when buffer reaches the minimum dataset size
-        # This ensures training happens every N events (default: 100)
-        if current_dataset_size >= min_dataset_size:
+        # Get last retraining time for this strategy
+        last_time = self._last_retraining_time.get(strategy_id or "default")
+
+        if not last_time:
+            # First time, check if we should retrain now
+            logger.debug("No previous retraining time found, triggering initial training", strategy_id=strategy_id)
+            return True
+
+        now = datetime.utcnow()
+        time_since_last = now - last_time
+        interval_timedelta = timedelta(days=interval_days)
+
+        if time_since_last >= interval_timedelta:
             logger.debug(
-                "Data accumulation threshold reached",
-                current_dataset_size=current_dataset_size,
-                min_dataset_size=min_dataset_size,
+                "Time-based retraining interval reached",
+                strategy_id=strategy_id,
+                time_since_last_days=time_since_last.days,
+                interval_days=interval_days,
             )
             return True
 

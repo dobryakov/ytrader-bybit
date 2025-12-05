@@ -12,6 +12,7 @@ import httpx
 from ..config.settings import settings
 from ..config.logging import get_logger
 from ..models.feature_vector import FeatureVector
+from ..models.dataset import Dataset, DatasetBuildRequest
 
 logger = get_logger(__name__)
 
@@ -160,7 +161,7 @@ class FeatureServiceClient:
             )
             return None
 
-    async def get_dataset(self, dataset_id: UUID, trace_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    async def get_dataset(self, dataset_id: UUID, trace_id: Optional[str] = None) -> Optional[Dataset]:
         """
         Get dataset metadata by ID from Feature Service.
 
@@ -169,7 +170,7 @@ class FeatureServiceClient:
             trace_id: Optional trace ID for request flow tracking
 
         Returns:
-            Dataset metadata dictionary or None if not found/error
+            Dataset model or None if not found/error
         """
         url = f"{self.base_url}/dataset/{dataset_id}"
         headers = {
@@ -183,13 +184,15 @@ class FeatureServiceClient:
                 response.raise_for_status()
                 data = response.json()
                 
+                # Parse Dataset from response
+                dataset = Dataset(**data)
                 logger.debug(
                     "Retrieved dataset metadata from Feature Service",
                     dataset_id=str(dataset_id),
-                    status=data.get("status"),
+                    status=dataset.status.value,
                     trace_id=trace_id,
                 )
-                return data
+                return dataset
 
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 404:
@@ -256,7 +259,7 @@ class FeatureServiceClient:
             )
             return None
 
-        output_format = dataset_meta.get("output_format", "parquet")
+        output_format = dataset_meta.output_format
         file_path = storage_path / f"{dataset_id}_{split}.{output_format}"
 
         try:

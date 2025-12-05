@@ -51,6 +51,12 @@ class Settings(BaseSettings):
     model_training_max_duration_seconds: int = Field(default=1800, alias="MODEL_TRAINING_MAX_DURATION_SECONDS")
     model_quality_threshold_accuracy: float = Field(default=0.75, alias="MODEL_QUALITY_THRESHOLD_ACCURACY")
     model_retraining_schedule: Optional[str] = Field(default=None, alias="MODEL_RETRAINING_SCHEDULE")
+    
+    # Time-Based Retraining Configuration (for market-data-only training)
+    model_retraining_interval_days: int = Field(default=7, alias="MODEL_RETRAINING_INTERVAL_DAYS")
+    model_retraining_train_period_days: int = Field(default=30, alias="MODEL_RETRAINING_TRAIN_PERIOD_DAYS")
+    model_retraining_validation_period_days: int = Field(default=7, alias="MODEL_RETRAINING_VALIDATION_PERIOD_DAYS")
+    model_retraining_test_period_days: int = Field(default=1, alias="MODEL_RETRAINING_TEST_PERIOD_DAYS")
 
     # Training Buffer Persistence Configuration
     buffer_persistence_enabled: bool = Field(default=True, alias="BUFFER_PERSISTENCE_ENABLED")
@@ -192,6 +198,38 @@ class Settings(BaseSettings):
         """Validate minimum dataset size is positive."""
         if v <= 0:
             raise ValueError("Minimum dataset size must be positive")
+        return v
+
+    @field_validator("model_retraining_interval_days")
+    @classmethod
+    def validate_retraining_interval_days(cls, v: int) -> int:
+        """Validate retraining interval is positive."""
+        if v <= 0:
+            raise ValueError("MODEL_RETRAINING_INTERVAL_DAYS must be positive")
+        return v
+
+    @field_validator("model_retraining_train_period_days")
+    @classmethod
+    def validate_retraining_train_period_days(cls, v: int) -> int:
+        """Validate training period length is positive."""
+        if v <= 0:
+            raise ValueError("MODEL_RETRAINING_TRAIN_PERIOD_DAYS must be positive")
+        return v
+
+    @field_validator("model_retraining_validation_period_days")
+    @classmethod
+    def validate_retraining_validation_period_days(cls, v: int) -> int:
+        """Validate validation period length is positive."""
+        if v <= 0:
+            raise ValueError("MODEL_RETRAINING_VALIDATION_PERIOD_DAYS must be positive")
+        return v
+
+    @field_validator("model_retraining_test_period_days")
+    @classmethod
+    def validate_retraining_test_period_days(cls, v: int) -> int:
+        """Validate test period length is positive."""
+        if v <= 0:
+            raise ValueError("MODEL_RETRAINING_TEST_PERIOD_DAYS must be positive")
         return v
 
     @field_validator("buffer_max_recovery_events")
@@ -403,6 +441,28 @@ class Settings(BaseSettings):
             errors.append(f"FEATURE_SERVICE_DATASET_BUILD_TIMEOUT_SECONDS must be positive, got {self.feature_service_dataset_build_timeout_seconds}")
         if self.feature_service_dataset_poll_interval_seconds <= 0:
             errors.append(f"FEATURE_SERVICE_DATASET_POLL_INTERVAL_SECONDS must be positive, got {self.feature_service_dataset_poll_interval_seconds}")
+
+        # Validate time-based retraining configuration
+        if self.model_retraining_interval_days <= 0:
+            errors.append(f"MODEL_RETRAINING_INTERVAL_DAYS must be positive, got {self.model_retraining_interval_days}")
+        if self.model_retraining_train_period_days <= 0:
+            errors.append(f"MODEL_RETRAINING_TRAIN_PERIOD_DAYS must be positive, got {self.model_retraining_train_period_days}")
+        if self.model_retraining_validation_period_days <= 0:
+            errors.append(f"MODEL_RETRAINING_VALIDATION_PERIOD_DAYS must be positive, got {self.model_retraining_validation_period_days}")
+        if self.model_retraining_test_period_days <= 0:
+            errors.append(f"MODEL_RETRAINING_TEST_PERIOD_DAYS must be positive, got {self.model_retraining_test_period_days}")
+        
+        # Validate period lengths are logical (train >= validation >= test)
+        if self.model_retraining_train_period_days < self.model_retraining_validation_period_days:
+            errors.append(
+                f"MODEL_RETRAINING_TRAIN_PERIOD_DAYS ({self.model_retraining_train_period_days}) "
+                f"should be >= MODEL_RETRAINING_VALIDATION_PERIOD_DAYS ({self.model_retraining_validation_period_days})"
+            )
+        if self.model_retraining_validation_period_days < self.model_retraining_test_period_days:
+            errors.append(
+                f"MODEL_RETRAINING_VALIDATION_PERIOD_DAYS ({self.model_retraining_validation_period_days}) "
+                f"should be >= MODEL_RETRAINING_TEST_PERIOD_DAYS ({self.model_retraining_test_period_days})"
+            )
 
         # Validate API key is not empty
         if not self.model_service_api_key or len(self.model_service_api_key.strip()) == 0:

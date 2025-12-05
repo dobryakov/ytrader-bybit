@@ -166,6 +166,61 @@ class TrainingOrchestrator:
         )
         return strategy_id
 
+    def _calculate_dataset_periods(self, reference_time: Optional[datetime] = None) -> Dict[str, datetime]:
+        """
+        Calculate train/validation/test periods for dataset building based on current time and configuration.
+
+        Uses rolling window approach:
+        - Test period: most recent data (e.g., last 1 day)
+        - Validation period: before test period (e.g., 7 days before test)
+        - Train period: before validation period (e.g., 30 days before validation)
+
+        Args:
+            reference_time: Reference time for calculation (defaults to UTC now).
+                          Typically set to 1 day ago to exclude most recent data.
+
+        Returns:
+            Dictionary with keys:
+                - train_period_start: datetime
+                - train_period_end: datetime
+                - validation_period_start: datetime
+                - validation_period_end: datetime
+                - test_period_start: datetime
+                - test_period_end: datetime
+        """
+        if reference_time is None:
+            # Use 1 day ago as reference to exclude most recent data (which may be incomplete)
+            reference_time = datetime.utcnow() - timedelta(days=1)
+
+        # Calculate periods backwards from reference time
+        test_period_end = reference_time
+        test_period_start = test_period_end - timedelta(days=settings.model_retraining_test_period_days)
+
+        validation_period_end = test_period_start
+        validation_period_start = validation_period_end - timedelta(days=settings.model_retraining_validation_period_days)
+
+        train_period_end = validation_period_start
+        train_period_start = train_period_end - timedelta(days=settings.model_retraining_train_period_days)
+
+        periods = {
+            "train_period_start": train_period_start,
+            "train_period_end": train_period_end,
+            "validation_period_start": validation_period_start,
+            "validation_period_end": validation_period_end,
+            "test_period_start": test_period_start,
+            "test_period_end": test_period_end,
+        }
+
+        logger.debug(
+            "Calculated dataset periods",
+            train_period_days=settings.model_retraining_train_period_days,
+            validation_period_days=settings.model_retraining_validation_period_days,
+            test_period_days=settings.model_retraining_test_period_days,
+            periods=periods,
+        )
+
+        return periods
+
     async def check_and_trigger_training(self, strategy_id: Optional[str] = None) -> None:
         """
         Check if training should be triggered and start it if needed.
@@ -176,30 +231,11 @@ class TrainingOrchestrator:
         # Normalize strategy_id to match configured strategies
         strategy_id = self._normalize_strategy_id(strategy_id)
 
-        # Check if retraining should occur
-        should_retrain = await retraining_trigger.should_retrain(
-            strategy_id=strategy_id,
-            execution_event_count=len(self._execution_events_buffer),
-            current_dataset_size=len(self._execution_events_buffer),
-        )
+        # Check if retraining should occur (time-based or scheduled, no execution_events dependency)
+        should_retrain = await retraining_trigger.should_retrain(strategy_id=strategy_id)
 
         if not should_retrain:
             return
-
-        # Check minimum dataset size before starting training
-        # This prevents training from starting with insufficient data (e.g., scheduled retraining with only 1 event)
-        min_dataset_size = settings.model_training_min_dataset_size
-        buffer_size = len(self._execution_events_buffer)
-
-        if buffer_size < min_dataset_size:
-            logger.info(
-                "Training triggered but insufficient data in buffer",
-                strategy_id=strategy_id,
-                buffer_size=buffer_size,
-                min_dataset_size=min_dataset_size,
-                reason="waiting_for_more_events",
-            )
-            return  # Wait for more events to accumulate
 
         # Check if training is already in progress
         if self._current_training_task and not self._current_training_task.done():

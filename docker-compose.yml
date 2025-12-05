@@ -120,6 +120,18 @@ services:
       - MODEL_TRAINING_MAX_DURATION_SECONDS=${MODEL_TRAINING_MAX_DURATION_SECONDS:-1800}
       - MODEL_QUALITY_THRESHOLD_ACCURACY=${MODEL_QUALITY_THRESHOLD_ACCURACY:-0.75}
       - MODEL_RETRAINING_SCHEDULE=${MODEL_RETRAINING_SCHEDULE:-}
+      - MODEL_RETRAINING_INTERVAL_DAYS=${MODEL_RETRAINING_INTERVAL_DAYS:-7}
+      - MODEL_RETRAINING_TRAIN_PERIOD_DAYS=${MODEL_RETRAINING_TRAIN_PERIOD_DAYS:-30}
+      - MODEL_RETRAINING_VALIDATION_PERIOD_DAYS=${MODEL_RETRAINING_VALIDATION_PERIOD_DAYS:-7}
+      - MODEL_RETRAINING_TEST_PERIOD_DAYS=${MODEL_RETRAINING_TEST_PERIOD_DAYS:-1}
+      - FEATURE_SERVICE_HOST=${FEATURE_SERVICE_HOST:-feature-service}
+      - FEATURE_SERVICE_PORT=${FEATURE_SERVICE_PORT:-4900}
+      - FEATURE_SERVICE_API_KEY=${FEATURE_SERVICE_API_KEY}
+      - FEATURE_SERVICE_USE_QUEUE=${FEATURE_SERVICE_USE_QUEUE:-true}
+      - FEATURE_SERVICE_FEATURE_CACHE_TTL_SECONDS=${FEATURE_SERVICE_FEATURE_CACHE_TTL_SECONDS:-30}
+      - FEATURE_SERVICE_DATASET_BUILD_TIMEOUT_SECONDS=${FEATURE_SERVICE_DATASET_BUILD_TIMEOUT_SECONDS:-3600}
+      - FEATURE_SERVICE_DATASET_POLL_INTERVAL_SECONDS=${FEATURE_SERVICE_DATASET_POLL_INTERVAL_SECONDS:-60}
+      - FEATURE_SERVICE_DATASET_STORAGE_PATH=${FEATURE_SERVICE_DATASET_STORAGE_PATH:-/datasets}
       - SIGNAL_GENERATION_RATE_LIMIT=${SIGNAL_GENERATION_RATE_LIMIT:-60}
       - SIGNAL_GENERATION_BURST_ALLOWANCE=${SIGNAL_GENERATION_BURST_ALLOWANCE:-10}
       - WARMUP_MODE_ENABLED=${WARMUP_MODE_ENABLED:-true}
@@ -147,6 +159,7 @@ services:
       - BALANCE_SYNC_TIMEOUT_SECONDS=${BALANCE_SYNC_TIMEOUT_SECONDS:-5.0}
     volumes:
       - model_storage:/models
+      - model_datasets:/datasets
       - ./model-service/src:/app/src
       - ./model-service/tests:/app/tests
     depends_on:
@@ -155,6 +168,8 @@ services:
       rabbitmq:
         condition: service_healthy
       ws-gateway:
+        condition: service_started
+      feature-service:
         condition: service_started
     networks:
       - ytrader-network
@@ -211,6 +226,8 @@ services:
       rabbitmq:
         condition: service_healthy
       ws-gateway:
+        condition: service_started
+      feature-service:
         condition: service_started
     networks:
       - ytrader-network
@@ -450,6 +467,7 @@ volumes:
   postgres_data:
   rabbitmq_data:
   model_storage:
+  model_datasets:
   grafana_data:
   redis_data:
   feature_raw_data:
