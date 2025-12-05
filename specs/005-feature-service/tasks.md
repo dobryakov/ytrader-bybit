@@ -156,54 +156,54 @@
 
 > **NOTE: Write these tests FIRST, ensure they FAIL before implementation**
 
-- [ ] T080 [P] [US2] Create test fixtures for dataset metadata in feature-service/tests/fixtures/datasets.py
-- [ ] T081 [P] [US2] Create test fixtures for historical market data (Parquet format) in feature-service/tests/fixtures/historical_data.py
-- [ ] T082 [P] [US2] Create test fixtures for target variables (regression, classification, risk-adjusted) in feature-service/tests/fixtures/targets.py
-- [ ] T083 [P] [US2] Create unit tests for Dataset model in feature-service/tests/unit/test_dataset.py
-- [ ] T084 [P] [US2] Create unit tests for Parquet storage service in feature-service/tests/unit/test_parquet_storage.py
-- [ ] T085 [P] [US2] Create unit tests for offline feature engine in feature-service/tests/unit/test_offline_engine.py
-- [ ] T086 [P] [US2] Create unit tests for orderbook state reconstruction in feature-service/tests/unit/test_orderbook_reconstruction.py
-- [ ] T087 [P] [US2] Create unit tests for rolling windows reconstruction in feature-service/tests/unit/test_rolling_windows_reconstruction.py
-- [ ] T088 [P] [US2] Create unit tests for target variable computation in feature-service/tests/unit/test_target_computation.py
-- [ ] T089 [P] [US2] Create unit tests for data leakage prevention validation in feature-service/tests/unit/test_data_leakage_prevention.py
-- [ ] T090 [P] [US2] Create unit tests for time-based dataset splitting in feature-service/tests/unit/test_dataset_splitting.py
-- [ ] T091 [P] [US2] Create unit tests for walk-forward validation strategy in feature-service/tests/unit/test_walk_forward.py
-- [ ] T092 [P] [US2] Create unit tests for random split strategy in feature-service/tests/unit/test_random_split.py
-- [ ] T093 [US2] Create integration tests for feature identity (online vs offline comparison) in feature-service/tests/integration/test_feature_identity.py
-- [ ] T094 [US2] Create integration tests for dataset building workflow in feature-service/tests/integration/test_dataset_building.py
-- [ ] T095 [US2] Create integration tests for batch processing of large datasets in feature-service/tests/integration/test_batch_processing.py
-- [ ] T096 [US2] Create contract tests for POST /dataset/build endpoint in feature-service/tests/contract/test_dataset_api.py
-- [ ] T097 [US2] Create contract tests for GET /dataset/list endpoint in feature-service/tests/contract/test_dataset_api.py
-- [ ] T098 [US2] Create contract tests for GET /dataset/{dataset_id} endpoint in feature-service/tests/contract/test_dataset_api.py
-- [ ] T099 [US2] Create contract tests for GET /dataset/{dataset_id}/download endpoint in feature-service/tests/contract/test_dataset_api.py
-- [ ] T100 [US2] Create contract tests for POST /model/evaluate endpoint in feature-service/tests/contract/test_dataset_api.py
-- [ ] T101 [US2] Create integration tests for dataset completion publisher in feature-service/tests/integration/test_dataset_publisher.py
+- [X] T080 [P] [US2] Create test fixtures for dataset metadata in feature-service/tests/fixtures/datasets.py
+- [X] T081 [P] [US2] Create test fixtures for historical market data (Parquet format) in feature-service/tests/fixtures/historical_data.py
+- [X] T082 [P] [US2] Create test fixtures for target variables (regression, classification, risk-adjusted) in feature-service/tests/fixtures/targets.py
+- [X] T083 [P] [US2] Create unit tests for Dataset model in feature-service/tests/unit/test_dataset.py
+- [X] T084 [P] [US2] Create unit tests for Parquet storage service in feature-service/tests/unit/test_parquet_storage.py
+- [X] T085 [P] [US2] Create unit tests for offline feature engine in feature-service/tests/unit/test_offline_engine.py
+- [X] T086 [P] [US2] Create unit tests for orderbook state reconstruction in feature-service/tests/unit/test_orderbook_reconstruction.py
+- [X] T087 [P] [US2] Create unit tests for rolling windows reconstruction in feature-service/tests/unit/test_rolling_windows_reconstruction.py
+- [X] T088 [P] [US2] Create unit tests for target variable computation in feature-service/tests/unit/test_target_computation.py
+- [X] T089 [P] [US2] Create unit tests for data leakage prevention validation in feature-service/tests/unit/test_data_leakage_prevention.py
+- [X] T090 [P] [US2] Create unit tests for time-based dataset splitting in feature-service/tests/unit/test_dataset_splitting.py
+- [X] T091 [P] [US2] Create unit tests for walk-forward validation strategy in feature-service/tests/unit/test_walk_forward.py
+- [X] T092 [P] [US2] Create unit tests for random split strategy in feature-service/tests/unit/test_random_split.py
+- [X] T093 [US2] Create integration tests for feature identity (online vs offline comparison) in feature-service/tests/integration/test_feature_identity.py
+- [X] T094 [US2] Create integration tests for dataset building workflow in feature-service/tests/integration/test_dataset_building.py
+- [X] T095 [US2] Create integration tests for batch processing of large datasets in feature-service/tests/integration/test_batch_processing.py
+- [X] T096 [US2] Create contract tests for POST /dataset/build endpoint in feature-service/tests/contract/test_dataset_api.py
+- [X] T097 [US2] Create contract tests for GET /dataset/list endpoint in feature-service/tests/contract/test_dataset_api.py
+- [X] T098 [US2] Create contract tests for GET /dataset/{dataset_id} endpoint in feature-service/tests/contract/test_dataset_api.py
+- [X] T099 [US2] Create contract tests for GET /dataset/{dataset_id}/download endpoint in feature-service/tests/contract/test_dataset_api.py
+- [X] T100 [US2] Create contract tests for POST /model/evaluate endpoint in feature-service/tests/contract/test_dataset_api.py
+- [X] T101 [US2] Create integration tests for dataset completion publisher in feature-service/tests/integration/test_dataset_publisher.py
 
 ### Implementation for User Story 2
 
-- [ ] T102 [P] [US2] Create Dataset model in feature-service/src/models/dataset.py
-- [ ] T103 [US2] Implement Parquet storage service in feature-service/src/storage/parquet_storage.py (read/write operations)
-- [ ] T104 [US2] Implement offline feature engine in feature-service/src/services/offline_engine.py (rebuilds features from historical data)
-- [ ] T105 [US2] Implement orderbook state reconstruction from snapshot + deltas in feature-service/src/services/offline_engine.py
-- [ ] T106 [US2] Implement rolling windows reconstruction for historical data in feature-service/src/services/offline_engine.py
-- [ ] T107 [US2] Implement target variable computation (regression: returns, classification: direction, risk-adjusted) in feature-service/src/services/dataset_builder.py
-- [ ] T108 [US2] Implement configurable threshold for classification targets (default 0.001 = 0.1%) in feature-service/src/services/dataset_builder.py
-- [ ] T109 [US2] Implement data leakage prevention validation in feature-service/src/services/dataset_builder.py
-- [ ] T110 [US2] Implement time-based dataset splitting in feature-service/src/services/dataset_builder.py
-- [ ] T111 [US2] Implement walk-forward validation strategy with configurable parameters in feature-service/src/services/dataset_builder.py
-- [ ] T112 [US2] Implement random split strategy (for testing only, with temporal order preserved) in feature-service/src/services/dataset_builder.py
-- [ ] T113 [US2] Implement Dataset Builder service in feature-service/src/services/dataset_builder.py (orchestrates dataset building)
-- [ ] T114 [US2] Implement POST /dataset/build endpoint in feature-service/src/api/dataset.py with estimated_completion in response
-- [ ] T115 [US2] Implement batch processing for large datasets with progress tracking in feature-service/src/services/dataset_builder.py
-- [ ] T116 [US2] Implement queue management for concurrent dataset build requests in feature-service/src/services/dataset_builder.py
-- [ ] T117 [US2] Implement GET /dataset/list endpoint in feature-service/src/api/dataset.py
-- [ ] T118 [US2] Implement GET /dataset/{dataset_id} endpoint in feature-service/src/api/dataset.py
-- [ ] T119 [US2] Implement GET /dataset/{dataset_id}/download endpoint in feature-service/src/api/dataset.py
-- [ ] T120 [US2] Implement POST /model/evaluate endpoint in feature-service/src/api/dataset.py
-- [ ] T121 [US2] Implement dataset completion publisher in feature-service/src/publishers/dataset_publisher.py (publishes to features.dataset.ready queue)
-- [ ] T122 [US2] Implement error handling for missing historical data with available period suggestions in feature-service/src/services/dataset_builder.py
-- [ ] T123 [US2] Add logging for dataset building operations in feature-service/src/services/dataset_builder.py
-- [ ] T124 [US2] Implement feature identity validation (online vs offline comparison) in feature-service/src/services/offline_engine.py
+- [X] T102 [P] [US2] Create Dataset model in feature-service/src/models/dataset.py
+- [X] T103 [US2] Implement Parquet storage service in feature-service/src/storage/parquet_storage.py (read/write operations)
+- [X] T104 [US2] Implement offline feature engine in feature-service/src/services/offline_engine.py (rebuilds features from historical data)
+- [X] T105 [US2] Implement orderbook state reconstruction from snapshot + deltas in feature-service/src/services/offline_engine.py
+- [X] T106 [US2] Implement rolling windows reconstruction for historical data in feature-service/src/services/offline_engine.py
+- [X] T107 [US2] Implement target variable computation (regression: returns, classification: direction, risk-adjusted) in feature-service/src/services/dataset_builder.py
+- [X] T108 [US2] Implement configurable threshold for classification targets (default 0.001 = 0.1%) in feature-service/src/services/dataset_builder.py
+- [X] T109 [US2] Implement data leakage prevention validation in feature-service/src/services/dataset_builder.py
+- [X] T110 [US2] Implement time-based dataset splitting in feature-service/src/services/dataset_builder.py
+- [X] T111 [US2] Implement walk-forward validation strategy with configurable parameters in feature-service/src/services/dataset_builder.py
+- [X] T112 [US2] Implement random split strategy (for testing only, with temporal order preserved) in feature-service/src/services/dataset_builder.py
+- [X] T113 [US2] Implement Dataset Builder service in feature-service/src/services/dataset_builder.py (orchestrates dataset building)
+- [X] T114 [US2] Implement POST /dataset/build endpoint in feature-service/src/api/dataset.py with estimated_completion in response
+- [X] T115 [US2] Implement batch processing for large datasets with progress tracking in feature-service/src/services/dataset_builder.py
+- [X] T116 [US2] Implement queue management for concurrent dataset build requests in feature-service/src/services/dataset_builder.py
+- [X] T117 [US2] Implement GET /dataset/list endpoint in feature-service/src/api/dataset.py
+- [X] T118 [US2] Implement GET /dataset/{dataset_id} endpoint in feature-service/src/api/dataset.py
+- [X] T119 [US2] Implement GET /dataset/{dataset_id}/download endpoint in feature-service/src/api/dataset.py
+- [X] T120 [US2] Implement POST /model/evaluate endpoint in feature-service/src/api/dataset.py
+- [X] T121 [US2] Implement dataset completion publisher in feature-service/src/publishers/dataset_publisher.py (publishes to features.dataset.ready queue)
+- [X] T122 [US2] Implement error handling for missing historical data with available period suggestions in feature-service/src/services/dataset_builder.py
+- [X] T123 [US2] Add logging for dataset building operations in feature-service/src/services/dataset_builder.py
+- [X] T124 [US2] Implement feature identity validation (online vs offline comparison) in feature-service/src/services/offline_engine.py
 
 **Checkpoint**: At this point, User Stories 1 AND 2 should both work independently. Datasets can be built from historical data with proper train/val/test splits.
 

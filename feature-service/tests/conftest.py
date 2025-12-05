@@ -40,6 +40,31 @@ from tests.fixtures.market_data_streams import (
     sample_funding_stream,
     sample_mixed_market_data_stream,
 )
+from tests.fixtures.datasets import (
+    sample_dataset_metadata,
+    sample_dataset_metadata_walk_forward,
+    sample_dataset_metadata_building,
+    sample_dataset_metadata_failed,
+    sample_dataset_list,
+)
+from tests.fixtures.historical_data import (
+    sample_historical_orderbook_snapshots,
+    sample_historical_orderbook_deltas,
+    sample_historical_trades,
+    sample_historical_klines,
+    sample_historical_ticker,
+    sample_historical_funding,
+    sample_parquet_file_orderbook,
+    sample_parquet_file_trades,
+    sample_parquet_directory_structure,
+)
+from tests.fixtures.targets import (
+    sample_targets_regression,
+    sample_targets_classification,
+    sample_targets_risk_adjusted,
+    sample_targets_with_leakage,
+    sample_targets_no_leakage,
+)
 
 
 @pytest.fixture

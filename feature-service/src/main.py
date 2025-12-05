@@ -9,6 +9,7 @@ from fastapi import FastAPI, Depends
 from fastapi.responses import JSONResponse
 from src.api.health import router as health_router
 from src.api.features import router as features_router, set_feature_computer
+from src.api.dataset import router as dataset_router, set_metadata_storage, set_dataset_builder
 from src.api.middleware.auth import verify_api_key
 from src.logging import setup_logging, get_logger
 from src.config import config
@@ -22,6 +23,9 @@ from src.services.feature_registry import FeatureRegistryLoader
 from src.consumers.market_data_consumer import MarketDataConsumer
 from src.publishers.feature_publisher import FeaturePublisher
 from src.services.feature_scheduler import FeatureScheduler
+from src.storage.metadata_storage import MetadataStorage
+from src.storage.parquet_storage import ParquetStorage
+from src.services.dataset_builder import DatasetBuilder
 
 # Setup logging
 setup_logging(level=config.feature_service_log_level)
@@ -42,10 +46,13 @@ feature_registry_loader: FeatureRegistryLoader = None
 market_data_consumer: MarketDataConsumer = None
 feature_publisher: FeaturePublisher = None
 feature_scheduler: FeatureScheduler = None
+metadata_storage: MetadataStorage = None
+dataset_builder: DatasetBuilder = None
 
 # Include routers
 app.include_router(health_router)
 app.include_router(features_router)
+app.include_router(dataset_router)
 
 # Add authentication middleware to all routes except health
 @app.middleware("http")
@@ -78,6 +85,7 @@ async def startup():
     """Application startup event."""
     global mq_manager, http_client, orderbook_manager, feature_computer
     global feature_registry_loader, market_data_consumer, feature_publisher, feature_scheduler
+    global metadata_storage, dataset_builder
     
     logger.info("Feature Service starting up")
     
@@ -103,6 +111,23 @@ async def startup():
         
         # Set feature computer for API
         set_feature_computer(feature_computer)
+        
+        # Initialize Metadata Storage
+        metadata_storage = MetadataStorage()
+        await metadata_storage.initialize()
+        set_metadata_storage(metadata_storage)
+        
+        # Initialize Parquet Storage
+        parquet_storage = ParquetStorage(base_path=config.feature_service_raw_data_path)
+        
+        # Initialize Dataset Builder
+        dataset_builder = DatasetBuilder(
+            metadata_storage=metadata_storage,
+            parquet_storage=parquet_storage,
+            dataset_storage_path=config.feature_service_dataset_storage_path,
+            feature_registry_version=registry_version,
+        )
+        set_dataset_builder(dataset_builder)
         
         # Initialize Publisher
         feature_publisher = FeaturePublisher(mq_manager=mq_manager)
@@ -167,6 +192,10 @@ async def shutdown():
         # Close connections
         if mq_manager:
             await mq_manager.close()
+        
+        # Close metadata storage
+        if metadata_storage:
+            await metadata_storage.close()
         
         logger.info("Feature Service shut down complete")
     
