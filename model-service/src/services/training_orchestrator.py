@@ -1,8 +1,11 @@
 """
 Training orchestration service.
 
-Coordinates dataset building, model training, quality evaluation, version management,
+Coordinates dataset building via Feature Service, model training, quality evaluation, version management,
 and handles training cancellation and restart on new triggers.
+
+Training pipeline uses only market data from Feature Service (not execution_events).
+Model learns from market movements (price predictions), not from own trading results.
 """
 
 from typing import List, Optional, Dict, Any
@@ -13,17 +16,13 @@ from uuid import uuid4
 import pandas as pd
 from pathlib import Path
 
-from ..models.execution_event import OrderExecutionEvent
-from ..models.signal import MarketDataSnapshot
 from ..models.training_dataset import TrainingDataset
-from ..services.dataset_builder import dataset_builder
+from ..models.dataset import DatasetBuildRequest, TargetConfig, SplitStrategy, DatasetStatus
 from ..services.model_trainer import model_trainer
 from ..services.quality_evaluator import quality_evaluator
 from ..services.model_version_manager import model_version_manager
 from ..services.retraining_trigger import retraining_trigger
-from ..services.buffer_persistence import buffer_persistence
 from ..services.feature_service_client import feature_service_client
-from ..services.label_generator import label_generator
 from ..config.settings import settings
 from ..config.logging import get_logger
 
@@ -31,83 +30,178 @@ logger = get_logger(__name__)
 
 
 class TrainingOrchestrator:
-    """Orchestrates the model training pipeline."""
+    """Orchestrates the model training pipeline using Feature Service datasets."""
 
     def __init__(self):
         """Initialize training orchestrator."""
         self._current_training_task: Optional[asyncio.Task] = None
         self._current_strategy_id: Optional[str] = None
         self._training_cancelled = False
-        self._execution_events_buffer: List[OrderExecutionEvent] = []
-        self._signal_market_data: Dict[str, MarketDataSnapshot] = {}
 
         # Training queue: list of items waiting to be trained
-        # Each item: {"strategy_id": str | None, "events": List[OrderExecutionEvent],
-        #             "signal_market_data": Dict[str, MarketDataSnapshot],
+        # Each item: {"strategy_id": str | None, "dataset_id": UUID, "symbol": str,
         #             "priority": str, "enqueued_at": datetime}
         self._training_queue: List[Dict[str, Any]] = []
 
+        # Pending dataset builds: tracks dataset_id -> strategy_id mapping
+        # Used to match dataset.ready notifications with training requests
+        self._pending_dataset_builds: Dict[UUID, Dict[str, Any]] = {}
+
         # Metrics for observability
         self._metrics: Dict[str, Any] = {
-            "buffer_recovery_count": 0,
             "cancelled_trainings_count": 0,
             "successful_trainings_count": 0,
             "total_trainings_count": 0,
             "last_training_duration_seconds": None,
+            "dataset_build_requests": 0,
+            "dataset_build_failures": 0,
         }
-        self._last_buffer_persist_time: Optional[datetime] = None
         self._last_queue_metrics_update: Optional[datetime] = None
 
-    async def add_execution_event(self, event: OrderExecutionEvent, signal_market_data: Optional[MarketDataSnapshot] = None) -> None:
+    async def request_dataset_build(self, strategy_id: Optional[str] = None, symbol: Optional[str] = None) -> Optional[UUID]:
         """
-        Add an execution event to the training buffer.
+        Request dataset build from Feature Service.
 
         Args:
-            event: Order execution event
-            signal_market_data: Optional market data snapshot from the trading signal
+            strategy_id: Trading strategy identifier
+            symbol: Trading pair symbol (e.g., 'BTCUSDT'). If None, uses first symbol from configured strategies.
+
+        Returns:
+            Dataset ID (UUID) if request successful, None otherwise
         """
-        self._execution_events_buffer.append(event)
-        if signal_market_data:
-            self._signal_market_data[event.signal_id] = signal_market_data
+        # Normalize strategy_id to match configured strategies
+        strategy_id = self._normalize_strategy_id(strategy_id)
 
-        logger.debug("Added execution event to buffer", event_id=event.event_id, buffer_size=len(self._execution_events_buffer))
+        # Determine symbol if not provided
+        if not symbol:
+            # Use first configured trading pair or default to BTCUSDT
+            trading_pairs = getattr(settings, "trading_pairs", None) or ["BTCUSDT"]
+            symbol = trading_pairs[0] if trading_pairs else "BTCUSDT"
+            logger.debug("Using default symbol for dataset build", symbol=symbol, strategy_id=strategy_id)
 
-    async def restore_buffer_from_database(self, strategy_id: Optional[str] = None) -> None:
-        """
-        Restore execution events buffer from database on startup.
+        # Calculate dataset periods
+        periods = self._calculate_dataset_periods()
 
-        This uses the buffer_persistence service to load execution events that
-        have not yet been used for training, so that the service can resume
-        from where it left off before restart.
-        """
-        if not settings.buffer_persistence_enabled or not settings.buffer_recovery_on_startup:
-            return
+        # Build dataset request
+        request = {
+            "symbol": symbol,
+            "split_strategy": SplitStrategy.TIME_BASED.value,
+            "train_period_start": periods["train_period_start"].isoformat() + "Z",
+            "train_period_end": periods["train_period_end"].isoformat() + "Z",
+            "validation_period_start": periods["validation_period_start"].isoformat() + "Z",
+            "validation_period_end": periods["validation_period_end"].isoformat() + "Z",
+            "test_period_start": periods["test_period_start"].isoformat() + "Z",
+            "test_period_end": periods["test_period_end"].isoformat() + "Z",
+            "target_config": {
+                "type": "classification",
+                "horizon": "1h",  # Default horizon, could be configurable
+                "threshold": 0.001,
+            },
+            "feature_registry_version": "latest",  # Use latest feature registry version
+            "output_format": "parquet",
+        }
 
-        max_events = settings.buffer_max_recovery_events
-        restored_events = await buffer_persistence.restore_buffer(
-            strategy_id=strategy_id,
-            max_events=max_events,
-        )
+        # Request dataset build from Feature Service
+        trace_id = str(uuid4())
+        dataset_id = await feature_service_client.build_dataset(request, trace_id=trace_id)
 
-        if not restored_events:
-            return
+        if not dataset_id:
+            self._metrics["dataset_build_failures"] = self._metrics.get("dataset_build_failures", 0) + 1
+            logger.error("Failed to request dataset build from Feature Service", strategy_id=strategy_id, symbol=symbol, trace_id=trace_id)
+            return None
 
-        # Append restored events to in-memory buffer
-        self._execution_events_buffer.extend(restored_events)
-        self._metrics["buffer_recovery_count"] = self._metrics.get("buffer_recovery_count", 0) + 1
+        # Track pending dataset build
+        self._pending_dataset_builds[dataset_id] = {
+            "strategy_id": strategy_id,
+            "symbol": symbol,
+            "requested_at": datetime.utcnow(),
+            "trace_id": trace_id,
+        }
+        self._metrics["dataset_build_requests"] = self._metrics.get("dataset_build_requests", 0) + 1
 
         logger.info(
-            "Restored training buffer from database",
-            restored_events=len(restored_events),
-            total_buffer_size=len(self._execution_events_buffer),
+            "Dataset build requested from Feature Service",
+            dataset_id=str(dataset_id),
             strategy_id=strategy_id,
+            symbol=symbol,
+            trace_id=trace_id,
         )
-        
-        # After restoring buffer, check if training should be triggered immediately
-        # (e.g., if we restored 100+ events)
-        if restored_events:
-            # Check if we have enough events to trigger training
-            await self.check_and_trigger_training(strategy_id)
+
+        return dataset_id
+
+    async def handle_dataset_ready(self, dataset_id: UUID, symbol: Optional[str] = None, trace_id: Optional[str] = None) -> None:
+        """
+        Handle dataset ready notification from Feature Service.
+
+        This method is called by dataset_ready_consumer when a dataset.ready notification is received.
+        It triggers model training using the ready dataset.
+
+        Args:
+            dataset_id: Dataset UUID identifier
+            symbol: Trading pair symbol (optional, for logging)
+            trace_id: Optional trace ID for request flow tracking
+        """
+        # Check if this dataset was requested by us
+        pending_build = self._pending_dataset_builds.get(dataset_id)
+        if not pending_build:
+            logger.warning(
+                "Dataset ready notification received for unknown dataset",
+                dataset_id=str(dataset_id),
+                symbol=symbol,
+                trace_id=trace_id,
+            )
+            return
+
+        strategy_id = pending_build["strategy_id"]
+        symbol = symbol or pending_build.get("symbol")
+
+        logger.info(
+            "Dataset ready notification received, starting training",
+            dataset_id=str(dataset_id),
+            strategy_id=strategy_id,
+            symbol=symbol,
+            trace_id=trace_id,
+        )
+
+        # Remove from pending builds
+        del self._pending_dataset_builds[dataset_id]
+
+        # Check if training is already in progress
+        if self._current_training_task and not self._current_training_task.done():
+            # If queueing is enabled, enqueue a new training request instead of cancelling
+            if settings.training_queue_enabled:
+                if len(self._training_queue) >= settings.training_queue_max_size:
+                    logger.warning(
+                        "Training queue is full, dropping dataset ready notification",
+                        dataset_id=str(dataset_id),
+                        strategy_id=strategy_id,
+                        queue_size=len(self._training_queue),
+                    )
+                    return
+
+                queue_item = {
+                    "strategy_id": strategy_id,
+                    "dataset_id": dataset_id,
+                    "symbol": symbol,
+                    "priority": "NORMAL",
+                    "enqueued_at": datetime.utcnow(),
+                }
+                self._training_queue.append(queue_item)
+
+                logger.info(
+                    "Enqueued training request while training in progress",
+                    dataset_id=str(dataset_id),
+                    strategy_id=strategy_id,
+                    queue_size=len(self._training_queue),
+                )
+                return
+
+            # Legacy behaviour: cancel current training and start a new one
+            logger.info("Training already in progress, cancelling for new training", dataset_id=str(dataset_id), strategy_id=strategy_id)
+            await self._cancel_current_training()
+
+        # Start training with ready dataset
+        await self._start_training_with_dataset(strategy_id, dataset_id, symbol, trace_id)
 
     def _normalize_strategy_id(self, strategy_id: Optional[str]) -> Optional[str]:
         """
@@ -221,12 +315,13 @@ class TrainingOrchestrator:
 
         return periods
 
-    async def check_and_trigger_training(self, strategy_id: Optional[str] = None) -> None:
+    async def check_and_trigger_training(self, strategy_id: Optional[str] = None, symbol: Optional[str] = None) -> None:
         """
-        Check if training should be triggered and start it if needed.
+        Check if training should be triggered and request dataset build if needed.
 
         Args:
             strategy_id: Trading strategy identifier
+            symbol: Trading pair symbol (optional, will use default if not provided)
         """
         # Normalize strategy_id to match configured strategies
         strategy_id = self._normalize_strategy_id(strategy_id)
@@ -237,59 +332,43 @@ class TrainingOrchestrator:
         if not should_retrain:
             return
 
-        # Check if training is already in progress
-        if self._current_training_task and not self._current_training_task.done():
-            # If queueing is enabled, enqueue a new training request instead of cancelling
-            if settings.training_queue_enabled:
-                if len(self._training_queue) >= settings.training_queue_max_size:
-                    logger.warning(
-                        "Training queue is full, dropping new training request",
-                        strategy_id=strategy_id,
-                        queue_size=len(self._training_queue),
-                    )
-                    return
+        # Request dataset build from Feature Service
+        # Training will start automatically when dataset.ready notification is received
+        dataset_id = await self.request_dataset_build(strategy_id=strategy_id, symbol=symbol)
 
-                queue_item = {
-                    "strategy_id": strategy_id,
-                    "events": self._execution_events_buffer.copy(),
-                    "signal_market_data": self._signal_market_data.copy(),
-                    "priority": "NORMAL",
-                    "enqueued_at": datetime.utcnow(),
-                }
-                self._training_queue.append(queue_item)
-                self._execution_events_buffer.clear()
-                self._signal_market_data.clear()
+        if not dataset_id:
+            logger.error("Failed to request dataset build, training not triggered", strategy_id=strategy_id, symbol=symbol)
+            return
 
-                logger.info(
-                    "Enqueued training request while training in progress",
-                    strategy_id=strategy_id,
-                    queue_size=len(self._training_queue),
-                    buffer_size=buffer_size,
-                )
-                return
+        logger.info(
+            "Dataset build requested for training",
+            dataset_id=str(dataset_id),
+            strategy_id=strategy_id,
+            symbol=symbol,
+        )
 
-            # Legacy behaviour: cancel current training and start a new one
-            logger.info("Training already in progress, cancelling for new training", strategy_id=strategy_id)
-            await self._cancel_current_training()
-
-        # Start new training
-        await self._start_training(strategy_id)
-
-    async def _start_training(self, strategy_id: Optional[str] = None) -> None:
+    async def _start_training_with_dataset(
+        self, strategy_id: Optional[str], dataset_id: UUID, symbol: Optional[str] = None, trace_id: Optional[str] = None
+    ) -> None:
         """
-        Start model training.
+        Start model training with ready dataset from Feature Service.
 
         Args:
             strategy_id: Trading strategy identifier
+            dataset_id: Dataset UUID identifier
+            symbol: Trading pair symbol (for logging)
+            trace_id: Optional trace ID for request flow tracking
         """
         # Normalize strategy_id to match configured strategies
         strategy_id = self._normalize_strategy_id(strategy_id)
 
-        if not self._execution_events_buffer:
-            logger.warning("No execution events available for training", strategy_id=strategy_id)
-            return
-
-        logger.info("Starting model training", strategy_id=strategy_id, event_count=len(self._execution_events_buffer))
+        logger.info(
+            "Starting model training with Feature Service dataset",
+            strategy_id=strategy_id,
+            dataset_id=str(dataset_id),
+            symbol=symbol,
+            trace_id=trace_id,
+        )
 
         # Reset cancellation flag
         self._training_cancelled = False
@@ -297,11 +376,7 @@ class TrainingOrchestrator:
 
         # Create training task
         self._current_training_task = asyncio.create_task(
-            self._train_model_async(
-                strategy_id,
-                self._execution_events_buffer.copy(),
-                self._signal_market_data.copy(),
-            )
+            self._train_model_async(strategy_id, dataset_id, symbol, trace_id)
         )
 
         # Attach completion handler to process queued trainings
@@ -309,49 +384,123 @@ class TrainingOrchestrator:
             lambda _: asyncio.create_task(self._handle_training_completion())
         )
 
-        # Clear buffer after starting training
-        self._execution_events_buffer.clear()
-        self._signal_market_data.clear()
-
     async def _train_model_async(
         self,
         strategy_id: Optional[str],
-        execution_events: List[OrderExecutionEvent],
-        signal_market_data: Dict[str, MarketDataSnapshot],
+        dataset_id: UUID,
+        symbol: Optional[str] = None,
+        trace_id: Optional[str] = None,
     ) -> None:
         """
-        Train model asynchronously.
+        Train model asynchronously using dataset from Feature Service.
 
         Args:
             strategy_id: Trading strategy identifier
-            execution_events: List of execution events to train on
-            signal_market_data: Dictionary mapping signal_id to market data snapshot
+            dataset_id: Dataset UUID identifier
+            symbol: Trading pair symbol (for logging)
+            trace_id: Optional trace ID for request flow tracking
         """
         training_start_time = datetime.utcnow()
         training_id = str(uuid4())
 
         try:
             logger.info(
-                "Training model",
-            training_id=training_id,
+                "Training model with Feature Service dataset",
+                training_id=training_id,
                 strategy_id=strategy_id,
-                event_count=len(execution_events),
+                dataset_id=str(dataset_id),
+                symbol=symbol,
+                trace_id=trace_id,
             )
 
-            # Build training dataset
-            dataset = dataset_builder.build_dataset(
-                execution_events=execution_events,
-                signal_market_data=signal_market_data if signal_market_data else None,
-                strategy_id=strategy_id,
-                label_type="multi_class",  # Changed from "binary" to "multi_class" to predict buy/sell directly
-            )
+            # Verify dataset is ready
+            dataset_meta = await feature_service_client.get_dataset(dataset_id, trace_id)
+            if not dataset_meta:
+                logger.error("Dataset not found", training_id=training_id, dataset_id=str(dataset_id), trace_id=trace_id)
+                return
 
-            if not dataset:
-                logger.error("Failed to build training dataset", training_id=training_id)
+            if dataset_meta.status != DatasetStatus.READY:
+                logger.error(
+                    "Dataset is not ready",
+                    training_id=training_id,
+                    dataset_id=str(dataset_id),
+                    status=dataset_meta.status.value,
+                    trace_id=trace_id,
+                )
                 return
 
             if self._training_cancelled:
-                logger.info("Training cancelled during dataset building", training_id=training_id)
+                logger.info("Training cancelled before dataset download", training_id=training_id)
+                return
+
+            # Download train split from Feature Service
+            train_file_path = await feature_service_client.download_dataset(dataset_id, split="train", trace_id=trace_id)
+            if not train_file_path:
+                logger.error("Failed to download train dataset", training_id=training_id, dataset_id=str(dataset_id), trace_id=trace_id)
+                return
+
+            if self._training_cancelled:
+                logger.info("Training cancelled during dataset download", training_id=training_id)
+                return
+
+            # Load dataset from Parquet file
+            logger.info("Loading dataset from Parquet file", training_id=training_id, file_path=str(train_file_path), trace_id=trace_id)
+            df = pd.read_parquet(train_file_path)
+
+            # Extract features and labels
+            # Feature Service dataset format: features are all columns except 'target'
+            # Target column name may vary (target, label, y, etc.)
+            target_column = None
+            for col in ["target", "label", "y", "target_value"]:
+                if col in df.columns:
+                    target_column = col
+                    break
+
+            if not target_column:
+                logger.error(
+                    "Target column not found in dataset",
+                    training_id=training_id,
+                    dataset_id=str(dataset_id),
+                    available_columns=list(df.columns),
+                    trace_id=trace_id,
+                )
+                return
+
+            # Separate features and labels
+            features_df = df.drop(columns=[target_column])
+            labels_series = df[target_column]
+
+            if features_df.empty or labels_series.empty:
+                logger.error("Empty dataset after loading", training_id=training_id, dataset_id=str(dataset_id), trace_id=trace_id)
+                return
+
+            # Create TrainingDataset object
+            dataset = TrainingDataset(
+                dataset_id=str(dataset_id),
+                strategy_id=strategy_id or "default",
+                features=features_df,
+                labels=labels_series,
+                metadata={
+                    "source": "feature_service",
+                    "dataset_id": str(dataset_id),
+                    "symbol": symbol,
+                    "record_count": len(features_df),
+                    "feature_count": len(features_df.columns),
+                    "feature_names": list(features_df.columns),
+                },
+            )
+
+            logger.info(
+                "Dataset loaded successfully",
+                training_id=training_id,
+                dataset_id=str(dataset_id),
+                record_count=dataset.get_record_count(),
+                feature_count=len(dataset.get_feature_names()),
+                trace_id=trace_id,
+            )
+
+            if self._training_cancelled:
+                logger.info("Training cancelled during dataset loading", training_id=training_id)
                 return
 
             # Train model
@@ -365,21 +514,50 @@ class TrainingOrchestrator:
                 logger.info("Training cancelled during model training", training_id=training_id)
                 return
 
+            # Download validation split for evaluation
+            validation_file_path = await feature_service_client.download_dataset(
+                dataset_id, split="validation", trace_id=trace_id
+            )
+            validation_features = None
+            validation_labels = None
+
+            if validation_file_path:
+                try:
+                    val_df = pd.read_parquet(validation_file_path)
+                    if target_column in val_df.columns:
+                        validation_features = val_df.drop(columns=[target_column])
+                        validation_labels = val_df[target_column]
+                        logger.info(
+                            "Validation dataset loaded",
+                            training_id=training_id,
+                            record_count=len(validation_features),
+                            trace_id=trace_id,
+                        )
+                except Exception as e:
+                    logger.warning(
+                        "Failed to load validation dataset, using train set for evaluation",
+                        training_id=training_id,
+                        error=str(e),
+                        trace_id=trace_id,
+                    )
+
             # Evaluate model quality
-            # For now, we'll use the training data for evaluation (in production, use validation set)
-            y_pred = model.predict(dataset.features)
-            y_pred_proba = model.predict_proba(dataset.features)[:, 1] if hasattr(model, "predict_proba") else None
+            # Use validation set if available, otherwise use training set
+            eval_features = validation_features if validation_features is not None else dataset.features
+            eval_labels = validation_labels if validation_labels is not None else dataset.labels
+
+            y_pred = model.predict(eval_features)
+            y_pred_proba = model.predict_proba(eval_features)[:, 1] if hasattr(model, "predict_proba") else None
 
             metrics = quality_evaluator.evaluate(
-                y_true=dataset.labels,
+                y_true=eval_labels,
                 y_pred=pd.Series(y_pred),
                 y_pred_proba=pd.Series(y_pred_proba) if y_pred_proba is not None else None,
                 task_type="classification",
             )
 
-            # Calculate trading performance metrics
-            trading_metrics = quality_evaluator.calculate_trading_metrics(execution_events, pd.Series(y_pred))
-            metrics.update(trading_metrics)
+            # Note: Trading metrics are not calculated here since we don't have execution_events
+            # Model learns from market movements (price predictions), not from own trading results
 
             if self._training_cancelled:
                 logger.info("Training cancelled during quality evaluation", training_id=training_id)
@@ -403,6 +581,8 @@ class TrainingOrchestrator:
                     "model_type": "xgboost",
                     "task_type": "classification",
                     "feature_count": len(dataset.get_feature_names()),
+                    "dataset_source": "feature_service",
+                    "dataset_id": str(dataset_id),
                 },
                 is_active=False,  # Don't activate automatically, require manual activation or quality check
             )
@@ -415,19 +595,8 @@ class TrainingOrchestrator:
             await model_version_manager.save_quality_metrics(
                 model_version_id=model_version["id"],
                 metrics=metrics,
-                evaluation_dataset_size=dataset.get_record_count(),
+                evaluation_dataset_size=len(eval_features),
             )
-
-            # Mark events as used for training if buffer persistence is enabled
-            if settings.buffer_persistence_enabled:
-                try:
-                    await buffer_persistence.mark_events_used_for_training(
-                        [event.event_id for event in execution_events],
-                        model_version["id"],
-                    )
-                except Exception:
-                    # Errors are already logged in buffer_persistence; do not fail training
-                    pass
 
             # Check if model quality meets threshold for activation
             accuracy = metrics.get("accuracy", 0.0)
@@ -450,8 +619,10 @@ class TrainingOrchestrator:
                 training_id=training_id,
                 version=version,
                 strategy_id=strategy_id,
+                dataset_id=str(dataset_id),
                 duration_seconds=training_duration,
                 metrics=metrics,
+                trace_id=trace_id,
             )
 
         except asyncio.CancelledError:
@@ -489,29 +660,35 @@ class TrainingOrchestrator:
 
         # Pop next item (FIFO queue)
         queue_item = self._training_queue.pop(0)
-        self._execution_events_buffer = queue_item["events"]
-        self._signal_market_data = queue_item["signal_market_data"]
+        dataset_id = queue_item.get("dataset_id")
+        strategy_id = queue_item.get("strategy_id")
+        symbol = queue_item.get("symbol")
+        trace_id = queue_item.get("trace_id")
+
+        if not dataset_id:
+            logger.warning("Queue item missing dataset_id, skipping", queue_item=queue_item)
+            return
 
         logger.info(
             "Starting queued training after previous completion",
-            strategy_id=queue_item.get("strategy_id"),
+            strategy_id=strategy_id,
+            dataset_id=str(dataset_id),
             remaining_queue_size=len(self._training_queue),
         )
 
-        await self._start_training(queue_item.get("strategy_id"))
+        await self._start_training_with_dataset(strategy_id, dataset_id, symbol, trace_id)
 
     async def shutdown(self, timeout: float = 10.0) -> None:
         """
         Gracefully shut down training orchestrator.
 
         - Wait for current training to complete (up to timeout)
-        - Leave unused buffer events in database for future recovery
-        - Log buffer and queue state for observability
+        - Log queue state for observability
         """
         logger.info(
             "Shutting down training orchestrator",
-            buffer_size=len(self._execution_events_buffer),
             queue_size=len(self._training_queue),
+            pending_dataset_builds=len(self._pending_dataset_builds),
         )
 
         if self._current_training_task and not self._current_training_task.done():
@@ -529,7 +706,7 @@ class TrainingOrchestrator:
         Get current training orchestrator status for API responses.
 
         Returns:
-            Dictionary with training status, buffer, and queue metrics.
+            Dictionary with training status, queue metrics, and pending dataset builds.
         """
         is_training = self._current_training_task is not None and not self._current_training_task.done()
         now = datetime.utcnow()
@@ -538,18 +715,21 @@ class TrainingOrchestrator:
         next_item = self._training_queue[0] if self._training_queue else None
         next_wait_seconds: Optional[float] = None
         next_strategy_id: Optional[str] = None
+        next_dataset_id: Optional[str] = None
 
         if next_item:
             enqueued_at: datetime = next_item.get("enqueued_at", now)
             next_wait_seconds = max((now - enqueued_at).total_seconds(), 0.0)
             next_strategy_id = next_item.get("strategy_id")
+            next_dataset_id = str(next_item.get("dataset_id")) if next_item.get("dataset_id") else None
 
         return {
             "is_training": is_training,
-            "buffered_events_count": len(self._execution_events_buffer),
             "queue_size": queue_size,
             "queue_next_wait_time_seconds": next_wait_seconds,
             "next_queued_training_strategy_id": next_strategy_id,
+            "next_queued_training_dataset_id": next_dataset_id,
+            "pending_dataset_builds": len(self._pending_dataset_builds),
             "metrics": self._metrics.copy(),
         }
 

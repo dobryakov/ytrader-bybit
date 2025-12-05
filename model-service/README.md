@@ -1,13 +1,15 @@
 # Model Service - Trading Decision and ML Training Microservice
 
-A microservice that trains ML models from order execution feedback, generates trading signals using trained models or warm-up heuristics, and manages model versioning.
+A microservice that trains ML models from market data, generates trading signals using trained models or warm-up heuristics, and manages model versioning.
 
 ## Features
 
 - **Warm-up Mode**: Generate trading signals using simple heuristics when no trained model exists
-- **Model Training**: Train ML models from order execution feedback using scikit-learn and XGBoost
+- **Model Training**: Train ML models from market data using Feature Service datasets (market-data-only training approach)
 - **Signal Generation**: Generate intelligent trading signals using trained models with duplicate order prevention
 - **Model Versioning**: Track model versions, quality metrics, and manage model lifecycle
+- **Feature Service Integration**: Receive ready feature vectors from Feature Service for both inference and training
+- **Time-based Retraining**: Scheduled retraining based on time intervals instead of execution event accumulation
 - **Real-time Processing**: Async message queue processing with RabbitMQ
 - **Observability**: Structured logging with trace IDs for request flow tracking
 
@@ -27,10 +29,10 @@ A microservice that trains ML models from order execution feedback, generates tr
 ```
 model-service/
 ├── src/
-│   ├── models/              # ML model definitions and training logic
+│   ├── models/              # Data models (signals, feature vectors, datasets)
 │   ├── services/            # Core business logic (signal generation, training orchestration)
 │   ├── api/                 # REST API endpoints (health checks, monitoring)
-│   ├── consumers/           # RabbitMQ message consumers (order execution events)
+│   ├── consumers/           # RabbitMQ message consumers (feature vectors, dataset ready notifications)
 │   ├── publishers/          # RabbitMQ message publishers (trading signals)
 │   ├── database/            # Database access layer (model metadata, quality metrics)
 │   ├── config/              # Configuration management
@@ -40,6 +42,7 @@ model-service/
 │   ├── integration/         # Integration tests for database, message queue
 │   └── e2e/                 # End-to-end tests for full workflows
 ├── models/                  # Model file storage directory (mounted volume)
+├── datasets/                # Dataset storage directory (downloaded from Feature Service)
 ├── Dockerfile
 ├── requirements.txt
 └── README.md
@@ -72,7 +75,22 @@ MODEL_STORAGE_PATH=/models
 MODEL_TRAINING_MIN_DATASET_SIZE=1000
 MODEL_TRAINING_MAX_DURATION_SECONDS=1800
 MODEL_QUALITY_THRESHOLD_ACCURACY=0.75
-MODEL_RETRAINING_SCHEDULE=
+
+# Time-based Retraining Configuration (market-data-only training)
+MODEL_RETRAINING_INTERVAL_DAYS=7
+MODEL_RETRAINING_TRAIN_PERIOD_DAYS=30
+MODEL_RETRAINING_VALIDATION_PERIOD_DAYS=7
+MODEL_RETRAINING_TEST_PERIOD_DAYS=1
+
+# Feature Service Configuration
+FEATURE_SERVICE_HOST=feature-service
+FEATURE_SERVICE_PORT=4900
+FEATURE_SERVICE_API_KEY=your-feature-service-api-key
+FEATURE_SERVICE_USE_QUEUE=true
+FEATURE_SERVICE_FEATURE_CACHE_TTL_SECONDS=30
+FEATURE_SERVICE_DATASET_BUILD_TIMEOUT_SECONDS=3600
+FEATURE_SERVICE_DATASET_POLL_INTERVAL_SECONDS=60
+FEATURE_SERVICE_DATASET_STORAGE_PATH=/datasets
 
 # Signal Generation Configuration
 SIGNAL_GENERATION_RATE_LIMIT=60
@@ -452,7 +470,8 @@ Get current training status.
   "current_training": null,
   "last_training": null,
   "next_scheduled_training": null,
-  "buffered_events_count": 150
+  "queue_size": 0,
+  "pending_dataset_builds": 1
 }
 ```
 
@@ -596,11 +615,34 @@ Get strategy performance time-series data.
 }
 ```
 
+## Feature Service Integration
+
+Model Service integrates with Feature Service to receive ready feature vectors for inference and training datasets. This integration enables:
+
+- **Market-Data-Only Training**: Models learn from market movements (price predictions) rather than from own trading results
+- **Ready Features**: Feature engineering is handled by Feature Service, Model Service receives pre-computed features
+- **Dataset Building**: Training datasets are built by Feature Service with explicit train/validation/test periods
+- **Time-based Retraining**: Training is triggered by scheduled time intervals instead of execution event accumulation
+
+### Feature Service Workflow
+
+1. **Inference**: Model Service requests latest features from Feature Service (via queue or REST API) for signal generation
+2. **Training**: Model Service requests dataset build from Feature Service with time-based periods, waits for dataset.ready notification, downloads and trains on ready dataset
+
+### Configuration
+
+See `env.example` for complete Feature Service configuration options including:
+- `FEATURE_SERVICE_HOST`, `FEATURE_SERVICE_PORT`, `FEATURE_SERVICE_API_KEY`
+- `FEATURE_SERVICE_USE_QUEUE`: Use queue subscription (true) or REST API polling (false)
+- `FEATURE_SERVICE_DATASET_BUILD_TIMEOUT_SECONDS`: Maximum wait time for dataset build
+- `FEATURE_SERVICE_DATASET_STORAGE_PATH`: Directory for downloaded dataset files
+
 ## Message Queues
 
 ### Consumed Queues
 
-- `order-manager.order_events`: Order execution events for model training
+- `features.live`: Feature vectors from Feature Service (for inference)
+- `features.dataset.ready`: Dataset completion notifications from Feature Service (for training)
 
 ### Published Queues
 

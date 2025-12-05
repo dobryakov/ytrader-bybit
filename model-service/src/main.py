@@ -20,9 +20,8 @@ from .config.rabbitmq import rabbitmq_manager
 from .api.router import api_router, APIKeyMiddleware, TraceIDMiddleware
 from .api.middleware import RequestResponseLoggingMiddleware
 from .api.health import router as health_router
-from .services.market_data_subscriber import MarketDataSubscriber
-from .consumers.market_data_consumer import market_data_consumer
-from .consumers.execution_event_consumer import ExecutionEventConsumer
+# Market data subscription and consumer removed - now using Feature Service
+# Execution event consumer removed - training pipeline now uses Feature Service datasets
 from .consumers.position_update_consumer import position_update_consumer
 from .consumers.feature_consumer import feature_consumer
 from .consumers.dataset_ready_consumer import DatasetReadyConsumer
@@ -72,31 +71,8 @@ async def lifespan(app: FastAPI):
         await signal_publisher.initialize()
         logger.info("Signal publisher initialized")
 
-        # Subscribe to market data channels (needed for both warm-up and intelligent modes)
-        subscriber = MarketDataSubscriber(
-            ws_gateway_url=settings.ws_gateway_url,
-            api_key=settings.ws_gateway_api_key,
-        )
-
-        # Get trading strategies and default assets
-        strategies = settings.trading_strategy_list
-        assets = ["BTCUSDT", "ETHUSDT"]  # TODO: Make configurable
-
-        if strategies:
-            try:
-                # Subscribe to all required channels for all assets
-                subscriptions = await subscriber.subscribe_all_channels(assets, "model-service")
-                logger.info(
-                    "Subscribed to market data channels",
-                    subscriptions=subscriptions,
-                )
-            except Exception as e:
-                logger.error(
-                    "Failed to subscribe to market data channels",
-                    error=str(e),
-                    exc_info=True,
-                )
-                # Continue anyway - can work with fallback values
+        # Market data subscription removed - now using Feature Service for market data
+        logger.info("Market data now provided by Feature Service (via features queue or REST API)")
 
         # Start feature consumer if queue is enabled (for Feature Service integration)
         if settings.feature_service_use_queue:
@@ -111,17 +87,8 @@ async def lifespan(app: FastAPI):
                 )
                 # Continue anyway - can fallback to REST API
 
-        # Start market data consumer (needed for both modes - TODO: will be removed in Phase 10 cleanup)
-        try:
-            await market_data_consumer.start()
-            logger.info("Market data consumer started")
-        except Exception as e:
-            logger.error(
-                "Failed to start market data consumer",
-                error=str(e),
-                exc_info=True,
-            )
-            # Continue anyway - can work with fallback values
+        # Market data consumer removed - now using Feature Service for market data
+        logger.info("Market data consumer removed - using Feature Service instead")
 
         # Check if trained model exists and start appropriate orchestrator
         model_version_repo = ModelVersionRepository()
@@ -183,31 +150,10 @@ async def lifespan(app: FastAPI):
         else:
             logger.warning("No trained model and warm-up mode disabled, signal generation will not start")
 
-        # Restore training buffer from database (if enabled)
-        try:
-            await training_orchestrator.restore_buffer_from_database()
-        except Exception as e:
-            logger.error("Failed to restore training buffer on startup", error=str(e), exc_info=True)
-
-        # Start execution event consumer for training pipeline
-        async def handle_execution_event(event):
-            """Handle execution event for training."""
-            try:
-                # Add event to training orchestrator buffer
-                await training_orchestrator.add_execution_event(event)
-                # Check if training should be triggered
-                await training_orchestrator.check_and_trigger_training(event.strategy_id)
-            except Exception as e:
-                logger.error("Error handling execution event", event_id=event.event_id, error=str(e), exc_info=True)
-
-        execution_event_consumer = ExecutionEventConsumer(event_callback=handle_execution_event)
-        app.state.execution_event_consumer = execution_event_consumer  # Store for shutdown
-        try:
-            await execution_event_consumer.start()
-            logger.info("Execution event consumer started")
-        except Exception as e:
-            logger.error("Failed to start execution event consumer", error=str(e), exc_info=True)
-            # Continue anyway - training can be triggered manually
+        # Note: Training pipeline no longer uses execution_events
+        # Training is triggered by time-based retraining or scheduled triggers
+        # Dataset building is handled by Feature Service
+        logger.info("Training pipeline uses Feature Service datasets (market-data-only training)")
 
         # Start position update consumer for cache invalidation and exit strategy evaluation
         app.state.position_update_consumer = position_update_consumer  # Store for shutdown
@@ -238,16 +184,8 @@ async def lifespan(app: FastAPI):
         async def handle_dataset_ready(dataset_id: UUID, symbol: Optional[str], trace_id: Optional[str]):
             """Handle dataset ready notification from Feature Service."""
             try:
-                logger.info(
-                    "Dataset ready notification received",
-                    dataset_id=str(dataset_id),
-                    symbol=symbol,
-                    trace_id=trace_id,
-                )
-                # Trigger training with ready dataset
-                # Note: Full integration with TrainingOrchestrator requires additional work (T152)
-                # For now, just log the notification
-                # TODO: Complete integration in T152
+                # Trigger training with ready dataset via TrainingOrchestrator
+                await training_orchestrator.handle_dataset_ready(dataset_id, symbol, trace_id)
             except Exception as e:
                 logger.error(
                     "Error handling dataset ready notification",
@@ -308,18 +246,7 @@ async def lifespan(app: FastAPI):
 
         shutdown_tasks.append(stop_quality_monitor())
 
-        # Stop execution event consumer
-        async def stop_execution_consumer():
-            try:
-                if hasattr(app.state, "execution_event_consumer"):
-                    await asyncio.wait_for(app.state.execution_event_consumer.stop(), timeout=5.0)
-                    logger.info("Execution event consumer stopped")
-            except asyncio.TimeoutError:
-                logger.warning("Execution event consumer stop timed out")
-            except Exception as e:
-                logger.error("Error stopping execution event consumer", error=str(e), exc_info=True)
-
-        shutdown_tasks.append(stop_execution_consumer())
+        # Execution event consumer removed - training pipeline now uses Feature Service datasets
 
         # Stop position update consumer
         async def stop_position_update_consumer():
@@ -384,17 +311,7 @@ async def lifespan(app: FastAPI):
 
         shutdown_tasks.append(stop_feature_consumer())
 
-        # Stop market data consumer
-        async def stop_market_data_consumer():
-            try:
-                await asyncio.wait_for(market_data_consumer.stop(), timeout=5.0)
-                logger.info("Market data consumer stopped")
-            except asyncio.TimeoutError:
-                logger.warning("Market data consumer stop timed out")
-            except Exception as e:
-                logger.error("Error stopping market data consumer", error=str(e), exc_info=True)
-
-        shutdown_tasks.append(stop_market_data_consumer())
+        # Market data consumer removed - no longer needed
 
         # Stop dataset ready consumer
         async def stop_dataset_ready_consumer():

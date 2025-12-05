@@ -10,8 +10,9 @@ from typing import Optional, List
 from datetime import datetime
 
 from ..models.signal import TradingSignal, MarketDataSnapshot
-from ..consumers.market_data_consumer import market_data_cache
 from ..services.balance_calculator import balance_calculator
+from ..services.feature_service_client import feature_service_client
+from ..consumers.feature_consumer import feature_cache
 from ..config.settings import settings
 from ..config.logging import get_logger, bind_context
 
@@ -60,19 +61,50 @@ class WarmUpSignalGenerator:
 
         logger.info("Generating warm-up signal", asset=asset, strategy_id=strategy_id)
 
-        # Retrieve market data snapshot with freshness checks
-        market_data = market_data_cache.get_market_data(
-            asset,
-            max_age_seconds=settings.market_data_max_age_seconds,
-            stale_warning_threshold_seconds=settings.market_data_stale_warning_threshold_seconds,
-        )
+        # Retrieve market data from Feature Service (via feature cache or REST API)
+        # Feature Service provides features that include price, spread, volume, volatility
+        market_data = None
+        
+        # Try to get from feature cache first
+        if settings.feature_service_use_queue:
+            feature_vector = feature_cache.get_latest_features(asset)
+            if feature_vector and feature_vector.features:
+                # Extract market data from features (Feature Service provides price, spread, volume, volatility as features)
+                market_data = {
+                    "price": feature_vector.features.get("price", feature_vector.features.get("close_price", None)),
+                    "spread": feature_vector.features.get("spread", feature_vector.features.get("bid_ask_spread", 0.0)),
+                    "volume_24h": feature_vector.features.get("volume_24h", feature_vector.features.get("volume", 0.0)),
+                    "volatility": feature_vector.features.get("volatility", feature_vector.features.get("realized_volatility", 0.0)),
+                    "last_updated": feature_vector.timestamp,
+                }
+        
+        # Fallback to REST API if cache is empty
         if not market_data:
+            feature_vector = await feature_service_client.get_latest_features(asset, trace_id)
+            if feature_vector and feature_vector.features:
+                market_data = {
+                    "price": feature_vector.features.get("price", feature_vector.features.get("close_price", None)),
+                    "spread": feature_vector.features.get("spread", feature_vector.features.get("bid_ask_spread", 0.0)),
+                    "volume_24h": feature_vector.features.get("volume_24h", feature_vector.features.get("volume", 0.0)),
+                    "volatility": feature_vector.features.get("volatility", feature_vector.features.get("realized_volatility", 0.0)),
+                    "last_updated": feature_vector.timestamp,
+                }
+        
+        # Final fallback: use default values if Feature Service unavailable
+        if not market_data or not market_data.get("price"):
             logger.warning(
-                "Market data unavailable, skipping signal generation",
+                "Market data unavailable from Feature Service, using fallback values",
                 asset=asset,
                 strategy_id=strategy_id,
             )
-            return None
+            # Use fallback values for warm-up mode
+            market_data = {
+                "price": 50000.0,  # Default price (will be adapted by balance calculator)
+                "spread": 0.001,
+                "volume_24h": 1000000.0,
+                "volatility": 0.02,
+                "last_updated": datetime.utcnow(),
+            }
 
         # Generate signal using heuristics or random generation
         signal_type = self._determine_signal_type(asset, market_data)
@@ -115,10 +147,10 @@ class WarmUpSignalGenerator:
 
         # Create market data snapshot
         market_snapshot = MarketDataSnapshot(
-            price=market_data["price"],
-            spread=market_data["spread"],
-            volume_24h=market_data["volume_24h"],
-            volatility=market_data["volatility"],
+            price=market_data.get("price"),
+            spread=market_data.get("spread", 0.0),
+            volume_24h=market_data.get("volume_24h", 0.0),
+            volatility=market_data.get("volatility", 0.0),
             orderbook_depth=market_data.get("orderbook_depth"),
         )
 

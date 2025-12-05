@@ -11,9 +11,9 @@ This guide provides step-by-step instructions to set up and run the Model Servic
 
 - Docker and Docker Compose V2 installed
 - PostgreSQL database (shared database, managed by ws-gateway)
-- RabbitMQ message queue (for order execution events and trading signals)
-- Order Manager microservice (for order execution events)
-- WebSocket Gateway service (for market data, optional)
+- RabbitMQ message queue (for feature vectors, dataset notifications, and trading signals)
+- Feature Service microservice (for feature vectors and training datasets)
+- Order Manager microservice (for order execution, optional for training)
 
 ## Quick Setup
 
@@ -61,7 +61,22 @@ MODEL_STORAGE_PATH=/models  # Directory for model files (mounted as Docker volum
 MODEL_TRAINING_MIN_DATASET_SIZE=1000  # Minimum records for training
 MODEL_TRAINING_MAX_DURATION_SECONDS=1800  # 30 minutes max training time
 MODEL_QUALITY_THRESHOLD_ACCURACY=0.75  # Minimum accuracy for model activation
-MODEL_RETRAINING_SCHEDULE=cron(0 2 * * *)  # Daily at 2 AM (optional)
+
+# Time-based Retraining Configuration (market-data-only training)
+MODEL_RETRAINING_INTERVAL_DAYS=7  # Retrain every 7 days
+MODEL_RETRAINING_TRAIN_PERIOD_DAYS=30  # Use last 30 days for training
+MODEL_RETRAINING_VALIDATION_PERIOD_DAYS=7  # Use 7 days for validation
+MODEL_RETRAINING_TEST_PERIOD_DAYS=1  # Use 1 day for test
+
+# Feature Service Configuration
+FEATURE_SERVICE_HOST=feature-service
+FEATURE_SERVICE_PORT=4900
+FEATURE_SERVICE_API_KEY=your-feature-service-api-key
+FEATURE_SERVICE_USE_QUEUE=true  # Use queue subscription (true) or REST API polling (false)
+FEATURE_SERVICE_FEATURE_CACHE_TTL_SECONDS=30
+FEATURE_SERVICE_DATASET_BUILD_TIMEOUT_SECONDS=3600
+FEATURE_SERVICE_DATASET_POLL_INTERVAL_SECONDS=60
+FEATURE_SERVICE_DATASET_STORAGE_PATH=/datasets
 
 # Signal Generation Configuration
 SIGNAL_GENERATION_RATE_LIMIT=60  # Signals per minute
@@ -75,18 +90,22 @@ TRADING_STRATEGIES=momentum_v1,mean_reversion_v1  # Comma-separated strategy IDs
 
 ### 3. Start Dependencies
 
-Start PostgreSQL and RabbitMQ using Docker Compose:
+Start PostgreSQL, RabbitMQ, and Feature Service using Docker Compose:
 
 ```bash
-docker compose up -d postgres rabbitmq
+docker compose up -d postgres rabbitmq feature-service
 ```
 
 Wait for services to be ready:
 
 ```bash
-docker compose logs -f postgres rabbitmq
+docker compose logs -f postgres rabbitmq feature-service
 # Press Ctrl+C when services are ready
 ```
+
+**Note**: Feature Service is required for Model Service to function. It provides:
+- Feature vectors for signal generation (inference)
+- Training datasets for model training
 
 ### 4. Run Database Migrations
 
@@ -99,11 +118,16 @@ docker compose run --rm ws-gateway python -m migrations.run
 
 Or if migrations are run automatically on startup, skip this step.
 
-### 5. Create Model Storage Directory
+### 5. Create Storage Directories
 
 ```bash
+# Model storage
 mkdir -p /home/ubuntu/ytrader/model-service/models
 chmod 755 /home/ubuntu/ytrader/model-service/models
+
+# Dataset storage (for downloaded datasets from Feature Service)
+mkdir -p /home/ubuntu/ytrader/model-service/datasets
+chmod 755 /home/ubuntu/ytrader/model-service/datasets
 ```
 
 ### 6. Start Model Service
@@ -148,7 +172,9 @@ Response:
 {
   "is_training": false,
   "last_training": null,
-  "next_scheduled_training": "2025-01-28T02:00:00Z"
+  "next_scheduled_training": "2025-01-28T02:00:00Z",
+  "queue_size": 0,
+  "pending_dataset_builds": 0
 }
 ```
 
@@ -289,52 +315,17 @@ channel.start_consuming()
 "
 ```
 
-### Publish Order Execution Events (for Testing)
+### Training Workflow (Feature Service Integration)
 
-To test model training, you can publish order execution events to the queue consumed by the model service:
+Model training now uses Feature Service for dataset building. The workflow is:
 
-```bash
-# Publish test execution event (example using Python)
-python -c "
-import pika
-import json
-from datetime import datetime
+1. **Time-based Retraining**: Training is triggered by scheduled time intervals (e.g., every 7 days)
+2. **Dataset Request**: Model Service requests dataset build from Feature Service with explicit train/validation/test periods
+3. **Dataset Ready Notification**: Feature Service builds dataset and publishes notification to `features.dataset.ready` queue
+4. **Dataset Download**: Model Service downloads ready dataset from Feature Service
+5. **Model Training**: Model is trained on downloaded dataset (market data only, no execution_events)
 
-connection = pika.BlockingConnection(pika.ConnectionParameters('localhost', 5672))
-channel = connection.channel()
-channel.queue_declare(queue='order-manager.order_events')
-
-event = {
-    'event_id': 'test-event-001',
-    'order_id': 'test-order-001',
-    'signal_id': 'test-signal-001',
-    'strategy_id': 'momentum_v1',
-    'asset': 'BTCUSDT',
-    'side': 'buy',
-    'execution_price': 50000.00,
-    'execution_quantity': 0.1,
-    'execution_fees': 5.00,
-    'executed_at': datetime.utcnow().isoformat() + 'Z',
-    'signal_price': 50010.00,
-    'signal_timestamp': datetime.utcnow().isoformat() + 'Z',
-    'market_conditions': {
-        'spread': 1.00,
-        'volume_24h': 1000000.00,
-        'volatility': 0.02
-    },
-    'performance': {
-        'slippage': -10.00,
-        'slippage_percent': -0.02,
-        'realized_pnl': 50.00,
-        'return_percent': 0.01
-    }
-}
-
-channel.basic_publish(exchange='', routing_key='order-manager.order_events', body=json.dumps(event))
-print('Published execution event')
-connection.close()
-"
-```
+**Note**: Training no longer depends on execution_events accumulation. Models learn from market movements (price predictions) rather than from own trading results.
 
 ## Development Workflow
 
@@ -456,10 +447,13 @@ docker compose exec rabbitmq rabbitmqadmin purge queue name=model-service.tradin
    docker compose logs model-service | grep -i "training\|model"
    ```
 
-2. Verify sufficient training data:
+2. Verify Feature Service is available:
    ```bash
-   # Check execution events in queue
-   docker compose exec rabbitmq rabbitmqadmin list queues name messages | grep execution_events
+   # Check Feature Service health
+   curl http://localhost:4900/health
+   
+   # Check dataset ready queue
+   docker compose exec rabbitmq rabbitmqadmin list queues name messages | grep dataset.ready
    ```
 
 3. Check model storage permissions:
@@ -512,11 +506,29 @@ docker compose exec rabbitmq rabbitmqadmin purge queue name=model-service.tradin
 2. Verify queues exist:
    ```bash
    docker compose exec rabbitmq rabbitmqadmin list queues name
+   # Should see: features.live, features.dataset.ready, model-service.trading_signals
    ```
 
 3. Check queue consumers:
    ```bash
    docker compose exec rabbitmq rabbitmqadmin list queues name consumers
+   ```
+
+### Feature Service Integration Issues
+
+1. Check Feature Service connection:
+   ```bash
+   docker compose logs model-service | grep -i "feature.*service\|feature.*client"
+   ```
+
+2. Verify Feature Service is running:
+   ```bash
+   curl http://localhost:4900/health
+   ```
+
+3. Check feature queue:
+   ```bash
+   docker compose exec rabbitmq rabbitmqadmin list queues name messages | grep features
    ```
 
 ## Production Deployment

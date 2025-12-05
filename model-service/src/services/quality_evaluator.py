@@ -146,6 +146,10 @@ class QualityEvaluator:
         """
         Calculate trading performance metrics.
 
+        **NOTE**: This method is deprecated for training pipeline. Training now uses only ML metrics
+        (accuracy, precision, recall, F1, MSE, MAE, R2) from market data predictions.
+        This method is kept for backtesting purposes only.
+
         Args:
             execution_events: List of execution events (with performance data)
             predictions: Model predictions

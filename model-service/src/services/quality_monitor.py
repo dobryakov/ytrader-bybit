@@ -93,7 +93,11 @@ class QualityMonitor:
 
     async def _evaluate_model_quality(self, model_version_id: UUID, model_version: Dict[str, Any]) -> None:
         """
-        Evaluate quality for a specific model based on recent execution events.
+        Evaluate quality for a specific model using ML metrics from validation/test sets.
+
+        **NOTE**: Quality monitoring now uses only ML metrics (accuracy, precision, recall, F1, MSE, MAE, R2)
+        from validation/test sets stored during training. Trading metrics from execution_events are no longer
+        used for quality monitoring, as training pipeline uses market-data-only approach.
 
         Args:
             model_version_id: Model version UUID
@@ -102,106 +106,55 @@ class QualityMonitor:
         try:
             strategy_id = model_version.get("strategy_id")
 
-            # Check if execution_events table exists
-            async with db_pool.get_connection() as conn:
-                table_exists = await conn.fetchval(
-                    """
-                    SELECT EXISTS (
-                        SELECT FROM information_schema.tables
-                        WHERE table_schema = 'public'
-                        AND table_name = 'execution_events'
-                    )
-                """
-                )
+            # Get latest ML metrics from quality_metrics table (saved during training)
+            metrics_repo = ModelQualityMetricsRepository()
 
-                if not table_exists:
-                    logger.debug("execution_events table does not exist, skipping quality evaluation", model_version_id=str(model_version_id))
-                    return
+            # Get latest metrics for this model version (get all, then filter by latest evaluation)
+            all_metrics = await metrics_repo.get_by_model_version(model_version_id)
 
-                # Get recent execution events for this strategy (last 24 hours)
-                cutoff_time = datetime.utcnow() - timedelta(hours=24)
-
-                query = """
-                    SELECT 
-                        COUNT(*) as total_orders,
-                        COUNT(*) FILTER (WHERE (performance->>'realized_pnl')::numeric > 0) as successful_orders,
-                        AVG((performance->>'realized_pnl')::numeric) as avg_pnl,
-                        SUM((performance->>'realized_pnl')::numeric) as total_pnl,
-                        COUNT(DISTINCT signal_id) as unique_signals
-                    FROM execution_events
-                    WHERE strategy_id = $1
-                        AND executed_at >= $2
-                """
-
-                result = await conn.fetchrow(query, strategy_id, cutoff_time)
-
-                if not result or result["total_orders"] == 0:
-                    logger.debug("No recent execution events for quality evaluation", model_version_id=str(model_version_id), strategy_id=strategy_id)
-                    return
-
-                total_orders = result["total_orders"]
-                successful_orders = result["successful_orders"]
-                win_rate = (successful_orders / total_orders) if total_orders > 0 else 0.0
-                total_pnl = float(result["total_pnl"] or 0)
-                avg_pnl = float(result["avg_pnl"] or 0)
-
-                # Calculate additional metrics
-                # Sharpe ratio approximation (simplified)
-                # Profit factor
-                positive_pnl = await conn.fetchval(
-                    """
-                    SELECT SUM((performance->>'realized_pnl')::numeric)
-                    FROM execution_events
-                    WHERE strategy_id = $1
-                        AND executed_at >= $2
-                        AND (performance->>'realized_pnl')::numeric > 0
-                """,
-                    strategy_id,
-                    cutoff_time,
-                )
-                negative_pnl = await conn.fetchval(
-                    """
-                    SELECT ABS(SUM((performance->>'realized_pnl')::numeric))
-                    FROM execution_events
-                    WHERE strategy_id = $1
-                        AND executed_at >= $2
-                        AND (performance->>'realized_pnl')::numeric < 0
-                """,
-                    strategy_id,
-                    cutoff_time,
-                )
-
-                profit_factor = (float(positive_pnl or 0) / float(negative_pnl or 1)) if negative_pnl else (float(positive_pnl or 0) if positive_pnl else 0.0)
-
-                # Store metrics
-                metrics = {
-                    "win_rate": win_rate,
-                    "total_pnl": total_pnl,
-                    "avg_pnl": avg_pnl,
-                    "profit_factor": profit_factor,
-                }
-
-                await model_version_manager.save_quality_metrics(
-                    model_version_id=model_version_id,
-                    metrics=metrics,
-                    evaluation_dataset_size=total_orders,
-                    metadata={
-                        "evaluation_period_hours": 24,
-                        "cutoff_time": cutoff_time.isoformat(),
-                    },
-                )
-
-                logger.info(
-                    "Evaluated model quality",
+            if not all_metrics:
+                logger.debug(
+                    "No quality metrics found for model version",
                     model_version_id=str(model_version_id),
                     strategy_id=strategy_id,
-                    win_rate=win_rate,
-                    total_pnl=total_pnl,
-                    profit_factor=profit_factor,
                 )
+                return
 
-                # Check for quality degradation
-                await self._check_quality_degradation(model_version_id, metrics)
+            # Group metrics by evaluation time and get the latest evaluation
+            # Extract ML metrics (accuracy, precision, recall, F1, MSE, MAE, R2) from latest evaluation
+            ml_metrics = {}
+            latest_evaluation_time = None
+            
+            for metric_record in all_metrics:
+                evaluated_at = metric_record.get("evaluated_at")
+                if evaluated_at and (latest_evaluation_time is None or evaluated_at > latest_evaluation_time):
+                    latest_evaluation_time = evaluated_at
+            
+            # Extract metrics from latest evaluation
+            for metric_record in all_metrics:
+                if metric_record.get("evaluated_at") == latest_evaluation_time:
+                    metric_name = metric_record.get("metric_name")
+                    metric_value = metric_record.get("metric_value")
+                    if metric_name in ["accuracy", "precision", "recall", "f1_score", "mse", "mae", "r2_score", "roc_auc"]:
+                        ml_metrics[metric_name] = float(metric_value) if metric_value is not None else 0.0
+
+            if not ml_metrics:
+                logger.debug(
+                    "No ML metrics found in quality metrics",
+                    model_version_id=str(model_version_id),
+                    strategy_id=strategy_id,
+                )
+                return
+
+            logger.info(
+                "Evaluated model quality using ML metrics",
+                model_version_id=str(model_version_id),
+                strategy_id=strategy_id,
+                ml_metrics=ml_metrics,
+            )
+
+            # Check for quality degradation using ML metrics
+            await self._check_quality_degradation(model_version_id, ml_metrics)
 
         except Exception as e:
             logger.error("Failed to evaluate model quality", model_version_id=str(model_version_id), error=str(e), exc_info=True)
@@ -222,33 +175,39 @@ class QualityMonitor:
             previous_win_rate = await metrics_repo.get_latest_by_model_version(model_version_id, metric_name="win_rate")
             previous_profit_factor = await metrics_repo.get_latest_by_model_version(model_version_id, metric_name="profit_factor")
 
-            # Check thresholds (configurable)
-            win_rate_threshold = getattr(settings, "model_quality_threshold_win_rate", 0.5)
-            profit_factor_threshold = getattr(settings, "model_quality_threshold_profit_factor", 1.0)
+            # Check thresholds using ML metrics (configurable)
+            accuracy_threshold = getattr(settings, "model_quality_threshold_accuracy", 0.75)
+            f1_threshold = getattr(settings, "model_quality_threshold_f1", 0.7)
 
             degradation_detected = False
             degradation_reasons = []
 
-            if current_metrics.get("win_rate", 0) < win_rate_threshold:
+            # Check accuracy threshold
+            if current_metrics.get("accuracy", 0) < accuracy_threshold:
                 degradation_detected = True
-                degradation_reasons.append(f"win_rate {current_metrics['win_rate']:.2f} below threshold {win_rate_threshold}")
+                degradation_reasons.append(f"accuracy {current_metrics.get('accuracy', 0):.2f} below threshold {accuracy_threshold}")
 
-            if current_metrics.get("profit_factor", 0) < profit_factor_threshold:
+            # Check F1 score threshold (for classification)
+            if current_metrics.get("f1_score", 0) < f1_threshold:
                 degradation_detected = True
-                degradation_reasons.append(f"profit_factor {current_metrics['profit_factor']:.2f} below threshold {profit_factor_threshold}")
+                degradation_reasons.append(f"f1_score {current_metrics.get('f1_score', 0):.2f} below threshold {f1_threshold}")
 
             # Compare with previous metrics if available
-            if previous_win_rate and previous_win_rate.get("metric_value"):
-                prev_win_rate = float(previous_win_rate["metric_value"])
-                if current_metrics.get("win_rate", 0) < prev_win_rate * 0.8:  # 20% degradation
+            previous_accuracy = await metrics_repo.get_latest_by_model_version(model_version_id, metric_name="accuracy")
+            if previous_accuracy and previous_accuracy.get("metric_value"):
+                prev_accuracy = float(previous_accuracy["metric_value"])
+                current_accuracy = current_metrics.get("accuracy", 0)
+                if current_accuracy < prev_accuracy * 0.8:  # 20% degradation
                     degradation_detected = True
-                    degradation_reasons.append(f"win_rate dropped from {prev_win_rate:.2f} to {current_metrics['win_rate']:.2f}")
+                    degradation_reasons.append(f"accuracy dropped from {prev_accuracy:.2f} to {current_accuracy:.2f}")
 
-            if previous_profit_factor and previous_profit_factor.get("metric_value"):
-                prev_profit_factor = float(previous_profit_factor["metric_value"])
-                if current_metrics.get("profit_factor", 0) < prev_profit_factor * 0.8:  # 20% degradation
+            previous_f1 = await metrics_repo.get_latest_by_model_version(model_version_id, metric_name="f1_score")
+            if previous_f1 and previous_f1.get("metric_value"):
+                prev_f1 = float(previous_f1["metric_value"])
+                current_f1 = current_metrics.get("f1_score", 0)
+                if current_f1 < prev_f1 * 0.8:  # 20% degradation
                     degradation_detected = True
-                    degradation_reasons.append(f"profit_factor dropped from {prev_profit_factor:.2f} to {current_metrics['profit_factor']:.2f}")
+                    degradation_reasons.append(f"f1_score dropped from {prev_f1:.2f} to {current_f1:.2f}")
 
             if degradation_detected:
                 logger.warning(
