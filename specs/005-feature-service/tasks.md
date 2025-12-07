@@ -430,6 +430,82 @@
 
 ---
 
+## Phase 9: Historical Data Backfilling (Priority: P1)
+
+**Goal**: Enable Feature Service to fetch historical market data from Bybit REST API when insufficient data is available for model training. This allows immediate model training without waiting for data accumulation through WebSocket streams.
+
+**Context**: Feature Service currently receives data only through WebSocket streams via ws-gateway, which means it takes time to accumulate sufficient historical data (e.g., 38 days for training). Bybit REST API v5 provides `/v5/market/kline` endpoint that allows fetching up to 200 historical candles per request, enabling backfilling of missing historical data.
+
+**Independent Test**: Can be fully tested by requesting backfilling for a specific period, verifying that historical data is fetched from Bybit REST API, saved to Parquet storage in the same format as WebSocket data, and then used by Dataset Builder for training dataset creation.
+
+### Implementation for Historical Data Backfilling
+
+#### Part 1: Feature Registry Data Type Analysis
+
+- [ ] T256 [US2] Add method to determine required data types from Feature Registry in feature-service/src/services/feature_registry.py (add get_required_data_types() method to FeatureRegistryLoader class, extract unique input_sources from all features in registry, return set of required data types: ["orderbook", "kline", "trades", "ticker", "funding"], handle empty registry gracefully, cache result for performance, add unit tests for this method)
+- [ ] T256a [US2] Add data type mapping utility in feature-service/src/services/feature_registry.py (add get_data_type_mapping() method that maps Feature Registry input_sources to actual data storage types: "orderbook" → ["orderbook_snapshots", "orderbook_deltas"], "kline" → ["klines"], "trades" → ["trades"], "ticker" → ["ticker"], "funding" → ["funding"], return dict mapping input_source to list of storage types, used by DatasetBuilder and BackfillingService to determine which data files to load/backfill)
+
+#### Part 2: Bybit REST API Client
+
+- [ ] T257 [P] [US2] Create Bybit REST API client in feature-service/src/utils/bybit_client.py (async HTTP client for Bybit REST API v5 with HMAC-SHA256 authentication, support for public endpoints (no auth required for market data), support for authenticated endpoints (optional for future use), retry logic with exponential backoff for rate limits, timeout handling, error handling with BybitAPIError exceptions, base URL configuration for mainnet/testnet, similar to order-manager/src/utils/bybit_client.py but adapted for Feature Service needs)
+- [ ] T258 [P] [US2] Add Bybit API configuration to feature-service/src/config/__init__.py (BYBIT_API_KEY optional for authenticated endpoints, BYBIT_API_SECRET optional for authenticated endpoints, BYBIT_ENVIRONMENT=mainnet|testnet default mainnet, BYBIT_REST_BASE_URL derived from environment, BYBIT_RATE_LIMIT_DELAY_MS=100 for delay between requests to respect rate limits, document that API keys are optional for public market data endpoints)
+- [ ] T259 [P] [US2] Add Bybit API configuration to env.example (BYBIT_API_KEY= optional, BYBIT_API_SECRET= optional, BYBIT_ENVIRONMENT=mainnet, BYBIT_RATE_LIMIT_DELAY_MS=100, document that keys are optional for public market data backfilling)
+
+#### Part 3: Dataset Builder Data Type Optimization
+
+- [ ] T260 [US2] Update DatasetBuilder to use Feature Registry for determining required data types in feature-service/src/services/dataset_builder.py (in _read_historical_data method, use FeatureRegistryLoader.get_required_data_types() to determine which data types to load, use get_data_type_mapping() to map input_sources to storage types, only load data types that are actually needed by features, maintain backward compatibility: if Feature Registry not available, load all data types as before, add logging to indicate which data types are being loaded and why, optimize performance by skipping unnecessary data loading)
+- [ ] T260a [US2] Update DatasetBuilder constructor to accept FeatureRegistryLoader in feature-service/src/services/dataset_builder.py (add optional feature_registry_loader parameter to __init__, if provided, use it to determine required data types, if not provided, fall back to loading all data types, update main.py to pass FeatureRegistryLoader instance to DatasetBuilder)
+
+#### Part 4: Backfilling Service
+
+- [ ] T261 [US2] Create backfilling service in feature-service/src/services/backfilling_service.py (BackfillingService class that fetches historical data from Bybit REST API, methods: backfill_klines(symbol, start_date, end_date, interval) -> List[Dict], backfill_trades(symbol, start_date, end_date) -> List[Dict] optional, backfill_orderbook_snapshots(symbol, start_date, end_date) -> List[Dict] optional, handle pagination for klines (200 candles per request), split large periods into chunks, respect rate limits with configurable delays, convert Bybit API response format to internal format matching WebSocket data structure, handle errors gracefully with retry logic, log backfilling progress with structured logging, use FeatureRegistryLoader to determine which data types to backfill based on required features)
+- [ ] T262 [US2] Implement kline backfilling in feature-service/src/services/backfilling_service.py (use Bybit REST API GET /v5/market/kline endpoint, parameters: category=spot, symbol, interval (1, 3, 5, 15, 30, 60, 120, 240, 360, 720, D, M, W), start timestamp in milliseconds, end timestamp in milliseconds, limit=200 max per request, handle pagination by splitting period into chunks of 200 candles, convert response format: [startTime, open, high, low, close, volume, turnover] to internal format with timestamp, open, high, low, close, volume fields matching WebSocket kline events, save to Parquet using existing ParquetStorage.write_klines method)
+- [ ] T263 [US2] Integrate backfilling with data storage in feature-service/src/services/backfilling_service.py (use existing ParquetStorage service to save backfilled data, use existing DataStorageService for file organization, ensure backfilled data is saved in same format and structure as WebSocket data: /data/raw/klines/{date}/{symbol}.parquet, ensure backfilled data can be read by DatasetBuilder using existing read_klines_range method, handle date-based file organization matching existing structure)
+- [ ] T263a [US2] Add data validation after backfilling save in feature-service/src/services/backfilling_service.py (after saving each chunk/date, immediately read data back from Parquet file to verify it was saved correctly, verify record count matches downloaded data (compare downloaded records count with read records count), verify data structure: all required fields present (timestamp, open, high, low, close, volume for klines), verify data types are correct (timestamp is datetime, prices are float, volume is float), verify data integrity: no corrupted records, timestamps are in valid range, prices are positive, if validation fails: mark date as failed, log validation error with details (date, symbol, data_type, error_reason, expected_count, actual_count), delete corrupted file if validation fails, retry backfilling for failed dates, track validation failures in job metadata for monitoring and debugging)
+- [ ] T264 [US2] Add data availability check before backfilling in feature-service/src/services/backfilling_service.py (check existing Parquet files to determine which dates need backfilling, skip dates that already have data, only backfill missing periods, log which dates are being backfilled vs skipped, optimize to avoid redundant API calls, use FeatureRegistryLoader to determine which data types actually need backfilling based on required features)
+
+#### Part 5: API Endpoints
+
+- [ ] T265 [P] [US2] Create backfilling API endpoints in feature-service/src/api/backfill.py (POST /backfill/historical endpoint: accepts symbol, start_date, end_date, data_types (optional, if not provided, use Feature Registry to determine required types), returns backfill_job_id, GET /backfill/status/{job_id} endpoint: returns backfill status, progress, completed dates, failed dates, POST /backfill/auto endpoint: automatically backfill missing data for a symbol up to configured maximum days, use Feature Registry to determine which data types to backfill, handle API key authentication via verify_api_key middleware, return structured responses with job status)
+- [ ] T266 [US2] Implement backfilling job tracking in feature-service/src/services/backfilling_service.py (track backfilling jobs with job_id, status (pending, in_progress, completed, failed), progress (dates_completed, dates_total, current_date), start_time, end_time, error_message if failed, store job metadata in memory or database for status queries, support cancellation of in-progress jobs, track which data types are being backfilled)
+
+#### Part 6: Automatic Backfilling Integration
+
+- [ ] T267 [US2] Integrate automatic backfilling into dataset builder in feature-service/src/services/dataset_builder.py (in _check_data_availability method, if insufficient data detected and FEATURE_SERVICE_BACKFILL_AUTO=true, automatically trigger backfilling for missing periods, use FeatureRegistryLoader to determine which data types need backfilling based on required features, wait for backfilling to complete before proceeding with dataset build, log automatic backfilling trigger with dataset_id, symbol, missing_period, required_data_types, handle backfilling failures gracefully with fallback to available data, add configuration check for FEATURE_SERVICE_BACKFILL_AUTO)
+- [ ] T268 [US2] Add backfilling configuration to feature-service/src/config/__init__.py (FEATURE_SERVICE_BACKFILL_ENABLED=true/false to enable/disable backfilling feature, FEATURE_SERVICE_BACKFILL_AUTO=true/false to enable/disable automatic backfilling when data insufficient, FEATURE_SERVICE_BACKFILL_MAX_DAYS=90 for maximum days to backfill in one operation, FEATURE_SERVICE_BACKFILL_RATE_LIMIT_DELAY_MS=100 for delay between API requests, FEATURE_SERVICE_BACKFILL_DEFAULT_INTERVAL=1 for default kline interval (1 minute), document configuration options)
+- [ ] T269 [US2] Add backfilling configuration to env.example (FEATURE_SERVICE_BACKFILL_ENABLED=true, FEATURE_SERVICE_BACKFILL_AUTO=true, FEATURE_SERVICE_BACKFILL_MAX_DAYS=40, FEATURE_SERVICE_BACKFILL_RATE_LIMIT_DELAY_MS=100, FEATURE_SERVICE_BACKFILL_DEFAULT_INTERVAL=1, document that backfilling uses Bybit REST API public endpoints and does not require API keys for market data)
+
+#### Part 7: Error Handling and Logging
+
+- [ ] T270 [US2] Add comprehensive error handling for backfilling in feature-service/src/services/backfilling_service.py (handle Bybit API rate limits (429 errors) with exponential backoff, handle network timeouts with retry logic, handle invalid date ranges with clear error messages, handle missing symbols with 404 errors, log all errors with structured logging including symbol, date_range, data_types, error_type, retry_count, continue processing other dates if one date fails, track failed dates for retry or manual intervention)
+- [ ] T271 [US2] Add structured logging for backfilling operations in feature-service/src/services/backfilling_service.py (log backfilling start with symbol, date_range, data_types (from Feature Registry), log progress for each date/chunk processed, log completion with total_dates, successful_dates, failed_dates, duration_seconds, log rate limit delays and retries, include trace_id for request flow tracking, log data volume saved (bytes, records), log which data types were backfilled and why)
+
+#### Part 8: Testing
+
+- [ ] T272 [P] [US2] Create unit tests for Feature Registry data type analysis in feature-service/tests/unit/test_feature_registry.py (test get_required_data_types() method with various Feature Registry configurations, test get_data_type_mapping() method, test with empty registry, test with registry containing all data types, test with registry containing subset of data types, verify correct mapping of input_sources to storage types)
+- [ ] T273 [P] [US2] Create unit tests for DatasetBuilder data type optimization in feature-service/tests/unit/test_dataset_builder.py (test _read_historical_data only loads required data types when Feature Registry provided, test fallback to loading all data types when Feature Registry not provided, test data type mapping logic, use mocks for FeatureRegistryLoader and ParquetStorage)
+- [ ] T274 [P] [US2] Create unit tests for Bybit REST API client in feature-service/tests/unit/test_bybit_client.py (test HMAC-SHA256 signature generation, test public endpoint requests (no auth), test authenticated endpoint requests (with API keys), test retry logic for 429 errors, test timeout handling, test error parsing from Bybit API responses, use mocks for HTTP requests)
+- [ ] T275 [P] [US2] Create unit tests for backfilling service in feature-service/tests/unit/test_backfilling_service.py (test kline backfilling with pagination, test date range splitting into chunks, test data format conversion from Bybit API to internal format, test data availability check logic, test error handling and retry logic, test Feature Registry integration for determining data types to backfill, test data validation after save: verify validation passes for correct data, verify validation fails for corrupted data, verify failed dates are retried, verify corrupted files are deleted on validation failure, use mocks for Bybit API client, ParquetStorage, and FeatureRegistryLoader)
+- [ ] T276 [P] [US2] Create integration tests for backfilling in feature-service/tests/integration/test_backfilling_integration.py (test end-to-end backfilling: fetch from Bybit API, save to Parquet, verify data validation passes after save, verify data can be read by DatasetBuilder, test automatic backfilling trigger in dataset builder with Feature Registry, test backfilling API endpoints, test that only required data types are backfilled based on Feature Registry, test validation failure handling: simulate corrupted save, verify file is deleted and date is marked as failed, verify retry mechanism for failed dates, use test Bybit API or mocks, verify data format matches WebSocket data format)
+- [ ] T277 [P] [US2] Create contract tests for backfilling API in feature-service/tests/contract/test_backfill_api.py (test POST /backfill/historical endpoint contract, test GET /backfill/status/{job_id} endpoint contract, test error responses, test authentication requirements, test automatic data type determination from Feature Registry, verify response schemas match API documentation)
+
+**Checkpoint**: At this point, Feature Service should be able to fetch historical data from Bybit REST API when insufficient data is available, automatically backfill missing data when dataset building is requested, and provide manual backfilling via API endpoints. This enables immediate model training without waiting for data accumulation.
+
+**Summary of Changes for Historical Data Backfilling**:
+- Feature Registry analysis: methods to determine required data types from Feature Registry
+- Dataset Builder optimization: only loads data types required by features (reduces memory and I/O)
+- Bybit REST API client added for fetching historical market data
+- Backfilling service implements kline data fetching with pagination
+- Backfilling service uses Feature Registry to determine which data types to backfill
+- Backfilled data saved in same format as WebSocket data (Parquet)
+- Data validation after save: immediate verification that saved data is correct and readable, prevents wasted API calls by catching save failures early, validates record count, data structure, data types, and data integrity
+- Automatic backfilling integrated into dataset builder with Feature Registry awareness
+- Manual backfilling available via REST API endpoints with automatic data type determination
+- Comprehensive error handling and logging for backfilling operations
+- Configuration for enabling/disabling backfilling and auto-backfilling
+
+---
+
 ## Dependencies & Execution Order
 
 ### Phase Dependencies
@@ -451,6 +527,36 @@
 - **User Story 3 (P2)**: Can start after Foundational (Phase 2) - No dependencies on other stories (can run in parallel with US1/US2)
 - **User Story 4 (P2)**: Can start after Foundational (Phase 2) - Depends on US1 for orderbook manager and data quality monitoring
 - **User Story 5 (P3)**: Can start after Foundational (Phase 2) - Depends on US1 and US2 for feature computation integration
+- **Historical Data Backfilling (Phase 9)**: Depends on US2 (dataset building) and US3 (raw data storage) - requires ParquetStorage and DataStorageService infrastructure, enables immediate model training by fetching historical data from Bybit REST API when insufficient data is available
+
+### Task Dependencies for Historical Data Backfilling (T256-T277)
+
+**Note**: These tasks implement backfilling of historical market data from Bybit REST API to enable immediate model training without waiting for data accumulation.
+
+- **T256** (Bybit REST API client): Can be done independently, must complete before T259, T260 (backfilling service needs client to fetch data from Bybit API)
+- **T257** (Bybit API configuration): Can be done independently, must complete before T256 (client needs configuration values)
+- **T258** (env.example configuration): Can be done independently, can be done in parallel with T257
+- **T260** (DatasetBuilder data type optimization): Depends on T256, T256a (Feature Registry analysis exists), must complete after US2 (dataset builder exists), can be done in parallel with T261-T264
+- **T260a** (DatasetBuilder constructor update): Depends on T260, must complete after main.py integration
+- **T261** (backfilling service): Depends on T256, T256a (Feature Registry analysis exists), T257 (Bybit client exists), T263 (data storage integration), must complete before T262, T264 (kline backfilling and data availability check need service structure)
+- **T262** (kline backfilling): Depends on T261 (backfilling service exists), T263 (data storage integration), implements core backfilling logic
+- **T263** (data storage integration): Depends on US3 (ParquetStorage and DataStorageService exist), must complete before T261, T262 (backfilling needs storage services)
+- **T263a** (data validation after save): Depends on T263 (data storage integration exists), must complete after T262 (kline backfilling exists), validates that saved data is correct and readable, prevents wasted API calls by catching save failures immediately
+- **T264** (data availability check): Depends on T261 (backfilling service exists), T256, T256a (Feature Registry analysis), can be done in parallel with T262, T263a
+- **T265** (backfilling API endpoints): Depends on T261 (backfilling service exists), T266 (job tracking exists), T256, T256a (Feature Registry analysis), must complete before T267 (automatic integration may use API)
+- **T266** (job tracking): Can be done independently, must complete before T265 (API endpoints need job tracking)
+- **T267** (automatic integration): Depends on T261 (backfilling service exists), T264 (data availability check exists), T268 (configuration exists), T256, T256a (Feature Registry analysis), must complete after US2 (dataset builder exists)
+- **T268** (backfilling configuration): Can be done independently, must complete before T267 (automatic integration needs configuration)
+- **T269** (env.example backfilling config): Can be done independently, can be done in parallel with T268
+- **T270** (error handling): Depends on T261 (backfilling service exists), can be done in parallel with T271
+- **T271** (structured logging): Depends on T261 (backfilling service exists), can be done in parallel with T270
+- **T272** (unit tests for Feature Registry): Depends on T256, T256a (Feature Registry analysis exists), can be done in parallel with T273-T277
+- **T273** (unit tests for DatasetBuilder): Depends on T260 (DatasetBuilder optimization exists), can be done in parallel with T272, T274-T277
+- **T274** (unit tests for client): Depends on T257 (Bybit client exists), can be done in parallel with T272, T273, T275-T277
+- **T275** (unit tests for service): Depends on T261 (backfilling service exists), can be done in parallel with T272-T274, T276, T277
+- **T276** (integration tests): Depends on T261 (backfilling service exists), T265 (API endpoints exist), T260 (DatasetBuilder optimization), can be done in parallel with T272-T275, T277
+- **T277** (contract tests): Depends on T265 (API endpoints exist), can be done in parallel with T272-T276
+- **Note**: T256, T256a, T257, T258, T259 can be done in parallel (setup tasks), T272-T277 can be done in parallel (test tasks), T270 and T271 can be done in parallel (enhancement tasks)
 
 ### Within Each User Story
 
@@ -475,6 +581,7 @@
 - All models within a story marked [P] can run in parallel
 - Different user stories can be worked on in parallel by different team members (respecting dependencies)
 - Grafana observability tasks (T196-T207) can run in parallel after corresponding services are implemented: T196-T199 (database migrations) can run in parallel, T200-T203 (metrics persistence) can run in parallel after services are ready, T204-T207 (dashboard creation) can run in parallel after metrics tables are created
+- Historical Data Backfilling tasks (T256-T277, T263a) can run in parallel after US2 and US3 are complete: T256-T259 (setup tasks including Feature Registry analysis) can run in parallel, T260-T260a (DatasetBuilder optimization) can run after T256-T256a, T261-T264, T263a (core backfilling with validation) can run sequentially after T256-T256a, T257, T263, T265-T266 (API and tracking) can run in parallel, T267-T269 (integration and config) can run in parallel, T270-T271 (enhancements) can run in parallel, T272-T277 (tests) can run in parallel
 
 ---
 
@@ -570,7 +677,7 @@ With multiple developers:
 
 ## Task Summary
 
-- **Total Tasks**: 265 (added 9 Grafana observability tasks T196-T204 + 4 migration application tasks T196a-T199a + 17 Feature Registry versioning tasks T208-T218, T166a-T166b, T169a-T169f: version management, backward compatibility, automatic migration, rollback, audit trail + 36 Statistics API tasks T219-T254: HTTP API endpoints for service statistics and monitoring + 1 dataset validation task T255: empty test split validation and warning). Dashboard creation tasks (3 tasks) are in `specs/001-grafana-monitoring/tasks.md`
+- **Total Tasks**: 283 (added 9 Grafana observability tasks T196-T204 + 4 migration application tasks T196a-T199a + 17 Feature Registry versioning tasks T208-T218, T166a-T166b, T169a-T169f: version management, backward compatibility, automatic migration, rollback, audit trail + 36 Statistics API tasks T219-T254: HTTP API endpoints for service statistics and monitoring + 1 dataset validation task T255: empty test split validation and warning + 23 Historical Data Backfilling tasks T256-T277, T263a: Feature Registry data type analysis, DatasetBuilder optimization, Bybit REST API client, backfilling service with data validation, API endpoints, automatic integration, error handling, testing). Dashboard creation tasks (3 tasks) are in `specs/001-grafana-monitoring/tasks.md`
 - **Phase 1 (Setup)**: 10 tasks (added test structure setup)
 - **Phase 2 (Foundational)**: 29 tasks (12 tests + 17 implementation: 3 migrations + 3 migration application tasks)
 - **Phase 3 (User Story 1)**: 43 tasks (20 tests + 23 implementation)
@@ -579,6 +686,7 @@ With multiple developers:
 - **Phase 6 (User Story 4)**: 22 tasks (11 tests + 11 implementation)
 - **Phase 7 (User Story 5)**: 35 tasks (15 tests + 20 implementation, including version management, backward compatibility, automatic migration, and rollback capabilities)
 - **Phase 8 (Polish)**: 61 tasks (5 additional tests + 12 implementation + 7 Grafana observability tasks: T196-T199 database migrations + T196a-T199a migration application, T200-T203 metrics persistence, T204 health check extension + 36 Statistics API tasks T219-T254: 16 tests + 20 implementation + 1 dataset validation task T255: empty test split validation). Grafana dashboard creation tasks (T205-T207) are in `specs/001-grafana-monitoring/tasks.md`
+- **Phase 9 (Historical Data Backfilling)**: 23 tasks (T256-T277, T263a: Feature Registry data type analysis and mapping, DatasetBuilder optimization to load only required data types, Bybit REST API client, backfilling service with Feature Registry awareness and data validation after save, API endpoints for manual and automatic backfilling, integration with dataset builder, comprehensive error handling and logging, unit/integration/contract tests)
 
 **Suggested MVP Scope**: Phase 1 + Phase 2 + Phase 3 (User Story 1) = 79 tasks
 
