@@ -41,6 +41,25 @@ class Config(BaseSettings):
     ws_gateway_port: int = Field(..., env="WS_GATEWAY_PORT", description="WS Gateway port")
     ws_gateway_api_key: Optional[str] = Field(default=None, env="WS_GATEWAY_API_KEY", description="WS Gateway API key")
     
+    # Bybit REST API Configuration (for historical data backfilling)
+    bybit_api_key: Optional[str] = Field(default=None, env="BYBIT_API_KEY", description="Bybit API key (optional for public market data endpoints)")
+    bybit_api_secret: Optional[str] = Field(default=None, env="BYBIT_API_SECRET", description="Bybit API secret (optional for public market data endpoints)")
+    bybit_environment: str = Field(default="mainnet", env="BYBIT_ENVIRONMENT", description="Bybit environment: mainnet or testnet")
+    feature_service_backfill_rate_limit_delay_ms: int = Field(default=100, env="FEATURE_SERVICE_BACKFILL_RATE_LIMIT_DELAY_MS", description="Delay between API requests in milliseconds to respect rate limits (for backfilling)")
+    
+    # Backfilling Configuration
+    feature_service_backfill_enabled: bool = Field(default=True, env="FEATURE_SERVICE_BACKFILL_ENABLED", description="Enable/disable backfilling feature")
+    feature_service_backfill_auto: bool = Field(default=True, env="FEATURE_SERVICE_BACKFILL_AUTO", description="Enable/disable automatic backfilling when data insufficient")
+    feature_service_backfill_max_days: int = Field(default=90, env="FEATURE_SERVICE_BACKFILL_MAX_DAYS", description="Maximum days to backfill in one operation")
+    feature_service_backfill_default_interval: int = Field(default=1, env="FEATURE_SERVICE_BACKFILL_DEFAULT_INTERVAL", description="Default kline interval in minutes (1 = 1 minute)")
+    
+    @property
+    def bybit_rest_base_url(self) -> str:
+        """Get Bybit REST API base URL based on environment."""
+        if self.bybit_environment == "testnet":
+            return "https://api-testnet.bybit.com"
+        return "https://api.bybit.com"
+    
     @property
     def ws_gateway_api_url(self) -> str:
         """Get ws-gateway API URL."""

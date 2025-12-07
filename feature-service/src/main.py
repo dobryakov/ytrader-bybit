@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from src.api.health import router as health_router
 from src.api.features import router as features_router, set_feature_computer
 from src.api.dataset import router as dataset_router, set_metadata_storage, set_dataset_builder
+from src.api.backfill import router as backfill_router, set_backfilling_service
 from src.api.middleware.auth import verify_api_key
 from src.logging import setup_logging, get_logger
 from src.config import config
@@ -27,6 +28,7 @@ from src.storage.metadata_storage import MetadataStorage
 from src.storage.parquet_storage import ParquetStorage
 from src.services.dataset_builder import DatasetBuilder
 from src.services.data_storage import DataStorageService
+from src.services.backfilling_service import BackfillingService
 
 # Setup logging
 setup_logging(level=config.feature_service_log_level)
@@ -50,9 +52,11 @@ feature_scheduler: FeatureScheduler = None
 metadata_storage: MetadataStorage = None
 dataset_builder: DatasetBuilder = None
 data_storage: DataStorageService = None
+backfilling_service: BackfillingService = None
 
 # Include routers
 app.include_router(health_router)
+app.include_router(backfill_router)
 app.include_router(features_router)
 app.include_router(dataset_router)
 
@@ -87,7 +91,7 @@ async def startup():
     """Application startup event."""
     global mq_manager, http_client, orderbook_manager, feature_computer
     global feature_registry_loader, market_data_consumer, feature_publisher, feature_scheduler
-    global metadata_storage, dataset_builder, data_storage
+    global metadata_storage, dataset_builder, data_storage, backfilling_service
     
     logger.info("Feature Service starting up")
     
@@ -130,12 +134,25 @@ async def startup():
         )
         await data_storage.start()
         
+        # Initialize Backfilling Service (if enabled)
+        if config.feature_service_backfill_enabled:
+            backfilling_service = BackfillingService(
+                parquet_storage=parquet_storage,
+                feature_registry_loader=feature_registry_loader,
+            )
+            set_backfilling_service(backfilling_service)
+            logger.info("Backfilling service initialized")
+        else:
+            backfilling_service = None
+        
         # Initialize Dataset Builder
         dataset_builder = DatasetBuilder(
             metadata_storage=metadata_storage,
             parquet_storage=parquet_storage,
             dataset_storage_path=config.feature_service_dataset_storage_path,
             feature_registry_version=registry_version,
+            feature_registry_loader=feature_registry_loader,
+            backfilling_service=backfilling_service,
         )
         set_dataset_builder(dataset_builder)
         

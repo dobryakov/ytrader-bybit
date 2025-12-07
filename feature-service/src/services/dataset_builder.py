@@ -14,6 +14,8 @@ from src.models.feature_vector import FeatureVector
 from src.storage.metadata_storage import MetadataStorage
 from src.storage.parquet_storage import ParquetStorage
 from src.services.offline_engine import OfflineEngine
+from src.services.feature_registry import FeatureRegistryLoader
+from src.services.backfilling_service import BackfillingService
 
 logger = structlog.get_logger(__name__)
 
@@ -28,6 +30,8 @@ class DatasetBuilder:
         dataset_storage_path: str,
         batch_size: int = 1000,
         feature_registry_version: str = "1.0.0",
+        feature_registry_loader: Optional[FeatureRegistryLoader] = None,
+        backfilling_service: Optional[BackfillingService] = None,
     ):
         """
         Initialize dataset builder.
@@ -38,6 +42,8 @@ class DatasetBuilder:
             dataset_storage_path: Base path for storing built datasets
             batch_size: Batch size for processing large datasets
             feature_registry_version: Feature Registry version to use
+            feature_registry_loader: Optional Feature Registry loader for data type optimization
+            backfilling_service: Optional backfilling service for automatic data fetching
         """
         self._metadata_storage = metadata_storage
         self._parquet_storage = parquet_storage
@@ -47,6 +53,8 @@ class DatasetBuilder:
         self._feature_registry_version = feature_registry_version
         self._offline_engine = OfflineEngine(feature_registry_version)
         self._active_builds: Dict[str, asyncio.Task] = {}
+        self._feature_registry_loader = feature_registry_loader
+        self._backfilling_service = backfilling_service
     
     async def build_dataset(
         self,
@@ -350,6 +358,108 @@ class DatasetBuilder:
             )
             
             if sample_trades.empty:
+                # Check if automatic backfilling is enabled
+                from src.config import config
+                
+                if (
+                    config.feature_service_backfill_enabled
+                    and config.feature_service_backfill_auto
+                    and self._backfilling_service is not None
+                ):
+                    # Determine which data types need backfilling
+                    data_types = None
+                    if self._feature_registry_loader is not None:
+                        try:
+                            required_types = self._feature_registry_loader.get_required_data_types()
+                            data_type_mapping = self._feature_registry_loader.get_data_type_mapping()
+                            # Map input sources to storage types
+                            data_types = []
+                            for input_source in required_types:
+                                if input_source in data_type_mapping:
+                                    if "klines" in data_type_mapping[input_source]:
+                                        data_types.append("klines")
+                            logger.info(
+                                "automatic_backfilling_triggered",
+                                symbol=symbol,
+                                missing_period_start=start_date_obj.isoformat(),
+                                missing_period_end=end_date_obj.isoformat(),
+                                required_data_types=data_types,
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                "feature_registry_analysis_failed_for_backfill",
+                                error=str(e),
+                                fallback="backfilling_all_data_types",
+                            )
+                            data_types = ["klines"]  # Default to klines
+                    else:
+                        data_types = ["klines"]  # Default to klines
+                    
+                    # Trigger automatic backfilling
+                    try:
+                        job_id = await self._backfilling_service.backfill_historical(
+                            symbol=symbol,
+                            start_date=start_date_obj,
+                            end_date=end_date_obj,
+                            data_types=data_types,
+                        )
+                        
+                        # Wait for backfilling to complete (with timeout)
+                        max_wait_seconds = 300  # 5 minutes timeout
+                        wait_interval = 5  # Check every 5 seconds
+                        waited = 0
+                        
+                        while waited < max_wait_seconds:
+                            job_status = self._backfilling_service.get_job_status(job_id)
+                            if job_status is None:
+                                break
+                            
+                            if job_status["status"] == "completed":
+                                logger.info(
+                                    "automatic_backfilling_completed",
+                                    job_id=job_id,
+                                    symbol=symbol,
+                                    completed_dates=len(job_status.get("completed_dates", [])),
+                                )
+                                # Re-check data availability after backfilling
+                                sample_trades = await self._parquet_storage.read_trades_range(
+                                    symbol, start_date_obj, end_date_obj
+                                )
+                                if not sample_trades.empty:
+                                    return {
+                                        "start": start_date,
+                                        "end": end_date,
+                                    }
+                                break
+                            elif job_status["status"] == "failed":
+                                logger.warning(
+                                    "automatic_backfilling_failed",
+                                    job_id=job_id,
+                                    symbol=symbol,
+                                    error=job_status.get("error_message"),
+                                )
+                                break
+                            
+                            await asyncio.sleep(wait_interval)
+                            waited += wait_interval
+                        
+                        if waited >= max_wait_seconds:
+                            logger.warning(
+                                "automatic_backfilling_timeout",
+                                job_id=job_id,
+                                symbol=symbol,
+                                timeout_seconds=max_wait_seconds,
+                            )
+                    
+                    except Exception as e:
+                        logger.error(
+                            "automatic_backfilling_error",
+                            symbol=symbol,
+                            error=str(e),
+                            exc_info=True,
+                        )
+                        # Fall through to return None
+                
                 # Try to find available period
                 # For now, return None - in production would search for available dates
                 return None
@@ -369,36 +479,111 @@ class DatasetBuilder:
         start_date: datetime,
         end_date: datetime,
     ) -> Dict[str, pd.DataFrame]:
-        """Read historical data for date range."""
+        """
+        Read historical data for date range.
+        
+        Uses Feature Registry to determine which data types to load if available.
+        Falls back to loading all data types if Feature Registry not provided.
+        """
         start_date_obj = start_date.date()
         end_date_obj = end_date.date()
         
-        # Read all data types in parallel
-        snapshots, deltas, trades, klines, ticker, funding = await asyncio.gather(
-            self._parquet_storage.read_orderbook_snapshots_range(
-                symbol, start_date_obj, end_date_obj
-            ),
-            self._parquet_storage.read_orderbook_deltas_range(
-                symbol, start_date_obj, end_date_obj
-            ),
-            self._parquet_storage.read_trades_range(symbol, start_date_obj, end_date_obj),
-            self._parquet_storage.read_klines_range(symbol, start_date_obj, end_date_obj),
-            asyncio.to_thread(
-                lambda: pd.DataFrame()
-            ),  # Ticker not used for now
-            asyncio.to_thread(
-                lambda: pd.DataFrame()
-            ),  # Funding not used for now
+        # Determine required data types from Feature Registry if available
+        required_data_types = None
+        data_type_mapping = None
+        
+        if self._feature_registry_loader is not None:
+            try:
+                required_data_types = self._feature_registry_loader.get_required_data_types()
+                data_type_mapping = self._feature_registry_loader.get_data_type_mapping()
+                logger.info(
+                    "loading_required_data_types",
+                    symbol=symbol,
+                    required_types=sorted(required_data_types),
+                    mapping=data_type_mapping,
+                )
+            except Exception as e:
+                logger.warning(
+                    "feature_registry_analysis_failed",
+                    error=str(e),
+                    fallback="loading_all_data_types",
+                )
+        
+        # Determine which data types to load
+        load_orderbook = True
+        load_trades = True
+        load_klines = True
+        load_ticker = True
+        load_funding = True
+        
+        if required_data_types is not None:
+            # Only load data types required by features
+            load_orderbook = "orderbook" in required_data_types
+            load_trades = "trades" in required_data_types
+            load_klines = "kline" in required_data_types
+            load_ticker = "ticker" in required_data_types
+            load_funding = "funding" in required_data_types
+        
+        # Read required data types in parallel
+        read_tasks = []
+        
+        if load_orderbook:
+            read_tasks.append(
+                ("snapshots", self._parquet_storage.read_orderbook_snapshots_range(
+                    symbol, start_date_obj, end_date_obj
+                ))
+            )
+            read_tasks.append(
+                ("deltas", self._parquet_storage.read_orderbook_deltas_range(
+                    symbol, start_date_obj, end_date_obj
+                ))
+            )
+        else:
+            read_tasks.append(("snapshots", asyncio.to_thread(lambda: pd.DataFrame())))
+            read_tasks.append(("deltas", asyncio.to_thread(lambda: pd.DataFrame())))
+        
+        if load_trades:
+            read_tasks.append(
+                ("trades", self._parquet_storage.read_trades_range(symbol, start_date_obj, end_date_obj))
+            )
+        else:
+            read_tasks.append(("trades", asyncio.to_thread(lambda: pd.DataFrame())))
+        
+        if load_klines:
+            read_tasks.append(
+                ("klines", self._parquet_storage.read_klines_range(symbol, start_date_obj, end_date_obj))
+            )
+        else:
+            read_tasks.append(("klines", asyncio.to_thread(lambda: pd.DataFrame())))
+        
+        if load_ticker:
+            # Ticker not implemented yet, return empty DataFrame
+            read_tasks.append(("ticker", asyncio.to_thread(lambda: pd.DataFrame())))
+        else:
+            read_tasks.append(("ticker", asyncio.to_thread(lambda: pd.DataFrame())))
+        
+        if load_funding:
+            # Funding not implemented yet, return empty DataFrame
+            read_tasks.append(("funding", asyncio.to_thread(lambda: pd.DataFrame())))
+        else:
+            read_tasks.append(("funding", asyncio.to_thread(lambda: pd.DataFrame())))
+        
+        # Execute all reads in parallel
+        results = await asyncio.gather(*[task[1] for task in read_tasks])
+        
+        # Build result dictionary
+        result = {}
+        for i, (name, _) in enumerate(read_tasks):
+            result[name] = results[i]
+        
+        logger.debug(
+            "historical_data_loaded",
+            symbol=symbol,
+            data_types_loaded=[name for name, _ in read_tasks if not result[name].empty],
+            optimization_enabled=required_data_types is not None,
         )
         
-        return {
-            "snapshots": snapshots,
-            "deltas": deltas,
-            "trades": trades,
-            "klines": klines,
-            "ticker": ticker,
-            "funding": funding,
-        }
+        return result
     
     async def _compute_features_batch(
         self,

@@ -3,7 +3,7 @@ Feature Registry configuration loader and management.
 """
 import yaml
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from src.config import config
 from src.logging import get_logger
 
@@ -115,4 +115,73 @@ class FeatureRegistryLoader:
         """
         self._config = None
         return self.load()
+    
+    def get_required_data_types(self) -> set:
+        """
+        Determine required data types from Feature Registry.
+        
+        Extracts unique input_sources from all features in registry.
+        
+        Returns:
+            Set of required data types: {"orderbook", "kline", "trades", "ticker", "funding"}
+            
+        Raises:
+            ValueError: If registry is not loaded
+        """
+        if self._config is None:
+            raise ValueError("Feature Registry not loaded. Call load() first.")
+        
+        required_types = set()
+        
+        if "features" not in self._config:
+            logger.warning("Feature Registry has no features section")
+            return required_types
+        
+        for feature in self._config["features"]:
+            if "input_sources" in feature:
+                input_sources = feature["input_sources"]
+                if isinstance(input_sources, list):
+                    required_types.update(input_sources)
+                elif isinstance(input_sources, str):
+                    required_types.add(input_sources)
+        
+        logger.debug("Required data types determined", data_types=sorted(required_types))
+        return required_types
+    
+    def get_data_type_mapping(self) -> Dict[str, List[str]]:
+        """
+        Map Feature Registry input_sources to actual data storage types.
+        
+        Maps:
+        - "orderbook" → ["orderbook_snapshots", "orderbook_deltas"]
+        - "kline" → ["klines"]
+        - "trades" → ["trades"]
+        - "ticker" → ["ticker"]
+        - "funding" → ["funding"]
+        
+        Returns:
+            Dict mapping input_source to list of storage types
+            
+        Raises:
+            ValueError: If registry is not loaded
+        """
+        if self._config is None:
+            raise ValueError("Feature Registry not loaded. Call load() first.")
+        
+        mapping = {
+            "orderbook": ["orderbook_snapshots", "orderbook_deltas"],
+            "kline": ["klines"],
+            "trades": ["trades"],
+            "ticker": ["ticker"],
+            "funding": ["funding"],
+        }
+        
+        # Get required input sources
+        required_sources = self.get_required_data_types()
+        
+        # Return mapping only for required sources
+        result = {source: mapping[source] for source in required_sources if source in mapping}
+        
+        logger.debug("Data type mapping created", mapping=result)
+        return result
 

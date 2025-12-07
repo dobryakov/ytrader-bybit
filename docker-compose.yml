@@ -214,6 +214,14 @@ services:
       - DATA_QUALITY_MONITORING_ENABLED=${DATA_QUALITY_MONITORING_ENABLED:-true}
       - DATA_QUALITY_REPORT_TIMEOUT_SECONDS=${DATA_QUALITY_REPORT_TIMEOUT_SECONDS:-5}
       - FEATURE_SERVICE_SYMBOLS=${FEATURE_SERVICE_SYMBOLS:-}
+      - BYBIT_API_KEY=${BYBIT_API_KEY}
+      - BYBIT_API_SECRET=${BYBIT_API_SECRET}
+      - BYBIT_ENVIRONMENT=${BYBIT_ENVIRONMENT:-testnet}
+      - FEATURE_SERVICE_BACKFILL_RATE_LIMIT_DELAY_MS=${FEATURE_SERVICE_BACKFILL_RATE_LIMIT_DELAY_MS:-100}
+      - FEATURE_SERVICE_BACKFILL_ENABLED=${FEATURE_SERVICE_BACKFILL_ENABLED:-true}
+      - FEATURE_SERVICE_BACKFILL_AUTO=${FEATURE_SERVICE_BACKFILL_AUTO:-true}
+      - FEATURE_SERVICE_BACKFILL_MAX_DAYS=${FEATURE_SERVICE_BACKFILL_MAX_DAYS:-90}
+      - FEATURE_SERVICE_BACKFILL_DEFAULT_INTERVAL=${FEATURE_SERVICE_BACKFILL_DEFAULT_INTERVAL:-1}
     volumes:
       - ./feature-service/src:/app/src
       - ./feature-service/config:/app/config
@@ -236,6 +244,11 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "1m"
+        max-file: "3"
 
   order-manager:
     build:
