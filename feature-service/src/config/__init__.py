@@ -44,7 +44,7 @@ class Config(BaseSettings):
     # Bybit REST API Configuration (for historical data backfilling)
     bybit_api_key: Optional[str] = Field(default=None, env="BYBIT_API_KEY", description="Bybit API key (optional for public market data endpoints)")
     bybit_api_secret: Optional[str] = Field(default=None, env="BYBIT_API_SECRET", description="Bybit API secret (optional for public market data endpoints)")
-    bybit_environment: str = Field(default="mainnet", env="BYBIT_ENVIRONMENT", description="Bybit environment: mainnet or testnet")
+    bybit_environment: str = Field(default="testnet", env="BYBIT_ENVIRONMENT", description="Bybit environment: mainnet or testnet (default: testnet for development)")
     feature_service_backfill_rate_limit_delay_ms: int = Field(default=100, env="FEATURE_SERVICE_BACKFILL_RATE_LIMIT_DELAY_MS", description="Delay between API requests in milliseconds to respect rate limits (for backfilling)")
     
     # Backfilling Configuration

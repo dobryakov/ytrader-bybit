@@ -121,6 +121,8 @@ class BackfillingService:
             
             try:
                 # Make API request
+                # Note: Bybit API returns data starting from 'start' timestamp
+                # We use 'end' to limit the range, but API may return data up to 'end' inclusive
                 response = await self._bybit_client.get(
                     endpoint="/v5/market/kline",
                     params={
@@ -148,6 +150,21 @@ class BackfillingService:
                     # No more data available, stop pagination
                     break
                 
+                # Log pagination details for debugging
+                first_timestamp = int(klines[0][0]) if klines else None
+                last_timestamp_in_response = int(klines[-1][0]) if klines else None
+                logger.debug(
+                    "backfilling_klines_api_response",
+                    symbol=symbol,
+                    request_start=current_start,
+                    request_end=current_end,
+                    response_count=len(klines),
+                    first_timestamp=first_timestamp,
+                    last_timestamp=last_timestamp_in_response,
+                    first_datetime=datetime.fromtimestamp(first_timestamp / 1000, tz=timezone.utc).isoformat() if first_timestamp else None,
+                    last_datetime=datetime.fromtimestamp(last_timestamp_in_response / 1000, tz=timezone.utc).isoformat() if last_timestamp_in_response else None,
+                )
+                
                 # Convert to internal format
                 for kline in klines:
                     # Bybit format: [startTime, open, high, low, close, volume, turnover]
@@ -163,10 +180,58 @@ class BackfillingService:
                     }
                     all_klines.append(internal_kline)
                 
+                # Check for duplicates in current response
+                timestamps_in_response = [int(k[0]) for k in klines]
+                unique_timestamps = set(timestamps_in_response)
+                if len(timestamps_in_response) != len(unique_timestamps):
+                    duplicates_in_response = len(timestamps_in_response) - len(unique_timestamps)
+                    logger.warning(
+                        "backfilling_duplicates_in_api_response",
+                        symbol=symbol,
+                        request_start=current_start,
+                        total_records=len(klines),
+                        unique_records=len(unique_timestamps),
+                        duplicates=duplicates_in_response,
+                        message="API returned duplicate timestamps in single response",
+                    )
+                
+                # Check for overlap with previously fetched data
+                if all_klines:
+                    existing_timestamps = {int(k["timestamp"].timestamp() * 1000) for k in all_klines}
+                    overlapping = existing_timestamps.intersection(unique_timestamps)
+                    if overlapping:
+                        logger.warning(
+                            "backfilling_pagination_overlap",
+                            symbol=symbol,
+                            request_start=current_start,
+                            overlapping_count=len(overlapping),
+                            overlapping_timestamps=sorted(list(overlapping))[:10],  # First 10 for logging
+                            message="API returned data that overlaps with previously fetched data",
+                        )
+                        # Filter out overlapping data before adding to all_klines
+                        # This prevents duplicates even if API returns overlapping data
+                        new_klines = [k for k in klines if int(k[0]) not in existing_timestamps]
+                        if len(new_klines) < len(klines):
+                            logger.info(
+                                "backfilling_filtered_overlapping",
+                                symbol=symbol,
+                                original_count=len(klines),
+                                filtered_count=len(new_klines),
+                                removed_count=len(klines) - len(new_klines),
+                            )
+                            klines = new_klines
+                            # Recalculate unique timestamps after filtering
+                            unique_timestamps = {int(k[0]) for k in klines}
+                
                 # Update current_start to last kline timestamp + interval duration
                 # This ensures we don't request the same data twice
-                last_timestamp = int(klines[-1][0])
-                next_start = last_timestamp + (interval * 60 * 1000)
+                # Use the last timestamp from filtered data (without overlaps)
+                if klines:
+                    last_timestamp = int(klines[-1][0])
+                    next_start = last_timestamp + (interval * 60 * 1000)
+                else:
+                    # No new data in this response, advance by chunk duration to avoid infinite loop
+                    next_start = current_end + (interval * 60 * 1000)
                 
                 # Safety check: if next_start doesn't advance, break to avoid infinite loop
                 if next_start <= current_start:
@@ -201,6 +266,28 @@ class BackfillingService:
                 )
                 raise
         
+        # Remove duplicates by timestamp (keep last occurrence)
+        # This handles cases where API returns duplicate data
+        if all_klines:
+            # Convert to DataFrame for efficient deduplication
+            df_temp = pd.DataFrame(all_klines)
+            df_temp["timestamp"] = pd.to_datetime(df_temp["timestamp"])
+            initial_count = len(df_temp)
+            df_temp = df_temp.drop_duplicates(subset=["timestamp"], keep="last")
+            df_temp = df_temp.sort_values("timestamp")
+            
+            if len(df_temp) < initial_count:
+                logger.warning(
+                    "backfilling_klines_duplicates_removed",
+                    symbol=symbol,
+                    initial_count=initial_count,
+                    final_count=len(df_temp),
+                    duplicates_removed=initial_count - len(df_temp),
+                )
+            
+            # Convert back to list of dicts
+            all_klines = df_temp.to_dict("records")
+        
         logger.info(
             "backfilling_klines_complete",
             symbol=symbol,
@@ -232,6 +319,35 @@ class BackfillingService:
         # Ensure timestamp is datetime
         if "timestamp" in df.columns:
             df["timestamp"] = pd.to_datetime(df["timestamp"])
+        
+        # Remove duplicates by timestamp (keep last occurrence)
+        # This prevents duplicate data from being saved
+        initial_count = len(df)
+        df = df.drop_duplicates(subset=["timestamp"], keep="last")
+        if len(df) < initial_count:
+            logger.warning(
+                "klines_duplicates_removed",
+                symbol=symbol,
+                date=date_str,
+                initial_count=initial_count,
+                final_count=len(df),
+                duplicates_removed=initial_count - len(df),
+            )
+        
+        # Sort by timestamp
+        df = df.sort_values("timestamp").reset_index(drop=True)
+        
+        # For backfilling, we should overwrite existing file, not append
+        # Delete existing file if it exists to ensure clean data
+        klines_path = self._parquet_storage._get_klines_path(symbol, date_str)
+        if klines_path.exists():
+            logger.debug(
+                "klines_overwriting_existing",
+                symbol=symbol,
+                date=date_str,
+                existing_file=str(klines_path),
+            )
+            klines_path.unlink()
         
         # Save to Parquet
         await self._parquet_storage.write_klines(symbol, date_str, df)
@@ -414,15 +530,41 @@ class BackfillingService:
                     data_type_mapping = self._feature_registry_loader.get_data_type_mapping()
                     # Map input sources to storage types
                     data_types = []
+                    supported_types = {"klines"}  # Currently supported types for backfilling
+                    
                     for input_source in required_types:
                         if input_source in data_type_mapping:
-                            # For now, only support klines
-                            if "klines" in data_type_mapping[input_source]:
-                                data_types.append("klines")
+                            storage_types = data_type_mapping[input_source]
+                            for storage_type in storage_types:
+                                # Add all supported types from mapping
+                                if storage_type in supported_types:
+                                    if storage_type not in data_types:
+                                        data_types.append(storage_type)
+                                else:
+                                    logger.warning(
+                                        "backfilling_unsupported_data_type",
+                                        symbol=symbol,
+                                        input_source=input_source,
+                                        storage_type=storage_type,
+                                        message=f"Backfilling for {storage_type} is not yet implemented",
+                                    )
+                    
+                    # If no supported types found, default to klines
+                    if not data_types:
+                        logger.warning(
+                            "backfilling_no_supported_types",
+                            symbol=symbol,
+                            required_types=required_types,
+                            data_type_mapping=data_type_mapping,
+                            fallback="using klines",
+                        )
+                        data_types = ["klines"]
+                    
                     logger.info(
                         "backfilling_data_types_from_registry",
                         symbol=symbol,
                         data_types=data_types,
+                        required_input_sources=required_types,
                     )
                 except Exception as e:
                     logger.warning(
@@ -493,13 +635,20 @@ class BackfillingService:
                             if klines:
                                 # Save to Parquet
                                 date_str = date_obj.isoformat()
+                                
+                                # Count unique records before saving (after deduplication in _save_klines)
+                                # _save_klines will deduplicate, so we need to count unique timestamps
+                                df_temp = pd.DataFrame(klines)
+                                df_temp["timestamp"] = pd.to_datetime(df_temp["timestamp"])
+                                unique_count = df_temp["timestamp"].nunique()
+                                
                                 await self._save_klines(job.symbol, date_str, klines)
                                 
-                                # Validate saved data
+                                # Validate saved data (compare with unique count, not total with duplicates)
                                 validation_passed = await self._validate_saved_data(
                                     job.symbol,
                                     date_str,
-                                    len(klines),
+                                    unique_count,
                                     "klines",
                                 )
                                 
@@ -547,18 +696,33 @@ class BackfillingService:
                 
                 job.progress["dates_completed"] += 1
             
-            # Mark job as completed
-            job.status = "completed"
+            # Determine final job status
             job.end_time = datetime.now(timezone.utc)
             
-            logger.info(
-                "backfilling_job_completed",
-                job_id=job.job_id,
-                symbol=job.symbol,
-                total_dates=job.progress["dates_total"],
-                completed_dates=len(job.completed_dates),
-                failed_dates=len(job.failed_dates),
-            )
+            if job.failed_dates:
+                # Some dates failed - mark as failed
+                job.status = "failed"
+                job.error_message = f"Failed to backfill {len(job.failed_dates)} date(s): {[d.isoformat() for d in job.failed_dates]}"
+                logger.warning(
+                    "backfilling_job_completed_with_failures",
+                    job_id=job.job_id,
+                    symbol=job.symbol,
+                    total_dates=job.progress["dates_total"],
+                    completed_dates=len(job.completed_dates),
+                    failed_dates=len(job.failed_dates),
+                    failed_date_list=[d.isoformat() for d in job.failed_dates],
+                )
+            else:
+                # All dates completed successfully
+                job.status = "completed"
+                logger.info(
+                    "backfilling_job_completed",
+                    job_id=job.job_id,
+                    symbol=job.symbol,
+                    total_dates=job.progress["dates_total"],
+                    completed_dates=len(job.completed_dates),
+                    failed_dates=len(job.failed_dates),
+                )
         
         except Exception as e:
             job.status = "failed"
