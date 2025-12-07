@@ -541,6 +541,56 @@ Manually trigger training for a strategy.
 2. Wait for dataset.ready notification
 3. Download dataset and start training automatically
 
+## Model Training and Evaluation Workflow
+
+The model service uses a three-way data split (train/validation/test) for proper model evaluation and activation decisions.
+
+### Dataset Splits
+
+- **Train Split**: Used for model training. Contains historical market data for learning patterns.
+- **Validation Split**: Used for hyperparameter tuning and early stopping during training. Metrics are saved with `dataset_split="validation"` metadata.
+- **Test Split**: Used for final out-of-sample evaluation. This is the **primary metric** used for model activation decisions. Metrics are saved with `dataset_split="test"` metadata.
+
+### Evaluation Workflow
+
+1. **Training Phase**: Model is trained on the train split.
+2. **Validation Evaluation**: Model is evaluated on the validation split. Metrics are saved for monitoring and comparison.
+3. **Test Evaluation**: Model is evaluated on the test split (out-of-sample data). This provides the final quality assessment.
+4. **Model Activation**: Model activation decisions use **test set metrics** (not validation metrics) to ensure generalization. If test split is unavailable, the system falls back to validation metrics with a warning.
+
+### Quality Metrics Storage
+
+Quality metrics are stored separately for each dataset split:
+- Validation metrics: `metadata.dataset_split = "validation"`
+- Test metrics: `metadata.dataset_split = "test"`
+
+This allows querying metrics by split:
+```bash
+# Get test set metrics
+GET /api/v1/models/{version}/metrics?dataset_split=test
+
+# Get validation metrics
+GET /api/v1/models/{version}/metrics?dataset_split=validation
+```
+
+### Fallback Behavior
+
+If the test split is unavailable (download fails, empty split, or file not found), the system:
+1. Logs a structured warning with the reason (`download_failed`, `empty_split`, `file_not_found`)
+2. Falls back to validation set metrics for model activation decisions
+3. Continues training workflow without interruption
+
+This ensures backward compatibility with models that may only have validation metrics and provides operational awareness when test splits are missing.
+
+### Mode Transition and Retraining Triggers
+
+Both mode transition (warm-up → model-based) and retraining triggers (quality degradation detection) prefer test set metrics over validation metrics:
+- **First attempt**: Query test set metrics
+- **Fallback**: Use validation metrics if test set not available
+- **Final fallback**: Use any available metrics (backward compatibility)
+
+This ensures that activation and retraining decisions are based on the most reliable out-of-sample evaluation available.
+
 #### Request Dataset Build
 
 ```bash

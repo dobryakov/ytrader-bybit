@@ -138,6 +138,9 @@ class RetrainingTrigger:
         """
         Check if model quality has degraded below threshold.
 
+        Prefers test set metrics over validation metrics for quality degradation detection.
+        Falls back to validation metrics if test set metrics are not available.
+
         Args:
             strategy_id: Trading strategy identifier
 
@@ -152,13 +155,43 @@ class RetrainingTrigger:
 
         model_version_id = active_version["id"]
 
-        # Get latest quality metrics
+        # Try to get test set metrics first (preferred for quality assessment)
         latest_metrics = await self.quality_metrics_repo.get_latest_by_model_version(
-            model_version_id, metric_name="accuracy"
+            model_version_id, metric_name="accuracy", dataset_split="test"
         )
+        metrics_source = "test"
+
+        # Fallback to validation metrics if test set not available
+        if not latest_metrics:
+            logger.debug(
+                "Test set metrics not available, using validation metrics for quality degradation check",
+                strategy_id=strategy_id,
+                model_version_id=str(model_version_id),
+            )
+            latest_metrics = await self.quality_metrics_repo.get_latest_by_model_version(
+                model_version_id, metric_name="accuracy", dataset_split="validation"
+            )
+            metrics_source = "validation"
+
+        # Final fallback: try without dataset_split filter (backward compatibility)
+        if not latest_metrics:
+            logger.debug(
+                "Validation metrics not available, using any available metrics (backward compatibility)",
+                strategy_id=strategy_id,
+                model_version_id=str(model_version_id),
+            )
+            latest_metrics = await self.quality_metrics_repo.get_latest_by_model_version(
+                model_version_id, metric_name="accuracy"
+            )
+            metrics_source = "any"
 
         if not latest_metrics:
             # No quality metrics available, can't check degradation
+            logger.debug(
+                "No quality metrics available for quality degradation check",
+                strategy_id=strategy_id,
+                model_version_id=str(model_version_id),
+            )
             return False
 
         accuracy = float(latest_metrics["metric_value"])
@@ -170,6 +203,8 @@ class RetrainingTrigger:
                 strategy_id=strategy_id,
                 accuracy=accuracy,
                 threshold=threshold,
+                metrics_source=metrics_source,
+                model_version_id=str(model_version_id),
             )
             return True
 

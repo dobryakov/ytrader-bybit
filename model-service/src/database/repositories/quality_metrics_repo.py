@@ -116,6 +116,7 @@ class ModelQualityMetricsRepository(BaseRepository[Dict[str, Any]]):
         model_version_id: UUID,
         metric_name: Optional[str] = None,
         metric_type: Optional[str] = None,
+        dataset_split: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Get quality metrics for a model version.
@@ -124,6 +125,7 @@ class ModelQualityMetricsRepository(BaseRepository[Dict[str, Any]]):
             model_version_id: Model version UUID
             metric_name: Filter by metric name (optional)
             metric_type: Filter by metric type (optional)
+            dataset_split: Filter by dataset split (optional, e.g., 'train', 'validation', 'test')
 
         Returns:
             List of quality metric records
@@ -140,6 +142,11 @@ class ModelQualityMetricsRepository(BaseRepository[Dict[str, Any]]):
         if metric_type:
             conditions.append(f"metric_type = ${param_index}")
             params.append(metric_type)
+            param_index += 1
+
+        if dataset_split:
+            conditions.append(f"metadata->>'dataset_split' = ${param_index}")
+            params.append(dataset_split)
             param_index += 1
 
         query = f"""
@@ -159,6 +166,7 @@ class ModelQualityMetricsRepository(BaseRepository[Dict[str, Any]]):
         self,
         model_version_id: UUID,
         metric_name: Optional[str] = None,
+        dataset_split: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         Get the latest quality metric for a model version.
@@ -166,6 +174,7 @@ class ModelQualityMetricsRepository(BaseRepository[Dict[str, Any]]):
         Args:
             model_version_id: Model version UUID
             metric_name: Filter by metric name (optional)
+            dataset_split: Filter by dataset split (optional, e.g., 'train', 'validation', 'test')
 
         Returns:
             Latest quality metric record or None if not found
@@ -177,6 +186,11 @@ class ModelQualityMetricsRepository(BaseRepository[Dict[str, Any]]):
         if metric_name:
             conditions.append(f"metric_name = ${param_index}")
             params.append(metric_name)
+            param_index += 1
+
+        if dataset_split:
+            conditions.append(f"metadata->>'dataset_split' = ${param_index}")
+            params.append(dataset_split)
             param_index += 1
 
         query = f"""

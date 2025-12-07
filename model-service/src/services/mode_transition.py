@@ -139,6 +139,9 @@ class ModeTransition:
         """
         Get model quality score (accuracy or primary metric).
 
+        Prefers test set metrics over validation metrics for final quality assessment.
+        Falls back to validation metrics if test set metrics are not available.
+
         Args:
             model_version_id: Model version UUID
 
@@ -149,31 +152,83 @@ class ModeTransition:
             from uuid import UUID
             model_version_uuid = UUID(model_version_id) if isinstance(model_version_id, str) else model_version_id
 
-            # Try to get latest quality metrics for this model version
-            # Try accuracy first
+            # Try to get test set metrics first (preferred for final quality assessment)
+            # Try accuracy on test set
             metric = await self.quality_metrics_repo.get_latest_by_model_version(
                 model_version_id=model_version_uuid,
                 metric_name="accuracy",
+                dataset_split="test",
             )
             if metric:
                 quality = float(metric["metric_value"])
                 # Normalize to 0-1 range if needed
                 if quality > 1.0:
                     quality = quality / 100.0  # Assume percentage
+                logger.debug(
+                    "Using test set accuracy for quality assessment",
+                    model_version_id=model_version_id,
+                    quality=quality,
+                )
                 return quality
 
-            # Try f1_score
+            # Try f1_score on test set
             metric = await self.quality_metrics_repo.get_latest_by_model_version(
                 model_version_id=model_version_uuid,
                 metric_name="f1_score",
+                dataset_split="test",
             )
             if metric:
                 quality = float(metric["metric_value"])
                 if quality > 1.0:
                     quality = quality / 100.0
+                logger.debug(
+                    "Using test set f1_score for quality assessment",
+                    model_version_id=model_version_id,
+                    quality=quality,
+                )
                 return quality
 
-            # Try win_rate
+            # Fallback to validation set metrics if test set not available
+            logger.debug(
+                "Test set metrics not available, falling back to validation metrics",
+                model_version_id=model_version_id,
+            )
+
+            # Try accuracy on validation set
+            metric = await self.quality_metrics_repo.get_latest_by_model_version(
+                model_version_id=model_version_uuid,
+                metric_name="accuracy",
+                dataset_split="validation",
+            )
+            if metric:
+                quality = float(metric["metric_value"])
+                if quality > 1.0:
+                    quality = quality / 100.0
+                logger.debug(
+                    "Using validation set accuracy for quality assessment",
+                    model_version_id=model_version_id,
+                    quality=quality,
+                )
+                return quality
+
+            # Try f1_score on validation set
+            metric = await self.quality_metrics_repo.get_latest_by_model_version(
+                model_version_id=model_version_uuid,
+                metric_name="f1_score",
+                dataset_split="validation",
+            )
+            if metric:
+                quality = float(metric["metric_value"])
+                if quality > 1.0:
+                    quality = quality / 100.0
+                logger.debug(
+                    "Using validation set f1_score for quality assessment",
+                    model_version_id=model_version_id,
+                    quality=quality,
+                )
+                return quality
+
+            # Try win_rate (backward compatibility for older models)
             metric = await self.quality_metrics_repo.get_latest_by_model_version(
                 model_version_id=model_version_uuid,
                 metric_name="win_rate",
@@ -182,14 +237,24 @@ class ModeTransition:
                 quality = float(metric["metric_value"])
                 if quality > 1.0:
                     quality = quality / 100.0
+                logger.debug(
+                    "Using win_rate for quality assessment (backward compatibility)",
+                    model_version_id=model_version_id,
+                    quality=quality,
+                )
                 return quality
 
-            # Get any metric as fallback
+            # Get any metric as fallback (backward compatibility)
             metrics = await self.quality_metrics_repo.get_by_model_version(model_version_id=model_version_uuid)
             if metrics:
                 quality = float(metrics[0]["metric_value"])
                 if quality > 1.0:
                     quality = quality / 100.0
+                logger.debug(
+                    "Using any available metric for quality assessment (backward compatibility)",
+                    model_version_id=model_version_id,
+                    quality=quality,
+                )
                 return quality
 
             return None

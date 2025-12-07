@@ -139,6 +139,7 @@ class ModelVersionManager:
         metrics: Dict[str, float],
         evaluation_dataset_size: Optional[int] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        dataset_split: Optional[str] = None,
     ) -> None:
         """
         Save quality metrics for a model version.
@@ -148,6 +149,7 @@ class ModelVersionManager:
             metrics: Dictionary of metric names to values
             evaluation_dataset_size: Number of records in evaluation dataset
             metadata: Additional metric metadata
+            dataset_split: Dataset split identifier (e.g., 'train', 'validation', 'test')
         """
         # Determine metric types based on metric names
         metric_type_mapping = {
@@ -168,6 +170,11 @@ class ModelVersionManager:
             "max_drawdown": "trading_performance",
         }
 
+        # Include dataset_split in metadata if provided
+        final_metadata = metadata.copy() if metadata else {}
+        if dataset_split:
+            final_metadata["dataset_split"] = dataset_split
+
         for metric_name, metric_value in metrics.items():
             metric_type = metric_type_mapping.get(metric_name, "trading_performance")
 
@@ -178,7 +185,7 @@ class ModelVersionManager:
                     metric_value=metric_value,
                     metric_type=metric_type,
                     evaluation_dataset_size=evaluation_dataset_size,
-                    metadata=metadata,
+                    metadata=final_metadata if final_metadata else None,
                 )
                 logger.debug("Saved quality metric", metric_name=metric_name, metric_value=metric_value)
             except Exception as e:

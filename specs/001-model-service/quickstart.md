@@ -289,8 +289,24 @@ curl -X POST "http://localhost:4500/api/v1/models/v1" \
 
 ### Get Model Quality Metrics
 
+Get all metrics for a model version:
+
 ```bash
 curl -X GET "http://localhost:4500/api/v1/models/v1/metrics" \
+  -H "X-API-Key: your-model-service-api-key"
+```
+
+Get test set metrics only (used for model activation):
+
+```bash
+curl -X GET "http://localhost:4500/api/v1/models/v1/metrics?dataset_split=test" \
+  -H "X-API-Key: your-model-service-api-key"
+```
+
+Get validation set metrics:
+
+```bash
+curl -X GET "http://localhost:4500/api/v1/models/v1/metrics?dataset_split=validation" \
   -H "X-API-Key: your-model-service-api-key"
 ```
 
@@ -307,18 +323,27 @@ Response:
       "metric_value": 0.82,
       "metric_type": "classification",
       "evaluated_at": "2025-01-27T10:00:00Z",
-      "evaluation_dataset_size": 10000
+      "evaluation_dataset_size": 10000,
+      "metadata": {
+        "dataset_split": "test"
+      }
     },
     {
       "id": "660e8400-e29b-41d4-a716-446655440002",
-      "metric_name": "sharpe_ratio",
-      "metric_value": 1.5,
-      "metric_type": "trading_performance",
-      "evaluated_at": "2025-01-27T10:00:00Z"
+      "metric_name": "accuracy",
+      "metric_value": 0.80,
+      "metric_type": "classification",
+      "evaluated_at": "2025-01-27T10:00:00Z",
+      "evaluation_dataset_size": 7000,
+      "metadata": {
+        "dataset_split": "validation"
+      }
     }
   ]
 }
 ```
+
+**Note**: Metrics are stored separately for each dataset split (train/validation/test). Test set metrics are used for model activation decisions, while validation metrics are used for monitoring and comparison.
 
 ### Consume Trading Signals from RabbitMQ
 
@@ -354,10 +379,15 @@ Model training now uses Feature Service for dataset building. The workflow is:
 1. **Time-based Retraining**: Training is triggered by scheduled time intervals (e.g., every 7 days)
 2. **Dataset Request**: Model Service requests dataset build from Feature Service with explicit train/validation/test periods
 3. **Dataset Ready Notification**: Feature Service builds dataset and publishes notification to `features.dataset.ready` queue
-4. **Dataset Download**: Model Service downloads ready dataset from Feature Service
-5. **Model Training**: Model is trained on downloaded dataset (market data only, no execution_events)
+4. **Dataset Download**: Model Service downloads train, validation, and test splits from Feature Service
+5. **Model Training**: Model is trained on train split (market data only, no execution_events)
+6. **Validation Evaluation**: Model is evaluated on validation split for hyperparameter tuning and early stopping
+7. **Test Evaluation**: Model is evaluated on test split (out-of-sample) for final quality assessment
+8. **Model Activation**: Model activation decisions use **test set metrics** (not validation metrics) to ensure generalization
 
 **Note**: Training no longer depends on execution_events accumulation. Models learn from market movements (price predictions) rather than from own trading results.
+
+**Test Set Evaluation**: The system uses test set metrics for final quality assessment and model activation decisions. If test split is unavailable (download fails, empty split), the system falls back to validation metrics with a warning. This ensures proper out-of-sample evaluation and prevents overfitting.
 
 ## Development Workflow
 
@@ -406,11 +436,18 @@ docker compose exec postgres psql -U ytrader -d ytrader
 # View model versions
 SELECT version, model_type, strategy_id, trained_at, is_active FROM model_versions ORDER BY trained_at DESC;
 
-# View quality metrics
-SELECT mv.version, mqm.metric_name, mqm.metric_value, mqm.evaluated_at
+# View quality metrics (all splits)
+SELECT mv.version, mqm.metric_name, mqm.metric_value, mqm.metadata->>'dataset_split' as dataset_split, mqm.evaluated_at
 FROM model_quality_metrics mqm
 JOIN model_versions mv ON mqm.model_version_id = mv.id
 WHERE mv.version = 'v1'
+ORDER BY mqm.evaluated_at DESC;
+
+# View test set metrics only (used for activation)
+SELECT mv.version, mqm.metric_name, mqm.metric_value, mqm.evaluated_at
+FROM model_quality_metrics mqm
+JOIN model_versions mv ON mqm.model_version_id = mv.id
+WHERE mv.version = 'v1' AND mqm.metadata->>'dataset_split' = 'test'
 ORDER BY mqm.evaluated_at DESC;
 
 # View active models

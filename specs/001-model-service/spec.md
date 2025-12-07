@@ -205,7 +205,7 @@ The system reacts to position updates in real-time and generates exit signals (S
 - **SC-004**: System completes model training operations within 30 minutes for datasets up to 1 million records
 - **SC-011**: System triggers periodic retraining according to configured schedule with accuracy within 5 minutes of scheduled time
 - **SC-012**: System detects model quality degradation and triggers retraining within 1 minute of threshold breach
-- **SC-005**: System transitions from warm-up mode to model-based generation when model quality metrics exceed 75% classification accuracy threshold (percentage of correct buy/sell predictions on validation set)
+- **SC-005**: System transitions from warm-up mode to model-based generation when model quality metrics exceed 75% classification accuracy threshold (percentage of correct buy/sell predictions on test set)
 - **SC-006**: System maintains model version history with complete metadata for at least 100 previous versions
 - **SC-007**: System logs all critical operations (signal generation, training, mode transitions) with 100% coverage and traceability
 - **SC-008**: System handles message queue and database connection failures with automatic retry and graceful degradation, maintaining 99% uptime

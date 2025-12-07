@@ -541,7 +541,7 @@ class TrainingOrchestrator:
                         trace_id=trace_id,
                     )
 
-            # Evaluate model quality
+            # Evaluate model quality on validation set
             # Use validation set if available, otherwise use training set
             eval_features = validation_features if validation_features is not None else dataset.features
             eval_labels = validation_labels if validation_labels is not None else dataset.labels
@@ -549,7 +549,7 @@ class TrainingOrchestrator:
             y_pred = model.predict(eval_features)
             y_pred_proba = model.predict_proba(eval_features)[:, 1] if hasattr(model, "predict_proba") else None
 
-            metrics = quality_evaluator.evaluate(
+            validation_metrics = quality_evaluator.evaluate(
                 y_true=eval_labels,
                 y_pred=pd.Series(y_pred),
                 y_pred_proba=pd.Series(y_pred_proba) if y_pred_proba is not None else None,
@@ -561,6 +561,104 @@ class TrainingOrchestrator:
 
             if self._training_cancelled:
                 logger.info("Training cancelled during quality evaluation", training_id=training_id)
+                return
+
+            # Download test split for final out-of-sample evaluation
+            test_file_path = None
+            test_features = None
+            test_labels = None
+            test_metrics = None
+
+            try:
+                logger.info(
+                    "Downloading test split for final evaluation",
+                    training_id=training_id,
+                    dataset_id=str(dataset_id),
+                    trace_id=trace_id,
+                )
+                test_file_path = await feature_service_client.download_dataset(
+                    dataset_id, split="test", trace_id=trace_id
+                )
+
+                if test_file_path:
+                    try:
+                        test_df = pd.read_parquet(test_file_path)
+                        if target_column in test_df.columns:
+                            test_features = test_df.drop(columns=[target_column])
+                            test_labels = test_df[target_column]
+
+                            if test_features.empty or test_labels.empty:
+                                logger.warning(
+                                    "Test split is empty",
+                                    training_id=training_id,
+                                    dataset_id=str(dataset_id),
+                                    reason="empty_split",
+                                    trace_id=trace_id,
+                                )
+                            else:
+                                logger.info(
+                                    "Test dataset loaded",
+                                    training_id=training_id,
+                                    record_count=len(test_features),
+                                    trace_id=trace_id,
+                                )
+
+                                # Evaluate model on test set
+                                test_y_pred = model.predict(test_features)
+                                test_y_pred_proba = (
+                                    model.predict_proba(test_features)[:, 1] if hasattr(model, "predict_proba") else None
+                                )
+
+                                test_metrics = quality_evaluator.evaluate(
+                                    y_true=test_labels,
+                                    y_pred=pd.Series(test_y_pred),
+                                    y_pred_proba=pd.Series(test_y_pred_proba) if test_y_pred_proba is not None else None,
+                                    task_type="classification",
+                                )
+
+                                logger.info(
+                                    "Test set evaluation completed",
+                                    training_id=training_id,
+                                    metrics=test_metrics,
+                                    trace_id=trace_id,
+                                )
+                        else:
+                            logger.warning(
+                                "Target column not found in test split",
+                                training_id=training_id,
+                                dataset_id=str(dataset_id),
+                                reason="file_not_found",
+                                trace_id=trace_id,
+                            )
+                    except Exception as e:
+                        logger.warning(
+                            "Failed to load test dataset",
+                            training_id=training_id,
+                            dataset_id=str(dataset_id),
+                            error=str(e),
+                            reason="download_failed",
+                            trace_id=trace_id,
+                        )
+                else:
+                    logger.warning(
+                        "Test split download failed or unavailable",
+                        training_id=training_id,
+                        dataset_id=str(dataset_id),
+                        reason="download_failed",
+                        trace_id=trace_id,
+                    )
+            except Exception as e:
+                logger.warning(
+                    "Error downloading test split, will use validation metrics",
+                    training_id=training_id,
+                    dataset_id=str(dataset_id),
+                    error=str(e),
+                    reason="download_failed",
+                    trace_id=trace_id,
+                )
+
+            if self._training_cancelled:
+                logger.info("Training cancelled during test split evaluation", training_id=training_id)
                 return
 
             # Create model version
@@ -591,20 +689,47 @@ class TrainingOrchestrator:
             full_file_path = f"{settings.model_storage_path}/{file_path}"
             model_trainer.save_model(model, "xgboost", full_file_path)
 
-            # Save quality metrics
+            # Save validation metrics with dataset_split metadata
             await model_version_manager.save_quality_metrics(
                 model_version_id=model_version["id"],
-                metrics=metrics,
+                metrics=validation_metrics,
                 evaluation_dataset_size=len(eval_features),
+                dataset_split="validation",
             )
 
+            # Save test metrics with dataset_split metadata if available
+            if test_metrics:
+                await model_version_manager.save_quality_metrics(
+                    model_version_id=model_version["id"],
+                    metrics=test_metrics,
+                    evaluation_dataset_size=len(test_features),
+                    dataset_split="test",
+                )
+
             # Check if model quality meets threshold for activation
-            accuracy = metrics.get("accuracy", 0.0)
+            # Use test set metrics if available, otherwise fallback to validation metrics
+            final_metrics = test_metrics if test_metrics else validation_metrics
+            metrics_source = "test" if test_metrics else "validation"
+
+            accuracy = final_metrics.get("accuracy", 0.0)
             if accuracy >= settings.model_quality_threshold_accuracy:
                 await model_version_manager.activate_version(model_version["id"], strategy_id)
-                logger.info("Model activated automatically", version=version, accuracy=accuracy)
+                logger.info(
+                    "Model activated automatically",
+                    version=version,
+                    accuracy=accuracy,
+                    metrics_source=metrics_source,
+                    trace_id=trace_id,
+                )
             else:
-                logger.info("Model quality below threshold, not activated", version=version, accuracy=accuracy)
+                logger.info(
+                    "Model quality below threshold, not activated",
+                    version=version,
+                    accuracy=accuracy,
+                    metrics_source=metrics_source,
+                    threshold=settings.model_quality_threshold_accuracy,
+                    trace_id=trace_id,
+                )
 
             # Record retraining
             retraining_trigger.record_retraining(strategy_id)
@@ -621,7 +746,9 @@ class TrainingOrchestrator:
                 strategy_id=strategy_id,
                 dataset_id=str(dataset_id),
                 duration_seconds=training_duration,
-                metrics=metrics,
+                validation_metrics=validation_metrics,
+                test_metrics=test_metrics,
+                final_metrics_source=metrics_source,
                 trace_id=trace_id,
             )
 
