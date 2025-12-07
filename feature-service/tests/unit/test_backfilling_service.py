@@ -20,8 +20,23 @@ class TestBackfillingService:
         """Create mock Parquet storage."""
         storage = MagicMock(spec=ParquetStorage)
         storage.write_klines = AsyncMock()
+        storage.write_trades = AsyncMock()
+        storage.write_orderbook_snapshots = AsyncMock()
+        storage.write_orderbook_deltas = AsyncMock()
+        storage.write_ticker = AsyncMock()
+        storage.write_funding = AsyncMock()
         storage.read_klines = AsyncMock(side_effect=FileNotFoundError())
+        storage.read_trades = AsyncMock(side_effect=FileNotFoundError())
+        storage.read_orderbook_snapshots = AsyncMock(side_effect=FileNotFoundError())
+        storage.read_orderbook_deltas = AsyncMock(side_effect=FileNotFoundError())
+        storage.read_ticker = AsyncMock(side_effect=FileNotFoundError())
+        storage.read_funding = AsyncMock(side_effect=FileNotFoundError())
         storage._get_klines_path = MagicMock(return_value=MagicMock(exists=MagicMock(return_value=False)))
+        storage._get_trades_path = MagicMock(return_value=MagicMock(exists=MagicMock(return_value=False)))
+        storage._get_orderbook_snapshots_path = MagicMock(return_value=MagicMock(exists=MagicMock(return_value=False)))
+        storage._get_orderbook_deltas_path = MagicMock(return_value=MagicMock(exists=MagicMock(return_value=False)))
+        storage._get_ticker_path = MagicMock(return_value=MagicMock(exists=MagicMock(return_value=False)))
+        storage._get_funding_path = MagicMock(return_value=MagicMock(exists=MagicMock(return_value=False)))
         return storage
     
     @pytest.fixture
@@ -291,4 +306,245 @@ class TestBackfillingService:
         assert status["symbol"] == "BTCUSDT"
         assert "status" in status
         assert "progress" in status
+    
+    @pytest.mark.asyncio
+    async def test_backfill_trades(self, backfilling_service, mock_bybit_client):
+        """Test trades backfilling."""
+        timestamp_ms = int(datetime(2025, 1, 1, 12, 0, 0, tzinfo=timezone.utc).timestamp() * 1000)
+        mock_response = {
+            "retCode": 0,
+            "retMsg": "OK",
+            "result": {
+                "list": [
+                    {
+                        "execId": "test-exec-id-1",
+                        "symbol": "BTCUSDT",
+                        "price": "50000.5",
+                        "size": "0.1",
+                        "side": "Buy",
+                        "time": str(timestamp_ms),
+                        "isBlockTrade": False,
+                    },
+                    {
+                        "execId": "test-exec-id-2",
+                        "symbol": "BTCUSDT",
+                        "price": "50001.0",
+                        "size": "0.2",
+                        "side": "Sell",
+                        "time": str(timestamp_ms + 1000),
+                        "isBlockTrade": False,
+                    },
+                ],
+            },
+        }
+        
+        mock_bybit_client.get = AsyncMock(return_value=mock_response)
+        
+        start_date = date(2025, 1, 1)
+        end_date = date(2025, 1, 1)
+        
+        trades = await backfilling_service.backfill_trades("BTCUSDT", start_date, end_date)
+        
+        assert len(trades) == 2
+        assert trades[0]["symbol"] == "BTCUSDT"
+        assert trades[0]["price"] == 50000.5
+        assert trades[0]["quantity"] == 0.1
+        assert trades[0]["side"] == "Buy"
+        assert isinstance(trades[0]["timestamp"], datetime)
+    
+    @pytest.mark.asyncio
+    async def test_backfill_funding(self, backfilling_service, mock_bybit_client):
+        """Test funding rate backfilling."""
+        timestamp_ms = int(datetime(2025, 1, 1, 12, 0, 0, tzinfo=timezone.utc).timestamp() * 1000)
+        mock_response = {
+            "retCode": 0,
+            "retMsg": "OK",
+            "result": {
+                "list": [
+                    {
+                        "symbol": "BTCUSDT",
+                        "fundingRate": "0.0001",
+                        "fundingRateTimestamp": str(timestamp_ms),
+                    },
+                    {
+                        "symbol": "BTCUSDT",
+                        "fundingRate": "0.0002",
+                        "fundingRateTimestamp": str(timestamp_ms + 8 * 60 * 60 * 1000),  # 8 hours later
+                    },
+                ],
+            },
+        }
+        
+        mock_response_empty = {
+            "retCode": 0,
+            "retMsg": "OK",
+            "result": {"list": []},
+        }
+        
+        mock_bybit_client.get = AsyncMock(side_effect=[mock_response, mock_response_empty])
+        
+        start_date = date(2025, 1, 1)
+        end_date = date(2025, 1, 2)
+        
+        funding = await backfilling_service.backfill_funding("BTCUSDT", start_date, end_date)
+        
+        assert len(funding) == 2
+        assert funding[0]["symbol"] == "BTCUSDT"
+        assert funding[0]["funding_rate"] == 0.0001
+        assert isinstance(funding[0]["timestamp"], datetime)
+    
+    @pytest.mark.asyncio
+    async def test_backfill_orderbook_snapshots_not_available(self, backfilling_service):
+        """Test that orderbook snapshots return empty list (not available via REST API)."""
+        start_date = date(2025, 1, 1)
+        end_date = date(2025, 1, 2)
+        
+        snapshots = await backfilling_service.backfill_orderbook_snapshots("BTCUSDT", start_date, end_date)
+        
+        assert snapshots == []
+    
+    @pytest.mark.asyncio
+    async def test_backfill_orderbook_deltas_not_available(self, backfilling_service):
+        """Test that orderbook deltas return empty list (not available via REST API)."""
+        start_date = date(2025, 1, 1)
+        end_date = date(2025, 1, 2)
+        
+        deltas = await backfilling_service.backfill_orderbook_deltas("BTCUSDT", start_date, end_date)
+        
+        assert deltas == []
+    
+    @pytest.mark.asyncio
+    async def test_backfill_ticker(self, backfilling_service, mock_bybit_client):
+        """Test ticker backfilling (returns current ticker only)."""
+        timestamp_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        mock_response = {
+            "retCode": 0,
+            "retMsg": "OK",
+            "result": {
+                "list": [
+                    {
+                        "symbol": "BTCUSDT",
+                        "lastPrice": "50000.5",
+                        "bid1Price": "49999.0",
+                        "ask1Price": "50001.0",
+                        "volume24h": "1000.5",
+                        "time": str(timestamp_ms),
+                    },
+                ],
+            },
+        }
+        
+        mock_bybit_client.get = AsyncMock(return_value=mock_response)
+        
+        start_date = date(2025, 1, 1)
+        end_date = date(2025, 1, 2)
+        
+        tickers = await backfilling_service.backfill_ticker("BTCUSDT", start_date, end_date)
+        
+        assert len(tickers) == 1
+        assert tickers[0]["symbol"] == "BTCUSDT"
+        assert tickers[0]["last_price"] == 50000.5
+        assert tickers[0]["bid_price"] == 49999.0
+        assert tickers[0]["ask_price"] == 50001.0
+        assert tickers[0]["volume_24h"] == 1000.5
+        assert isinstance(tickers[0]["timestamp"], datetime)
+    
+    @pytest.mark.asyncio
+    async def test_data_availability_check_all_types(self, backfilling_service, mock_parquet_storage):
+        """Test data availability check for all data types."""
+        async def mock_read_klines(symbol, date_str):
+            if date_str == "2025-01-01":
+                return pd.DataFrame({"timestamp": [datetime.now(timezone.utc)]})
+            else:
+                raise FileNotFoundError()
+        
+        async def mock_read_trades(symbol, date_str):
+            if date_str == "2025-01-01":
+                return pd.DataFrame({"timestamp": [datetime.now(timezone.utc)]})
+            else:
+                raise FileNotFoundError()
+        
+        async def mock_read_orderbook_snapshots(symbol, date_str):
+            if date_str == "2025-01-01":
+                return pd.DataFrame({"timestamp": [datetime.now(timezone.utc)]})
+            else:
+                raise FileNotFoundError()
+        
+        async def mock_read_orderbook_deltas(symbol, date_str):
+            if date_str == "2025-01-01":
+                return pd.DataFrame({"timestamp": [datetime.now(timezone.utc)]})
+            else:
+                raise FileNotFoundError()
+        
+        async def mock_read_ticker(symbol, date_str):
+            if date_str == "2025-01-01":
+                return pd.DataFrame({"timestamp": [datetime.now(timezone.utc)]})
+            else:
+                raise FileNotFoundError()
+        
+        async def mock_read_funding(symbol, date_str):
+            if date_str == "2025-01-01":
+                return pd.DataFrame({"timestamp": [datetime.now(timezone.utc)]})
+            else:
+                raise FileNotFoundError()
+        
+        mock_parquet_storage.read_klines = AsyncMock(side_effect=mock_read_klines)
+        mock_parquet_storage.read_trades = AsyncMock(side_effect=mock_read_trades)
+        mock_parquet_storage.read_orderbook_snapshots = AsyncMock(side_effect=mock_read_orderbook_snapshots)
+        mock_parquet_storage.read_orderbook_deltas = AsyncMock(side_effect=mock_read_orderbook_deltas)
+        mock_parquet_storage.read_ticker = AsyncMock(side_effect=mock_read_ticker)
+        mock_parquet_storage.read_funding = AsyncMock(side_effect=mock_read_funding)
+        
+        start_date = date(2025, 1, 1)
+        end_date = date(2025, 1, 2)
+        
+        data_types = ["klines", "trades", "orderbook_snapshots", "orderbook_deltas", "ticker", "funding"]
+        missing_data = await backfilling_service._check_data_availability("BTCUSDT", start_date, end_date, data_types)
+        
+        # Only 2025-01-02 should be missing for all types
+        assert date(2025, 1, 2) in missing_data
+        assert len(missing_data[date(2025, 1, 2)]) == len(data_types)
+        assert date(2025, 1, 1) not in missing_data
+    
+    @pytest.mark.asyncio
+    async def test_validate_saved_data_trades(self, backfilling_service, mock_parquet_storage):
+        """Test data validation for trades."""
+        read_data = pd.DataFrame({
+            "timestamp": pd.to_datetime([datetime.now(timezone.utc)]),
+            "price": [50000.0],
+            "quantity": [0.1],
+            "side": ["Buy"],
+            "symbol": ["BTCUSDT"],
+        })
+        
+        mock_parquet_storage.read_trades = AsyncMock(return_value=read_data)
+        
+        validation_passed = await backfilling_service._validate_saved_data(
+            "BTCUSDT",
+            "2025-01-01",
+            expected_count=1,
+            data_type="trades",
+        )
+        
+        assert validation_passed is True
+    
+    @pytest.mark.asyncio
+    async def test_validate_saved_data_funding(self, backfilling_service, mock_parquet_storage):
+        """Test data validation for funding rates."""
+        read_data = pd.DataFrame({
+            "timestamp": pd.to_datetime([datetime.now(timezone.utc)]),
+            "funding_rate": [0.0001],
+            "symbol": ["BTCUSDT"],
+        })
+        
+        mock_parquet_storage.read_funding = AsyncMock(return_value=read_data)
+        
+        validation_passed = await backfilling_service._validate_saved_data(
+            "BTCUSDT",
+            "2025-01-01",
+            expected_count=1,
+            data_type="funding",
+        )
+        
+        assert validation_passed is True
 

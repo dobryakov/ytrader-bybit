@@ -296,6 +296,459 @@ class BackfillingService:
         
         return all_klines
     
+    async def backfill_trades(
+        self,
+        symbol: str,
+        start_date: date,
+        end_date: date,
+    ) -> List[Dict[str, Any]]:
+        """
+        Backfill trades data from Bybit REST API.
+        
+        Note: Bybit /v5/market/recent-trade endpoint returns only recent trades (limit 60 for spot).
+        Historical trades may not be available through REST API. This method attempts to fetch
+        available data but may be limited to recent trades only.
+        
+        Args:
+            symbol: Trading pair symbol (e.g., "BTCUSDT")
+            start_date: Start date for backfilling
+            end_date: End date for backfilling
+            
+        Returns:
+            List of trade data dictionaries in internal format
+            
+        Raises:
+            BybitAPIError: If API request fails
+        """
+        logger.info(
+            "backfilling_trades_start",
+            symbol=symbol,
+            start_date=start_date.isoformat(),
+            end_date=end_date.isoformat(),
+        )
+        
+        all_trades = []
+        
+        # Note: Bybit /v5/market/recent-trade endpoint doesn't support historical pagination
+        # It only returns recent trades (up to 60 for spot category)
+        # We'll attempt to fetch recent trades, but this may not cover the full date range
+        try:
+            response = await self._bybit_client.get(
+                endpoint="/v5/market/recent-trade",
+                params={
+                    "category": "spot",
+                    "symbol": symbol,
+                    "limit": 60,  # Max 60 for spot category
+                },
+                authenticated=False,  # Public endpoint
+            )
+            
+            # Parse response
+            if "result" not in response or "list" not in response["result"]:
+                logger.warning(
+                    "bybit_api_unexpected_response_trades",
+                    symbol=symbol,
+                    response_keys=list(response.keys()),
+                )
+                return all_trades
+            
+            trades = response["result"]["list"]
+            if not trades:
+                logger.warning(
+                    "backfilling_trades_no_data",
+                    symbol=symbol,
+                )
+                return all_trades
+            
+            # Convert to internal format
+            # Bybit format: {"execId", "symbol", "price", "size", "side", "time", "isBlockTrade"}
+            # Internal format: timestamp, price, quantity, side, symbol
+            for trade in trades:
+                trade_timestamp_ms = int(trade["time"])
+                trade_datetime = datetime.fromtimestamp(trade_timestamp_ms / 1000, tz=timezone.utc)
+                
+                # Filter by date range
+                if trade_datetime.date() < start_date or trade_datetime.date() > end_date:
+                    continue
+                
+                internal_trade = {
+                    "timestamp": trade_datetime,
+                    "price": float(trade["price"]),
+                    "quantity": float(trade["size"]),
+                    "side": trade["side"],  # "Buy" or "Sell"
+                    "symbol": symbol,
+                }
+                all_trades.append(internal_trade)
+            
+            logger.info(
+                "backfilling_trades_complete",
+                symbol=symbol,
+                total_trades=len(all_trades),
+                note="Bybit API returns only recent trades, historical trades may not be available",
+            )
+            
+        except BybitAPIError as e:
+            logger.error(
+                "backfilling_trades_api_error",
+                symbol=symbol,
+                error=str(e),
+            )
+            raise
+        
+        return all_trades
+    
+    async def backfill_orderbook_snapshots(
+        self,
+        symbol: str,
+        start_date: date,
+        end_date: date,
+    ) -> List[Dict[str, Any]]:
+        """
+        Backfill orderbook snapshots from Bybit REST API.
+        
+        Note: Bybit /v5/market/orderbook endpoint returns only current orderbook snapshot.
+        Historical orderbook snapshots are not available through REST API. This method
+        fetches the current snapshot, which may not match the requested date range.
+        
+        Args:
+            symbol: Trading pair symbol (e.g., "BTCUSDT")
+            start_date: Start date for backfilling (not used - API returns current snapshot)
+            end_date: End date for backfilling (not used - API returns current snapshot)
+            
+        Returns:
+            List containing single orderbook snapshot in internal format (empty if unavailable)
+            
+        Raises:
+            BybitAPIError: If API request fails
+        """
+        logger.warning(
+            "backfilling_orderbook_snapshots_limited",
+            symbol=symbol,
+            start_date=start_date.isoformat(),
+            end_date=end_date.isoformat(),
+            note="Bybit REST API does not provide historical orderbook snapshots, only current snapshot",
+        )
+        
+        # Bybit API only provides current snapshot, not historical
+        # Return empty list as historical snapshots are not available
+        logger.warning(
+            "backfilling_orderbook_snapshots_not_available",
+            symbol=symbol,
+            message="Historical orderbook snapshots not available via REST API",
+        )
+        return []
+    
+    async def backfill_orderbook_deltas(
+        self,
+        symbol: str,
+        start_date: date,
+        end_date: date,
+    ) -> List[Dict[str, Any]]:
+        """
+        Backfill orderbook deltas from Bybit REST API.
+        
+        Note: Bybit REST API does not provide historical orderbook deltas. Orderbook deltas
+        are typically reconstructed from snapshots or require WebSocket stream data.
+        This method returns empty list as deltas are not available via REST API.
+        
+        Args:
+            symbol: Trading pair symbol (e.g., "BTCUSDT")
+            start_date: Start date for backfilling (not used)
+            end_date: End date for backfilling (not used)
+            
+        Returns:
+            Empty list (orderbook deltas not available via REST API)
+            
+        Raises:
+            BybitAPIError: If API request fails
+        """
+        logger.warning(
+            "backfilling_orderbook_deltas_not_available",
+            symbol=symbol,
+            start_date=start_date.isoformat(),
+            end_date=end_date.isoformat(),
+            message="Historical orderbook deltas not available via Bybit REST API",
+        )
+        return []
+    
+    async def backfill_ticker(
+        self,
+        symbol: str,
+        start_date: date,
+        end_date: date,
+    ) -> List[Dict[str, Any]]:
+        """
+        Backfill ticker data from Bybit REST API.
+        
+        Note: Bybit /v5/market/tickers endpoint returns only current ticker data.
+        Historical ticker data is not available through REST API. This method
+        fetches the current ticker, which may not match the requested date range.
+        
+        Args:
+            symbol: Trading pair symbol (e.g., "BTCUSDT")
+            start_date: Start date for backfilling (not used - API returns current ticker)
+            end_date: End date for backfilling (not used - API returns current ticker)
+            
+        Returns:
+            List containing single ticker in internal format (empty if unavailable)
+            
+        Raises:
+            BybitAPIError: If API request fails
+        """
+        logger.warning(
+            "backfilling_ticker_limited",
+            symbol=symbol,
+            start_date=start_date.isoformat(),
+            end_date=end_date.isoformat(),
+            note="Bybit REST API does not provide historical ticker data, only current ticker",
+        )
+        
+        try:
+            response = await self._bybit_client.get(
+                endpoint="/v5/market/tickers",
+                params={
+                    "category": "spot",
+                    "symbol": symbol,
+                },
+                authenticated=False,  # Public endpoint
+            )
+            
+            # Parse response
+            if "result" not in response or "list" not in response["result"]:
+                logger.warning(
+                    "bybit_api_unexpected_response_ticker",
+                    symbol=symbol,
+                    response_keys=list(response.keys()),
+                )
+                return []
+            
+            tickers = response["result"]["list"]
+            if not tickers:
+                return []
+            
+            # Find ticker for our symbol
+            ticker_data = None
+            for ticker in tickers:
+                if ticker.get("symbol") == symbol:
+                    ticker_data = ticker
+                    break
+            
+            if not ticker_data:
+                logger.warning(
+                    "backfilling_ticker_symbol_not_found",
+                    symbol=symbol,
+                )
+                return []
+            
+            # Convert to internal format
+            # Bybit format: {"symbol", "lastPrice", "bid1Price", "ask1Price", "volume24h", "time"}
+            # Internal format: timestamp, last_price, bid_price, ask_price, volume_24h, symbol
+            ticker_timestamp_ms = int(ticker_data.get("time", int(datetime.now(timezone.utc).timestamp() * 1000)))
+            ticker_datetime = datetime.fromtimestamp(ticker_timestamp_ms / 1000, tz=timezone.utc)
+            
+            internal_ticker = {
+                "timestamp": ticker_datetime,
+                "last_price": float(ticker_data["lastPrice"]) if ticker_data.get("lastPrice") else None,
+                "bid_price": float(ticker_data["bid1Price"]) if ticker_data.get("bid1Price") else None,
+                "ask_price": float(ticker_data["ask1Price"]) if ticker_data.get("ask1Price") else None,
+                "volume_24h": float(ticker_data["volume24h"]) if ticker_data.get("volume24h") else None,
+                "symbol": symbol,
+            }
+            
+            logger.info(
+                "backfilling_ticker_complete",
+                symbol=symbol,
+                note="Only current ticker available, historical ticker data not supported",
+            )
+            
+            return [internal_ticker]
+            
+        except BybitAPIError as e:
+            logger.error(
+                "backfilling_ticker_api_error",
+                symbol=symbol,
+                error=str(e),
+            )
+            raise
+    
+    async def backfill_funding(
+        self,
+        symbol: str,
+        start_date: date,
+        end_date: date,
+    ) -> List[Dict[str, Any]]:
+        """
+        Backfill funding rate data from Bybit REST API.
+        
+        Note: Funding rates are only available for perpetual contracts (linear/inverse),
+        not for spot trading. This method uses /v5/market/funding/history endpoint
+        which supports historical data with pagination.
+        
+        Args:
+            symbol: Trading pair symbol (e.g., "BTCUSDT" for linear perpetual)
+            start_date: Start date for backfilling
+            end_date: End date for backfilling
+            
+        Returns:
+            List of funding rate data dictionaries in internal format
+            
+        Raises:
+            BybitAPIError: If API request fails
+        """
+        logger.info(
+            "backfilling_funding_start",
+            symbol=symbol,
+            start_date=start_date.isoformat(),
+            end_date=end_date.isoformat(),
+        )
+        
+        # Convert dates to timestamps (milliseconds)
+        start_timestamp = int(datetime.combine(start_date, datetime.min.time()).replace(tzinfo=timezone.utc).timestamp() * 1000)
+        end_timestamp = int(datetime.combine(end_date, datetime.max.time()).replace(tzinfo=timezone.utc).timestamp() * 1000)
+        
+        all_funding = []
+        current_start = start_timestamp
+        max_records_per_request = 200  # Bybit API limit
+        
+        while current_start < end_timestamp:
+            # Calculate end timestamp for this chunk
+            current_end = min(current_start + (max_records_per_request * 8 * 60 * 60 * 1000), end_timestamp)
+            # Funding rates occur every 8 hours, so 200 records = ~66 days
+            
+            try:
+                response = await self._bybit_client.get(
+                    endpoint="/v5/market/funding/history",
+                    params={
+                        "category": "linear",  # Funding rates are for perpetual contracts
+                        "symbol": symbol,
+                        "startTime": current_start,
+                        "endTime": current_end,
+                        "limit": max_records_per_request,
+                    },
+                    authenticated=False,  # Public endpoint
+                )
+                
+                # Parse response
+                if "result" not in response or "list" not in response["result"]:
+                    logger.warning(
+                        "bybit_api_unexpected_response_funding",
+                        symbol=symbol,
+                        response_keys=list(response.keys()),
+                    )
+                    break
+                
+                funding_list = response["result"]["list"]
+                if not funding_list:
+                    # No more data available, stop pagination
+                    break
+                
+                # Convert to internal format
+                # Bybit format: [{"symbol", "fundingRate", "fundingRateTimestamp"}]
+                # Internal format: timestamp, funding_rate, symbol
+                for funding in funding_list:
+                    funding_timestamp_ms = int(funding["fundingRateTimestamp"])
+                    funding_datetime = datetime.fromtimestamp(funding_timestamp_ms / 1000, tz=timezone.utc)
+                    
+                    internal_funding = {
+                        "timestamp": funding_datetime,
+                        "funding_rate": float(funding["fundingRate"]),
+                        "symbol": symbol,
+                    }
+                    all_funding.append(internal_funding)
+                
+                # Check if we got fewer records than requested (last page)
+                if len(funding_list) < max_records_per_request:
+                    break
+                
+                # Move to next page: use last timestamp + 1ms
+                last_timestamp = int(funding_list[-1]["fundingRateTimestamp"])
+                current_start = last_timestamp + 1
+                
+                logger.debug(
+                    "backfilling_funding_chunk",
+                    symbol=symbol,
+                    chunk_size=len(funding_list),
+                    total_funding=len(all_funding),
+                )
+                
+            except BybitAPIError as e:
+                # Check if error is about spot symbol (funding rates are only for perpetuals)
+                error_msg = str(e).lower()
+                if "spot" in error_msg or "not found" in error_msg:
+                    logger.warning(
+                        "backfilling_funding_spot_not_supported",
+                        symbol=symbol,
+                        message="Funding rates are only available for perpetual contracts, not spot",
+                    )
+                    return []
+                logger.error(
+                    "backfilling_funding_api_error",
+                    symbol=symbol,
+                    error=str(e),
+                    current_start=current_start,
+                )
+                raise
+        
+        # Sort by timestamp
+        all_funding.sort(key=lambda x: x["timestamp"])
+        
+        logger.info(
+            "backfilling_funding_complete",
+            symbol=symbol,
+            total_funding=len(all_funding),
+        )
+        
+        return all_funding
+    
+    async def _delete_all_data_for_date(self, symbol: str, date_str: str) -> None:
+        """
+        Delete all existing data files for a specific symbol and date.
+        This ensures clean backfilling without partial or corrupted data.
+        
+        Args:
+            symbol: Trading pair symbol
+            date_str: Date string (YYYY-MM-DD)
+        """
+        data_type_paths = [
+            ("klines", self._parquet_storage._get_klines_path),
+            ("trades", self._parquet_storage._get_trades_path),
+            ("funding", self._parquet_storage._get_funding_path),
+            ("ticker", self._parquet_storage._get_ticker_path),
+            ("orderbook_snapshots", self._parquet_storage._get_orderbook_snapshots_path),
+            ("orderbook_deltas", self._parquet_storage._get_orderbook_deltas_path),
+        ]
+        
+        deleted_count = 0
+        for data_type, get_path_method in data_type_paths:
+            try:
+                file_path = get_path_method(symbol, date_str)
+                if file_path.exists():
+                    file_path.unlink()
+                    deleted_count += 1
+                    logger.debug(
+                        "backfilling_deleted_existing_data",
+                        symbol=symbol,
+                        date=date_str,
+                        data_type=data_type,
+                        file_path=str(file_path),
+                    )
+            except Exception as e:
+                logger.warning(
+                    "backfilling_delete_error",
+                    symbol=symbol,
+                    date=date_str,
+                    data_type=data_type,
+                    error=str(e),
+                )
+        
+        if deleted_count > 0:
+            logger.info(
+                "backfilling_cleaned_existing_data",
+                symbol=symbol,
+                date=date_str,
+                files_deleted=deleted_count,
+            )
+    
     async def _save_klines(
         self,
         symbol: str,
@@ -359,6 +812,314 @@ class BackfillingService:
             record_count=len(klines),
         )
     
+    async def _save_trades(
+        self,
+        symbol: str,
+        date_str: str,
+        trades: List[Dict[str, Any]],
+    ) -> None:
+        """
+        Save trades to Parquet storage.
+        
+        Args:
+            symbol: Trading pair symbol
+            date_str: Date string (YYYY-MM-DD)
+            trades: List of trade data dictionaries
+        """
+        if not trades:
+            return
+        
+        # Convert to DataFrame
+        df = pd.DataFrame(trades)
+        
+        # Ensure timestamp is datetime
+        if "timestamp" in df.columns:
+            df["timestamp"] = pd.to_datetime(df["timestamp"])
+        
+        # Remove duplicates by timestamp (keep last occurrence)
+        initial_count = len(df)
+        df = df.drop_duplicates(subset=["timestamp"], keep="last")
+        if len(df) < initial_count:
+            logger.warning(
+                "trades_duplicates_removed",
+                symbol=symbol,
+                date=date_str,
+                initial_count=initial_count,
+                final_count=len(df),
+                duplicates_removed=initial_count - len(df),
+            )
+        
+        # Sort by timestamp
+        df = df.sort_values("timestamp").reset_index(drop=True)
+        
+        # For backfilling, we should overwrite existing file, not append
+        trades_path = self._parquet_storage._get_trades_path(symbol, date_str)
+        if trades_path.exists():
+            logger.debug(
+                "trades_overwriting_existing",
+                symbol=symbol,
+                date=date_str,
+                existing_file=str(trades_path),
+            )
+            trades_path.unlink()
+        
+        # Save to Parquet
+        await self._parquet_storage.write_trades(symbol, date_str, df)
+        
+        logger.debug(
+            "trades_saved",
+            symbol=symbol,
+            date=date_str,
+            record_count=len(trades),
+        )
+    
+    async def _save_orderbook_snapshots(
+        self,
+        symbol: str,
+        date_str: str,
+        snapshots: List[Dict[str, Any]],
+    ) -> None:
+        """
+        Save orderbook snapshots to Parquet storage.
+        
+        Args:
+            symbol: Trading pair symbol
+            date_str: Date string (YYYY-MM-DD)
+            snapshots: List of orderbook snapshot data dictionaries
+        """
+        if not snapshots:
+            return
+        
+        # Convert to DataFrame
+        df = pd.DataFrame(snapshots)
+        
+        # Ensure timestamp is datetime
+        if "timestamp" in df.columns:
+            df["timestamp"] = pd.to_datetime(df["timestamp"])
+        
+        # Remove duplicates by timestamp (keep last occurrence)
+        initial_count = len(df)
+        df = df.drop_duplicates(subset=["timestamp"], keep="last")
+        if len(df) < initial_count:
+            logger.warning(
+                "orderbook_snapshots_duplicates_removed",
+                symbol=symbol,
+                date=date_str,
+                initial_count=initial_count,
+                final_count=len(df),
+                duplicates_removed=initial_count - len(df),
+            )
+        
+        # Sort by timestamp
+        df = df.sort_values("timestamp").reset_index(drop=True)
+        
+        # For backfilling, we should overwrite existing file, not append
+        snapshots_path = self._parquet_storage._get_orderbook_snapshots_path(symbol, date_str)
+        if snapshots_path.exists():
+            logger.debug(
+                "orderbook_snapshots_overwriting_existing",
+                symbol=symbol,
+                date=date_str,
+                existing_file=str(snapshots_path),
+            )
+            snapshots_path.unlink()
+        
+        # Save to Parquet
+        await self._parquet_storage.write_orderbook_snapshots(symbol, date_str, df)
+        
+        logger.debug(
+            "orderbook_snapshots_saved",
+            symbol=symbol,
+            date=date_str,
+            record_count=len(snapshots),
+        )
+    
+    async def _save_orderbook_deltas(
+        self,
+        symbol: str,
+        date_str: str,
+        deltas: List[Dict[str, Any]],
+    ) -> None:
+        """
+        Save orderbook deltas to Parquet storage.
+        
+        Args:
+            symbol: Trading pair symbol
+            date_str: Date string (YYYY-MM-DD)
+            deltas: List of orderbook delta data dictionaries
+        """
+        if not deltas:
+            return
+        
+        # Convert to DataFrame
+        df = pd.DataFrame(deltas)
+        
+        # Ensure timestamp is datetime
+        if "timestamp" in df.columns:
+            df["timestamp"] = pd.to_datetime(df["timestamp"])
+        
+        # Remove duplicates by sequence if available, otherwise by timestamp
+        initial_count = len(df)
+        if "sequence" in df.columns:
+            df = df.drop_duplicates(subset=["sequence"], keep="last")
+        else:
+            df = df.drop_duplicates(subset=["timestamp"], keep="last")
+        if len(df) < initial_count:
+            logger.warning(
+                "orderbook_deltas_duplicates_removed",
+                symbol=symbol,
+                date=date_str,
+                initial_count=initial_count,
+                final_count=len(df),
+                duplicates_removed=initial_count - len(df),
+            )
+        
+        # Sort by timestamp
+        df = df.sort_values("timestamp").reset_index(drop=True)
+        
+        # For backfilling, we should overwrite existing file, not append
+        deltas_path = self._parquet_storage._get_orderbook_deltas_path(symbol, date_str)
+        if deltas_path.exists():
+            logger.debug(
+                "orderbook_deltas_overwriting_existing",
+                symbol=symbol,
+                date=date_str,
+                existing_file=str(deltas_path),
+            )
+            deltas_path.unlink()
+        
+        # Save to Parquet
+        await self._parquet_storage.write_orderbook_deltas(symbol, date_str, df)
+        
+        logger.debug(
+            "orderbook_deltas_saved",
+            symbol=symbol,
+            date=date_str,
+            record_count=len(deltas),
+        )
+    
+    async def _save_ticker(
+        self,
+        symbol: str,
+        date_str: str,
+        tickers: List[Dict[str, Any]],
+    ) -> None:
+        """
+        Save ticker data to Parquet storage.
+        
+        Args:
+            symbol: Trading pair symbol
+            date_str: Date string (YYYY-MM-DD)
+            tickers: List of ticker data dictionaries
+        """
+        if not tickers:
+            return
+        
+        # Convert to DataFrame
+        df = pd.DataFrame(tickers)
+        
+        # Ensure timestamp is datetime
+        if "timestamp" in df.columns:
+            df["timestamp"] = pd.to_datetime(df["timestamp"])
+        
+        # Remove duplicates by timestamp (keep last occurrence)
+        initial_count = len(df)
+        df = df.drop_duplicates(subset=["timestamp"], keep="last")
+        if len(df) < initial_count:
+            logger.warning(
+                "ticker_duplicates_removed",
+                symbol=symbol,
+                date=date_str,
+                initial_count=initial_count,
+                final_count=len(df),
+                duplicates_removed=initial_count - len(df),
+            )
+        
+        # Sort by timestamp
+        df = df.sort_values("timestamp").reset_index(drop=True)
+        
+        # For backfilling, we should overwrite existing file, not append
+        ticker_path = self._parquet_storage._get_ticker_path(symbol, date_str)
+        if ticker_path.exists():
+            logger.debug(
+                "ticker_overwriting_existing",
+                symbol=symbol,
+                date=date_str,
+                existing_file=str(ticker_path),
+            )
+            ticker_path.unlink()
+        
+        # Save to Parquet
+        await self._parquet_storage.write_ticker(symbol, date_str, df)
+        
+        logger.debug(
+            "ticker_saved",
+            symbol=symbol,
+            date=date_str,
+            record_count=len(tickers),
+        )
+    
+    async def _save_funding(
+        self,
+        symbol: str,
+        date_str: str,
+        funding: List[Dict[str, Any]],
+    ) -> None:
+        """
+        Save funding rate data to Parquet storage.
+        
+        Args:
+            symbol: Trading pair symbol
+            date_str: Date string (YYYY-MM-DD)
+            funding: List of funding rate data dictionaries
+        """
+        if not funding:
+            return
+        
+        # Convert to DataFrame
+        df = pd.DataFrame(funding)
+        
+        # Ensure timestamp is datetime
+        if "timestamp" in df.columns:
+            df["timestamp"] = pd.to_datetime(df["timestamp"])
+        
+        # Remove duplicates by timestamp (keep last occurrence)
+        initial_count = len(df)
+        df = df.drop_duplicates(subset=["timestamp"], keep="last")
+        if len(df) < initial_count:
+            logger.warning(
+                "funding_duplicates_removed",
+                symbol=symbol,
+                date=date_str,
+                initial_count=initial_count,
+                final_count=len(df),
+                duplicates_removed=initial_count - len(df),
+            )
+        
+        # Sort by timestamp
+        df = df.sort_values("timestamp").reset_index(drop=True)
+        
+        # For backfilling, we should overwrite existing file, not append
+        funding_path = self._parquet_storage._get_funding_path(symbol, date_str)
+        if funding_path.exists():
+            logger.debug(
+                "funding_overwriting_existing",
+                symbol=symbol,
+                date=date_str,
+                existing_file=str(funding_path),
+            )
+            funding_path.unlink()
+        
+        # Save to Parquet
+        await self._parquet_storage.write_funding(symbol, date_str, df)
+        
+        logger.debug(
+            "funding_saved",
+            symbol=symbol,
+            date=date_str,
+            record_count=len(funding),
+        )
+    
     async def _validate_saved_data(
         self,
         symbol: str,
@@ -382,8 +1143,23 @@ class BackfillingService:
             # Read data back from Parquet
             if data_type == "klines":
                 read_data = await self._parquet_storage.read_klines(symbol, date_str)
+            elif data_type == "trades":
+                read_data = await self._parquet_storage.read_trades(symbol, date_str)
+            elif data_type == "orderbook_snapshots":
+                read_data = await self._parquet_storage.read_orderbook_snapshots(symbol, date_str)
+            elif data_type == "orderbook_deltas":
+                read_data = await self._parquet_storage.read_orderbook_deltas(symbol, date_str)
+            elif data_type == "ticker":
+                read_data = await self._parquet_storage.read_ticker(symbol, date_str)
+            elif data_type == "funding":
+                read_data = await self._parquet_storage.read_funding(symbol, date_str)
             else:
-                # Other data types not implemented yet
+                logger.warning(
+                    "data_validation_unknown_type",
+                    symbol=symbol,
+                    date=date_str,
+                    data_type=data_type,
+                )
                 return True
             
             # Verify record count
@@ -399,8 +1175,22 @@ class BackfillingService:
                 )
                 return False
             
-            # Verify data structure
-            required_fields = ["timestamp", "open", "high", "low", "close", "volume", "symbol"]
+            # Verify data structure based on data type
+            if data_type == "klines":
+                required_fields = ["timestamp", "open", "high", "low", "close", "volume", "symbol"]
+            elif data_type == "trades":
+                required_fields = ["timestamp", "price", "quantity", "side", "symbol"]
+            elif data_type == "orderbook_snapshots":
+                required_fields = ["timestamp", "bids", "asks", "symbol"]
+            elif data_type == "orderbook_deltas":
+                required_fields = ["timestamp", "bids", "asks", "symbol"]  # sequence is optional
+            elif data_type == "ticker":
+                required_fields = ["timestamp", "last_price", "bid_price", "ask_price", "volume_24h", "symbol"]
+            elif data_type == "funding":
+                required_fields = ["timestamp", "funding_rate", "symbol"]
+            else:
+                required_fields = ["timestamp", "symbol"]  # Minimum required
+            
             missing_fields = [field for field in required_fields if field not in read_data.columns]
             if missing_fields:
                 logger.error(
@@ -422,15 +1212,52 @@ class BackfillingService:
                 )
                 return False
             
-            # Verify data integrity: prices are positive, timestamps are valid
-            if (read_data["open"] <= 0).any() or (read_data["high"] <= 0).any() or (read_data["low"] <= 0).any() or (read_data["close"] <= 0).any():
-                logger.error(
-                    "data_validation_failed_invalid_prices",
-                    symbol=symbol,
-                    date=date_str,
-                    data_type=data_type,
-                )
-                return False
+            # Verify data integrity based on data type
+            if data_type == "klines":
+                # Prices must be positive
+                if (read_data["open"] <= 0).any() or (read_data["high"] <= 0).any() or (read_data["low"] <= 0).any() or (read_data["close"] <= 0).any():
+                    logger.error(
+                        "data_validation_failed_invalid_prices",
+                        symbol=symbol,
+                        date=date_str,
+                        data_type=data_type,
+                    )
+                    return False
+            elif data_type == "trades":
+                # Price and quantity must be positive
+                if (read_data["price"] <= 0).any() or (read_data["quantity"] <= 0).any():
+                    logger.error(
+                        "data_validation_failed_invalid_trade_values",
+                        symbol=symbol,
+                        date=date_str,
+                        data_type=data_type,
+                    )
+                    return False
+            elif data_type == "ticker":
+                # Prices should be positive (but can be None)
+                price_cols = ["last_price", "bid_price", "ask_price"]
+                for col in price_cols:
+                    if col in read_data.columns:
+                        non_null = read_data[col].dropna()
+                        if len(non_null) > 0 and (non_null <= 0).any():
+                            logger.error(
+                                "data_validation_failed_invalid_ticker_prices",
+                                symbol=symbol,
+                                date=date_str,
+                                data_type=data_type,
+                                column=col,
+                            )
+                            return False
+            elif data_type == "funding":
+                # Funding rate can be positive or negative, but should be finite
+                if (read_data["funding_rate"].isna()).any() or not pd.api.types.is_numeric_dtype(read_data["funding_rate"]):
+                    logger.error(
+                        "data_validation_failed_invalid_funding_rate",
+                        symbol=symbol,
+                        date=date_str,
+                        data_type=data_type,
+                    )
+                    return False
             
             logger.debug(
                 "data_validation_passed",
@@ -488,13 +1315,25 @@ class BackfillingService:
             missing_types = []
             
             for data_type in data_types:
-                if data_type == "klines":
-                    try:
-                        # Try to read existing data
+                try:
+                    # Try to read existing data based on type
+                    if data_type == "klines":
                         await self._parquet_storage.read_klines(symbol, date_str)
-                    except FileNotFoundError:
+                    elif data_type == "trades":
+                        await self._parquet_storage.read_trades(symbol, date_str)
+                    elif data_type == "orderbook_snapshots":
+                        await self._parquet_storage.read_orderbook_snapshots(symbol, date_str)
+                    elif data_type == "orderbook_deltas":
+                        await self._parquet_storage.read_orderbook_deltas(symbol, date_str)
+                    elif data_type == "ticker":
+                        await self._parquet_storage.read_ticker(symbol, date_str)
+                    elif data_type == "funding":
+                        await self._parquet_storage.read_funding(symbol, date_str)
+                    else:
+                        # Unknown type, mark as missing
                         missing_types.append(data_type)
-                # Other data types not implemented yet
+                except FileNotFoundError:
+                    missing_types.append(data_type)
             
             if missing_types:
                 missing_data[current_date] = missing_types
@@ -530,7 +1369,14 @@ class BackfillingService:
                     data_type_mapping = self._feature_registry_loader.get_data_type_mapping()
                     # Map input sources to storage types
                     data_types = []
-                    supported_types = {"klines"}  # Currently supported types for backfilling
+                    supported_types = {
+                        "klines",
+                        "trades",
+                        "orderbook_snapshots",
+                        "orderbook_deltas",
+                        "ticker",
+                        "funding",
+                    }  # Supported types for backfilling
                     
                     for input_source in required_types:
                         if input_source in data_type_mapping:
@@ -620,81 +1466,228 @@ class BackfillingService:
         try:
             for date_obj, missing_types in missing_data.items():
                 job.progress["current_date"] = date_obj.isoformat()
+                date_str = date_obj.isoformat()
+                processed_types = set()  # Track which types were processed for this date
+                
+                logger.info(
+                    "backfilling_date_start",
+                    job_id=job.job_id,
+                    symbol=job.symbol,
+                    date=date_str,
+                    missing_types=missing_types,
+                )
+                
+                # Delete all existing data for this date before backfilling
+                # This ensures clean data without partial or corrupted files
+                await self._delete_all_data_for_date(job.symbol, date_str)
                 
                 for data_type in missing_types:
-                    if data_type == "klines":
-                        try:
-                            # Backfill klines for this date
-                            klines = await self.backfill_klines(
+                    processed_types.add(data_type)
+                    try:
+                        date_str = date_obj.isoformat()
+                        backfilled_data = None
+                        save_method = None
+                        get_path_method = None
+                        
+                        # Backfill data based on type
+                        if data_type == "klines":
+                            backfilled_data = await self.backfill_klines(
                                 job.symbol,
                                 date_obj,
                                 date_obj,
                                 interval=config.feature_service_backfill_default_interval,
                             )
-                            
-                            if klines:
-                                # Save to Parquet
-                                date_str = date_obj.isoformat()
-                                
-                                # Count unique records before saving (after deduplication in _save_klines)
-                                # _save_klines will deduplicate, so we need to count unique timestamps
-                                df_temp = pd.DataFrame(klines)
-                                df_temp["timestamp"] = pd.to_datetime(df_temp["timestamp"])
-                                unique_count = df_temp["timestamp"].nunique()
-                                
-                                await self._save_klines(job.symbol, date_str, klines)
-                                
-                                # Validate saved data (compare with unique count, not total with duplicates)
-                                validation_passed = await self._validate_saved_data(
-                                    job.symbol,
-                                    date_str,
-                                    unique_count,
-                                    "klines",
-                                )
-                                
-                                if not validation_passed:
-                                    # Delete corrupted file and mark date as failed
-                                    try:
-                                        klines_path = self._parquet_storage._get_klines_path(job.symbol, date_str)
-                                        if klines_path.exists():
-                                            klines_path.unlink()
-                                        logger.warning(
-                                            "backfilling_validation_failed_deleted",
-                                            symbol=job.symbol,
-                                            date=date_str,
-                                        )
-                                    except Exception as e:
-                                        logger.error(
-                                            "backfilling_validation_failed_delete_error",
-                                            symbol=job.symbol,
-                                            date=date_str,
-                                            error=str(e),
-                                        )
-                                    
-                                    job.failed_dates.append(date_obj)
-                                else:
-                                    job.completed_dates.append(date_obj)
-                            else:
-                                logger.warning(
-                                    "backfilling_no_data",
-                                    symbol=job.symbol,
-                                    date=date_obj.isoformat(),
-                                    data_type=data_type,
-                                )
-                                job.failed_dates.append(date_obj)
-                        
-                        except Exception as e:
-                            logger.error(
-                                "backfilling_date_failed",
+                            save_method = self._save_klines
+                            get_path_method = self._parquet_storage._get_klines_path
+                        elif data_type == "trades":
+                            backfilled_data = await self.backfill_trades(
+                                job.symbol,
+                                date_obj,
+                                date_obj,
+                            )
+                            save_method = self._save_trades
+                            get_path_method = self._parquet_storage._get_trades_path
+                        elif data_type == "orderbook_snapshots":
+                            backfilled_data = await self.backfill_orderbook_snapshots(
+                                job.symbol,
+                                date_obj,
+                                date_obj,
+                            )
+                            save_method = self._save_orderbook_snapshots
+                            get_path_method = self._parquet_storage._get_orderbook_snapshots_path
+                        elif data_type == "orderbook_deltas":
+                            backfilled_data = await self.backfill_orderbook_deltas(
+                                job.symbol,
+                                date_obj,
+                                date_obj,
+                            )
+                            save_method = self._save_orderbook_deltas
+                            get_path_method = self._parquet_storage._get_orderbook_deltas_path
+                        elif data_type == "ticker":
+                            backfilled_data = await self.backfill_ticker(
+                                job.symbol,
+                                date_obj,
+                                date_obj,
+                            )
+                            save_method = self._save_ticker
+                            get_path_method = self._parquet_storage._get_ticker_path
+                        elif data_type == "funding":
+                            backfilled_data = await self.backfill_funding(
+                                job.symbol,
+                                date_obj,
+                                date_obj,
+                            )
+                            save_method = self._save_funding
+                            get_path_method = self._parquet_storage._get_funding_path
+                        else:
+                            logger.warning(
+                                "backfilling_unsupported_data_type_in_task",
                                 symbol=job.symbol,
-                                date=date_obj.isoformat(),
+                                date=date_str,
                                 data_type=data_type,
-                                error=str(e),
-                                exc_info=True,
+                                message=f"Backfilling for {data_type} is not implemented",
                             )
                             job.failed_dates.append(date_obj)
+                            continue
+                        
+                        # Save and validate data
+                        if backfilled_data:
+                            # Count unique records before saving (after deduplication in save methods)
+                            df_temp = pd.DataFrame(backfilled_data)
+                            df_temp["timestamp"] = pd.to_datetime(df_temp["timestamp"])
+                            unique_count = df_temp["timestamp"].nunique()
+                            
+                            # Save to Parquet
+                            await save_method(job.symbol, date_str, backfilled_data)
+                            
+                            # Validate saved data
+                            validation_passed = await self._validate_saved_data(
+                                job.symbol,
+                                date_str,
+                                unique_count,
+                                data_type,
+                            )
+                            
+                            if not validation_passed:
+                                # Delete corrupted file and mark date as failed
+                                try:
+                                    data_path = get_path_method(job.symbol, date_str)
+                                    if data_path.exists():
+                                        data_path.unlink()
+                                    logger.warning(
+                                        "backfilling_validation_failed_deleted",
+                                        symbol=job.symbol,
+                                        date=date_str,
+                                        data_type=data_type,
+                                    )
+                                except Exception as e:
+                                    logger.error(
+                                        "backfilling_validation_failed_delete_error",
+                                        symbol=job.symbol,
+                                        date=date_str,
+                                        data_type=data_type,
+                                        error=str(e),
+                                    )
+                                
+                                # Remove from completed if it was there, add to failed
+                                if date_obj in job.completed_dates:
+                                    job.completed_dates.remove(date_obj)
+                                if date_obj not in job.failed_dates:
+                                    job.failed_dates.append(date_obj)
+                            else:
+                                logger.debug(
+                                    "backfilling_data_type_completed",
+                                    symbol=job.symbol,
+                                    date=date_str,
+                                    data_type=data_type,
+                                    record_count=unique_count,
+                                )
+                                # Only mark date as completed if it's not already failed for another type
+                                if date_obj not in job.failed_dates:
+                                    if date_obj not in job.completed_dates:
+                                        job.completed_dates.append(date_obj)
+                        else:
+                            # No data backfilled - this is expected for some types
+                            # For funding: spot symbols don't have funding rates (only perpetuals)
+                            # For trades: historical trades may not be available via REST API for old dates
+                            # For orderbook_snapshots, orderbook_deltas, ticker: no historical data available via REST API
+                            if data_type == "funding":
+                                # Funding rates are only for perpetual contracts, not spot
+                                # Empty result is expected for spot symbols like BTCUSDT
+                                logger.debug(
+                                    "backfilling_funding_empty_expected",
+                                    symbol=job.symbol,
+                                    date=date_str,
+                                    note="Funding rates are only available for perpetual contracts, not spot symbols",
+                                )
+                            elif data_type == "trades":
+                                # Historical trades may not be available via REST API
+                                # This is not necessarily a failure - data might be available via WebSocket only
+                                logger.debug(
+                                    "backfilling_trades_empty",
+                                    symbol=job.symbol,
+                                    date=date_str,
+                                    note="Historical trades may not be available via REST API for this date",
+                                )
+                            else:
+                                # For orderbook_snapshots, orderbook_deltas, ticker - no historical data available is expected
+                                logger.debug(
+                                    "backfilling_no_historical_data_available",
+                                    symbol=job.symbol,
+                                    date=date_str,
+                                    data_type=data_type,
+                                    note="Historical data not available via REST API for this type",
+                                )
+                    
+                    except Exception as e:
+                        logger.error(
+                            "backfilling_date_failed",
+                            symbol=job.symbol,
+                            date=date_obj.isoformat(),
+                            data_type=data_type,
+                            error=str(e),
+                            exc_info=True,
+                        )
+                        # Remove from completed if it was there, add to failed
+                        if date_obj in job.completed_dates:
+                            job.completed_dates.remove(date_obj)
+                        if date_obj not in job.failed_dates:
+                            job.failed_dates.append(date_obj)
                 
-                job.progress["dates_completed"] += 1
+                # After processing all types for this date, check if date should be marked as completed
+                # If all types were processed and date is not in failed_dates, mark as completed
+                if date_obj not in job.failed_dates and len(processed_types) == len(missing_types):
+                    if date_obj not in job.completed_dates:
+                        job.completed_dates.append(date_obj)
+                        logger.info(
+                            "backfilling_date_completed",
+                            job_id=job.job_id,
+                            symbol=job.symbol,
+                            date=date_str,
+                            processed_types=list(processed_types),
+                        )
+                else:
+                    logger.warning(
+                        "backfilling_date_not_completed",
+                        job_id=job.job_id,
+                        symbol=job.symbol,
+                        date=date_str,
+                        in_failed_dates=date_obj in job.failed_dates,
+                        processed_types_count=len(processed_types),
+                        missing_types_count=len(missing_types),
+                        processed_types=list(processed_types),
+                    )
+                
+                # Note: dates_completed will be recalculated at the end based on actual completed_dates
+            
+            # Clean up: remove duplicates and ensure no overlap between completed and failed
+            job.completed_dates = list(set(job.completed_dates))
+            job.failed_dates = list(set(job.failed_dates))
+            # Remove any dates from completed that are also in failed
+            job.completed_dates = [d for d in job.completed_dates if d not in job.failed_dates]
+            
+            # Update dates_completed to match actual completed dates
+            job.progress["dates_completed"] = len(job.completed_dates)
             
             # Determine final job status
             job.end_time = datetime.now(timezone.utc)
