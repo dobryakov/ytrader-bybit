@@ -9,7 +9,7 @@ Model learns from market movements (price predictions), not from own trading res
 """
 
 from typing import List, Optional, Dict, Any
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone, time as dt_time
 from uuid import UUID
 import asyncio
 from uuid import uuid4
@@ -83,15 +83,24 @@ class TrainingOrchestrator:
         periods = self._calculate_dataset_periods()
 
         # Build dataset request
+        # Format datetime as ISO string with Z suffix for UTC
+        def format_dt(dt: datetime) -> str:
+            """Format datetime as ISO string with Z suffix."""
+            if dt.tzinfo is None:
+                # If naive, assume UTC
+                return dt.replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
+            # If timezone-aware, convert to UTC and format
+            return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+        
         request = {
             "symbol": symbol,
             "split_strategy": SplitStrategy.TIME_BASED.value,
-            "train_period_start": periods["train_period_start"].isoformat() + "Z",
-            "train_period_end": periods["train_period_end"].isoformat() + "Z",
-            "validation_period_start": periods["validation_period_start"].isoformat() + "Z",
-            "validation_period_end": periods["validation_period_end"].isoformat() + "Z",
-            "test_period_start": periods["test_period_start"].isoformat() + "Z",
-            "test_period_end": periods["test_period_end"].isoformat() + "Z",
+            "train_period_start": format_dt(periods["train_period_start"]),
+            "train_period_end": format_dt(periods["train_period_end"]),
+            "validation_period_start": format_dt(periods["validation_period_start"]),
+            "validation_period_end": format_dt(periods["validation_period_end"]),
+            "test_period_start": format_dt(periods["test_period_start"]),
+            "test_period_end": format_dt(periods["test_period_end"]),
             "target_config": {
                 "type": "classification",
                 "horizon": "1h",  # Default horizon, could be configurable
@@ -269,32 +278,47 @@ class TrainingOrchestrator:
         - Validation period: before test period (e.g., 7 days before test)
         - Train period: before validation period (e.g., 30 days before validation)
 
+        Periods are rounded to start/end of day to ensure full day coverage and avoid
+        issues with data that starts at 00:01:00 instead of exact period boundaries.
+
         Args:
             reference_time: Reference time for calculation (defaults to UTC now).
                           Typically set to 1 day ago to exclude most recent data.
 
         Returns:
             Dictionary with keys:
-                - train_period_start: datetime
-                - train_period_end: datetime
-                - validation_period_start: datetime
-                - validation_period_end: datetime
-                - test_period_start: datetime
-                - test_period_end: datetime
+                - train_period_start: datetime (start of day)
+                - train_period_end: datetime (end of day)
+                - validation_period_start: datetime (start of day)
+                - validation_period_end: datetime (end of day)
+                - test_period_start: datetime (start of day)
+                - test_period_end: datetime (end of day)
         """
         if reference_time is None:
             # Use 1 day ago as reference to exclude most recent data (which may be incomplete)
-            reference_time = datetime.utcnow() - timedelta(days=1)
+            reference_time = datetime.now(timezone.utc) - timedelta(days=1)
 
         # Calculate periods backwards from reference time
-        test_period_end = reference_time
-        test_period_start = test_period_end - timedelta(days=settings.model_retraining_test_period_days)
+        # Round reference_time to end of day (23:59:59) to include all data for that day
+        reference_date = reference_time.date()
+        test_period_end = datetime.combine(reference_date, dt_time(23, 59, 59)).replace(tzinfo=timezone.utc)
+        # For N days period, we need N days: from (reference_date - N + 1) to reference_date
+        test_period_start_date = reference_date - timedelta(days=settings.model_retraining_test_period_days - 1)
+        test_period_start = datetime.combine(test_period_start_date, dt_time(0, 0, 0)).replace(tzinfo=timezone.utc)
 
-        validation_period_end = test_period_start
-        validation_period_start = validation_period_end - timedelta(days=settings.model_retraining_validation_period_days)
+        # Validation period ends 1 day before test period starts
+        validation_period_end_date = test_period_start_date - timedelta(days=1)
+        validation_period_end = datetime.combine(validation_period_end_date, dt_time(23, 59, 59)).replace(tzinfo=timezone.utc)
+        # For N days period, we need N days: from (validation_period_end_date - N + 1) to validation_period_end_date
+        validation_period_start_date = validation_period_end_date - timedelta(days=settings.model_retraining_validation_period_days - 1)
+        validation_period_start = datetime.combine(validation_period_start_date, dt_time(0, 0, 0)).replace(tzinfo=timezone.utc)
 
-        train_period_end = validation_period_start
-        train_period_start = train_period_end - timedelta(days=settings.model_retraining_train_period_days)
+        # Train period ends 1 day before validation period starts
+        train_period_end_date = validation_period_start_date - timedelta(days=1)
+        train_period_end = datetime.combine(train_period_end_date, dt_time(23, 59, 59)).replace(tzinfo=timezone.utc)
+        # For N days period, we need N days: from (train_period_end_date - N + 1) to train_period_end_date
+        train_period_start_date = train_period_end_date - timedelta(days=settings.model_retraining_train_period_days - 1)
+        train_period_start = datetime.combine(train_period_start_date, dt_time(0, 0, 0)).replace(tzinfo=timezone.utc)
 
         periods = {
             "train_period_start": train_period_start,

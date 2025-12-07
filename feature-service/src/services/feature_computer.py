@@ -112,8 +112,12 @@ class FeatureComputer:
             temporal_features = compute_all_temporal_features(timestamp)
             all_features.update(temporal_features)
             
-            # Filter out None values
-            filtered_features = {k: v for k, v in all_features.items() if v is not None}
+            # Filter out None values and NaN/Inf values (not JSON compliant)
+            import math
+            filtered_features = {
+                k: v for k, v in all_features.items()
+                if v is not None and not (isinstance(v, float) and (math.isnan(v) or math.isinf(v)))
+            }
             
             # Create feature vector
             feature_vector = FeatureVector(

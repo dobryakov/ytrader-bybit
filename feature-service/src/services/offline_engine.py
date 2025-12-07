@@ -62,19 +62,15 @@ class OfflineEngine:
             FeatureVector at the target timestamp, or None if insufficient data
         """
         try:
-            # Reconstruct orderbook state up to timestamp
-            orderbook = await self._reconstruct_orderbook_state(
-                symbol=symbol,
-                timestamp=timestamp,
-                snapshots=orderbook_snapshots,
-                deltas=orderbook_deltas,
-            )
-            
-            if orderbook is None:
-                logger.warning(
-                    f"Cannot reconstruct orderbook for {symbol} at {timestamp}"
+            # Reconstruct orderbook state up to timestamp (if snapshots available)
+            orderbook = None
+            if not orderbook_snapshots.empty:
+                orderbook = await self._reconstruct_orderbook_state(
+                    symbol=symbol,
+                    timestamp=timestamp,
+                    snapshots=orderbook_snapshots,
+                    deltas=orderbook_deltas,
                 )
-                return None
             
             # Reconstruct rolling windows up to timestamp
             rolling_windows = await self._reconstruct_rolling_windows(
@@ -84,8 +80,14 @@ class OfflineEngine:
                 klines=klines,
             )
             
-            # Get current price
+            # Get current price from orderbook or klines
             current_price = orderbook.get_mid_price() if orderbook else None
+            if current_price is None and not klines.empty:
+                # Try to get price from klines
+                klines_before = klines[klines["timestamp"] <= timestamp]
+                if not klines_before.empty:
+                    latest_kline = klines_before.iloc[-1]
+                    current_price = latest_kline.get("close") or latest_kline.get("price")
             
             # Get funding rate if available
             funding_rate = None
@@ -127,11 +129,18 @@ class OfflineEngine:
             temporal_features = compute_all_temporal_features(timestamp)
             all_features.update(temporal_features)
             
+            # Filter out None values and NaN/Inf values (not JSON compliant)
+            import math
+            filtered_features = {
+                k: v for k, v in all_features.items()
+                if v is not None and not (isinstance(v, float) and (math.isnan(v) or math.isinf(v)))
+            }
+            
             # Create feature vector
             return FeatureVector(
                 timestamp=timestamp,
                 symbol=symbol,
-                features=all_features,
+                features=filtered_features,
                 feature_registry_version=self._feature_registry_version,
             )
         
@@ -290,7 +299,18 @@ class OfflineEngine:
                     "side": "Buy",  # Kline doesn't have side
                 }])
                 
-                windows["1m"] = pd.concat([windows["1m"], kline_data], ignore_index=True)
+                # Fix FutureWarning: handle empty DataFrame before concat
+                # If windows["1m"] is empty, just assign the new data
+                # Otherwise, concat with explicit dtype preservation
+                if windows["1m"].empty:
+                    windows["1m"] = kline_data
+                else:
+                    # Use concat with sort=False to preserve column order and avoid FutureWarning
+                    windows["1m"] = pd.concat(
+                        [windows["1m"], kline_data], 
+                        ignore_index=True,
+                        sort=False
+                    )
         
         return RollingWindows(
             symbol=symbol,

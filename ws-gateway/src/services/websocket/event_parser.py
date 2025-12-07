@@ -6,11 +6,31 @@ import datetime as dt
 from typing import Any, Dict, List, Optional
 
 from ...config.logging import get_logger
-from ...models.event import Event
+from ...models.event import Event, EventType
 from ...models.subscription import Subscription
 from ...utils.tracing import get_or_create_trace_id
 
 logger = get_logger(__name__)
+
+
+def _normalize_channel_type_to_event_type(channel_type: str) -> EventType:
+    """
+    Convert channel_type to event_type.
+    
+    Channel types use plural forms (e.g., "trades"), but event types use singular forms (e.g., "trade").
+    
+    Args:
+        channel_type: Channel type from subscription
+        
+    Returns:
+        Event type matching EventType literal
+    """
+    # Map channel_type (plural) to event_type (singular)
+    # Most channel types match event types, except "trades" -> "trade"
+    if channel_type == "trades":
+        return "trade"
+    # All other channel types match event types directly
+    return channel_type  # type: ignore
 
 
 def _parse_timestamp(ts: Any) -> Optional[dt.datetime]:
@@ -129,7 +149,7 @@ def parse_events_from_message(
             payload["creationTime"] = message["creationTime"]
 
         event = Event.create(
-            event_type=subscription.channel_type,
+            event_type=_normalize_channel_type_to_event_type(subscription.channel_type),
             topic=topic,
             timestamp=ts,
             payload=payload,
@@ -150,7 +170,7 @@ def parse_events_from_message(
             payload["creationTime"] = message["creationTime"]
 
         event = Event.create(
-            event_type=subscription.channel_type,
+            event_type=_normalize_channel_type_to_event_type(subscription.channel_type),
             topic=topic,
             timestamp=ts,
             payload=payload,
@@ -165,7 +185,7 @@ def parse_events_from_message(
             payload.setdefault("topic", topic)
 
             event = Event.create(
-                event_type=subscription.channel_type,
+                event_type=_normalize_channel_type_to_event_type(subscription.channel_type),
                 topic=topic,
                 timestamp=ts,
                 payload=payload,

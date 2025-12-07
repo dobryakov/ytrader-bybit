@@ -156,6 +156,9 @@ async def startup():
         )
         set_dataset_builder(dataset_builder)
         
+        # Recover incomplete dataset builds after restart
+        await dataset_builder.recover_incomplete_builds()
+        
         # Initialize Publisher
         feature_publisher = FeaturePublisher(mq_manager=mq_manager)
         await feature_publisher.initialize()

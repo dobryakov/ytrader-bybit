@@ -244,12 +244,13 @@ class MarketDataConsumer:
     async def _start_consumers(self) -> None:
         """Start consuming from all relevant queues."""
         # Queue names must match ws-gateway event types
-        # ws-gateway uses channel_type="trades" (plural) which becomes event_type="trades"
-        # See ws-gateway/src/services/websocket/event_parser.py: event_type=subscription.channel_type
+        # ws-gateway uses channel_type="trades" (plural) but EventType="trade" (singular)
+        # See ws-gateway/src/models/event.py: EventType = Literal["trade", ...]
+        # See ws-gateway/src/services/queue/setup.py: SUPPORTED_EVENT_TYPES = {"trade", ...}
         # Queue name format: ws-gateway.{event_type}
         queues = [
             "ws-gateway.orderbook",
-            "ws-gateway.trades",  # Note: plural, matches channel_type from subscription API
+            "ws-gateway.trade",  # Note: singular, matches EventType in ws-gateway
             "ws-gateway.ticker",
             "ws-gateway.kline",
             "ws-gateway.funding",

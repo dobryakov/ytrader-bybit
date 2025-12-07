@@ -1,6 +1,7 @@
 """Base RabbitMQ connection using aio-pika."""
 
 from typing import Optional
+import asyncio
 import aio_pika
 from aio_pika import Connection, Channel
 
@@ -18,27 +19,57 @@ class RabbitMQConnection:
     _channel: Optional[Channel] = None
 
     @classmethod
-    async def create_connection(cls) -> Connection:
-        """Create and return a RabbitMQ connection."""
+    async def create_connection(cls, max_retries: int = 10, initial_delay: float = 2.0) -> Connection:
+        """Create and return a RabbitMQ connection with retry logic.
+        
+        Args:
+            max_retries: Maximum number of connection attempts
+            initial_delay: Initial delay between retries in seconds (exponential backoff)
+        """
         if cls._connection is None or cls._connection.is_closed:
-            try:
-                cls._connection = await aio_pika.connect_robust(
-                    settings.rabbitmq_url,
-                    client_properties={"connection_name": settings.order_manager_service_name},
-                )
-                logger.info(
-                    "rabbitmq_connection_created",
-                    host=settings.rabbitmq_host,
-                    port=settings.rabbitmq_port,
-                )
-            except Exception as e:
-                logger.error(
-                    "rabbitmq_connection_failed",
-                    error=str(e),
-                    host=settings.rabbitmq_host,
-                    port=settings.rabbitmq_port,
-                )
-                raise QueueError(f"Failed to create RabbitMQ connection: {e}") from e
+            last_exception = None
+            delay = initial_delay
+            
+            for attempt in range(1, max_retries + 1):
+                try:
+                    cls._connection = await aio_pika.connect_robust(
+                        settings.rabbitmq_url,
+                        client_properties={"connection_name": settings.order_manager_service_name},
+                    )
+                    logger.info(
+                        "rabbitmq_connection_created",
+                        host=settings.rabbitmq_host,
+                        port=settings.rabbitmq_port,
+                        attempt=attempt,
+                    )
+                    return cls._connection
+                except Exception as e:
+                    last_exception = e
+                    if attempt < max_retries:
+                        logger.warning(
+                            "rabbitmq_connection_retry",
+                            error=str(e),
+                            host=settings.rabbitmq_host,
+                            port=settings.rabbitmq_port,
+                            attempt=attempt,
+                            max_retries=max_retries,
+                            retry_delay=delay,
+                        )
+                        await asyncio.sleep(delay)
+                        delay = min(delay * 1.5, 30.0)  # Exponential backoff, max 30s
+                    else:
+                        logger.error(
+                            "rabbitmq_connection_failed",
+                            error=str(e),
+                            host=settings.rabbitmq_host,
+                            port=settings.rabbitmq_port,
+                            attempt=attempt,
+                        )
+            
+            raise QueueError(
+                f"Failed to create RabbitMQ connection after {max_retries} attempts: {last_exception}"
+            ) from last_exception
+        
         return cls._connection
 
     @classmethod

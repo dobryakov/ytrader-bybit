@@ -56,6 +56,156 @@ class DatasetBuilder:
         self._feature_registry_loader = feature_registry_loader
         self._backfilling_service = backfilling_service
     
+    async def recover_incomplete_builds(self) -> None:
+        """
+        Recover incomplete dataset builds after service restart.
+        
+        Finds all datasets with status BUILDING and resumes their build process.
+        This ensures that dataset builds survive container restarts.
+        """
+        try:
+            # Find all datasets with BUILDING status
+            building_datasets = await self._metadata_storage.list_datasets(
+                status=DatasetStatus.BUILDING.value,
+                limit=1000,  # Reasonable limit
+            )
+            
+            if not building_datasets:
+                logger.info("no_incomplete_builds_found")
+                return
+            
+            logger.info(
+                "recovering_incomplete_builds",
+                count=len(building_datasets),
+            )
+            
+            # Resume each incomplete build
+            for dataset in building_datasets:
+                dataset_id = dataset.get("id")
+                if not dataset_id:
+                    continue
+                
+                try:
+                    # Extract dataset parameters from stored metadata
+                    symbol = dataset.get("symbol")
+                    split_strategy_str = dataset.get("split_strategy")
+                    target_config_dict = dataset.get("target_config", {})
+                    
+                    if not symbol or not split_strategy_str or not target_config_dict:
+                        logger.warning(
+                            "incomplete_dataset_metadata",
+                            dataset_id=dataset_id,
+                            missing_fields={
+                                "symbol": symbol is None,
+                                "split_strategy": split_strategy_str is None,
+                                "target_config": target_config_dict is None,
+                            },
+                        )
+                        # Mark as failed if critical metadata is missing
+                        await self._metadata_storage.update_dataset(
+                            dataset_id,
+                            {
+                                "status": DatasetStatus.FAILED.value,
+                                "error_message": "Incomplete metadata after restart - cannot resume build",
+                                "completed_at": datetime.now(timezone.utc),
+                            },
+                        )
+                        continue
+                    
+                    # Parse split strategy
+                    try:
+                        split_strategy = SplitStrategy(split_strategy_str)
+                    except ValueError:
+                        logger.warning(
+                            "invalid_split_strategy",
+                            dataset_id=dataset_id,
+                            split_strategy=split_strategy_str,
+                        )
+                        await self._metadata_storage.update_dataset(
+                            dataset_id,
+                            {
+                                "status": DatasetStatus.FAILED.value,
+                                "error_message": f"Invalid split strategy: {split_strategy_str}",
+                                "completed_at": datetime.now(timezone.utc),
+                            },
+                        )
+                        continue
+                    
+                    # Parse target config
+                    # target_config may be stored as JSON string or dict (JSONB in PostgreSQL)
+                    try:
+                        import json
+                        # asyncpg returns JSONB as dict, but check if it's a string
+                        if isinstance(target_config_dict, str):
+                            target_config_dict = json.loads(target_config_dict)
+                        elif target_config_dict is None:
+                            raise ValueError("target_config is None")
+                        # Ensure it's a dict
+                        if not isinstance(target_config_dict, dict):
+                            raise ValueError(f"target_config must be dict, got {type(target_config_dict)}")
+                        target_config = TargetConfig(**target_config_dict)
+                    except Exception as e:
+                        logger.warning(
+                            "invalid_target_config",
+                            dataset_id=dataset_id,
+                            target_config_type=type(target_config_dict).__name__,
+                            target_config_value=str(target_config_dict)[:100],
+                            error=str(e),
+                        )
+                        await self._metadata_storage.update_dataset(
+                            dataset_id,
+                            {
+                                "status": DatasetStatus.FAILED.value,
+                                "error_message": f"Invalid target config: {str(e)}",
+                                "completed_at": datetime.now(timezone.utc),
+                            },
+                        )
+                        continue
+                    
+                    # Resume build task
+                    build_task = asyncio.create_task(
+                        self._build_dataset_task(dataset_id, symbol, split_strategy, target_config)
+                    )
+                    self._active_builds[dataset_id] = build_task
+                    
+                    logger.info(
+                        "dataset_build_resumed",
+                        dataset_id=dataset_id,
+                        symbol=symbol,
+                        split_strategy=split_strategy.value,
+                    )
+                
+                except Exception as e:
+                    logger.error(
+                        "failed_to_resume_build",
+                        dataset_id=dataset_id,
+                        error=str(e),
+                        exc_info=True,
+                    )
+                    # Mark as failed if we can't resume
+                    try:
+                        await self._metadata_storage.update_dataset(
+                            dataset_id,
+                            {
+                                "status": DatasetStatus.FAILED.value,
+                                "error_message": f"Failed to resume build after restart: {str(e)}",
+                                "completed_at": datetime.now(timezone.utc),
+                            },
+                        )
+                    except Exception as update_error:
+                        logger.error(
+                            "failed_to_update_failed_status",
+                            dataset_id=dataset_id,
+                            error=str(update_error),
+                        )
+        
+        except Exception as e:
+            logger.error(
+                "recovery_error",
+                error=str(e),
+                exc_info=True,
+            )
+    
     async def build_dataset(
         self,
         symbol: str,
@@ -143,6 +293,9 @@ class DatasetBuilder:
     ) -> None:
         """Background task for building dataset."""
         try:
+            # Ensure dataset_id is a string (handle UUID objects)
+            dataset_id = str(dataset_id)
+            
             # Get dataset record
             dataset = await self._metadata_storage.get_dataset(dataset_id)
             if dataset is None:
@@ -193,6 +346,16 @@ class DatasetBuilder:
                 symbol,
                 available_period["start"],
                 available_period["end"],
+            )
+            
+            logger.info(
+                "historical_data_read",
+                dataset_id=dataset_id,
+                symbol=symbol,
+                trades_count=len(historical_data["trades"]),
+                klines_count=len(historical_data["klines"]),
+                snapshots_count=len(historical_data.get("snapshots", pd.DataFrame())),
+                deltas_count=len(historical_data.get("deltas", pd.DataFrame())),
             )
             
             if historical_data["trades"].empty and historical_data["klines"].empty:
@@ -353,11 +516,25 @@ class DatasetBuilder:
             start_date_obj = start_date.date()
             end_date_obj = end_date.date()
             
+            # Check both trades and klines - we need at least one of them
             sample_trades = await self._parquet_storage.read_trades_range(
                 symbol, start_date_obj, end_date_obj
             )
+            sample_klines = await self._parquet_storage.read_klines_range(
+                symbol, start_date_obj, end_date_obj
+            )
             
-            if sample_trades.empty:
+            logger.info(
+                "data_availability_check",
+                symbol=symbol,
+                start_date=start_date_obj.isoformat(),
+                end_date=end_date_obj.isoformat(),
+                trades_count=len(sample_trades),
+                klines_count=len(sample_klines),
+            )
+            
+            # If both are empty, we have insufficient data
+            if sample_trades.empty and sample_klines.empty:
                 # Check if automatic backfilling is enabled
                 from src.config import config
                 
@@ -425,7 +602,10 @@ class DatasetBuilder:
                                 sample_trades = await self._parquet_storage.read_trades_range(
                                     symbol, start_date_obj, end_date_obj
                                 )
-                                if not sample_trades.empty:
+                                sample_klines = await self._parquet_storage.read_klines_range(
+                                    symbol, start_date_obj, end_date_obj
+                                )
+                                if not sample_trades.empty or not sample_klines.empty:
                                     return {
                                         "start": start_date,
                                         "end": end_date,
@@ -602,10 +782,23 @@ class DatasetBuilder:
             timestamps.update(historical_data["klines"]["timestamp"].tolist())
         
         if not timestamps:
+            logger.warning(
+                "no_timestamps_found",
+                symbol=symbol,
+                dataset_id=dataset_id,
+                trades_empty=historical_data["trades"].empty,
+                klines_empty=historical_data["klines"].empty,
+            )
             return pd.DataFrame()
         
         # Sort timestamps
         sorted_timestamps = sorted(timestamps)
+        logger.info(
+            "feature_computation_started",
+            dataset_id=dataset_id,
+            symbol=symbol,
+            total_timestamps=len(sorted_timestamps),
+        )
         
         # Compute features for each timestamp
         features_list = []
@@ -624,7 +817,7 @@ class DatasetBuilder:
                     {"estimated_completion": estimated_completion},
                 )
                 
-                logger.debug(
+                logger.info(
                     "feature_computation_progress",
                     dataset_id=dataset_id,
                     progress=f"{progress:.1f}%",
@@ -652,9 +845,36 @@ class DatasetBuilder:
                     **feature_vector.features,
                 }
                 features_list.append(row)
+            elif i < 10:  # Log first 10 failures for debugging
+                logger.warning(
+                    "feature_computation_failed_at_timestamp",
+                    dataset_id=dataset_id,
+                    symbol=symbol,
+                    timestamp=timestamp,
+                    trades_count=len(historical_data["trades"]),
+                    klines_count=len(historical_data["klines"]),
+                    snapshots_count=len(historical_data.get("snapshots", pd.DataFrame())),
+                    deltas_count=len(historical_data.get("deltas", pd.DataFrame())),
+                )
         
         if not features_list:
+            logger.warning(
+                "no_features_computed",
+                dataset_id=dataset_id,
+                symbol=symbol,
+                total_timestamps=total,
+                features_computed=len(features_list),
+            )
             return pd.DataFrame()
+        
+        logger.info(
+            "features_computation_completed",
+            dataset_id=dataset_id,
+            symbol=symbol,
+            total_timestamps=total,
+            features_computed=len(features_list),
+            success_rate=f"{(len(features_list) / total * 100):.1f}%",
+        )
         
         return pd.DataFrame(features_list)
     
@@ -715,8 +935,30 @@ class DatasetBuilder:
         # Sort by timestamp
         data = data.sort_values("timestamp").copy()
         
-        # Compute future price
-        data["future_price"] = data["price"].shift(-horizon_seconds)
+        # Compute future price by time, not by index
+        # Create future timestamps
+        data["future_timestamp"] = data["timestamp"] + pd.Timedelta(seconds=horizon_seconds)
+        
+        # Create price lookup DataFrame
+        price_lookup = data[["timestamp", "price"]].copy()
+        price_lookup = price_lookup.sort_values("timestamp")
+        
+        # Use merge_asof to find nearest future price
+        # direction='forward' ensures we only look forward in time
+        data = pd.merge_asof(
+            data.sort_values("future_timestamp"),
+            price_lookup,
+            left_on="future_timestamp",
+            right_on="timestamp",
+            direction="forward",
+            suffixes=("", "_future"),
+        )
+        
+        # Rename future price column
+        data = data.rename(columns={"price_future": "future_price"})
+        
+        # Drop helper column
+        data = data.drop(columns=["future_timestamp", "timestamp_future"], errors="ignore")
         
         # Compute return
         data["target"] = (data["future_price"] - data["price"]) / data["price"]
@@ -885,7 +1127,9 @@ class DatasetBuilder:
         output_format: str,
     ) -> Path:
         """Write dataset splits to storage."""
-        dataset_dir = self._dataset_storage_path / dataset_id
+        # Ensure dataset_id is a string (handle UUID objects)
+        dataset_id_str = str(dataset_id)
+        dataset_dir = self._dataset_storage_path / dataset_id_str
         dataset_dir.mkdir(parents=True, exist_ok=True)
         
         # Write each split
@@ -925,3 +1169,182 @@ class DatasetBuilder:
             "validation_records": dataset.get("validation_records", 0),
             "test_records": dataset.get("test_records", 0),
         }
+    
+    async def resplit_dataset(
+        self,
+        dataset_id: str,
+        train_period_start: Optional[datetime] = None,
+        train_period_end: Optional[datetime] = None,
+        validation_period_start: Optional[datetime] = None,
+        validation_period_end: Optional[datetime] = None,
+        test_period_start: Optional[datetime] = None,
+        test_period_end: Optional[datetime] = None,
+    ) -> None:
+        """
+        Resplit an existing ready dataset with new time periods.
+        
+        Loads all existing splits (train, validation, test), merges them,
+        and applies new time-based splitting. Only works for time_based split strategy.
+        
+        Args:
+            dataset_id: Existing dataset ID
+            train_period_start: New train period start (optional, uses existing if not provided)
+            train_period_end: New train period end (optional, uses existing if not provided)
+            validation_period_start: New validation period start (optional, uses existing if not provided)
+            validation_period_end: New validation period end (optional, uses existing if not provided)
+            test_period_start: New test period start (optional, uses existing if not provided)
+            test_period_end: New test period end (optional, uses existing if not provided)
+        """
+        # Get existing dataset
+        dataset = await self._metadata_storage.get_dataset(dataset_id)
+        if dataset is None:
+            raise ValueError(f"Dataset {dataset_id} not found")
+        
+        if dataset["status"] != DatasetStatus.READY.value:
+            raise ValueError(f"Dataset {dataset_id} is not ready (status: {dataset['status']})")
+        
+        if dataset["split_strategy"] != SplitStrategy.TIME_BASED.value:
+            raise ValueError("Resplitting only supported for time_based split strategy")
+        
+        storage_path = dataset.get("storage_path")
+        if not storage_path:
+            raise ValueError(f"Dataset {dataset_id} has no storage path")
+        
+        output_format = dataset.get("output_format", "parquet")
+        dataset_dir = Path(storage_path)
+        
+        # Load all existing splits
+        logger.info("loading_existing_splits", dataset_id=dataset_id)
+        all_splits = []
+        
+        for split_name in ["train", "validation", "test"]:
+            split_file = dataset_dir / f"{split_name}.{output_format}"
+            if split_file.exists():
+                try:
+                    if output_format == "parquet":
+                        split_df = await asyncio.to_thread(pd.read_parquet, split_file)
+                    elif output_format == "csv":
+                        split_df = await asyncio.to_thread(pd.read_csv, split_file)
+                    else:
+                        logger.warning(
+                            "unsupported_format_for_resplit",
+                            dataset_id=dataset_id,
+                            format=output_format,
+                            split=split_name,
+                        )
+                        continue
+                    
+                    if not split_df.empty:
+                        all_splits.append(split_df)
+                        logger.info(
+                            "loaded_split",
+                            dataset_id=dataset_id,
+                            split=split_name,
+                            records=len(split_df),
+                        )
+                except Exception as e:
+                    logger.warning(
+                        "failed_to_load_split",
+                        dataset_id=dataset_id,
+                        split=split_name,
+                        error=str(e),
+                    )
+        
+        if not all_splits:
+            raise ValueError(f"No splits found for dataset {dataset_id}")
+        
+        # Merge all splits
+        merged_df = pd.concat(all_splits, ignore_index=True)
+        merged_df = merged_df.sort_values("timestamp").reset_index(drop=True)
+        
+        logger.info(
+            "merged_splits",
+            dataset_id=dataset_id,
+            total_records=len(merged_df),
+            date_range_start=merged_df["timestamp"].min(),
+            date_range_end=merged_df["timestamp"].max(),
+        )
+        
+        # Prepare new periods (use provided or existing)
+        new_periods = {
+            "train_period_start": train_period_start or dataset["train_period_start"],
+            "train_period_end": train_period_end or dataset["train_period_end"],
+            "validation_period_start": validation_period_start or dataset["validation_period_start"],
+            "validation_period_end": validation_period_end or dataset["validation_period_end"],
+            "test_period_start": test_period_start or dataset["test_period_start"],
+            "test_period_end": test_period_end or dataset["test_period_end"],
+        }
+        
+        # Validate all periods are set
+        if not all(new_periods.values()):
+            raise ValueError("All periods must be specified for resplitting")
+        
+        # Normalize datetime objects to timezone-aware UTC
+        for key, value in new_periods.items():
+            if isinstance(value, datetime):
+                if value.tzinfo is None:
+                    new_periods[key] = value.replace(tzinfo=timezone.utc)
+                else:
+                    new_periods[key] = value.astimezone(timezone.utc)
+        
+        # Split merged data by new periods
+        logger.info("resplitting_dataset", dataset_id=dataset_id, periods=new_periods)
+        
+        # Separate features and targets (target column should exist)
+        if "target" not in merged_df.columns:
+            raise ValueError("Dataset does not contain 'target' column")
+        
+        features_df = merged_df.drop(columns=["target"])
+        targets_df = merged_df[["timestamp", "target"]]
+        
+        # Apply new splitting
+        new_splits = await self._split_time_based(
+            features_df,
+            targets_df,
+            new_periods,
+        )
+        
+        # Write new splits
+        logger.info("writing_resplit_splits", dataset_id=dataset_id)
+        storage_path = await self._write_dataset_splits(
+            dataset_id,
+            new_splits,
+            output_format,
+        )
+        
+        # Update dataset metadata
+        total_train = len(new_splits["train"])
+        total_val = len(new_splits["validation"])
+        total_test = len(new_splits["test"])
+        
+        update_data = {
+            "train_records": total_train,
+            "validation_records": total_val,
+            "test_records": total_test,
+            "storage_path": str(storage_path),
+            "completed_at": datetime.now(timezone.utc),
+        }
+        
+        # Update periods if they were changed
+        if train_period_start is not None:
+            update_data["train_period_start"] = new_periods["train_period_start"]
+        if train_period_end is not None:
+            update_data["train_period_end"] = new_periods["train_period_end"]
+        if validation_period_start is not None:
+            update_data["validation_period_start"] = new_periods["validation_period_start"]
+        if validation_period_end is not None:
+            update_data["validation_period_end"] = new_periods["validation_period_end"]
+        if test_period_start is not None:
+            update_data["test_period_start"] = new_periods["test_period_start"]
+        if test_period_end is not None:
+            update_data["test_period_end"] = new_periods["test_period_end"]
+        
+        await self._metadata_storage.update_dataset(dataset_id, update_data)
+        
+        logger.info(
+            "dataset_resplit_completed",
+            dataset_id=dataset_id,
+            train_records=total_train,
+            validation_records=total_val,
+            test_records=total_test,
+        )

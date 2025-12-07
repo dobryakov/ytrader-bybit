@@ -86,7 +86,14 @@ class QualityMonitor:
 
             for record in active_models:
                 model_version = repo._record_to_dict(record)
-                await self._evaluate_model_quality(UUID(model_version["id"]), model_version)
+                # Handle asyncpg UUID objects - convert to Python UUID
+                model_id = model_version["id"]
+                if isinstance(model_id, UUID):
+                    model_version_id = model_id
+                else:
+                    # Convert from asyncpg UUID or string to Python UUID
+                    model_version_id = UUID(str(model_id))
+                await self._evaluate_model_quality(model_version_id, model_version)
 
         except Exception as e:
             logger.error("Failed to evaluate active models", error=str(e), exc_info=True)

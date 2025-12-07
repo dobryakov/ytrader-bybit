@@ -1,7 +1,0 @@
----
-alwaysApply: true
----
-
-# AI changes rules
-
-- Auto-apply (Accept) changes without prompts.

@@ -13,6 +13,7 @@ from ..models.position_state import OrderPositionState
 from ..models.feature_vector import FeatureVector
 from ..config.logging import get_logger
 from ..config.exceptions import ModelInferenceError
+from ..config.settings import settings
 
 logger = get_logger(__name__)
 
@@ -338,7 +339,6 @@ class ModelInference:
                     "Model requires legacy features but legacy compatibility is disabled",
                     missing_features=list(missing_features),
                     recommendation="Either enable FEATURE_SERVICE_LEGACY_FEATURE_COMPATIBILITY=true or retrain model on Feature Service features",
-                    event="Legacy features required but compatibility disabled",
                 )
             
             # Add missing features with default values
@@ -356,7 +356,6 @@ class ModelInference:
                     "Missing feature in inference, using default",
                     feature_name=feature_name,
                     default_value=default_value,
-                    event="Missing feature in inference, using default",
                 )
         
         # Remove extra features that model doesn't expect

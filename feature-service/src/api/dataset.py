@@ -6,7 +6,9 @@ from fastapi.responses import FileResponse
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from uuid import UUID
+from pathlib import Path as PathLib
 import structlog
+import shutil
 
 from src.models.dataset import (
     Dataset,
@@ -59,6 +61,16 @@ class DatasetBuildRequest(BaseModel):
     target_config: TargetConfig
     feature_registry_version: str
     output_format: str = "parquet"
+
+
+class DatasetResplitRequest(BaseModel):
+    """Request model for dataset resplitting."""
+    train_period_start: Optional[datetime] = None
+    train_period_end: Optional[datetime] = None
+    validation_period_start: Optional[datetime] = None
+    validation_period_end: Optional[datetime] = None
+    test_period_start: Optional[datetime] = None
+    test_period_end: Optional[datetime] = None
 
 
 @router.post("/build", status_code=202)
@@ -186,7 +198,7 @@ async def download_dataset(
         raise HTTPException(status_code=404, detail="Dataset file not found")
     
     output_format = dataset.get("output_format", "parquet")
-    file_path = Path(storage_path) / f"{split}.{output_format}"
+    file_path = PathLib(storage_path) / f"{split}.{output_format}"
     
     if not file_path.exists():
         raise HTTPException(status_code=404, detail=f"Split file not found: {split}")
@@ -202,6 +214,116 @@ async def download_dataset(
         media_type=media_type,
         filename=f"{dataset_id}_{split}.{output_format}",
     )
+
+
+@router.post("/{dataset_id}/resplit", status_code=200)
+async def resplit_dataset(
+    dataset_id: UUID = Path(..., description="Dataset ID"),
+    request: DatasetResplitRequest = Body(...),
+    api_key: str = Depends(verify_api_key),
+) -> dict:
+    """
+    Resplit an existing ready dataset with new time periods.
+    
+    Loads all existing splits (train, validation, test), merges them,
+    and applies new time-based splitting. Only works for time_based split strategy.
+    
+    Returns:
+        Updated dataset information with new split counts
+    """
+    if _dataset_builder is None:
+        raise HTTPException(status_code=503, detail="Dataset builder not initialized")
+    
+    if _metadata_storage is None:
+        raise HTTPException(status_code=503, detail="Metadata storage not initialized")
+    
+    try:
+        await _dataset_builder.resplit_dataset(
+            dataset_id=str(dataset_id),
+            train_period_start=request.train_period_start,
+            train_period_end=request.train_period_end,
+            validation_period_start=request.validation_period_start,
+            validation_period_end=request.validation_period_end,
+            test_period_start=request.test_period_start,
+            test_period_end=request.test_period_end,
+        )
+        
+        # Get updated dataset
+        dataset = await _metadata_storage.get_dataset(str(dataset_id))
+        
+        logger.info(
+            "dataset_resplit_requested",
+            dataset_id=str(dataset_id),
+            train_records=dataset.get("train_records", 0),
+            validation_records=dataset.get("validation_records", 0),
+            test_records=dataset.get("test_records", 0),
+        )
+        
+        return {
+            "dataset_id": str(dataset_id),
+            "status": "ready",
+            "train_records": dataset.get("train_records", 0),
+            "validation_records": dataset.get("validation_records", 0),
+            "test_records": dataset.get("test_records", 0),
+            "message": "Dataset resplit completed successfully",
+        }
+    
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error("dataset_resplit_error", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.delete("/{dataset_id}", status_code=204)
+async def delete_dataset(
+    dataset_id: UUID = Path(..., description="Dataset ID"),
+    api_key: str = Depends(verify_api_key),
+) -> None:
+    """
+    Delete dataset by ID.
+    
+    This will:
+    1. Delete the dataset record from the database
+    2. Delete all dataset files from storage (if they exist)
+    """
+    if _metadata_storage is None:
+        raise HTTPException(status_code=503, detail="Metadata storage not initialized")
+    
+    # Get dataset metadata first to get storage_path
+    dataset = await _metadata_storage.get_dataset(str(dataset_id))
+    
+    if dataset is None:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    
+    # Delete dataset record from database
+    deleted = await _metadata_storage.delete_dataset(str(dataset_id))
+    
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    
+    # Delete dataset files if they exist
+    storage_path = dataset.get("storage_path")
+    if storage_path:
+        try:
+            dataset_dir = PathLib(storage_path)
+            if dataset_dir.exists() and dataset_dir.is_dir():
+                shutil.rmtree(dataset_dir)
+                logger.info(
+                    "dataset_files_deleted",
+                    dataset_id=str(dataset_id),
+                    storage_path=str(storage_path),
+                )
+        except Exception as e:
+            # Log error but don't fail the request - database record is already deleted
+            logger.warning(
+                "dataset_files_deletion_failed",
+                dataset_id=str(dataset_id),
+                storage_path=str(storage_path),
+                error=str(e),
+            )
+    
+    logger.info("dataset_deleted", dataset_id=str(dataset_id))
 
 
 class ModelEvaluateRequest(BaseModel):

@@ -793,4 +793,29 @@ class MetadataStorage:
             # Normalize all datetime objects in results to timezone-aware UTC
             # This prevents mixing timezone-aware and timezone-naive datetimes
             return [self._normalize_datetime_in_dict(dict(row)) for row in rows]
+    
+    async def delete_dataset(self, dataset_id: str) -> bool:
+        """
+        Delete dataset record from database.
+        
+        Args:
+            dataset_id: Dataset ID (UUID string)
+            
+        Returns:
+            True if dataset was deleted, False if not found
+        """
+        async with self.transaction() as conn:
+            result = await conn.execute(
+                """
+                DELETE FROM datasets WHERE id = $1
+                """,
+                dataset_id,
+            )
+            # result is the number of rows affected
+            deleted = result == "DELETE 1"
+            if deleted:
+                logger.info("dataset_deleted", dataset_id=dataset_id)
+            else:
+                logger.warning("dataset_not_found_for_deletion", dataset_id=dataset_id)
+            return deleted
 
