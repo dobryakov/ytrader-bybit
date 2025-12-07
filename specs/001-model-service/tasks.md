@@ -329,6 +329,21 @@
 - **T172** (dataset period calculation): Depends on T171 (time-based config exists), must complete before T152 (TrainingOrchestrator needs period calculation)
 - **T162, T163** (documentation updates): Can be done independently, but should complete after T145-T172 (to document implemented integration including market-data-only training approach)
 
+### Task Dependencies for Test Split Evaluation (T173-T180)
+
+**Note**: These tasks implement proper test set evaluation for final quality assessment and model activation, aligning with docs/feature-service.md workflow.
+
+- **T173** (test split evaluation): Depends on T152 (TrainingOrchestrator updated), T174 (save_quality_metrics supports dataset_split), must complete after T152 to add test set evaluation to training pipeline
+- **T174** (save_quality_metrics update): Can be done independently, must complete before T173 (test split evaluation needs updated method to save metrics with dataset_split metadata)
+- **T175** (quality metrics repository filtering): Can be done independently, must complete before T177, T178 (mode transition and retraining trigger need filtering by dataset_split)
+- **T176** (update SC-005): Can be done independently, but should complete after T173 to align specification with implementation
+- **T177** (mode transition update): Depends on T175 (repository filtering exists), T173 (test split evaluation exists), must complete after T173 to use test set metrics for mode transitions
+- **T178** (retraining trigger update): Depends on T175 (repository filtering exists), T173 (test split evaluation exists), must complete after T173 to use test set metrics for quality degradation detection
+- **T179** (README documentation): Can be done independently, but should complete after T173-T178 (to document implemented test set evaluation workflow)
+- **T180** (quickstart documentation): Can be done independently, but should complete after T173-T178 (to synchronize quickstart with test set evaluation)
+- **T181** (warning logging): Depends on T173 (test split evaluation exists), can be done in parallel with T179, T180 (logging enhancement for operational awareness)
+- **Note**: T174 and T175 can be done in parallel, T177 and T178 can be done in parallel after T175 and T173 are complete, T181 can be done in parallel with T179, T180
+
 ---
 
 ## Parallel Example: User Story 1
@@ -438,7 +453,7 @@ With multiple developers:
 
 ## Task Summary
 
-- **Total Tasks**: 163 tasks (added T052c, T052d, T052e for risk management rules, T094-T097 for position cache optimization, T098-T116 for position-based exit strategy, T123-T140 for training orchestrator improvements, T141 for balance adaptation investigation and fixes, T142-T144 for market data cache freshness and signal delay monitoring, T145-T163 for Feature Service integration)
+- **Total Tasks**: 173 tasks (added T052c, T052d, T052e for risk management rules, T094-T097 for position cache optimization, T098-T116 for position-based exit strategy, T123-T140 for training orchestrator improvements, T141 for balance adaptation investigation and fixes, T142-T144 for market data cache freshness and signal delay monitoring, T145-T163 for Feature Service integration, T173-T181 for test split evaluation and related updates)
 - **Phase 1 (Setup)**: 9 tasks
 - **Phase 2 (Foundational)**: 12 tasks
 - **Phase 3 (User Story 1 - MVP)**: 15 tasks (added T030a, T030b, T030c, T030d)
@@ -448,7 +463,8 @@ With multiple developers:
 - **Phase 7 (Polish)**: 35 tasks (added T091, T092, T093, T094-T097 for position cache optimization, T117-T122 for automatic asset selection, T141 for balance adaptation investigation and fixes, T142-T144 for market data cache freshness and signal delay monitoring)
 - **Phase 8 (User Story 5)**: 19 tasks (position-based exit strategy)
 - **Phase 9 (Training Orchestrator Improvements)**: 18 tasks (T123-T140 for persistent buffer, training queue, and additional improvements)
-- **Phase 10 (Feature Service Integration)**: 19 tasks (T145-T163 for integrating with Feature Service, removing feature engineering code, using ready features for inference and training)
+- **Phase 10 (Feature Service Integration)**: 20 tasks (T145-T163 for integrating with Feature Service, removing feature engineering code, using ready features for inference and training)
+- **Phase 11 (Test Split Evaluation)**: 9 tasks (T173-T181 for implementing test set evaluation, updating quality metrics handling, updating mode transition and retraining triggers, updating documentation and specifications, adding warning logging for empty test splits)
 
 ### Task Count per User Story
 
@@ -635,3 +651,36 @@ Note: Take profit threshold uses MODEL_SERVICE_TAKE_PROFIT_PCT (unified with int
 - Model learns from market movements (price predictions), not from own trading results
 - Quality evaluation uses only ML metrics (accuracy, precision, recall, F1, MSE, MAE, R2)
 - Simpler architecture with fewer dependencies between services
+
+---
+
+## Phase 11: Test Split Evaluation (Priority: P2)
+
+**Goal**: Implement proper test set evaluation for final quality assessment and model activation, aligning with docs/feature-service.md workflow which specifies that Model Service should evaluate final quality on test set (out-of-sample) and activate model only if test set metrics exceed threshold.
+
+**Context**: Current implementation uses only validation split for quality evaluation and model activation, which is a discrepancy with documentation. Test set should be used for final out-of-sample evaluation to prevent overfitting and ensure model generalization.
+
+**Independent Test**: Can be fully tested by verifying that test split is downloaded, model is evaluated on test set, test set metrics are saved separately with dataset_split metadata, model activation uses test set metrics (not validation), and fallback to validation metrics works if test split is unavailable.
+
+### Implementation for Test Split Evaluation
+
+- [ ] T173 [US2] Implement test split evaluation in model-service/src/services/training_orchestrator.py (add download of test split via feature_service_client.download_dataset(dataset_id, split="test") after validation evaluation, load test dataset from Parquet file, extract features and labels from test split using same target_column logic as train/validation, evaluate model quality on test set using quality_evaluator.evaluate(), save test set metrics separately with metadata={"dataset_split": "test"} to distinguish from validation metrics in database, use test set metrics (not validation) for final quality assessment and model activation decision, implement fallback to validation set metrics if test split is unavailable (with warning log), add structured logging for test split download, loading, evaluation, and activation decision, align with docs/feature-service.md workflow which specifies that Model Service should evaluate final quality on test set (out-of-sample) and activate model only if test set metrics exceed threshold, currently only validation split is used for evaluation which is a discrepancy with documentation)
+- [ ] T174 [US2] Update save_quality_metrics to support dataset split metadata in model-service/src/services/model_version_manager.py (extend save_quality_metrics method to accept optional dataset_split parameter, include dataset_split in metadata when saving metrics: metadata={"dataset_split": dataset_split} if dataset_split provided, ensure backward compatibility: if dataset_split not provided, metadata remains unchanged, update method signature and documentation to reflect new parameter)
+- [ ] T175 [US2] Update quality metrics repository to support filtering by dataset split in model-service/src/database/repositories/quality_metrics_repo.py (add optional dataset_split parameter to get_by_model_version and get_latest_by_model_version methods, filter metrics by metadata->>'dataset_split' = dataset_split when parameter provided, support querying validation vs test metrics separately, ensure backward compatibility: if dataset_split not provided, return all metrics as before)
+- [ ] T176 [US4] Update SC-005 success criteria in specs/001-model-service/spec.md (change "validation set" to "test set" in SC-005: "System transitions from warm-up mode to model-based generation when model quality metrics exceed 75% classification accuracy threshold (percentage of correct buy/sell predictions on test set)", align with docs/feature-service.md workflow and T173 implementation which uses test set for final quality assessment)
+- [ ] T177 [US2] Update mode transition service to use test set metrics in model-service/src/services/mode_transition.py (modify _get_model_quality method to prefer test set metrics over validation metrics when available, query quality_metrics_repo.get_latest_by_model_version with dataset_split="test" first, fallback to validation metrics if test set metrics not available, log which dataset split metrics are used for mode transition decision, ensure backward compatibility with existing models that may only have validation metrics)
+- [ ] T178 [US2] Update retraining trigger to use test set metrics for quality degradation detection in model-service/src/services/retraining_trigger.py (modify _check_quality_degradation method to prefer test set metrics over validation metrics when checking quality thresholds, query quality_metrics_repo.get_latest_by_model_version with dataset_split="test" first, fallback to validation metrics if test set metrics not available, log which dataset split metrics are used for degradation detection, ensure backward compatibility with existing models)
+- [ ] T179 [P] Update documentation in model-service/README.md to document test set evaluation workflow (add section explaining train/validation/test split usage, document that test set is used for final quality assessment and model activation, explain fallback to validation set if test split unavailable, update training workflow documentation to match docs/feature-service.md, add examples showing test set metrics in API responses)
+- [ ] T180 [P] Update quickstart.md in specs/001-model-service/ to reflect test set evaluation (synchronize training workflow with test set evaluation, update examples to show test set metrics, document that model activation uses test set metrics, align with T173 implementation and docs/feature-service.md workflow)
+- [ ] T181 [US2] Add warning logging for empty or unavailable test split in model-service/src/services/training_orchestrator.py (when test split download fails or test split is empty, log structured warning with dataset_id, symbol, reason (download_failed, empty_split, file_not_found), record warning in metrics for monitoring, document fallback behavior to validation metrics in logs, ensure warning is visible in monitoring dashboards for operational awareness)
+
+**Checkpoint**: At this point, Model Service should properly evaluate models on test set for final quality assessment, save test set metrics separately from validation metrics, use test set metrics for model activation decisions, and have all related services (mode transition, retraining trigger) updated to use test set metrics when available. Documentation and specifications should be aligned with implementation.
+
+**Summary of Changes for Test Split Evaluation**:
+- Test set is now used for final quality assessment and model activation (not validation set)
+- Test set metrics are saved separately with dataset_split="test" metadata
+- Validation metrics are saved with dataset_split="validation" metadata
+- Mode transition and retraining trigger prefer test set metrics over validation metrics
+- Fallback to validation metrics if test split is unavailable (with warning)
+- SC-005 specification updated to reference test set instead of validation set
+- Documentation updated to reflect test set evaluation workflow

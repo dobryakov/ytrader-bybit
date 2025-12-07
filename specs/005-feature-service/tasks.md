@@ -424,6 +424,7 @@
 - [ ] T202 [Grafana] Implement dataset building metrics persistence in feature-service/src/services/dataset_builder.py (log metrics to dataset_building_metrics table when dataset building starts, updates progress, and completes: dataset_id, symbol, build_started_at, build_completed_at, build_status, build_duration_seconds when completed, records_count, train_records, validation_records, test_records, feature_registry_version, split_strategy, trace_id, handle database errors gracefully)
 - [ ] T203 [Grafana] Implement API endpoint metrics persistence in feature-service/src/api/middleware/metrics.py (log metrics to api_endpoint_metrics table for all API requests: endpoint, method, response_time_ms, status_code, symbol if applicable, request_timestamp, trace_id, handle database errors gracefully, use async logging to avoid blocking request processing)
 - [ ] T204 [P] [Grafana] Extend health check endpoint for Grafana monitoring in feature-service/src/api/health.py (add flat fields to HealthResponse: database_connected boolean, queue_connected boolean, feature_registry_loaded boolean, latest_feature_computation_timestamp, average_latency_ms_last_5min, data_quality_ok boolean, active_dataset_builds_count, last_dataset_build_duration_seconds, in addition to existing checks object for backward compatibility, enable Grafana System Health dashboard panel to extract dependency status directly without nested JSON parsing)
+- [ ] T255 [US2] Add validation and warning for empty test split in feature-service/src/services/dataset_builder.py (in _write_dataset_splits method, check if test split DataFrame is empty before skipping file creation, if test split is empty, log structured warning with dataset_id, symbol, test_period_start, test_period_end, reason (no_data_in_period, data_gap, insufficient_historical_data), update dataset metadata with warning flag or empty_test_split flag, ensure warning is visible in dataset status/metadata for Model Service to handle gracefully, document that empty test split may occur if historical data is insufficient for test period, add test_records=0 to metadata to indicate empty split)
 
 **Note**: Grafana dashboard creation tasks (T205-T207) are located in `specs/001-grafana-monitoring/tasks.md` as they belong to the Grafana monitoring service. See Phase 12: Feature Service Observability Dashboard tasks in that file.
 
@@ -569,7 +570,7 @@ With multiple developers:
 
 ## Task Summary
 
-- **Total Tasks**: 264 (added 9 Grafana observability tasks T196-T204 + 4 migration application tasks T196a-T199a + 17 Feature Registry versioning tasks T208-T218, T166a-T166b, T169a-T169f: version management, backward compatibility, automatic migration, rollback, audit trail + 36 Statistics API tasks T219-T254: HTTP API endpoints for service statistics and monitoring). Dashboard creation tasks (3 tasks) are in `specs/001-grafana-monitoring/tasks.md`
+- **Total Tasks**: 265 (added 9 Grafana observability tasks T196-T204 + 4 migration application tasks T196a-T199a + 17 Feature Registry versioning tasks T208-T218, T166a-T166b, T169a-T169f: version management, backward compatibility, automatic migration, rollback, audit trail + 36 Statistics API tasks T219-T254: HTTP API endpoints for service statistics and monitoring + 1 dataset validation task T255: empty test split validation and warning). Dashboard creation tasks (3 tasks) are in `specs/001-grafana-monitoring/tasks.md`
 - **Phase 1 (Setup)**: 10 tasks (added test structure setup)
 - **Phase 2 (Foundational)**: 29 tasks (12 tests + 17 implementation: 3 migrations + 3 migration application tasks)
 - **Phase 3 (User Story 1)**: 43 tasks (20 tests + 23 implementation)
@@ -577,7 +578,7 @@ With multiple developers:
 - **Phase 5 (User Story 3)**: 14 tasks (7 tests + 7 implementation)
 - **Phase 6 (User Story 4)**: 22 tasks (11 tests + 11 implementation)
 - **Phase 7 (User Story 5)**: 35 tasks (15 tests + 20 implementation, including version management, backward compatibility, automatic migration, and rollback capabilities)
-- **Phase 8 (Polish)**: 60 tasks (5 additional tests + 12 implementation + 7 Grafana observability tasks: T196-T199 database migrations + T196a-T199a migration application, T200-T203 metrics persistence, T204 health check extension + 36 Statistics API tasks T219-T254: 16 tests + 20 implementation). Grafana dashboard creation tasks (T205-T207) are in `specs/001-grafana-monitoring/tasks.md`
+- **Phase 8 (Polish)**: 61 tasks (5 additional tests + 12 implementation + 7 Grafana observability tasks: T196-T199 database migrations + T196a-T199a migration application, T200-T203 metrics persistence, T204 health check extension + 36 Statistics API tasks T219-T254: 16 tests + 20 implementation + 1 dataset validation task T255: empty test split validation). Grafana dashboard creation tasks (T205-T207) are in `specs/001-grafana-monitoring/tasks.md`
 
 **Suggested MVP Scope**: Phase 1 + Phase 2 + Phase 3 (User Story 1) = 79 tasks
 
