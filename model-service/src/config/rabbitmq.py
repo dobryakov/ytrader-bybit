@@ -62,8 +62,19 @@ class RabbitMQConnectionManager:
                 operation_name="rabbitmq_connect",
             )
         except Exception as e:
-            logger.error("Failed to connect to RabbitMQ after retries", error=str(e), exc_info=True)
-            raise MessageQueueConnectionError(f"Failed to connect to RabbitMQ: {e}") from e
+            error_msg = (
+                f"Failed to connect to RabbitMQ at {settings.rabbitmq_host}:{settings.rabbitmq_port} "
+                f"after retries. Please ensure RabbitMQ is running and accessible. Error: {e}"
+            )
+            logger.error(
+                "Failed to connect to RabbitMQ after retries",
+                host=settings.rabbitmq_host,
+                port=settings.rabbitmq_port,
+                error=str(e),
+                error_type=type(e).__name__,
+                exc_info=True,
+            )
+            raise MessageQueueConnectionError(error_msg) from e
 
     async def disconnect(self) -> None:
         """Close RabbitMQ connection and channel."""

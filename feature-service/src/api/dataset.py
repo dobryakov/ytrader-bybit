@@ -164,6 +164,24 @@ async def get_dataset(
     if dataset is None:
         raise HTTPException(status_code=404, detail="Dataset not found")
     
+    # Ensure target_config is a dict, not a JSON string
+    if isinstance(dataset.get("target_config"), str):
+        import json
+        try:
+            dataset["target_config"] = json.loads(dataset["target_config"])
+        except (json.JSONDecodeError, TypeError):
+            # If parsing fails, keep original value
+            pass
+    
+    # Ensure walk_forward_config is a dict, not a JSON string
+    if isinstance(dataset.get("walk_forward_config"), str):
+        import json
+        try:
+            dataset["walk_forward_config"] = json.loads(dataset["walk_forward_config"])
+        except (json.JSONDecodeError, TypeError):
+            # If parsing fails, keep original value
+            pass
+    
     return dataset
 
 

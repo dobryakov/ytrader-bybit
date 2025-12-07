@@ -23,6 +23,7 @@ from src.services.feature_computer import FeatureComputer
 from src.services.feature_registry import FeatureRegistryLoader
 from src.consumers.market_data_consumer import MarketDataConsumer
 from src.publishers.feature_publisher import FeaturePublisher
+from src.publishers.dataset_publisher import DatasetPublisher
 from src.services.feature_scheduler import FeatureScheduler
 from src.storage.metadata_storage import MetadataStorage
 from src.storage.parquet_storage import ParquetStorage
@@ -145,6 +146,13 @@ async def startup():
         else:
             backfilling_service = None
         
+        # Initialize Publishers
+        feature_publisher = FeaturePublisher(mq_manager=mq_manager)
+        await feature_publisher.initialize()
+        
+        dataset_publisher = DatasetPublisher(mq_manager=mq_manager)
+        await dataset_publisher.initialize()
+        
         # Initialize Dataset Builder
         dataset_builder = DatasetBuilder(
             metadata_storage=metadata_storage,
@@ -153,15 +161,12 @@ async def startup():
             feature_registry_version=registry_version,
             feature_registry_loader=feature_registry_loader,
             backfilling_service=backfilling_service,
+            dataset_publisher=dataset_publisher,
         )
         set_dataset_builder(dataset_builder)
         
         # Recover incomplete dataset builds after restart
         await dataset_builder.recover_incomplete_builds()
-        
-        # Initialize Publisher
-        feature_publisher = FeaturePublisher(mq_manager=mq_manager)
-        await feature_publisher.initialize()
         
         # Get symbols from config
         symbols = []

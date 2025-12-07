@@ -9,6 +9,7 @@ from datetime import datetime
 from decimal import Decimal
 from uuid import UUID
 import asyncpg
+import json
 
 from ..base import BaseRepository
 from ...config.logging import get_logger
@@ -59,6 +60,10 @@ class ModelQualityMetricsRepository(BaseRepository[Dict[str, Any]]):
             RETURNING *
         """
         try:
+            # Convert metadata dict to JSON string for JSONB field
+            # asyncpg expects JSON string, not dict for JSONB columns
+            metadata_json = json.dumps(metadata) if metadata else None
+            
             record = await self._fetchrow(
                 query,
                 model_version_id,
@@ -66,7 +71,7 @@ class ModelQualityMetricsRepository(BaseRepository[Dict[str, Any]]):
                 Decimal(str(metric_value)),
                 metric_type,
                 evaluation_dataset_size,
-                metadata,
+                metadata_json,
             )
             if not record:
                 raise ValueError("Failed to create quality metric")

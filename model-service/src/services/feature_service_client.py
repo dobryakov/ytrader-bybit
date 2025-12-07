@@ -189,7 +189,7 @@ class FeatureServiceClient:
                 logger.debug(
                     "Retrieved dataset metadata from Feature Service",
                     dataset_id=str(dataset_id),
-                    status=dataset.status.value,
+                    status=dataset.status.value if hasattr(dataset.status, 'value') else str(dataset.status),
                     trace_id=trace_id,
                 )
                 return dataset

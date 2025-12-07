@@ -3,7 +3,7 @@ Dataset Builder service for building training datasets from historical data.
 """
 import asyncio
 from datetime import datetime, timezone, timedelta
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, TYPE_CHECKING
 from uuid import uuid4
 from pathlib import Path
 import pandas as pd
@@ -16,6 +16,9 @@ from src.storage.parquet_storage import ParquetStorage
 from src.services.offline_engine import OfflineEngine
 from src.services.feature_registry import FeatureRegistryLoader
 from src.services.backfilling_service import BackfillingService
+
+if TYPE_CHECKING:
+    from src.publishers.dataset_publisher import DatasetPublisher
 
 logger = structlog.get_logger(__name__)
 
@@ -32,6 +35,7 @@ class DatasetBuilder:
         feature_registry_version: str = "1.0.0",
         feature_registry_loader: Optional[FeatureRegistryLoader] = None,
         backfilling_service: Optional[BackfillingService] = None,
+        dataset_publisher: Optional["DatasetPublisher"] = None,
     ):
         """
         Initialize dataset builder.
@@ -55,6 +59,7 @@ class DatasetBuilder:
         self._active_builds: Dict[str, asyncio.Task] = {}
         self._feature_registry_loader = feature_registry_loader
         self._backfilling_service = backfilling_service
+        self._dataset_publisher = dataset_publisher
     
     async def recover_incomplete_builds(self) -> None:
         """
@@ -460,18 +465,38 @@ class DatasetBuilder:
                 test_records=total_test,
             )
             
-            # Publish completion notification (T121)
-            # Note: This requires dataset_publisher to be initialized
-            # For now, we'll skip this and add it when publisher is available
-            # from src.publishers.dataset_publisher import DatasetPublisher
-            # await dataset_publisher.publish_dataset_ready(
-            #     dataset_id=dataset_id,
-            #     symbol=symbol,
-            #     status=DatasetStatus.READY.value,
-            #     train_records=total_train,
-            #     validation_records=total_val,
-            #     test_records=total_test,
-            # )
+            # Publish completion notification
+            if self._dataset_publisher:
+                try:
+                    await self._dataset_publisher.publish_dataset_ready(
+                        dataset_id=dataset_id,
+                        symbol=symbol,
+                        status=DatasetStatus.READY.value,
+                        train_records=total_train,
+                        validation_records=total_val,
+                        test_records=total_test,
+                        trace_id=None,  # Could be extracted from dataset metadata if needed
+                    )
+                    logger.info(
+                        "dataset_ready_notification_published",
+                        dataset_id=dataset_id,
+                        symbol=symbol,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "dataset_ready_notification_failed",
+                        dataset_id=dataset_id,
+                        symbol=symbol,
+                        error=str(e),
+                        exc_info=True,
+                    )
+            else:
+                logger.debug(
+                    "dataset_ready_notification_skipped",
+                    dataset_id=dataset_id,
+                    symbol=symbol,
+                    reason="dataset_publisher not initialized",
+                )
         
         except Exception as e:
             logger.error(

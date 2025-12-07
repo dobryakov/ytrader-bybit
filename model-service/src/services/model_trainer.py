@@ -85,11 +85,43 @@ class ModelTrainer:
         X = dataset.features
         y = dataset.labels
 
-        # Handle missing values
-        X = X.fillna(X.mean())  # Fill with mean for numeric columns
+        # Handle missing values - only for numeric columns
+        # Exclude non-numeric columns (like 'symbol', 'timestamp') from mean calculation
+        numeric_cols = X.select_dtypes(include=[np.number]).columns
+        if len(numeric_cols) > 0:
+            X[numeric_cols] = X[numeric_cols].fillna(X[numeric_cols].mean())
+        # For non-numeric columns, fill with forward fill or drop if needed
+        non_numeric_cols = X.select_dtypes(exclude=[np.number]).columns
+        if len(non_numeric_cols) > 0:
+            # Drop non-numeric columns that are not needed for training (like 'symbol', 'timestamp')
+            # These should be excluded from features before training
+            X = X.drop(columns=non_numeric_cols, errors='ignore')
 
         # Check for label diversity (critical for XGBoost with logistic loss)
         unique_labels = y.unique()
+        
+        # Normalize class labels for XGBoost (must start from 0 and be consecutive)
+        # XGBoost requires classes to be [0, 1, 2, ...], but we might have [-1, 0, 1]
+        label_mapping = None
+        if task_type == "classification" and model_type == "xgboost":
+            sorted_unique = sorted(unique_labels)
+            if sorted_unique[0] < 0 or sorted_unique != list(range(len(sorted_unique))):
+                # Need to remap labels to [0, 1, 2, ...]
+                # Convert numpy types to Python native types for JSON serialization
+                sorted_unique_py = [int(x) if isinstance(x, (np.integer, np.int64, np.int32)) else float(x) if isinstance(x, (np.floating, np.float64, np.float32)) else x for x in sorted_unique]
+                label_mapping = {int(old_label) if isinstance(old_label, (np.integer, np.int64, np.int32)) else old_label: new_label for new_label, old_label in enumerate(sorted_unique)}
+                reverse_mapping = {new_label: int(old_label) if isinstance(old_label, (np.integer, np.int64, np.int32)) else old_label for old_label, new_label in label_mapping.items()}
+                y = y.map(label_mapping)
+                logger.info(
+                    "Remapped class labels for XGBoost",
+                    original_labels=sorted_unique_py,
+                    mapped_labels=list(range(len(sorted_unique))),
+                    mapping={str(k): v for k, v in label_mapping.items()},  # Convert keys to strings for JSON
+                )
+                # Store reverse mapping in model metadata for inference
+                if hyperparameters is None:
+                    hyperparameters = {}
+                hyperparameters["_label_mapping"] = {int(k): int(v) if isinstance(v, (np.integer, np.int64, np.int32)) else v for k, v in reverse_mapping.items()}
         
         # Calculate class weights for balancing (for classification tasks)
         if task_type == "classification" and model_type == "xgboost" and len(unique_labels) > 1:

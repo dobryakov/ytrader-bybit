@@ -26,6 +26,7 @@ RETRYABLE_EXCEPTIONS = (
     MessageQueueError,
     DatabaseError,
     ConnectionError,
+    ConnectionRefusedError,  # RabbitMQ connection refused
     TimeoutError,
     asyncio.TimeoutError,
 )
@@ -91,6 +92,43 @@ async def retry_async(
                     error_type=type(e).__name__,
                     exc_info=True,
                 )
+        except OSError as e:
+            # Check if this is a network-related OSError (like ConnectionRefusedError)
+            # ConnectionRefusedError is a subclass of OSError
+            if isinstance(e, ConnectionRefusedError) or e.errno in (111, 113, 110, 101):
+                # Network errors: retry
+                last_exception = e
+                if attempt < max_retries:
+                    logger.warning(
+                        f"Network error in {op_name} (will retry)",
+                        attempt=attempt + 1,
+                        max_retries=max_retries,
+                        delay=delay,
+                        error=str(e),
+                        error_type=type(e).__name__,
+                        errno=getattr(e, 'errno', None),
+                    )
+                    await asyncio.sleep(delay)
+                    delay = min(delay * backoff_multiplier, max_delay)
+                else:
+                    logger.error(
+                        f"All retries exhausted for {op_name}",
+                        max_retries=max_retries,
+                        error=str(e),
+                        error_type=type(e).__name__,
+                        errno=getattr(e, 'errno', None),
+                        exc_info=True,
+                    )
+            else:
+                # Other OSError - don't retry, just raise
+                logger.error(
+                    f"Non-retryable OSError in {op_name}",
+                    error=str(e),
+                    error_type=type(e).__name__,
+                    errno=getattr(e, 'errno', None),
+                    exc_info=True,
+                )
+                raise
         except Exception as e:
             # Check if this is a "queue not found" error (expected when publisher not started)
             error_str = str(e)

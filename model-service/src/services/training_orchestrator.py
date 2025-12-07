@@ -14,6 +14,7 @@ from uuid import UUID
 import asyncio
 from uuid import uuid4
 import pandas as pd
+import numpy as np
 from pathlib import Path
 
 from ..models.training_dataset import TrainingDataset
@@ -152,17 +153,23 @@ class TrainingOrchestrator:
         """
         # Check if this dataset was requested by us
         pending_build = self._pending_dataset_builds.get(dataset_id)
-        if not pending_build:
-            logger.warning(
-                "Dataset ready notification received for unknown dataset",
+        if pending_build:
+            # Dataset was requested by us - use stored strategy_id
+            strategy_id = pending_build["strategy_id"]
+            symbol = symbol or pending_build.get("symbol")
+            # Remove from pending builds
+            del self._pending_dataset_builds[dataset_id]
+        else:
+            # Dataset was not requested by us, but we can still train on it
+            # Use default strategy_id (first configured strategy or None)
+            strategy_id = self._normalize_strategy_id(None)
+            logger.info(
+                "Dataset ready notification received for unrequested dataset, will train with default strategy",
                 dataset_id=str(dataset_id),
+                strategy_id=strategy_id,
                 symbol=symbol,
                 trace_id=trace_id,
             )
-            return
-
-        strategy_id = pending_build["strategy_id"]
-        symbol = symbol or pending_build.get("symbol")
 
         logger.info(
             "Dataset ready notification received, starting training",
@@ -171,9 +178,6 @@ class TrainingOrchestrator:
             symbol=symbol,
             trace_id=trace_id,
         )
-
-        # Remove from pending builds
-        del self._pending_dataset_builds[dataset_id]
 
         # Check if training is already in progress
         if self._current_training_task and not self._current_training_task.done():
@@ -491,7 +495,13 @@ class TrainingOrchestrator:
                 return
 
             # Separate features and labels
-            features_df = df.drop(columns=[target_column])
+            # Exclude non-numeric columns (symbol, timestamp) and target column from features
+            exclude_cols = [target_column, "symbol", "timestamp"]
+            features_df = df.drop(columns=[col for col in exclude_cols if col in df.columns])
+            
+            # Keep only numeric columns for features
+            features_df = features_df.select_dtypes(include=[np.number])
+            
             labels_series = df[target_column]
 
             if features_df.empty or labels_series.empty:
@@ -549,7 +559,11 @@ class TrainingOrchestrator:
                 try:
                     val_df = pd.read_parquet(validation_file_path)
                     if target_column in val_df.columns:
-                        validation_features = val_df.drop(columns=[target_column])
+                        # Exclude non-numeric columns (symbol, timestamp) and target column from features
+                        exclude_cols = [target_column, "symbol", "timestamp"]
+                        validation_features = val_df.drop(columns=[col for col in exclude_cols if col in val_df.columns])
+                        # Keep only numeric columns for features
+                        validation_features = validation_features.select_dtypes(include=[np.number])
                         validation_labels = val_df[target_column]
                         logger.info(
                             "Validation dataset loaded",
@@ -608,7 +622,11 @@ class TrainingOrchestrator:
                     try:
                         test_df = pd.read_parquet(test_file_path)
                         if target_column in test_df.columns:
-                            test_features = test_df.drop(columns=[target_column])
+                            # Exclude non-numeric columns (symbol, timestamp) and target column from features
+                            exclude_cols = [target_column, "symbol", "timestamp"]
+                            test_features = test_df.drop(columns=[col for col in exclude_cols if col in test_df.columns])
+                            # Keep only numeric columns for features
+                            test_features = test_features.select_dtypes(include=[np.number])
                             test_labels = test_df[target_column]
 
                             if test_features.empty or test_labels.empty:
