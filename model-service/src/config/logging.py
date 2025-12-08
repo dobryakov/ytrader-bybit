@@ -15,8 +15,8 @@ def configure_logging() -> None:
     """
     Configure structured logging with trace IDs.
 
-    Sets up structlog with JSON output for production and console output
-    for development, including trace ID support.
+    Sets up structlog with colored console output for better readability
+    during development and debugging, including trace ID support.
     """
     # Configure structlog processors
     processors = [
@@ -26,13 +26,8 @@ def configure_logging() -> None:
         structlog.processors.TimeStamper(fmt="iso"),  # Add ISO timestamp
         structlog.processors.StackInfoRenderer(),  # Add stack info for exceptions
         structlog.processors.format_exc_info,  # Format exceptions
+        structlog.dev.ConsoleRenderer(),  # Always use colored console renderer for better readability
     ]
-
-    # Add JSON renderer for production, console for development
-    if settings.model_service_log_level == "DEBUG":
-        processors.append(structlog.dev.ConsoleRenderer())
-    else:
-        processors.append(structlog.processors.JSONRenderer())
 
     # Configure structlog
     structlog.configure(

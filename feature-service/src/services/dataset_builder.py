@@ -536,18 +536,76 @@ class DatasetBuilder:
         """
         # Check if data exists for the period
         # This is a simplified check - in production, would query Parquet metadata
+        start_date_obj = start_date.date()
+        end_date_obj = end_date.date()
+        
+        logger.info(
+            "data_availability_check_start",
+            symbol=symbol,
+            start_date=start_date_obj.isoformat(),
+            end_date=end_date_obj.isoformat(),
+            start_datetime=start_date.isoformat() if start_date else None,
+            end_datetime=end_date.isoformat() if end_date else None,
+        )
+        
         try:
             # Try to read a sample of data
-            start_date_obj = start_date.date()
-            end_date_obj = end_date.date()
+            sample_trades = None
+            sample_klines = None
             
-            # Check both trades and klines - we need at least one of them
-            sample_trades = await self._parquet_storage.read_trades_range(
-                symbol, start_date_obj, end_date_obj
-            )
-            sample_klines = await self._parquet_storage.read_klines_range(
-                symbol, start_date_obj, end_date_obj
-            )
+            # Check trades
+            try:
+                sample_trades = await self._parquet_storage.read_trades_range(
+                    symbol, start_date_obj, end_date_obj
+                )
+                logger.debug(
+                    "trades_range_read",
+                    symbol=symbol,
+                    start_date=start_date_obj.isoformat(),
+                    end_date=end_date_obj.isoformat(),
+                    count=len(sample_trades),
+                    empty=sample_trades.empty,
+                )
+            except Exception as e:
+                logger.warning(
+                    "trades_range_read_error",
+                    symbol=symbol,
+                    start_date=start_date_obj.isoformat(),
+                    end_date=end_date_obj.isoformat(),
+                    error=str(e),
+                    exc_info=True,
+                )
+                sample_trades = pd.DataFrame()
+            
+            # Check klines
+            try:
+                sample_klines = await self._parquet_storage.read_klines_range(
+                    symbol, start_date_obj, end_date_obj
+                )
+                logger.debug(
+                    "klines_range_read",
+                    symbol=symbol,
+                    start_date=start_date_obj.isoformat(),
+                    end_date=end_date_obj.isoformat(),
+                    count=len(sample_klines),
+                    empty=sample_klines.empty,
+                )
+            except Exception as e:
+                logger.warning(
+                    "klines_range_read_error",
+                    symbol=symbol,
+                    start_date=start_date_obj.isoformat(),
+                    end_date=end_date_obj.isoformat(),
+                    error=str(e),
+                    exc_info=True,
+                )
+                sample_klines = pd.DataFrame()
+            
+            # Ensure we have DataFrames
+            if sample_trades is None:
+                sample_trades = pd.DataFrame()
+            if sample_klines is None:
+                sample_klines = pd.DataFrame()
             
             logger.info(
                 "data_availability_check",
@@ -555,7 +613,9 @@ class DatasetBuilder:
                 start_date=start_date_obj.isoformat(),
                 end_date=end_date_obj.isoformat(),
                 trades_count=len(sample_trades),
+                trades_empty=sample_trades.empty,
                 klines_count=len(sample_klines),
+                klines_empty=sample_klines.empty,
             )
             
             # If both are empty, we have insufficient data
@@ -670,12 +730,27 @@ class DatasetBuilder:
                 return None
             
             # Return available period (could be adjusted based on actual data)
+            logger.info(
+                "data_availability_check_success",
+                symbol=symbol,
+                start_date=start_date_obj.isoformat(),
+                end_date=end_date_obj.isoformat(),
+                trades_count=len(sample_trades),
+                klines_count=len(sample_klines),
+            )
             return {
                 "start": start_date,
                 "end": end_date,
             }
         except Exception as e:
-            logger.warning(f"Error checking data availability: {e}")
+            logger.error(
+                "data_availability_check_error",
+                symbol=symbol,
+                start_date=start_date_obj.isoformat() if 'start_date_obj' in locals() else None,
+                end_date=end_date_obj.isoformat() if 'end_date_obj' in locals() else None,
+                error=str(e),
+                exc_info=True,
+            )
             return None
     
     async def _read_historical_data(
@@ -1060,20 +1135,72 @@ class DatasetBuilder:
         # Merge features and targets
         merged = features_df.merge(targets_df, on="timestamp", how="inner")
         
+        # Normalize timestamp column to timezone-aware UTC if needed
+        # This prevents "Cannot compare tz-naive and tz-aware timestamps" errors
+        if merged["timestamp"].dtype.tz is None:
+            # If timestamp is timezone-naive, assume UTC
+            merged["timestamp"] = pd.to_datetime(merged["timestamp"], utc=True)
+        else:
+            # If timestamp is timezone-aware, convert to UTC
+            merged["timestamp"] = merged["timestamp"].dt.tz_convert(timezone.utc)
+        
+        # Normalize datetime objects from dataset to timezone-aware UTC
+        train_period_start = dataset["train_period_start"]
+        if isinstance(train_period_start, datetime):
+            if train_period_start.tzinfo is None:
+                train_period_start = train_period_start.replace(tzinfo=timezone.utc)
+            else:
+                train_period_start = train_period_start.astimezone(timezone.utc)
+        
+        train_period_end = dataset["train_period_end"]
+        if isinstance(train_period_end, datetime):
+            if train_period_end.tzinfo is None:
+                train_period_end = train_period_end.replace(tzinfo=timezone.utc)
+            else:
+                train_period_end = train_period_end.astimezone(timezone.utc)
+        
+        validation_period_start = dataset["validation_period_start"]
+        if isinstance(validation_period_start, datetime):
+            if validation_period_start.tzinfo is None:
+                validation_period_start = validation_period_start.replace(tzinfo=timezone.utc)
+            else:
+                validation_period_start = validation_period_start.astimezone(timezone.utc)
+        
+        validation_period_end = dataset["validation_period_end"]
+        if isinstance(validation_period_end, datetime):
+            if validation_period_end.tzinfo is None:
+                validation_period_end = validation_period_end.replace(tzinfo=timezone.utc)
+            else:
+                validation_period_end = validation_period_end.astimezone(timezone.utc)
+        
+        test_period_start = dataset["test_period_start"]
+        if isinstance(test_period_start, datetime):
+            if test_period_start.tzinfo is None:
+                test_period_start = test_period_start.replace(tzinfo=timezone.utc)
+            else:
+                test_period_start = test_period_start.astimezone(timezone.utc)
+        
+        test_period_end = dataset["test_period_end"]
+        if isinstance(test_period_end, datetime):
+            if test_period_end.tzinfo is None:
+                test_period_end = test_period_end.replace(tzinfo=timezone.utc)
+            else:
+                test_period_end = test_period_end.astimezone(timezone.utc)
+        
         # Split by periods
         train = merged[
-            (merged["timestamp"] >= dataset["train_period_start"]) &
-            (merged["timestamp"] < dataset["train_period_end"])
+            (merged["timestamp"] >= train_period_start) &
+            (merged["timestamp"] < train_period_end)
         ]
         
         validation = merged[
-            (merged["timestamp"] >= dataset["validation_period_start"]) &
-            (merged["timestamp"] < dataset["validation_period_end"])
+            (merged["timestamp"] >= validation_period_start) &
+            (merged["timestamp"] < validation_period_end)
         ]
         
         test = merged[
-            (merged["timestamp"] >= dataset["test_period_start"]) &
-            (merged["timestamp"] <= dataset["test_period_end"])
+            (merged["timestamp"] >= test_period_start) &
+            (merged["timestamp"] <= test_period_end)
         ]
         
         return {
@@ -1123,6 +1250,46 @@ class DatasetBuilder:
         val_end = val_start + timedelta(days=val_days)
         test_start = val_end
         test_end = test_start + timedelta(days=test_days)
+        
+        # Normalize timestamp column to timezone-aware UTC if needed
+        # This prevents "Cannot compare tz-naive and tz-aware timestamps" errors
+        if merged["timestamp"].dtype.tz is None:
+            # If timestamp is timezone-naive, assume UTC
+            merged["timestamp"] = pd.to_datetime(merged["timestamp"], utc=True)
+        else:
+            # If timestamp is timezone-aware, convert to UTC
+            merged["timestamp"] = merged["timestamp"].dt.tz_convert(timezone.utc)
+        
+        # Ensure all datetime objects are timezone-aware UTC
+        if train_start.tzinfo is None:
+            train_start = train_start.replace(tzinfo=timezone.utc)
+        else:
+            train_start = train_start.astimezone(timezone.utc)
+        
+        if train_end.tzinfo is None:
+            train_end = train_end.replace(tzinfo=timezone.utc)
+        else:
+            train_end = train_end.astimezone(timezone.utc)
+        
+        if val_start.tzinfo is None:
+            val_start = val_start.replace(tzinfo=timezone.utc)
+        else:
+            val_start = val_start.astimezone(timezone.utc)
+        
+        if val_end.tzinfo is None:
+            val_end = val_end.replace(tzinfo=timezone.utc)
+        else:
+            val_end = val_end.astimezone(timezone.utc)
+        
+        if test_start.tzinfo is None:
+            test_start = test_start.replace(tzinfo=timezone.utc)
+        else:
+            test_start = test_start.astimezone(timezone.utc)
+        
+        if test_end.tzinfo is None:
+            test_end = test_end.replace(tzinfo=timezone.utc)
+        else:
+            test_end = test_end.astimezone(timezone.utc)
         
         train = merged[
             (merged["timestamp"] >= train_start) &

@@ -585,12 +585,14 @@ class TrainingOrchestrator:
             eval_labels = validation_labels if validation_labels is not None else dataset.labels
 
             y_pred = model.predict(eval_features)
-            y_pred_proba = model.predict_proba(eval_features)[:, 1] if hasattr(model, "predict_proba") else None
+            # For multi-class classification, pass all class probabilities (2D array)
+            # For binary classification, this will still work correctly
+            y_pred_proba = model.predict_proba(eval_features) if hasattr(model, "predict_proba") else None
 
             validation_metrics = quality_evaluator.evaluate(
                 y_true=eval_labels,
                 y_pred=pd.Series(y_pred),
-                y_pred_proba=pd.Series(y_pred_proba) if y_pred_proba is not None else None,
+                y_pred_proba=y_pred_proba,  # Pass 2D array directly for multi-class
                 task_type="classification",
             )
 
@@ -647,14 +649,15 @@ class TrainingOrchestrator:
 
                                 # Evaluate model on test set
                                 test_y_pred = model.predict(test_features)
+                                # For multi-class classification, pass all class probabilities (2D array)
                                 test_y_pred_proba = (
-                                    model.predict_proba(test_features)[:, 1] if hasattr(model, "predict_proba") else None
+                                    model.predict_proba(test_features) if hasattr(model, "predict_proba") else None
                                 )
 
                                 test_metrics = quality_evaluator.evaluate(
                                     y_true=test_labels,
                                     y_pred=pd.Series(test_y_pred),
-                                    y_pred_proba=pd.Series(test_y_pred_proba) if test_y_pred_proba is not None else None,
+                                    y_pred_proba=test_y_pred_proba,  # Pass 2D array directly for multi-class
                                     task_type="classification",
                                 )
 

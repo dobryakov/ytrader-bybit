@@ -493,7 +493,24 @@ class ParquetStorage:
         if not all_trades:
             return pd.DataFrame()
         
-        return pd.concat(all_trades, ignore_index=True).sort_values("timestamp")
+        # Normalize all timestamps to timezone-aware UTC before concatenation
+        # This prevents "Cannot compare tz-naive and tz-aware timestamps" errors
+        from datetime import timezone
+        normalized_trades = []
+        for df in all_trades:
+            if not df.empty and "timestamp" in df.columns:
+                # Normalize timestamp column
+                df = df.copy()
+                # Check if timestamp is timezone-aware
+                if hasattr(df["timestamp"].dtype, 'tz') and df["timestamp"].dtype.tz is not None:
+                    # If timestamp is timezone-aware, convert to UTC
+                    df["timestamp"] = df["timestamp"].dt.tz_convert(timezone.utc)
+                else:
+                    # If timestamp is timezone-naive, assume UTC
+                    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+            normalized_trades.append(df)
+        
+        return pd.concat(normalized_trades, ignore_index=True).sort_values("timestamp")
     
     async def read_klines_range(
         self,
@@ -531,7 +548,24 @@ class ParquetStorage:
         if not all_klines:
             return pd.DataFrame()
         
-        return pd.concat(all_klines, ignore_index=True).sort_values("timestamp")
+        # Normalize all timestamps to timezone-aware UTC before concatenation
+        # This prevents "Cannot compare tz-naive and tz-aware timestamps" errors
+        from datetime import timezone
+        normalized_klines = []
+        for df in all_klines:
+            if not df.empty and "timestamp" in df.columns:
+                # Normalize timestamp column
+                df = df.copy()
+                # Check if timestamp is timezone-aware
+                if hasattr(df["timestamp"].dtype, 'tz') and df["timestamp"].dtype.tz is not None:
+                    # If timestamp is timezone-aware, convert to UTC
+                    df["timestamp"] = df["timestamp"].dt.tz_convert(timezone.utc)
+                else:
+                    # If timestamp is timezone-naive, assume UTC
+                    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+            normalized_klines.append(df)
+        
+        return pd.concat(normalized_klines, ignore_index=True).sort_values("timestamp")
     
     async def read_orderbook_snapshots_range(
         self,
@@ -569,7 +603,20 @@ class ParquetStorage:
         if not all_snapshots:
             return pd.DataFrame()
         
-        return pd.concat(all_snapshots, ignore_index=True).sort_values("timestamp")
+        # Normalize all timestamps to timezone-aware UTC before concatenation
+        from datetime import timezone
+        normalized_snapshots = []
+        for df in all_snapshots:
+            if not df.empty and "timestamp" in df.columns:
+                df = df.copy()
+                # Check if timestamp is timezone-aware
+                if hasattr(df["timestamp"].dtype, 'tz') and df["timestamp"].dtype.tz is not None:
+                    df["timestamp"] = df["timestamp"].dt.tz_convert(timezone.utc)
+                else:
+                    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+            normalized_snapshots.append(df)
+        
+        return pd.concat(normalized_snapshots, ignore_index=True).sort_values("timestamp")
     
     async def read_orderbook_deltas_range(
         self,
@@ -607,4 +654,17 @@ class ParquetStorage:
         if not all_deltas:
             return pd.DataFrame()
         
-        return pd.concat(all_deltas, ignore_index=True).sort_values("timestamp")
+        # Normalize all timestamps to timezone-aware UTC before concatenation
+        from datetime import timezone
+        normalized_deltas = []
+        for df in all_deltas:
+            if not df.empty and "timestamp" in df.columns:
+                df = df.copy()
+                # Check if timestamp is timezone-aware
+                if hasattr(df["timestamp"].dtype, 'tz') and df["timestamp"].dtype.tz is not None:
+                    df["timestamp"] = df["timestamp"].dt.tz_convert(timezone.utc)
+                else:
+                    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+            normalized_deltas.append(df)
+        
+        return pd.concat(normalized_deltas, ignore_index=True).sort_values("timestamp")

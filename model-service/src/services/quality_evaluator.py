@@ -98,10 +98,27 @@ class QualityEvaluator:
             metrics["recall"] = 0.0
             metrics["f1_score"] = 0.0
 
-        # ROC AUC (only for binary classification with probabilities)
-        if y_pred_proba is not None and len(y_true.unique()) == 2:
+        # ROC AUC (for binary and multi-class classification with probabilities)
+        if y_pred_proba is not None:
             try:
-                metrics["roc_auc"] = float(roc_auc_score(y_true, y_pred_proba))
+                unique_classes = len(y_true.unique())
+                if unique_classes == 2:
+                    # Binary classification: use probabilities for positive class
+                    metrics["roc_auc"] = float(roc_auc_score(y_true, y_pred_proba))
+                elif unique_classes > 2:
+                    # Multi-class classification: use one-vs-rest (ovr) or one-vs-one (ovo)
+                    # For multi-class, y_pred_proba should be a 2D array with probabilities for each class
+                    if isinstance(y_pred_proba, pd.Series):
+                        # If it's a Series, it's likely binary probabilities - convert to 2D
+                        # This shouldn't happen for multi-class, but handle gracefully
+                        metrics["roc_auc"] = 0.0
+                        logger.warning("ROC AUC not calculated: multi-class requires 2D probability array")
+                    else:
+                        # y_pred_proba should be a 2D array (n_samples, n_classes)
+                        # Use one-vs-rest averaging
+                        metrics["roc_auc"] = float(roc_auc_score(y_true, y_pred_proba, multi_class='ovr', average='weighted'))
+                else:
+                    metrics["roc_auc"] = 0.0
             except Exception as e:
                 logger.warning("Failed to calculate ROC AUC", error=str(e))
                 metrics["roc_auc"] = 0.0

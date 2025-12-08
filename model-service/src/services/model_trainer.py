@@ -112,6 +112,8 @@ class ModelTrainer:
                 label_mapping = {int(old_label) if isinstance(old_label, (np.integer, np.int64, np.int32)) else old_label: new_label for new_label, old_label in enumerate(sorted_unique)}
                 reverse_mapping = {new_label: int(old_label) if isinstance(old_label, (np.integer, np.int64, np.int32)) else old_label for old_label, new_label in label_mapping.items()}
                 y = y.map(label_mapping)
+                # Update unique_labels after remapping to reflect new label values
+                unique_labels = sorted(y.unique())
                 logger.info(
                     "Remapped class labels for XGBoost",
                     original_labels=sorted_unique_py,
@@ -126,7 +128,7 @@ class ModelTrainer:
         # Calculate class weights for balancing (for classification tasks)
         sample_weight = None
         if task_type == "classification" and model_type == "xgboost" and len(unique_labels) > 1:
-            # Calculate class distribution
+            # Calculate class distribution (use current y values after remapping)
             label_counts = y.value_counts()
             
             # For binary classification: use scale_pos_weight
