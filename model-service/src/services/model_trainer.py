@@ -124,18 +124,19 @@ class ModelTrainer:
                 hyperparameters["_label_mapping"] = {int(k): int(v) if isinstance(v, (np.integer, np.int64, np.int32)) else v for k, v in reverse_mapping.items()}
         
         # Calculate class weights for balancing (for classification tasks)
+        sample_weight = None
         if task_type == "classification" and model_type == "xgboost" and len(unique_labels) > 1:
             # Calculate class distribution
             label_counts = y.value_counts()
-            # Calculate scale_pos_weight: ratio of negative class to positive class
-            # For binary classification: 0 (negative) vs 1 (positive)
-            if 0 in label_counts.index and 1 in label_counts.index:
+            
+            # For binary classification: use scale_pos_weight
+            if len(unique_labels) == 2 and 0 in label_counts.index and 1 in label_counts.index:
                 negative_count = label_counts[0]
                 positive_count = label_counts[1]
                 if positive_count > 0:
                     scale_pos_weight = negative_count / positive_count
                     logger.info(
-                        "Calculated class balance for XGBoost",
+                        "Calculated class balance for binary XGBoost",
                         negative_count=int(negative_count),
                         positive_count=int(positive_count),
                         scale_pos_weight=float(scale_pos_weight),
@@ -145,6 +146,24 @@ class ModelTrainer:
                         hyperparameters = {}
                     if "scale_pos_weight" not in hyperparameters:
                         hyperparameters["scale_pos_weight"] = scale_pos_weight
+            # For multi-class classification: use sample_weight
+            elif len(unique_labels) > 2:
+                # Calculate inverse frequency weights to balance classes
+                total_samples = len(y)
+                class_weights = {}
+                for label in unique_labels:
+                    class_count = label_counts[label]
+                    # Weight inversely proportional to class frequency
+                    class_weights[label] = total_samples / (len(unique_labels) * class_count)
+                
+                # Create sample weights array
+                sample_weight = y.map(class_weights).values
+                
+                logger.info(
+                    "Calculated sample weights for multi-class XGBoost",
+                    class_distribution={int(k): int(v) for k, v in label_counts.items()},
+                    class_weights={int(k): float(v) for k, v in class_weights.items()},
+                )
         if len(unique_labels) == 1:
             # All labels are the same - XGBoost will fail with logistic loss
             # For XGBoost, we need to handle this case
@@ -199,7 +218,11 @@ class ModelTrainer:
         # Create and train model
         try:
             model = model_class(**hyperparameters)
-            model.fit(X, y)
+            # Use sample_weight for multi-class balancing if calculated
+            if sample_weight is not None:
+                model.fit(X, y, sample_weight=sample_weight)
+            else:
+                model.fit(X, y)
 
             logger.info(
                 "Model training completed",
@@ -309,12 +332,17 @@ class ModelTrainer:
         defaults = {
             "xgboost": {
                 "classification": {
-                    "n_estimators": 100,
-                    "max_depth": 6,
-                    "learning_rate": 0.1,
+                    "n_estimators": 300,
+                    "max_depth": 8,
+                    "learning_rate": 0.05,
                     "subsample": 0.8,
                     "colsample_bytree": 0.8,
+                    "min_child_weight": 3,
+                    "gamma": 0.1,
+                    "reg_alpha": 0.1,
+                    "reg_lambda": 1.0,
                     "random_state": 42,
+                    "eval_metric": "mlogloss",
                 },
                 "regression": {
                     "n_estimators": 100,

@@ -223,7 +223,47 @@ class DataStorageService:
                 await self.store_orderbook_delta(event)
             elif event_type == "trade" or event_type == "trades":
                 # ws-gateway may publish as "trade" or "trades"
-                await self.store_trade(event)
+                # Normalize trade event format (ws-gateway uses "p" for price, "v" for volume)
+                payload = event.get("payload", {})
+                
+                # ws-gateway sends trade data directly in payload (not wrapped in "data")
+                # Format: {"p": price, "v": volume, "S": side, "T": timestamp, "s": symbol, ...}
+                trade_data = payload if isinstance(payload, dict) else {}
+                
+                # If payload is a list (shouldn't happen with current ws-gateway, but handle it)
+                if isinstance(payload, list) and len(payload) > 0:
+                    trade_data = payload[0] if isinstance(payload[0], dict) else {}
+                
+                # Extract and normalize trade fields
+                # ws-gateway format: "p" = price, "v" = volume, "S" = side, "T" = timestamp (ms), "s" = symbol
+                normalized_trade_event = {
+                    **event,
+                    "event_type": "trade",
+                    "symbol": trade_data.get("s") or trade_data.get("symbol") or symbol,
+                    "price": trade_data.get("p") or trade_data.get("price"),
+                    "quantity": trade_data.get("v") or trade_data.get("quantity") or trade_data.get("volume"),
+                    "side": trade_data.get("S") or trade_data.get("side", "Buy"),
+                    "trade_time": trade_data.get("T") or trade_data.get("trade_time") or event.get("timestamp") or event.get("exchange_timestamp"),
+                }
+                
+                # Convert price and quantity to float if they are strings
+                if normalized_trade_event.get("price"):
+                    try:
+                        normalized_trade_event["price"] = float(normalized_trade_event["price"])
+                    except (ValueError, TypeError):
+                        normalized_trade_event["price"] = 0.0
+                else:
+                    normalized_trade_event["price"] = 0.0
+                
+                if normalized_trade_event.get("quantity"):
+                    try:
+                        normalized_trade_event["quantity"] = float(normalized_trade_event["quantity"])
+                    except (ValueError, TypeError):
+                        normalized_trade_event["quantity"] = 0.0
+                else:
+                    normalized_trade_event["quantity"] = 0.0
+                
+                await self.store_trade(normalized_trade_event)
             elif event_type == "kline":
                 await self.store_kline(event)
             elif event_type == "ticker":
