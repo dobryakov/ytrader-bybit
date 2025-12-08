@@ -51,7 +51,7 @@ async def test_real_create_dataset():
             "test_period_start": datetime(2025, 10, 27, 18, 46, 0),  # naive
             "test_period_end": datetime(2025, 10, 28, 18, 46, 0),  # naive
             "walk_forward_config": None,
-            "target_config": {"type": "regression", "horizon": "1h"},
+            "target_config": {"type": "regression", "horizon": 3600},
             "feature_registry_version": "1.0.0",
             "output_format": "parquet",
         }
@@ -99,7 +99,7 @@ async def test_real_create_dataset():
             "test_period_start": datetime(2025, 10, 27, 18, 46, 0),  # naive
             "test_period_end": datetime(2025, 10, 28, 18, 46, 0, tzinfo=timezone.utc),  # aware
             "walk_forward_config": None,
-            "target_config": {"type": "regression", "horizon": "1h"},
+            "target_config": {"type": "regression", "horizon": 3600},
             "feature_registry_version": "1.0.0",
             "output_format": "parquet",
         }
@@ -149,7 +149,7 @@ async def test_real_create_dataset():
                 # Если бы здесь были datetime объекты (что маловероятно, но возможно)
                 "some_datetime": datetime(2025, 10, 27, 18, 46, 0),  # naive datetime в конфиге
             },
-            "target_config": {"type": "regression", "horizon": "1h"},
+            "target_config": {"type": "regression", "horizon": 3600},
             "feature_registry_version": "1.0.0",
             "output_format": "parquet",
         }

@@ -117,7 +117,7 @@ Represents a structured dataset for model training, containing feature vectors a
 - `split_strategy` must be one of: 'time_based', 'walk_forward'
 - For `time_based`: train/validation/test periods must be specified and non-overlapping
 - For `walk_forward`: `walk_forward_config` must be valid JSON with required fields
-- `target_config` must contain: `type` (regression/classification), `horizon` (1m/5m/15m/1h), `threshold` (for classification)
+- `target_config` must contain: `type` (regression/classification), `horizon` (integer, prediction horizon in seconds), `threshold` (for classification)
 - Periods must be in chronological order: train_start < train_end < validation_start < validation_end < test_start < test_end
 
 **State Transitions**:

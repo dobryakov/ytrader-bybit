@@ -317,7 +317,7 @@ Public (внутренний) API Feature Service:
      "validation_strategy": "time_based",
      "target_config": {
        "type": "return",
-       "horizon": "1m",
+       "horizon": 60,
        "threshold": 0.001
      },
      "feature_registry_version": "v1.2",

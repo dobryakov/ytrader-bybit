@@ -1011,7 +1011,8 @@ class DatasetBuilder:
         if target_config.type == "regression":
             return self._compute_regression_targets(merged, target_config.horizon)
         elif target_config.type == "classification":
-            threshold = target_config.threshold or 0.001  # Default 0.1%
+            from src.config import config
+            threshold = target_config.threshold or config.model_classification_threshold
             return self._compute_classification_targets(
                 merged, target_config.horizon, threshold
             )
@@ -1021,23 +1022,20 @@ class DatasetBuilder:
     def _compute_regression_targets(
         self,
         data: pd.DataFrame,
-        horizon: str,
+        horizon: int,
     ) -> pd.DataFrame:
-        """Compute regression targets (returns)."""
-        # Map horizon to seconds
-        horizon_seconds = {
-            "1m": 60,
-            "5m": 300,
-            "15m": 900,
-            "1h": 3600,
-        }[horizon]
+        """Compute regression targets (returns).
         
+        Args:
+            data: DataFrame with timestamp and price columns
+            horizon: Prediction horizon in seconds
+        """
         # Sort by timestamp
         data = data.sort_values("timestamp").copy()
         
         # Compute future price by time, not by index
         # Create future timestamps
-        data["future_timestamp"] = data["timestamp"] + pd.Timedelta(seconds=horizon_seconds)
+        data["future_timestamp"] = data["timestamp"] + pd.Timedelta(seconds=horizon)
         
         # Create price lookup DataFrame
         price_lookup = data[["timestamp", "price"]].copy()
@@ -1071,7 +1069,7 @@ class DatasetBuilder:
     def _compute_classification_targets(
         self,
         data: pd.DataFrame,
-        horizon: str,
+        horizon: int,
         threshold: float,
     ) -> pd.DataFrame:
         """Compute classification targets (direction)."""
@@ -1088,7 +1086,7 @@ class DatasetBuilder:
     def _compute_risk_adjusted_targets(
         self,
         data: pd.DataFrame,
-        horizon: str,
+        horizon: int,
     ) -> pd.DataFrame:
         """Compute risk-adjusted targets (Sharpe ratio)."""
         # Compute returns first

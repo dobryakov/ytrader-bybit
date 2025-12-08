@@ -26,12 +26,12 @@ class TargetConfig(BaseModel):
     type: Literal["regression", "classification", "risk_adjusted"] = Field(
         description="Target type"
     )
-    horizon: Literal["1m", "5m", "15m", "1h"] = Field(
-        description="Prediction horizon"
+    horizon: int = Field(
+        description="Prediction horizon in seconds"
     )
     threshold: Optional[float] = Field(
         default=None,
-        description="Threshold for classification (default 0.001 = 0.1%)"
+        description="Threshold for classification (default 0.005 = 0.5%)"
     )
 
 

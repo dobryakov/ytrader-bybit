@@ -53,6 +53,9 @@ class Config(BaseSettings):
     feature_service_backfill_max_days: int = Field(default=90, env="FEATURE_SERVICE_BACKFILL_MAX_DAYS", description="Maximum days to backfill in one operation")
     feature_service_backfill_default_interval: int = Field(default=1, env="FEATURE_SERVICE_BACKFILL_DEFAULT_INTERVAL", description="Default kline interval in minutes (1 = 1 minute)")
     
+    # Model Training Configuration
+    model_classification_threshold: float = Field(default=0.005, env="MODEL_CLASSIFICATION_THRESHOLD", description="Classification threshold for target computation (default: 0.005 = 0.5%)")
+    
     @property
     def bybit_rest_base_url(self) -> str:
         """Get Bybit REST API base URL based on environment."""

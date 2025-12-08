@@ -30,7 +30,7 @@ async def test_post_dataset_build_time_based(mock_db_pool):
     #             "test_period_end": datetime.now(timezone.utc).isoformat(),
     #             "target_config": {
     #                 "type": "regression",
-    #                 "horizon": "1m",
+    #                 "horizon": 60,
     #             },
     #             "feature_registry_version": "1.0.0",
     #         },
@@ -69,7 +69,7 @@ async def test_post_dataset_build_walk_forward(mock_db_pool):
     #             },
     #             "target_config": {
     #                 "type": "classification",
-    #                 "horizon": "5m",
+    #                 "horizon": 300,
     #                 "threshold": 0.001,
     #             },
     #             "feature_registry_version": "1.0.0",

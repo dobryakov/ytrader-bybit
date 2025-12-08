@@ -27,7 +27,7 @@ def sample_dataset_metadata():
         "walk_forward_config": None,
         "target_config": {
             "type": "regression",
-            "horizon": "1m",
+            "horizon": 60,
             "threshold": None,
         },
         "feature_registry_version": "1.0.0",
@@ -70,7 +70,7 @@ def sample_dataset_metadata_walk_forward():
         },
         "target_config": {
             "type": "classification",
-            "horizon": "5m",
+            "horizon": 300,
             "threshold": 0.001,
         },
         "feature_registry_version": "1.0.0",
@@ -106,7 +106,7 @@ def sample_dataset_metadata_building():
         "walk_forward_config": None,
         "target_config": {
             "type": "regression",
-            "horizon": "15m",
+            "horizon": 900,
             "threshold": None,
         },
         "feature_registry_version": "1.0.0",
@@ -142,7 +142,7 @@ def sample_dataset_metadata_failed():
         "walk_forward_config": None,
         "target_config": {
             "type": "regression",
-            "horizon": "1m",
+            "horizon": 60,
             "threshold": None,
         },
         "feature_registry_version": "1.0.0",
@@ -178,7 +178,7 @@ def sample_dataset_list():
             "walk_forward_config": None,
             "target_config": {
                 "type": "regression",
-                "horizon": "1m",
+                "horizon": 60,
             },
             "feature_registry_version": "1.0.0",
             "train_records": 10000,
@@ -208,7 +208,7 @@ def sample_dataset_list():
             },
             "target_config": {
                 "type": "classification",
-                "horizon": "5m",
+                "horizon": 300,
                 "threshold": 0.001,
             },
             "feature_registry_version": "1.0.0",
@@ -234,7 +234,7 @@ def sample_dataset_list():
             "walk_forward_config": None,
             "target_config": {
                 "type": "regression",
-                "horizon": "15m",
+                "horizon": 900,
             },
             "feature_registry_version": "1.0.0",
             "train_records": 0,

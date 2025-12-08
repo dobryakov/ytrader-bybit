@@ -58,7 +58,7 @@ eval_metric: "mlogloss"
 {
   "target_config": {
     "type": "classification",
-    "horizon": "1h",
+    "horizon": 3600,
     "threshold": 0.005
   }
 }

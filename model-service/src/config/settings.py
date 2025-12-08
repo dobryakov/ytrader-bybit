@@ -57,6 +57,12 @@ class Settings(BaseSettings):
     model_retraining_train_period_days: int = Field(default=30, alias="MODEL_RETRAINING_TRAIN_PERIOD_DAYS")
     model_retraining_validation_period_days: int = Field(default=7, alias="MODEL_RETRAINING_VALIDATION_PERIOD_DAYS")
     model_retraining_test_period_days: int = Field(default=1, alias="MODEL_RETRAINING_TEST_PERIOD_DAYS")
+    
+    # Prediction Horizon Configuration
+    model_prediction_horizon_seconds: int = Field(default=60, alias="MODEL_PREDICTION_HORIZON_SECONDS")
+    
+    # Classification Threshold Configuration
+    model_classification_threshold: float = Field(default=0.005, alias="MODEL_CLASSIFICATION_THRESHOLD")
 
     # Training Buffer Persistence Configuration
     buffer_persistence_enabled: bool = Field(default=True, alias="BUFFER_PERSISTENCE_ENABLED")

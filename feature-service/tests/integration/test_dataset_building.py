@@ -38,7 +38,7 @@ async def test_dataset_building_workflow_time_based(
     #     test_period_end=base_time,
     #     target_config={
     #         "type": "regression",
-    #         "horizon": "1m",
+    #         "horizon": 60,
     #     },
     #     feature_registry_version="1.0.0",
     # )
@@ -78,7 +78,7 @@ async def test_dataset_building_workflow_walk_forward(
     #     },
     #     target_config={
     #         "type": "classification",
-    #         "horizon": "5m",
+    #         "horizon": 300,
     #         "threshold": 0.001,
     #     },
     #     feature_registry_version="1.0.0",

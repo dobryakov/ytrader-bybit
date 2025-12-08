@@ -222,8 +222,9 @@ components:
               type: string
               enum: [regression, classification, risk_adjusted]
             horizon:
-              type: string
-              enum: [1m, 5m, 15m, 1h]
+              type: integer
+              description: Prediction horizon in seconds
+              example: 3600
             threshold:
               type: number
               format: float

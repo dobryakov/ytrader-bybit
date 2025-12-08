@@ -53,7 +53,7 @@ def test_dataset_model_validation_periods_order():
         "test_period_end": base_time,
         "target_config": {
             "type": "regression",
-            "horizon": "1m",
+            "horizon": 60,
         },
         "feature_registry_version": "1.0.0",
         "output_format": "parquet",
@@ -84,7 +84,7 @@ def test_dataset_model_validation_status_enum():
         "test_period_end": base_time,
         "target_config": {
             "type": "regression",
-            "horizon": "1m",
+            "horizon": 60,
         },
         "feature_registry_version": "1.0.0",
         "output_format": "parquet",
@@ -111,7 +111,7 @@ def test_dataset_model_validation_split_strategy_enum():
         "train_period_end": base_time - timedelta(days=10),
         "target_config": {
             "type": "regression",
-            "horizon": "1m",
+            "horizon": 60,
         },
         "feature_registry_version": "1.0.0",
         "output_format": "parquet",

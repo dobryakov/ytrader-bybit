@@ -1316,23 +1316,51 @@ class BackfillingService:
             
             for data_type in data_types:
                 try:
-                    # Try to read existing data based on type
+                    # Try to read existing data based on type with timeout
+                    # Use asyncio.wait_for to prevent hanging on file operations
                     if data_type == "klines":
-                        await self._parquet_storage.read_klines(symbol, date_str)
+                        await asyncio.wait_for(
+                            self._parquet_storage.read_klines(symbol, date_str),
+                            timeout=2.0
+                        )
                     elif data_type == "trades":
-                        await self._parquet_storage.read_trades(symbol, date_str)
+                        await asyncio.wait_for(
+                            self._parquet_storage.read_trades(symbol, date_str),
+                            timeout=2.0
+                        )
                     elif data_type == "orderbook_snapshots":
-                        await self._parquet_storage.read_orderbook_snapshots(symbol, date_str)
+                        await asyncio.wait_for(
+                            self._parquet_storage.read_orderbook_snapshots(symbol, date_str),
+                            timeout=2.0
+                        )
                     elif data_type == "orderbook_deltas":
-                        await self._parquet_storage.read_orderbook_deltas(symbol, date_str)
+                        await asyncio.wait_for(
+                            self._parquet_storage.read_orderbook_deltas(symbol, date_str),
+                            timeout=2.0
+                        )
                     elif data_type == "ticker":
-                        await self._parquet_storage.read_ticker(symbol, date_str)
+                        await asyncio.wait_for(
+                            self._parquet_storage.read_ticker(symbol, date_str),
+                            timeout=2.0
+                        )
                     elif data_type == "funding":
-                        await self._parquet_storage.read_funding(symbol, date_str)
+                        await asyncio.wait_for(
+                            self._parquet_storage.read_funding(symbol, date_str),
+                            timeout=2.0
+                        )
                     else:
                         # Unknown type, mark as missing
                         missing_types.append(data_type)
-                except FileNotFoundError:
+                except (FileNotFoundError, asyncio.TimeoutError):
+                    missing_types.append(data_type)
+                except Exception as e:
+                    logger.warning(
+                        "backfilling_data_check_error",
+                        symbol=symbol,
+                        date=date_str,
+                        data_type=data_type,
+                        error=str(e),
+                    )
                     missing_types.append(data_type)
             
             if missing_types:

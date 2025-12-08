@@ -104,8 +104,8 @@ class TrainingOrchestrator:
             "test_period_end": format_dt(periods["test_period_end"]),
             "target_config": {
                 "type": "classification",
-                "horizon": "1h",  # Default horizon, could be configurable
-                "threshold": 0.001,
+                "horizon": settings.model_prediction_horizon_seconds,  # Configurable horizon in seconds
+                "threshold": settings.model_classification_threshold,  # Configurable threshold for classification
             },
             "feature_registry_version": "latest",  # Use latest feature registry version
             "output_format": "parquet",
@@ -610,15 +610,27 @@ class TrainingOrchestrator:
             test_metrics = None
 
             try:
-                logger.info(
-                    "Downloading test split for final evaluation",
-                    training_id=training_id,
-                    dataset_id=str(dataset_id),
-                    trace_id=trace_id,
-                )
-                test_file_path = await feature_service_client.download_dataset(
-                    dataset_id, split="test", trace_id=trace_id
-                )
+                # Check if test split has records before attempting download
+                if dataset_meta.test_records == 0:
+                    logger.info(
+                        "Test split is empty, skipping download",
+                        training_id=training_id,
+                        dataset_id=str(dataset_id),
+                        test_records=dataset_meta.test_records,
+                        trace_id=trace_id,
+                    )
+                    test_file_path = None
+                else:
+                    logger.info(
+                        "Downloading test split for final evaluation",
+                        training_id=training_id,
+                        dataset_id=str(dataset_id),
+                        test_records=dataset_meta.test_records,
+                        trace_id=trace_id,
+                    )
+                    test_file_path = await feature_service_client.download_dataset(
+                        dataset_id, split="test", trace_id=trace_id
+                    )
 
                 if test_file_path:
                     try:

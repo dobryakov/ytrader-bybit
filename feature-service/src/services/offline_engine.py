@@ -182,13 +182,27 @@ class OfflineEngine:
         # Get the latest snapshot
         latest_snapshot = snapshots_before.iloc[-1]
         snapshot_time = latest_snapshot["timestamp"]
-        snapshot_sequence = latest_snapshot["sequence"]
         
-        # Get all deltas after snapshot and before/at timestamp
-        deltas_after = deltas[
-            (deltas["sequence"] > snapshot_sequence) &
-            (deltas["timestamp"] <= timestamp)
-        ].sort_values("sequence")
+        # Check if sequence column exists in both snapshots and deltas
+        # Use .get() to safely access sequence from Series
+        has_sequence = (
+            "sequence" in snapshots.columns and 
+            "sequence" in deltas.columns
+        )
+        
+        if has_sequence:
+            snapshot_sequence = latest_snapshot["sequence"]
+            # Get all deltas after snapshot and before/at timestamp
+            deltas_after = deltas[
+                (deltas["sequence"] > snapshot_sequence) &
+                (deltas["timestamp"] <= timestamp)
+            ].sort_values("sequence")
+        else:
+            # If no sequence column, use timestamp for filtering and sorting
+            deltas_after = deltas[
+                (deltas["timestamp"] > snapshot_time) &
+                (deltas["timestamp"] <= timestamp)
+            ].sort_values("timestamp")
         
         # Create orderbook manager and apply snapshot
         orderbook_manager = OrderbookManager()
@@ -198,25 +212,29 @@ class OfflineEngine:
             "event_type": "orderbook_snapshot",
             "symbol": symbol,
             "timestamp": snapshot_time.isoformat() if isinstance(snapshot_time, datetime) else str(snapshot_time),
-            "sequence": int(snapshot_sequence),
             "bids": latest_snapshot.get("bids", []),
             "asks": latest_snapshot.get("asks", []),
         }
+        # Add sequence if available
+        if has_sequence:
+            snapshot_dict["sequence"] = int(snapshot_sequence)
         
         orderbook_manager.apply_snapshot(snapshot_dict)
         
-        # Apply deltas in sequence order
+        # Apply deltas in sequence order (or timestamp order if no sequence)
         for _, delta_row in deltas_after.iterrows():
             delta_dict = {
                 "event_type": "orderbook_delta",
                 "symbol": symbol,
                 "timestamp": delta_row["timestamp"].isoformat() if isinstance(delta_row["timestamp"], datetime) else str(delta_row["timestamp"]),
-                "sequence": int(delta_row["sequence"]),
                 "delta_type": delta_row.get("delta_type", "update"),
                 "side": delta_row.get("side", "bid"),
                 "price": float(delta_row.get("price", 0)),
                 "quantity": float(delta_row.get("quantity", 0)),
             }
+            # Add sequence if available
+            if has_sequence and "sequence" in delta_row:
+                delta_dict["sequence"] = int(delta_row["sequence"])
             
             orderbook_manager.apply_delta(delta_dict)
         

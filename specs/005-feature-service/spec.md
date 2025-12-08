@@ -158,7 +158,7 @@ Model Service должен иметь возможность запросить 
 - **FR-007**: System MUST support rebuilding features from historical data in offline/batch mode
 - **FR-008**: System MUST guarantee feature identity between online and offline computation modes (same calculation code and parameters)
 - **FR-009**: System MUST support dataset building with explicit train/validation/test period splits
-- **FR-010**: System MUST generate regression targets (future returns) for specified prediction horizons (1m, 5m, 15m, 1h)
+- **FR-010**: System MUST generate regression targets (future returns) for specified prediction horizons (in seconds)
 - **FR-011**: System MUST generate classification targets (direction: up/down/flat) based on return thresholds
 - **FR-011.1**: System MUST use configurable threshold (default 0.001 = 0.1%) for classification: up if return > threshold, down if return < -threshold, flat if |return| ≤ threshold
 - **FR-011.2**: System MUST generate risk-adjusted targets (e.g., sharpe_return) as optional target type, using volatility calculated from past data (not future data). Sharpe return formula: `sharpe_return = return / volatility`, where `return` is the future return over the prediction horizon and `volatility` is the rolling standard deviation of returns calculated from past data (e.g., using the same lookback window as volatility features: 1m or 5m). If volatility is zero or near-zero, sharpe_return MUST be set to 0 to avoid division by zero.

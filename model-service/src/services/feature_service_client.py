@@ -263,7 +263,7 @@ class FeatureServiceClient:
         file_path = storage_path / f"{dataset_id}_{split}.{output_format}"
 
         try:
-            async with httpx.AsyncClient(timeout=300.0) as client:  # 5 minute timeout for large downloads
+            async with httpx.AsyncClient(timeout=600.0) as client:  # 10 minute timeout for large downloads
                 async with client.stream("GET", url, headers=headers, params=params) as response:
                     response.raise_for_status()
                     

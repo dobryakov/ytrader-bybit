@@ -176,7 +176,7 @@ curl -X POST http://localhost:4500/dataset/build \
     "test_period_end": "2025-01-27T00:00:00Z",
     "target_config": {
       "type": "regression",
-      "horizon": "1m"
+      "horizon": 60
     },
     "feature_registry_version": "1.0.0",
     "data_leakage_check": true,
@@ -230,7 +230,7 @@ curl -X POST http://localhost:4500/dataset/build \
     },
     "target_config": {
       "type": "classification",
-      "horizon": "5m",
+      "horizon": 300,
       "threshold": 0.001
     },
     "feature_registry_version": "1.0.0",

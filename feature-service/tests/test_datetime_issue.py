@@ -117,7 +117,7 @@ async def test_datetime_scenarios():
                 naive_start,
                 naive_end,
                 None,
-                {"type": "regression", "horizon": "1h"},  # asyncpg автоматически конвертирует dict в JSONB
+                {"type": "regression", "horizon": 3600},  # asyncpg автоматически конвертирует dict в JSONB
                 "1.0.0",
                 "parquet",
             )
@@ -153,7 +153,7 @@ async def test_datetime_scenarios():
                         naive_start,
                         naive_end,
                         None,
-                        json.dumps({"type": "regression", "horizon": "1h"}),
+                        json.dumps({"type": "regression", "horizon": 3600}),
                         "1.0.0",
                         "parquet",
                     )
@@ -194,7 +194,7 @@ async def test_datetime_scenarios():
                 aware_start,
                 aware_end,
                 None,
-                {"type": "regression", "horizon": "1h"},  # asyncpg автоматически конвертирует dict в JSONB
+                {"type": "regression", "horizon": 3600},  # asyncpg автоматически конвертирует dict в JSONB
                 "1.0.0",
                 "parquet",
             )
@@ -235,7 +235,7 @@ async def test_datetime_scenarios():
                 mixed_start,
                 mixed_end,
                 None,
-                {"type": "regression", "horizon": "1h"},  # asyncpg автоматически конвертирует dict в JSONB
+                {"type": "regression", "horizon": 3600},  # asyncpg автоматически конвертирует dict в JSONB
                 "1.0.0",
                 "parquet",
             )
@@ -270,7 +270,7 @@ async def test_datetime_scenarios():
                         mixed_start,
                         mixed_end,
                         None,
-                        json.dumps({"type": "regression", "horizon": "1h"}),
+                        json.dumps({"type": "regression", "horizon": 3600}),
                         "1.0.0",
                         "parquet",
                     )
@@ -315,7 +315,7 @@ async def test_datetime_scenarios():
                 normalized_start,
                 normalized_end,
                 None,
-                {"type": "regression", "horizon": "1h"},  # asyncpg автоматически конвертирует dict в JSONB
+                {"type": "regression", "horizon": 3600},  # asyncpg автоматически конвертирует dict в JSONB
                 "1.0.0",
                 "parquet",
             )
@@ -364,7 +364,7 @@ async def test_datetime_scenarios():
             "test_period_start": datetime(2025, 10, 27, 18, 46, 0),
             "test_period_end": datetime(2025, 10, 28, 18, 46, 0),
             "walk_forward_config": None,
-            "target_config": {"type": "regression", "horizon": "1h"},
+            "target_config": {"type": "regression", "horizon": 3600},
             "feature_registry_version": "1.0.0",
             "output_format": "parquet",
         }

@@ -19,7 +19,7 @@ async def test_target_computation_regression(sample_historical_klines):
     #     data=sample_historical_klines,
     #     target_config={
     #         "type": "regression",
-    #         "horizon": "1m",
+    #         "horizon": 60,
     #         "threshold": None,
     #     },
     # )
@@ -44,7 +44,7 @@ async def test_target_computation_classification(sample_historical_klines):
     #     data=sample_historical_klines,
     #     target_config={
     #         "type": "classification",
-    #         "horizon": "5m",
+    #         "horizon": 300,
     #         "threshold": 0.001,  # 0.1%
     #     },
     # )
@@ -69,7 +69,7 @@ async def test_target_computation_threshold_configurable(sample_historical_kline
     #     data=sample_historical_klines,
     #     target_config={
     #         "type": "classification",
-    #         "horizon": "1m",
+    #         "horizon": 60,
     #         "threshold": 0.001,  # 0.1%
     #     },
     # )
@@ -78,7 +78,7 @@ async def test_target_computation_threshold_configurable(sample_historical_kline
     #     data=sample_historical_klines,
     #     target_config={
     #         "type": "classification",
-    #         "horizon": "1m",
+    #         "horizon": 60,
     #         "threshold": 0.002,  # 0.2%
     #     },
     # )
@@ -101,7 +101,7 @@ async def test_target_computation_risk_adjusted(sample_historical_klines):
     #     data=sample_historical_klines,
     #     target_config={
     #         "type": "risk_adjusted",
-    #         "horizon": "1m",
+    #         "horizon": 60,
     #         "threshold": None,
     #     },
     # )
@@ -123,7 +123,7 @@ async def test_target_computation_horizons(sample_historical_klines):
     #     data=sample_historical_klines,
     #     target_config={
     #         "type": "regression",
-    #         "horizon": "1h",
+    #         "horizon": 3600,
     #         "threshold": None,
     #     },
     # )
