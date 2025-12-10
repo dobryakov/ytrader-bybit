@@ -125,11 +125,22 @@ class DataStorageService:
                 if not isinstance(data, dict):
                     data = payload if isinstance(payload, dict) else {}
                 
-                # Determine type: check payload.data.type, payload.type, or infer from structure
-                orderbook_type = data.get("type") or payload.get("type")
+                # Determine type: check payload.type (from ws-gateway), payload.data.type, or event.type
+                # ws-gateway now includes 'type' field from message level in payload for orderbook events
+                orderbook_type = payload.get("type") or data.get("type") or event.get("type")
                 
                 # If no type field, check if it's a snapshot by structure (has bids/asks)
+                # Note: This fallback is unreliable as both snapshots and deltas have 'b'/'a' fields
+                # But ws-gateway should always provide 'type' field now
                 if orderbook_type is None:
+                    logger.warning(
+                        "orderbook_type_not_found",
+                        symbol=symbol,
+                        payload_keys=list(payload.keys()) if isinstance(payload, dict) else None,
+                        data_keys=list(data.keys()) if isinstance(data, dict) else None,
+                        message="Orderbook event missing 'type' field, attempting to infer from structure",
+                    )
+                    # Fallback: check structure (unreliable but better than nothing)
                     if "b" in data or "a" in data or "bids" in data or "asks" in data:
                         orderbook_type = "snapshot"
                     else:

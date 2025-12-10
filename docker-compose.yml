@@ -238,6 +238,7 @@ services:
       - ./feature-service/src:/app/src
       - ./feature-service/config:/app/config
       - ./feature-service/tests:/app/tests
+      - ./feature-service/scripts:/app/scripts
       - feature_raw_data:/data/raw
       - feature_datasets:/data/datasets
     depends_on:

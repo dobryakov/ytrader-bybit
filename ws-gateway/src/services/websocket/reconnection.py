@@ -259,6 +259,16 @@ class ReconnectionManager:
             # Split into batches if needed
             messages = build_subscribe_messages(relevant_subscriptions, max_topics_per_message=10)
             
+            # Log orderbook subscriptions specifically for debugging
+            orderbook_subs = [s for s in relevant_subscriptions if s.channel_type == "orderbook"]
+            if orderbook_subs:
+                logger.info(
+                    "orderbook_subscriptions_in_resubscribe",
+                    endpoint_type=endpoint_type,
+                    orderbook_count=len(orderbook_subs),
+                    orderbook_topics=[s.topic for s in orderbook_subs],
+                )
+            
             for msg in messages:
                 await connection.send(msg)
                 # Small delay between batches to avoid rate limiting

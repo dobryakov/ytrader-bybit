@@ -9,6 +9,7 @@ from uuid import UUID
 from pathlib import Path as PathLib
 import structlog
 import shutil
+import asyncio
 
 from src.models.dataset import (
     Dataset,
@@ -159,7 +160,21 @@ async def get_dataset(
     if _metadata_storage is None:
         raise HTTPException(status_code=503, detail="Metadata storage not initialized")
     
-    dataset = await _metadata_storage.get_dataset(str(dataset_id))
+    dataset_id_str = str(dataset_id)
+    
+    # Get dataset with timeout to prevent hanging
+    try:
+        dataset = await asyncio.wait_for(
+            _metadata_storage.get_dataset(dataset_id_str),
+            timeout=5.0
+        )
+    except asyncio.TimeoutError:
+        logger.error(
+            "get_dataset_timeout",
+            dataset_id=dataset_id_str,
+            message="Timeout getting dataset from database",
+        )
+        raise HTTPException(status_code=504, detail="Timeout getting dataset from database")
     
     if dataset is None:
         raise HTTPException(status_code=404, detail="Dataset not found")
@@ -302,46 +317,114 @@ async def delete_dataset(
     Delete dataset by ID.
     
     This will:
-    1. Delete the dataset record from the database
-    2. Delete all dataset files from storage (if they exist)
+    1. Cancel active build task if exists
+    2. Delete the dataset record from the database
+    3. Delete all dataset files from storage (if they exist)
     """
     if _metadata_storage is None:
         raise HTTPException(status_code=503, detail="Metadata storage not initialized")
     
-    # Get dataset metadata first to get storage_path
-    dataset = await _metadata_storage.get_dataset(str(dataset_id))
+    dataset_id_str = str(dataset_id)
+    
+    logger.info("delete_dataset_requested", dataset_id=dataset_id_str)
+    
+    # Cancel active build task if exists (non-blocking)
+    if _dataset_builder is not None:
+        try:
+            active_builds = getattr(_dataset_builder, '_active_builds', {})
+            if dataset_id_str in active_builds:
+                build_task = active_builds[dataset_id_str]
+                logger.info(
+                    "cancelling_active_build",
+                    dataset_id=dataset_id_str,
+                )
+                build_task.cancel()
+                # Don't wait for cancellation - just cancel and continue
+                logger.info(
+                    "active_build_cancellation_initiated",
+                    dataset_id=dataset_id_str,
+                )
+        except Exception as e:
+            logger.warning(
+                "failed_to_cancel_build",
+                dataset_id=dataset_id_str,
+                error=str(e),
+            )
+    
+    # Get dataset metadata first to get storage_path (with timeout)
+    try:
+        dataset = await asyncio.wait_for(
+            _metadata_storage.get_dataset(dataset_id_str),
+            timeout=5.0
+        )
+    except asyncio.TimeoutError:
+        logger.error(
+            "get_dataset_timeout",
+            dataset_id=dataset_id_str,
+            message="Timeout getting dataset metadata",
+        )
+        raise HTTPException(status_code=504, detail="Timeout getting dataset metadata")
     
     if dataset is None:
         raise HTTPException(status_code=404, detail="Dataset not found")
     
-    # Delete dataset record from database
-    deleted = await _metadata_storage.delete_dataset(str(dataset_id))
+    storage_path = dataset.get("storage_path")
+    
+    # Delete dataset record from database (with timeout)
+    try:
+        deleted = await asyncio.wait_for(
+            _metadata_storage.delete_dataset(dataset_id_str),
+            timeout=5.0
+        )
+    except asyncio.TimeoutError:
+        logger.error(
+            "delete_dataset_db_timeout",
+            dataset_id=dataset_id_str,
+            message="Timeout deleting dataset from database",
+        )
+        raise HTTPException(status_code=504, detail="Timeout deleting dataset from database")
     
     if not deleted:
         raise HTTPException(status_code=404, detail="Dataset not found")
     
-    # Delete dataset files if they exist
-    storage_path = dataset.get("storage_path")
-    if storage_path:
-        try:
-            dataset_dir = PathLib(storage_path)
-            if dataset_dir.exists() and dataset_dir.is_dir():
-                shutil.rmtree(dataset_dir)
-                logger.info(
-                    "dataset_files_deleted",
-                    dataset_id=str(dataset_id),
-                    storage_path=str(storage_path),
-                )
-        except Exception as e:
-            # Log error but don't fail the request - database record is already deleted
-            logger.warning(
-                "dataset_files_deletion_failed",
-                dataset_id=str(dataset_id),
-                storage_path=str(storage_path),
-                error=str(e),
-            )
+    logger.info("dataset_deleted_from_db", dataset_id=dataset_id_str)
     
-    logger.info("dataset_deleted", dataset_id=str(dataset_id))
+    # Delete dataset files asynchronously (fire-and-forget) to avoid blocking
+    if storage_path:
+        async def delete_files_async():
+            """Delete files asynchronously without blocking the response."""
+            try:
+                dataset_dir = PathLib(storage_path)
+                if dataset_dir.exists() and dataset_dir.is_dir():
+                    # Use asyncio.to_thread with timeout
+                    await asyncio.wait_for(
+                        asyncio.to_thread(shutil.rmtree, dataset_dir),
+                        timeout=30.0,
+                    )
+                    logger.info(
+                        "dataset_files_deleted",
+                        dataset_id=dataset_id_str,
+                        storage_path=str(storage_path),
+                    )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "dataset_files_deletion_timeout",
+                    dataset_id=dataset_id_str,
+                    storage_path=str(storage_path),
+                    message="File deletion timed out after 30 seconds",
+                )
+            except Exception as e:
+                logger.warning(
+                    "dataset_files_deletion_failed",
+                    dataset_id=dataset_id_str,
+                    storage_path=str(storage_path),
+                    error=str(e),
+                )
+        
+        # Start file deletion in background (don't wait for it)
+        asyncio.create_task(delete_files_async())
+    
+    logger.info("dataset_deleted", dataset_id=dataset_id_str)
 
 
 class ModelEvaluateRequest(BaseModel):

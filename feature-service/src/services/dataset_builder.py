@@ -86,9 +86,11 @@ class DatasetBuilder:
             
             # Resume each incomplete build
             for dataset in building_datasets:
-                dataset_id = dataset.get("id")
-                if not dataset_id:
+                dataset_id_raw = dataset.get("id")
+                if not dataset_id_raw:
                     continue
+                # Convert UUID to string if needed (asyncpg returns UUID objects)
+                dataset_id = str(dataset_id_raw)
                 
                 try:
                     # Extract dataset parameters from stored metadata
@@ -301,16 +303,54 @@ class DatasetBuilder:
             # Ensure dataset_id is a string (handle UUID objects)
             dataset_id = str(dataset_id)
             
+            logger.info(
+                "build_dataset_task_started",
+                dataset_id=dataset_id,
+                symbol=symbol,
+                split_strategy=split_strategy.value,
+            )
+            
             # Get dataset record
             dataset = await self._metadata_storage.get_dataset(dataset_id)
             if dataset is None:
-                logger.error(f"Dataset {dataset_id} not found")
+                logger.error("dataset_not_found_in_task", dataset_id=dataset_id)
                 return
             
+            logger.info(
+                "dataset_record_loaded",
+                dataset_id=dataset_id,
+                dataset_status=dataset.get("status"),
+                # Note: dataset.get("id") returns UUID object from asyncpg,
+                # but we use dataset_id (string) everywhere in the code
+                dataset_id_type=str(type(dataset.get("id"))),
+            )
+            
             # Determine date range
+            logger.info(
+                "determining_date_range",
+                dataset_id=dataset_id,
+                split_strategy=split_strategy.value,
+            )
+            logger.info(
+                "determining_date_range",
+                dataset_id=dataset_id,
+                split_strategy=split_strategy.value,
+            )
             if split_strategy == SplitStrategy.TIME_BASED:
                 start_date = dataset["train_period_start"]
                 end_date = dataset["test_period_end"]
+                logger.info(
+                    "date_range_determined",
+                    dataset_id=dataset_id,
+                    start_date=start_date.isoformat() if start_date else None,
+                    end_date=end_date.isoformat() if end_date else None,
+                )
+                logger.info(
+                    "date_range_determined",
+                    dataset_id=dataset_id,
+                    start_date=start_date.isoformat() if start_date else None,
+                    end_date=end_date.isoformat() if end_date else None,
+                )
             else:
                 # Walk-forward: use config dates
                 wf_config = dataset["walk_forward_config"]
@@ -331,7 +371,19 @@ class DatasetBuilder:
                     end_date = end_date.astimezone(timezone.utc)
             
             # Check data availability
+            logger.info(
+                "checking_data_availability",
+                dataset_id=dataset_id,
+                symbol=symbol,
+                start_date=start_date.isoformat() if start_date else None,
+                end_date=end_date.isoformat() if end_date else None,
+            )
             available_period = await self._check_data_availability(symbol, start_date, end_date)
+            logger.info(
+                "data_availability_checked",
+                dataset_id=dataset_id,
+                available=available_period is not None,
+            )
             if available_period is None:
                 error_msg = f"Insufficient historical data for {symbol} in requested period"
                 await self._metadata_storage.update_dataset(
@@ -865,6 +917,29 @@ class DatasetBuilder:
         
         return result
     
+    async def _update_progress_safe(
+        self,
+        dataset_id: str,
+        update_data: Dict[str, Any],
+        progress: float,
+        processed: int,
+        total: int,
+    ) -> None:
+        """Safely update dataset progress with error handling."""
+        try:
+            await self._metadata_storage.update_dataset(dataset_id, update_data)
+        except Exception as e:
+            # Log but don't fail - progress update is not critical
+            logger.warning(
+                "progress_update_failed",
+                dataset_id=dataset_id,
+                error=str(e),
+                error_type=type(e).__name__,
+                progress=f"{progress:.1f}%",
+                processed=processed,
+                total=total,
+            )
+    
     async def _compute_features_batch(
         self,
         symbol: str,
@@ -906,16 +981,33 @@ class DatasetBuilder:
         
         for i, timestamp in enumerate(sorted_timestamps):
             if i % self._batch_size == 0:
-                # Update progress
+                # Update progress (non-blocking to avoid connection pool exhaustion)
                 progress = (i / total) * 100
                 estimated_completion = datetime.now(timezone.utc) + timedelta(
                     seconds=(total - i) * 0.1
                 )  # Rough estimate
                 
-                await self._metadata_storage.update_dataset(
-                    dataset_id,
-                    {"estimated_completion": estimated_completion},
-                )
+                # Update progress in background task to avoid blocking on connection pool
+                try:
+                    # Use asyncio.create_task to make it non-blocking
+                    # If connection pool is exhausted, this will fail gracefully
+                    asyncio.create_task(
+                        self._update_progress_safe(
+                            dataset_id,
+                            {"estimated_completion": estimated_completion},
+                            progress,
+                            i,
+                            total,
+                        )
+                    )
+                except Exception as e:
+                    # Log but don't fail - progress update is not critical
+                    logger.debug(
+                        "progress_update_failed",
+                        dataset_id=dataset_id,
+                        error=str(e),
+                        error_type=type(e).__name__,
+                    )
                 
                 logger.info(
                     "feature_computation_progress",

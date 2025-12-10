@@ -177,6 +177,55 @@ def parse_events_from_message(
             trace_id=trace_id,
         )
         events.append(event)
+    elif subscription.channel_type == "orderbook":
+        # For orderbook events, preserve 'type' field from message level
+        # Bybit sends 'type' at message level ("snapshot" or "delta"), not in data
+        # Add detailed logging to diagnose why type might be missing
+        logger.info(
+            "orderbook_message_processing",
+            topic=topic,
+            message_keys=list(message.keys()),
+            message_has_type="type" in message,
+            message_type_value=message.get("type") if "type" in message else None,
+            data_items_count=len(data_items),
+            data_items_type=type(data_items).__name__,
+            trace_id=trace_id,
+        )
+        
+        for item in data_items:
+            payload = dict(item)
+            # Common payload enrichment
+            payload.setdefault("topic", topic)
+            
+            # Copy 'type' field from message level to payload
+            if "type" in message:
+                payload["type"] = message["type"]
+                logger.info(
+                    "orderbook_type_copied_to_payload",
+                    topic=topic,
+                    message_type=message["type"],
+                    payload_type=payload.get("type"),
+                    payload_keys=list(payload.keys()),
+                    trace_id=trace_id,
+                )
+            else:
+                logger.warning(
+                    "orderbook_message_missing_type",
+                    topic=topic,
+                    message_keys=list(message.keys()),
+                    message_preview=str(message)[:500],
+                    payload_keys=list(payload.keys()),
+                    trace_id=trace_id,
+                )
+
+            event = Event.create(
+                event_type=_normalize_channel_type_to_event_type(subscription.channel_type),
+                topic=topic,
+                timestamp=ts,
+                payload=payload,
+                trace_id=trace_id,
+            )
+            events.append(event)
     else:
         # For other event types, create one event per data item
         for item in data_items:
