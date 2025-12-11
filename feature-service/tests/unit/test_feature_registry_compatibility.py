@@ -3,6 +3,7 @@ Unit tests for Feature Registry backward compatibility checking.
 """
 import pytest
 import tempfile
+import copy
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -43,7 +44,6 @@ def version_manager(mock_metadata_storage, temp_versions_dir):
     )
 
 
-@pytest.mark.asyncio
 class TestBackwardCompatibility:
     """Tests for backward compatibility checking."""
     
@@ -79,7 +79,7 @@ class TestBackwardCompatibility:
     def test_compatibility_report_changed_input_sources(self, version_manager):
         """Test compatibility report detects changed input_sources."""
         old_config = get_valid_feature_registry_config()
-        new_config = old_config.copy()
+        new_config = copy.deepcopy(old_config)  # Deep copy to avoid mutating original
         
         # Change input_sources for first feature
         if new_config["features"]:
@@ -96,7 +96,7 @@ class TestBackwardCompatibility:
     def test_compatibility_report_changed_lookback_window(self, version_manager):
         """Test compatibility report detects changed lookback_window (warning)."""
         old_config = get_valid_feature_registry_config()
-        new_config = old_config.copy()
+        new_config = copy.deepcopy(old_config)  # Deep copy to avoid mutating original
         
         # Change lookback_window for first feature
         if new_config["features"]:
@@ -114,7 +114,7 @@ class TestBackwardCompatibility:
     def test_compatibility_report_changed_max_lookback_days(self, version_manager):
         """Test compatibility report detects changed max_lookback_days (warning)."""
         old_config = get_valid_feature_registry_config()
-        new_config = old_config.copy()
+        new_config = copy.deepcopy(old_config)  # Deep copy to avoid mutating original
         
         # Change max_lookback_days for first feature
         if new_config["features"]:
@@ -132,7 +132,7 @@ class TestBackwardCompatibility:
     def test_compatibility_report_new_feature(self, version_manager):
         """Test compatibility report with new feature (not breaking)."""
         old_config = get_valid_feature_registry_config()
-        new_config = old_config.copy()
+        new_config = copy.deepcopy(old_config)  # Deep copy to avoid mutating original
         
         # Add new feature
         new_feature = {
@@ -153,6 +153,7 @@ class TestBackwardCompatibility:
         # New features are not breaking changes
         assert not report.has_breaking_changes
     
+    @pytest.mark.asyncio
     async def test_activate_version_with_breaking_changes_requires_acknowledgment(
         self, version_manager, mock_metadata_storage, temp_versions_dir
     ):

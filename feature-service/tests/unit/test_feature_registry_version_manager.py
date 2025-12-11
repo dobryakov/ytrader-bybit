@@ -264,7 +264,7 @@ class TestFeatureRegistryVersionManager:
             }
         )
         
-        with pytest.raises(ValueError, match="Validation failed"):
+        with pytest.raises(ValueError, match="Feature Registry validation failed"):
             await version_manager.activate_version(version=version)
     
     async def test_can_delete_version_true(

@@ -62,7 +62,7 @@ class TestFeatureRegistryRollback:
         )
         
         # Activation should fail validation
-        with pytest.raises(ValueError, match="Validation failed"):
+        with pytest.raises(ValueError, match="Feature Registry validation failed"):
             await version_manager.activate_version(version=version)
         
         # Rollback should not be called automatically (it's the caller's responsibility)
@@ -73,12 +73,21 @@ class TestFeatureRegistryRollback:
         self, mock_metadata_storage, temp_versions_dir
     ):
         """Test automatic rollback when migration fails."""
+        import yaml
+        from tests.fixtures.feature_registry import get_valid_feature_registry_config
+        
         version_manager = FeatureRegistryVersionManager(
             metadata_storage=mock_metadata_storage,
             versions_dir=str(temp_versions_dir),
         )
         
-        # Mock migration failure
+        # Create a valid legacy file
+        config_data = get_valid_feature_registry_config()
+        legacy_path = temp_versions_dir.parent / "feature_registry.yaml"
+        with open(legacy_path, "w") as f:
+            yaml.dump(config_data, f)
+        
+        # Mock migration failure in create_feature_registry_version
         mock_metadata_storage.get_active_feature_registry_version = AsyncMock(
             return_value=None
         )
@@ -89,7 +98,7 @@ class TestFeatureRegistryRollback:
         # Migration should fail
         with pytest.raises(Exception, match="Migration failed"):
             await version_manager.migrate_legacy_to_db(
-                legacy_config_path="/nonexistent/path.yaml"
+                legacy_config_path=str(legacy_path)
             )
     
     async def test_rollback_on_runtime_error_during_computation(
