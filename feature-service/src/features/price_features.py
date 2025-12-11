@@ -190,6 +190,180 @@ def compute_volatility(
     return float(volatility)
 
 
+def compute_returns_5m(
+    rolling_windows: RollingWindows,
+    current_price: Optional[float],
+) -> Optional[float]:
+    """
+    Compute 5-minute returns.
+    
+    Gets close price 5 minutes ago from klines and computes return as:
+    (current_price - price_5m_ago) / price_5m_ago
+    
+    Args:
+        rolling_windows: RollingWindows instance with kline data
+        current_price: Current price (from latest kline close or provided parameter)
+        
+    Returns:
+        Returns value or None if insufficient data or zero historical price
+    """
+    if current_price is None:
+        return None
+    
+    now = _ensure_datetime(rolling_windows.last_update)
+    # Get klines for 5-minute window (extend to 6 minutes to ensure we capture boundary)
+    start_time = now - timedelta(minutes=6)
+    klines = rolling_windows.get_klines_for_window("1m", start_time, now)
+    
+    if len(klines) == 0:
+        return None
+    
+    if "close" not in klines.columns or "timestamp" not in klines.columns:
+        return None
+    
+    # Sort by timestamp
+    klines_sorted = klines.sort_values("timestamp")
+    if len(klines_sorted) == 0:
+        return None
+    
+    # Find kline closest to 5 minutes ago
+    target_time = now - timedelta(minutes=5)
+    # Filter klines that are at or before target_time (with 1 minute tolerance)
+    klines_before = klines_sorted[klines_sorted["timestamp"] <= target_time + timedelta(minutes=1)]
+    
+    if len(klines_before) == 0:
+        # If no klines before target, use the earliest available kline
+        price_5m_ago = pd.to_numeric(klines_sorted.iloc[0]["close"], errors='coerce')
+    else:
+        # Use the kline closest to target_time (prefer earlier ones)
+        time_diffs = (klines_before["timestamp"] - target_time).abs()
+        closest_idx = time_diffs.idxmin()
+        price_5m_ago = pd.to_numeric(klines_before.loc[closest_idx]["close"], errors='coerce')
+    if pd.isna(price_5m_ago) or price_5m_ago == 0:
+        return None
+    
+    # Compute return: (current_price - price_5m_ago) / price_5m_ago
+    return float((current_price - price_5m_ago) / price_5m_ago)
+
+
+def compute_volatility_5m(
+    rolling_windows: RollingWindows,
+) -> Optional[float]:
+    """
+    Compute 5-minute volatility (standard deviation of returns).
+    
+    Gets klines for 5-minute period, computes returns between consecutive candles,
+    and returns std(returns) as volatility.
+    
+    Args:
+        rolling_windows: RollingWindows instance with kline data
+        
+    Returns:
+        Volatility value or None if insufficient data
+    """
+    now = _ensure_datetime(rolling_windows.last_update)
+    start_time = now - timedelta(minutes=5)
+    
+    # Get klines for 5-minute window
+    klines = rolling_windows.get_klines_for_window("1m", start_time, now)
+    
+    if len(klines) < 2:
+        return None
+    
+    if "close" not in klines.columns:
+        return None
+    
+    # Reuse existing compute_volatility function with window_seconds=300 (5 minutes)
+    return compute_volatility(rolling_windows, 300)
+
+
+def compute_price_ema21_ratio(
+    rolling_windows: RollingWindows,
+    current_price: Optional[float],
+) -> Optional[float]:
+    """
+    Compute price to EMA21 ratio.
+    
+    Computes EMA(21) using technical_indicators.compute_ema_21() and
+    computes ratio as current_price / ema_21.
+    
+    Args:
+        rolling_windows: RollingWindows instance with kline data
+        current_price: Current price (from latest kline close or provided parameter)
+        
+    Returns:
+        Ratio value or None if EMA is None or zero
+    """
+    if current_price is None:
+        return None
+    
+    # Import here to avoid circular dependency
+    from src.features.technical_indicators import compute_ema_21
+    
+    # Compute EMA(21)
+    ema_21 = compute_ema_21(rolling_windows)
+    
+    if ema_21 is None or ema_21 == 0:
+        return None
+    
+    # Compute ratio: current_price / ema_21
+    return float(current_price / ema_21)
+
+
+def compute_volume_ratio_20(
+    rolling_windows: RollingWindows,
+    current_volume: Optional[float],
+    candle_interval: str = "1m",
+) -> Optional[float]:
+    """
+    Compute volume to 20-period MA ratio.
+    
+    Gets historical volumes from last 20 candles, computes volume_ma_20 as
+    simple moving average of volumes over 20 periods, and computes ratio as
+    current_volume / volume_ma_20.
+    
+    Args:
+        rolling_windows: RollingWindows instance with kline data
+        current_volume: Current volume (from latest kline or provided parameter)
+        candle_interval: Candle interval (default: "1m")
+        
+    Returns:
+        Ratio value or None if insufficient data or zero average volume
+    """
+    if current_volume is None:
+        return None
+    
+    now = _ensure_datetime(rolling_windows.last_update)
+    # Get enough history for 20 candles (assuming 1m candles, need 20 minutes)
+    start_time = now - timedelta(minutes=20)
+    
+    # Get klines for window
+    klines = rolling_windows.get_klines_for_window(candle_interval, start_time, now)
+    
+    if len(klines) < 20:
+        return None
+    
+    if "volume" not in klines.columns:
+        return None
+    
+    # Sort by timestamp and get last 20 candles
+    klines_sorted = klines.sort_values("timestamp")
+    if len(klines_sorted) < 20:
+        return None
+    
+    # Get last 20 volumes
+    volumes = pd.to_numeric(klines_sorted.tail(20)["volume"], errors='coerce').fillna(0.0)
+    
+    # Compute volume_ma_20 as simple moving average
+    volume_ma_20 = float(volumes.mean())
+    
+    if volume_ma_20 == 0:
+        return None
+    
+    # Compute ratio: current_volume / volume_ma_20
+    return float(current_volume / volume_ma_20)
+
+
 def compute_all_price_features(
     orderbook: Optional[OrderbookState],
     rolling_windows: RollingWindows,
@@ -207,6 +381,7 @@ def compute_all_price_features(
     features["returns_1s"] = compute_returns(rolling_windows, 1, current_price)
     features["returns_3s"] = compute_returns(rolling_windows, 3, current_price)
     features["returns_1m"] = compute_returns(rolling_windows, 60, current_price)
+    features["returns_5m"] = compute_returns_5m(rolling_windows, current_price)
     
     # VWAP
     features["vwap_3s"] = compute_vwap(rolling_windows, 3)
@@ -220,7 +395,29 @@ def compute_all_price_features(
     
     # Volatility
     features["volatility_1m"] = compute_volatility(rolling_windows, 60)
-    features["volatility_5m"] = compute_volatility(rolling_windows, 300)
+    features["volatility_5m"] = compute_volatility_5m(rolling_windows)
+    
+    # Price to EMA21 ratio
+    features["price_ema21_ratio"] = compute_price_ema21_ratio(rolling_windows, current_price)
+    
+    # Technical indicators
+    from src.features.technical_indicators import compute_rsi_14
+    features["rsi_14"] = compute_rsi_14(rolling_windows)
+    
+    # Volume ratio
+    # Get current volume from latest kline or use volume_1m
+    current_volume = features.get("volume_1m")
+    if current_volume is None:
+        # Try to get from latest kline
+        now = _ensure_datetime(rolling_windows.last_update)
+        klines = rolling_windows.get_klines_for_window("1m", now - timedelta(minutes=1), now)
+        if len(klines) > 0 and "volume" in klines.columns:
+            klines_sorted = klines.sort_values("timestamp")
+            current_volume = pd.to_numeric(klines_sorted.iloc[-1]["volume"], errors='coerce')
+            if pd.isna(current_volume):
+                current_volume = None
+    
+    features["volume_ratio_20"] = compute_volume_ratio_20(rolling_windows, current_volume)
     
     return features
 

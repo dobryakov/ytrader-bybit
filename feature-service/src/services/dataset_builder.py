@@ -229,6 +229,7 @@ class DatasetBuilder:
         test_period_end: Optional[datetime] = None,
         walk_forward_config: Optional[Dict[str, Any]] = None,
         output_format: str = "parquet",
+        feature_registry_version: Optional[str] = None,
     ) -> str:
         """
         Build a dataset from historical data.
@@ -260,6 +261,9 @@ class DatasetBuilder:
                 return dt.replace(tzinfo=timezone.utc)
             return dt.astimezone(timezone.utc)
         
+        # Use version from request if provided, otherwise use default
+        registry_version = feature_registry_version or self._feature_registry_version
+        
         # Create dataset record
         dataset_data = {
             "symbol": symbol,
@@ -273,7 +277,7 @@ class DatasetBuilder:
             "test_period_end": normalize_dt(test_period_end),
             "walk_forward_config": walk_forward_config,
             "target_config": target_config.model_dump(),
-            "feature_registry_version": self._feature_registry_version,
+            "feature_registry_version": registry_version,
             "output_format": output_format,
         }
         

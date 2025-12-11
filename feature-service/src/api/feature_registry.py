@@ -271,12 +271,12 @@ async def create_feature_registry_version(
             detail="Feature Registry version manager not available"
         )
     
-        try:
-            version_record = await _feature_registry_version_manager.create_version(
-                version=request.version,
-                config_data=request.config,
-                created_by=None,  # TODO: Extract from auth context
-            )
+    try:
+        version_record = await _feature_registry_version_manager.create_version(
+            version=request.version,
+            config_data=request.config,
+            created_by=None,  # TODO: Extract from auth context
+        )
         logger.info("Feature Registry version created", version=request.version)
         return version_record
     except ValueError as e:
@@ -306,6 +306,8 @@ async def activate_feature_registry_version(
     Returns:
         Activated version record with metadata
     """
+    global _feature_computer, _feature_registry_loader, _dataset_builder, _orderbook_manager
+    
     if _feature_registry_version_manager is None:
         raise HTTPException(
             status_code=503,
@@ -344,7 +346,6 @@ async def activate_feature_registry_version(
             # Update global feature_computer reference
             # Note: reload_registry_in_memory already updates API reference via set_feature_computer
             # Update our local reference
-            global _feature_computer
             _feature_computer = reload_result.get("new_feature_computer", _feature_computer)
             
             logger.info(

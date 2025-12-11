@@ -1,0 +1,65 @@
+version: 1.2.0
+features:
+- name: returns_5m
+  input_sources:
+  - kline
+  lookback_window: 5m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: volatility_5m
+  input_sources:
+  - kline
+  lookback_window: 5m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: rsi_14
+  input_sources:
+  - kline
+  lookback_window: 14m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: ema_21
+  input_sources:
+  - kline
+  lookback_window: 21m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: price_ema21_ratio
+  input_sources:
+  - kline
+  lookback_window: 21m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: volume_ratio_20
+  input_sources:
+  - kline
+  lookback_window: 20m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: funding_rate
+  input_sources:
+  - funding
+  lookback_window: 0s
+  lookahead_forbidden: true
+  max_lookback_days: 0
+  data_sources:
+  - source: funding
+    timestamp_required: true

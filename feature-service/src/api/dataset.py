@@ -101,6 +101,7 @@ async def build_dataset(
             test_period_end=request.test_period_end,
             walk_forward_config=request.walk_forward_config.model_dump() if request.walk_forward_config else None,
             output_format=request.output_format,
+            feature_registry_version=request.feature_registry_version,
         )
         
         # Get estimated completion
