@@ -153,6 +153,8 @@ class Settings(BaseSettings):
     
     # Feature Service Dataset Building Configuration
     feature_service_dataset_build_timeout_seconds: int = Field(default=3600, alias="FEATURE_SERVICE_DATASET_BUILD_TIMEOUT_SECONDS")
+    feature_service_dataset_metadata_timeout_seconds: float = Field(default=60.0, alias="FEATURE_SERVICE_DATASET_METADATA_TIMEOUT_SECONDS", description="Timeout for getting dataset metadata from Feature Service API")
+    feature_service_dataset_download_timeout_seconds: float = Field(default=600.0, alias="FEATURE_SERVICE_DATASET_DOWNLOAD_TIMEOUT_SECONDS", description="Timeout for downloading dataset files from Feature Service API")
     feature_service_dataset_poll_interval_seconds: int = Field(default=60, alias="FEATURE_SERVICE_DATASET_POLL_INTERVAL_SECONDS")
     feature_service_dataset_storage_path: str = Field(default="/datasets", alias="FEATURE_SERVICE_DATASET_STORAGE_PATH")
     
@@ -450,6 +452,10 @@ class Settings(BaseSettings):
             errors.append(f"FEATURE_SERVICE_FEATURE_CACHE_TTL_SECONDS must be positive, got {self.feature_service_feature_cache_ttl_seconds}")
         if self.feature_service_dataset_build_timeout_seconds <= 0:
             errors.append(f"FEATURE_SERVICE_DATASET_BUILD_TIMEOUT_SECONDS must be positive, got {self.feature_service_dataset_build_timeout_seconds}")
+        if self.feature_service_dataset_metadata_timeout_seconds <= 0:
+            errors.append(f"FEATURE_SERVICE_DATASET_METADATA_TIMEOUT_SECONDS must be positive, got {self.feature_service_dataset_metadata_timeout_seconds}")
+        if self.feature_service_dataset_download_timeout_seconds <= 0:
+            errors.append(f"FEATURE_SERVICE_DATASET_DOWNLOAD_TIMEOUT_SECONDS must be positive, got {self.feature_service_dataset_download_timeout_seconds}")
         if self.feature_service_dataset_poll_interval_seconds <= 0:
             errors.append(f"FEATURE_SERVICE_DATASET_POLL_INTERVAL_SECONDS must be positive, got {self.feature_service_dataset_poll_interval_seconds}")
 

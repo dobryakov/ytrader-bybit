@@ -7,6 +7,7 @@ Provides access to feature vectors and dataset building from Feature Service.
 from typing import Optional, Dict, Any
 from uuid import UUID
 from pathlib import Path
+import asyncio
 import httpx
 
 from ..config.settings import settings
@@ -26,6 +27,8 @@ class FeatureServiceClient:
         self.api_key = settings.feature_service_api_key
         self.timeout = 10.0  # 10 second timeout for feature requests
         self.dataset_timeout = settings.feature_service_dataset_build_timeout_seconds
+        self.dataset_metadata_timeout = settings.feature_service_dataset_metadata_timeout_seconds
+        self.dataset_download_timeout = settings.feature_service_dataset_download_timeout_seconds
 
     async def get_latest_features(self, symbol: str, trace_id: Optional[str] = None) -> Optional[FeatureVector]:
         """
@@ -161,13 +164,14 @@ class FeatureServiceClient:
             )
             return None
 
-    async def get_dataset(self, dataset_id: UUID, trace_id: Optional[str] = None) -> Optional[Dataset]:
+    async def get_dataset(self, dataset_id: UUID, trace_id: Optional[str] = None, max_retries: int = 3) -> Optional[Dataset]:
         """
-        Get dataset metadata by ID from Feature Service.
+        Get dataset metadata by ID from Feature Service with retry logic for transient failures.
 
         Args:
             dataset_id: Dataset UUID identifier
             trace_id: Optional trace ID for request flow tracking
+            max_retries: Maximum number of retry attempts for transient failures (default: 3)
 
         Returns:
             Dataset model or None if not found/error
@@ -178,51 +182,98 @@ class FeatureServiceClient:
             "Content-Type": "application/json",
         }
 
-        try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.get(url, headers=headers)
-                response.raise_for_status()
-                data = response.json()
-                
-                # Parse Dataset from response
-                dataset = Dataset(**data)
-                logger.debug(
-                    "Retrieved dataset metadata from Feature Service",
+        delay = 1.0  # Initial delay in seconds
+        max_delay = 10.0  # Maximum delay in seconds
+
+        for attempt in range(max_retries + 1):
+            try:
+                async with httpx.AsyncClient(timeout=self.dataset_metadata_timeout) as client:
+                    response = await client.get(url, headers=headers)
+                    response.raise_for_status()
+                    data = response.json()
+                    
+                    # Parse Dataset from response
+                    dataset = Dataset(**data)
+                    if attempt > 0:
+                        logger.info(
+                            "Retrieved dataset metadata from Feature Service after retry",
+                            dataset_id=str(dataset_id),
+                            attempt=attempt + 1,
+                            trace_id=trace_id,
+                        )
+                    else:
+                        logger.debug(
+                            "Retrieved dataset metadata from Feature Service",
+                            dataset_id=str(dataset_id),
+                            status=dataset.status.value if hasattr(dataset.status, 'value') else str(dataset.status),
+                            trace_id=trace_id,
+                        )
+                    return dataset
+
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 404:
+                    # Dataset not found - don't retry
+                    logger.debug("Dataset not found", dataset_id=str(dataset_id), trace_id=trace_id)
+                    return None
+                # Other HTTP errors - retry if not last attempt
+                if attempt < max_retries and e.response.status_code >= 500:
+                    logger.warning(
+                        "Feature Service dataset API error, will retry",
+                        dataset_id=str(dataset_id),
+                        status_code=e.response.status_code,
+                        attempt=attempt + 1,
+                        max_retries=max_retries + 1,
+                        delay=delay,
+                        trace_id=trace_id,
+                    )
+                    await asyncio.sleep(delay)
+                    delay = min(delay * 2.0, max_delay)
+                    continue
+                logger.error(
+                    "Feature Service dataset API error",
                     dataset_id=str(dataset_id),
-                    status=dataset.status.value if hasattr(dataset.status, 'value') else str(dataset.status),
+                    status_code=e.response.status_code,
+                    error=str(e),
                     trace_id=trace_id,
                 )
-                return dataset
-
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 404:
-                logger.debug("Dataset not found", dataset_id=str(dataset_id), trace_id=trace_id)
                 return None
-            logger.error(
-                "Feature Service dataset API error",
-                dataset_id=str(dataset_id),
-                status_code=e.response.status_code,
-                error=str(e),
-                trace_id=trace_id,
-            )
-            return None
-        except httpx.TimeoutException:
-            logger.warning(
-                "Feature Service dataset API timeout",
-                dataset_id=str(dataset_id),
-                timeout=self.timeout,
-                trace_id=trace_id,
-            )
-            return None
-        except Exception as e:
-            logger.error(
-                "Failed to query dataset from Feature Service",
-                dataset_id=str(dataset_id),
-                error=str(e),
-                trace_id=trace_id,
-                exc_info=True,
-            )
-            return None
+            except (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError) as e:
+                # Network/timeout errors - retry if not last attempt
+                if attempt < max_retries:
+                    logger.warning(
+                        "Feature Service dataset API timeout/network error, will retry",
+                        dataset_id=str(dataset_id),
+                        timeout=self.dataset_metadata_timeout,
+                        attempt=attempt + 1,
+                        max_retries=max_retries + 1,
+                        delay=delay,
+                        error_type=type(e).__name__,
+                        trace_id=trace_id,
+                    )
+                    await asyncio.sleep(delay)
+                    delay = min(delay * 2.0, max_delay)
+                    continue
+                logger.warning(
+                    "Feature Service dataset API timeout/network error after retries",
+                    dataset_id=str(dataset_id),
+                    timeout=self.dataset_metadata_timeout,
+                    max_retries=max_retries + 1,
+                    error_type=type(e).__name__,
+                    trace_id=trace_id,
+                )
+                return None
+            except Exception as e:
+                # Other errors - don't retry
+                logger.error(
+                    "Failed to query dataset from Feature Service",
+                    dataset_id=str(dataset_id),
+                    error=str(e),
+                    trace_id=trace_id,
+                    exc_info=True,
+                )
+                return None
+
+        return None
 
     async def download_dataset(
         self, dataset_id: UUID, split: str = "train", trace_id: Optional[str] = None
@@ -263,7 +314,7 @@ class FeatureServiceClient:
         file_path = storage_path / f"{dataset_id}_{split}.{output_format}"
 
         try:
-            async with httpx.AsyncClient(timeout=600.0) as client:  # 10 minute timeout for large downloads
+            async with httpx.AsyncClient(timeout=self.dataset_download_timeout) as client:
                 async with client.stream("GET", url, headers=headers, params=params) as response:
                     response.raise_for_status()
                     
