@@ -35,6 +35,9 @@ class Config(BaseSettings):
     
     # Feature Registry Configuration
     feature_registry_path: str = Field(default="/app/config/feature_registry.yaml", env="FEATURE_REGISTRY_CONFIG_PATH", description="Feature Registry config path")
+    feature_registry_versions_dir: str = Field(default="/app/config/versions", env="FEATURE_REGISTRY_VERSIONS_DIR", description="Directory for Feature Registry version files")
+    feature_registry_use_db: bool = Field(default=True, env="FEATURE_REGISTRY_USE_DB", description="Use database-driven version management (default: True)")
+    feature_registry_auto_migrate: bool = Field(default=True, env="FEATURE_REGISTRY_AUTO_MIGRATE", description="Automatically migrate legacy feature_registry.yaml to versioned storage (default: True)")
     
     # WS Gateway API Configuration (for subscription management)
     ws_gateway_host: str = Field(..., env="WS_GATEWAY_HOST", description="WS Gateway hostname")

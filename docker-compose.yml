@@ -242,6 +242,7 @@ services:
     volumes:
       - ./feature-service/src:/app/src
       - ./feature-service/config:/app/config
+      - ./feature-service/config/versions:/app/config/versions
       - ./feature-service/tests:/app/tests
       - ./feature-service/scripts:/app/scripts
       - feature_raw_data:/data/raw

@@ -2,14 +2,18 @@
 Feature Computer service for orchestrating feature computations.
 """
 from datetime import datetime, timezone
-from typing import Dict, Optional
+from typing import Dict, Optional, TYPE_CHECKING
 import structlog
 import time
+
+if TYPE_CHECKING:
+    from src.services.feature_registry import FeatureRegistryLoader
 
 from src.models.feature_vector import FeatureVector
 from src.models.orderbook_state import OrderbookState
 from src.models.rolling_windows import RollingWindows
 from src.services.orderbook_manager import OrderbookManager
+from src.services.feature_registry import FeatureRegistryLoader
 from src.features.price_features import compute_all_price_features
 from src.features.orderflow_features import compute_all_orderflow_features
 from src.features.orderbook_features import compute_all_orderbook_features
@@ -26,16 +30,65 @@ class FeatureComputer:
         self,
         orderbook_manager: OrderbookManager,
         feature_registry_version: str = "1.0.0",
+        feature_registry_loader: Optional["FeatureRegistryLoader"] = None,
     ):
-        """Initialize feature computer."""
+        """
+        Initialize feature computer.
+        
+        Args:
+            orderbook_manager: OrderbookManager instance
+            feature_registry_version: Feature Registry version string
+            feature_registry_loader: Optional FeatureRegistryLoader for filtering features
+        """
         self._orderbook_manager = orderbook_manager
         self._rolling_windows: Dict[str, RollingWindows] = {}
         self._feature_registry_version = feature_registry_version
+        self._feature_registry_loader = feature_registry_loader
         self._latest_funding_rate: Dict[str, Optional[float]] = {}
         self._latest_next_funding_time: Dict[str, Optional[int]] = {}
         self._latency_threshold_ms = 70.0
         # Store last computed features per symbol for resilience (T078)
         self._last_features: Dict[str, FeatureVector] = {}
+        
+        # Cache allowed feature names from Feature Registry
+        self._allowed_feature_names: Optional[set] = None
+        self._update_allowed_features()
+    
+    def _update_allowed_features(self) -> None:
+        """Update allowed feature names from Feature Registry."""
+        if self._feature_registry_loader is None:
+            self._allowed_feature_names = None
+            return
+        
+        try:
+            registry_model = self._feature_registry_loader._registry_model
+            if registry_model:
+                self._allowed_feature_names = {f.name for f in registry_model.features}
+                logger.debug(
+                    "feature_registry_features_loaded",
+                    count=len(self._allowed_feature_names),
+                    features=list(self._allowed_feature_names),
+                )
+            else:
+                # Try to load config
+                try:
+                    config = self._feature_registry_loader.get_config()
+                    if config and "features" in config:
+                        self._allowed_feature_names = {
+                            f.get("name") for f in config["features"] if f.get("name")
+                        }
+                except Exception as e:
+                    logger.warning(
+                        "failed_to_load_feature_registry_for_filtering",
+                        error=str(e),
+                    )
+                    self._allowed_feature_names = None
+        except Exception as e:
+            logger.warning(
+                "failed_to_update_allowed_features",
+                error=str(e),
+            )
+            self._allowed_feature_names = None
     
     def get_rolling_windows(self, symbol: str) -> RollingWindows:
         """Get or create rolling windows for symbol."""
@@ -118,6 +171,21 @@ class FeatureComputer:
                 k: v for k, v in all_features.items()
                 if v is not None and not (isinstance(v, float) and (math.isnan(v) or math.isinf(v)))
             }
+            
+            # Filter features by Feature Registry (if enabled)
+            if self._allowed_feature_names is not None:
+                registry_filtered_features = {
+                    k: v for k, v in filtered_features.items()
+                    if k in self._allowed_feature_names
+                }
+                if len(registry_filtered_features) < len(filtered_features):
+                    logger.debug(
+                        "features_filtered_by_registry",
+                        original_count=len(filtered_features),
+                        filtered_count=len(registry_filtered_features),
+                        removed_features=set(filtered_features.keys()) - set(registry_filtered_features.keys()),
+                    )
+                filtered_features = registry_filtered_features
             
             # Create feature vector
             feature_vector = FeatureVector(

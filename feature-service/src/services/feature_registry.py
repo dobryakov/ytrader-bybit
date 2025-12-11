@@ -4,28 +4,117 @@ Feature Registry configuration loader and management.
 import yaml
 from pathlib import Path
 from typing import Dict, Any, Optional, List
+from pydantic import ValidationError
 from src.config import config
 from src.logging import get_logger
+from src.models.feature_registry import FeatureRegistry
 
 logger = get_logger(__name__)
+
+# Forward declaration to avoid circular import
+FeatureRegistryVersionManager = None  # type: ignore
 
 
 class FeatureRegistryLoader:
     """Feature Registry configuration loader."""
     
-    def __init__(self, config_path: Optional[str] = None):
+    def __init__(
+        self,
+        config_path: Optional[str] = None,
+        use_db: Optional[bool] = None,
+        version_manager: Optional[Any] = None,
+    ):
         """
         Initialize Feature Registry loader.
         
         Args:
-            config_path: Path to Feature Registry YAML file
+            config_path: Path to Feature Registry YAML file (for file_mode)
+            use_db: Whether to use database-driven mode (default: from config)
+            version_manager: FeatureRegistryVersionManager instance (required if use_db=True)
         """
         self._config_path = Path(config_path or config.feature_registry_path)
         self._config: Optional[Dict[str, Any]] = None
+        self._registry_model: Optional[FeatureRegistry] = None
+        self._use_db = use_db if use_db is not None else config.feature_registry_use_db
+        self._version_manager = version_manager
     
     def load(self) -> Dict[str, Any]:
         """
-        Load Feature Registry configuration from YAML file.
+        Load Feature Registry configuration (sync method, for backward compatibility).
+        
+        If use_db=True, this method cannot be used directly - use load_async() instead.
+        If use_db=False, loads from file directly (legacy mode).
+        
+        Validates:
+        - Temporal boundaries (lookback_window format, max_lookback_days)
+        - Data leakage prevention (lookahead_forbidden, negative lookback, excessive lookback)
+        - Feature structure and required fields
+        
+        Returns:
+            Dict containing Feature Registry configuration
+            
+        Raises:
+            FileNotFoundError: If config file does not exist or active version not found
+            ValueError: If config is invalid (structure, temporal boundaries, data leakage)
+            RuntimeError: If use_db=True (must use load_async() instead)
+        """
+        if self._use_db and self._version_manager:
+            raise RuntimeError(
+                "Cannot use sync load() method with database-driven mode. "
+                "Use load_async() instead or set use_db=False."
+            )
+        else:
+            return self._load_from_file()
+    
+    async def load_async(self) -> Dict[str, Any]:
+        """
+        Load Feature Registry configuration (async method).
+        
+        If use_db=True, loads from database (active version) and reads file.
+        If use_db=False, loads from file directly (legacy mode).
+        
+        Validates:
+        - Temporal boundaries (lookback_window format, max_lookback_days)
+        - Data leakage prevention (lookahead_forbidden, negative lookback, excessive lookback)
+        - Feature structure and required fields
+        
+        Returns:
+            Dict containing Feature Registry configuration
+            
+        Raises:
+            FileNotFoundError: If config file does not exist or active version not found
+            ValueError: If config is invalid (structure, temporal boundaries, data leakage)
+        """
+        if self._use_db and self._version_manager:
+            return await self.load_active_from_db()
+        else:
+            return self._load_from_file()
+    
+    async def load_active_from_db(self) -> Dict[str, Any]:
+        """
+        Load active version from database and read config from file (async).
+        
+        Returns:
+            Dict containing Feature Registry configuration
+            
+        Raises:
+            FileNotFoundError: If active version not found or file missing
+            ValueError: If config is invalid
+        """
+        if self._version_manager is None:
+            raise ValueError("version_manager is required for database-driven mode")
+        
+        # Load active version from DB (async)
+        config_data = await self._version_manager.load_active_version()
+        
+        # Validate and store
+        self._validate_and_store_config(config_data)
+        
+        return config_data
+    
+    def _load_from_file(self) -> Dict[str, Any]:
+        """
+        Load Feature Registry configuration from YAML file (legacy mode).
         
         Returns:
             Dict containing Feature Registry configuration
@@ -43,25 +132,94 @@ class FeatureRegistryLoader:
         if not config_data:
             raise ValueError("Feature Registry config is empty")
         
-        # Validate structure
-        if "version" not in config_data:
-            raise ValueError("Feature Registry config must include 'version' field")
-        
-        if "features" not in config_data:
-            raise ValueError("Feature Registry config must include 'features' section")
-        
-        # Validate each feature
-        for feature in config_data["features"]:
-            self._validate_feature(feature)
-        
-        self._config = config_data
-        logger.info("Feature Registry loaded", version=config_data.get("version"))
+        # Validate and store
+        self._validate_and_store_config(config_data)
         
         return config_data
     
+    def _validate_and_store_config(self, config_data: Dict[str, Any]) -> None:
+        """
+        Validate config using FeatureRegistry model and store it.
+        
+        Args:
+            config_data: Configuration dictionary
+            
+        Raises:
+            ValueError: If config is invalid
+        """
+        # Validate using FeatureRegistry model (comprehensive validation)
+        try:
+            self._registry_model = FeatureRegistry(**config_data)
+        except ValidationError as e:
+            # Convert Pydantic ValidationError to more readable ValueError
+            errors = []
+            for error in e.errors():
+                field = ".".join(str(loc) for loc in error["loc"])
+                msg = error["msg"]
+                errors.append(f"{field}: {msg}")
+            
+            raise ValueError(
+                f"Feature Registry validation failed:\n" + "\n".join(errors)
+            ) from e
+        
+        # Store config dict for backward compatibility
+        self._config = config_data
+        logger.info(
+            "Feature Registry loaded and validated",
+            version=config_data.get("version"),
+            features_count=len(config_data.get("features", [])),
+            use_db=self._use_db,
+        )
+    
+    def set_config(self, config_data: Dict[str, Any]) -> None:
+        """
+        Set configuration manually (for hot reload).
+        
+        Args:
+            config_data: Configuration dictionary
+            
+        Raises:
+            ValueError: If config is invalid
+        """
+        self._validate_and_store_config(config_data)
+        logger.info("Feature Registry config updated manually (hot reload)")
+    
+    def validate_version_match(self, file_path: Path, db_version: str) -> bool:
+        """
+        Validate that file version matches DB version.
+        
+        Args:
+            file_path: Path to YAML file
+            db_version: Version from database
+            
+        Returns:
+            True if versions match, False otherwise
+        """
+        if not file_path.exists():
+            return False
+        
+        with open(file_path, "r") as f:
+            config_data = yaml.safe_load(f)
+        
+        file_version = config_data.get("version") if config_data else None
+        
+        if file_version != db_version:
+            logger.warning(
+                "feature_registry_version_mismatch",
+                db_version=db_version,
+                file_version=file_version,
+                file_path=str(file_path),
+            )
+            return False
+        
+        return True
+    
     def _validate_feature(self, feature: Dict[str, Any]) -> None:
         """
-        Validate a feature definition.
+        Validate a feature definition (legacy method, now uses FeatureRegistry model).
+        
+        This method is kept for backward compatibility but validation is now done
+        by the FeatureRegistry model in load() method.
         
         Args:
             feature: Feature definition dictionary
@@ -69,33 +227,9 @@ class FeatureRegistryLoader:
         Raises:
             ValueError: If feature is invalid
         """
-        required_fields = ["name", "input_sources", "lookback_window", "lookahead_forbidden"]
-        
-        for field in required_fields:
-            if field not in feature:
-                raise ValueError(f"Feature '{feature.get('name', 'unknown')}' missing required field: {field}")
-        
-        # Validate lookahead_forbidden
-        if not feature["lookahead_forbidden"]:
-            raise ValueError(
-                f"Feature '{feature['name']}' must have lookahead_forbidden=true "
-                "to prevent data leakage"
-            )
-        
-        # Validate max_lookback_days if present
-        if "max_lookback_days" in feature:
-            lookback_window = feature["lookback_window"]
-            max_lookback_days = feature["max_lookback_days"]
-            
-            # Parse lookback_window to days (simplified)
-            # This is a basic validation - actual parsing would be more complex
-            if "d" in lookback_window.lower() or "day" in lookback_window.lower():
-                # Extract days from lookback_window
-                # For now, just check that max_lookback_days is reasonable
-                if max_lookback_days < 0:
-                    raise ValueError(
-                        f"Feature '{feature['name']}' max_lookback_days must be non-negative"
-                    )
+        # This method is deprecated - validation is now done by FeatureRegistry model
+        # Keeping for backward compatibility
+        pass
     
     def get_config(self) -> Optional[Dict[str, Any]]:
         """
@@ -128,6 +262,11 @@ class FeatureRegistryLoader:
         Raises:
             ValueError: If registry is not loaded
         """
+        if self._registry_model is not None:
+            # Use model if available (preferred)
+            return self._registry_model.get_required_data_types()
+        
+        # Fallback to dict-based approach for backward compatibility
         if self._config is None:
             raise ValueError("Feature Registry not loaded. Call load() first.")
         

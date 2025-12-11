@@ -55,7 +55,10 @@ class DatasetBuilder:
         self._dataset_storage_path.mkdir(parents=True, exist_ok=True)
         self._batch_size = batch_size
         self._feature_registry_version = feature_registry_version
-        self._offline_engine = OfflineEngine(feature_registry_version)
+        self._offline_engine = OfflineEngine(
+            feature_registry_version=feature_registry_version,
+            feature_registry_loader=feature_registry_loader,
+        )
         self._active_builds: Dict[str, asyncio.Task] = {}
         self._feature_registry_loader = feature_registry_loader
         self._backfilling_service = backfilling_service

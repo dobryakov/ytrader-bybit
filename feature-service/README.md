@@ -85,6 +85,10 @@ All configuration is done via environment variables. See `../env.example` in pro
 - `BYBIT_API_KEY`: Bybit API key (optional, not required for public market data endpoints)
 - `BYBIT_API_SECRET`: Bybit API secret (optional, not required for public market data endpoints)
 - `BYBIT_ENVIRONMENT`: Bybit environment: `mainnet` or `testnet` (default: `mainnet`)
+- `FEATURE_REGISTRY_CONFIG_PATH`: Path to legacy Feature Registry YAML file (default: `/app/config/feature_registry.yaml`)
+- `FEATURE_REGISTRY_VERSIONS_DIR`: Directory for Feature Registry version files (default: `/app/config/versions`)
+- `FEATURE_REGISTRY_USE_DB`: Use database-driven version management (default: `true`)
+- `FEATURE_REGISTRY_AUTO_MIGRATE`: Automatically migrate legacy feature_registry.yaml to versioned storage on startup (default: `true`)
 
 ## API Endpoints
 

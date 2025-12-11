@@ -2,7 +2,7 @@
 Metadata storage using asyncpg connection pool.
 """
 import asyncpg
-from typing import Optional, AsyncContextManager, Any
+from typing import Optional, AsyncContextManager, Any, List
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from src.config import config
@@ -817,5 +817,337 @@ class MetadataStorage:
                 logger.info("dataset_deleted", dataset_id=dataset_id)
             else:
                 logger.warning("dataset_not_found_for_deletion", dataset_id=dataset_id)
+            return deleted
+    
+    async def update_feature_registry_version_metadata(
+        self,
+        version: str,
+        compatibility_warnings: Optional[List[str]] = None,
+        breaking_changes: Optional[List[str]] = None,
+    ) -> dict:
+        """
+        Update Feature Registry version metadata (compatibility warnings, breaking changes).
+        
+        Args:
+            version: Version identifier
+            compatibility_warnings: List of compatibility warnings
+            breaking_changes: List of breaking changes
+            
+        Returns:
+            Updated version record
+        """
+        async with self.transaction() as conn:
+            # Build dynamic UPDATE query
+            set_clauses = []
+            values = []
+            param_num = 1
+            
+            if compatibility_warnings is not None:
+                set_clauses.append(f"compatibility_warnings = ${param_num}")
+                values.append(compatibility_warnings)
+                param_num += 1
+            
+            if breaking_changes is not None:
+                set_clauses.append(f"breaking_changes = ${param_num}")
+                values.append(breaking_changes)
+                param_num += 1
+            
+            if not set_clauses:
+                # Nothing to update
+                record = await conn.fetchrow(
+                    "SELECT * FROM feature_registry_versions WHERE version = $1",
+                    version,
+                )
+                return self._normalize_datetime_in_dict(dict(record)) if record else {}
+            
+            values.append(version)  # WHERE clause parameter
+            
+            row = await conn.fetchrow(
+                f"""
+                UPDATE feature_registry_versions
+                SET {', '.join(set_clauses)}
+                WHERE version = ${param_num}
+                RETURNING *
+                """,
+                *values,
+            )
+            
+            if not row:
+                raise ValueError(f"Feature Registry version not found: {version}")
+            
+            logger.info(
+                "feature_registry_version_metadata_updated",
+                version=version,
+            )
+            
+            return self._normalize_datetime_in_dict(dict(row))
+
+    # ============================================================================
+    # Feature Registry Version Management Methods
+    # ============================================================================
+    
+    async def get_active_feature_registry_version(self) -> Optional[dict]:
+        """
+        Get active Feature Registry version from database.
+        
+        Returns:
+            Dict with version metadata or None if no active version exists
+        """
+        async with self.get_connection() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT * FROM feature_registry_versions
+                WHERE is_active = true
+                LIMIT 1
+                """
+            )
+            if row is None:
+                return None
+            return self._normalize_datetime_in_dict(dict(row))
+    
+    async def create_feature_registry_version(
+        self,
+        version: str,
+        file_path: str,
+        is_active: bool = False,
+        created_by: Optional[str] = None,
+        validated_at: Optional[datetime] = None,
+        validation_errors: Optional[list] = None,
+        schema_version: Optional[str] = None,
+        migration_script: Optional[str] = None,
+        compatibility_warnings: Optional[List[str]] = None,
+        breaking_changes: Optional[List[str]] = None,
+    ) -> dict:
+        """
+        Create a new Feature Registry version record.
+        
+        Args:
+            version: Version identifier (e.g., "1.0.0")
+            file_path: Path to YAML file (e.g., "/app/config/versions/feature_registry_v1.0.0.yaml")
+            is_active: Whether this version is active (default: False)
+            created_by: User who created this version (optional)
+            validated_at: When validation was performed (optional)
+            validation_errors: List of validation errors (optional)
+            
+        Returns:
+            Created version record as dict
+        """
+        async with self.transaction() as conn:
+            validated_at_normalized = self._normalize_datetime(validated_at) if validated_at else None
+            
+            row = await conn.fetchrow(
+                """
+                INSERT INTO feature_registry_versions (
+                    version, file_path, is_active, created_by, validated_at, validation_errors,
+                    schema_version, migration_script, compatibility_warnings, breaking_changes, created_at
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
+                RETURNING *
+                """,
+                version,
+                file_path,
+                is_active,
+                created_by,
+                validated_at_normalized,
+                validation_errors,
+                schema_version,
+                migration_script,
+                compatibility_warnings,
+                breaking_changes,
+            )
+            
+            logger.info(
+                "feature_registry_version_created",
+                version=version,
+                file_path=file_path,
+                is_active=is_active,
+            )
+            
+            return self._normalize_datetime_in_dict(dict(row))
+    
+    async def activate_feature_registry_version(
+        self,
+        version: str,
+        activated_by: Optional[str] = None,
+        activation_reason: Optional[str] = None,
+    ) -> dict:
+        """
+        Activate a Feature Registry version (atomically deactivate old, activate new).
+        
+        Args:
+            version: Version identifier to activate
+            activated_by: User who activated this version (optional)
+            activation_reason: Reason for activation (optional)
+            
+        Returns:
+            Activated version record as dict
+            
+        Raises:
+            ValueError: If version not found
+        """
+        async with self.transaction() as conn:
+            # Get current active version
+            current_active = await conn.fetchrow(
+                """
+                SELECT version FROM feature_registry_versions
+                WHERE is_active = true
+                LIMIT 1
+                """
+            )
+            previous_version = current_active["version"] if current_active else None
+            
+            # Deactivate all versions
+            await conn.execute(
+                """
+                UPDATE feature_registry_versions
+                SET is_active = false
+                WHERE is_active = true
+                """
+            )
+            
+            # Activate new version
+            row = await conn.fetchrow(
+                """
+                UPDATE feature_registry_versions
+                SET is_active = true,
+                    loaded_at = NOW(),
+                    activated_by = $1,
+                    activation_reason = $2,
+                    previous_version = $3
+                WHERE version = $4
+                RETURNING *
+                """,
+                activated_by,
+                activation_reason,
+                previous_version,
+                version,
+            )
+            
+            if row is None:
+                raise ValueError(f"Feature Registry version not found: {version}")
+            
+            logger.info(
+                "feature_registry_version_activated",
+                version=version,
+                previous_version=previous_version,
+                activated_by=activated_by,
+            )
+            
+            return self._normalize_datetime_in_dict(dict(row))
+    
+    async def list_feature_registry_versions(self) -> list:
+        """
+        List all Feature Registry versions ordered by creation date (newest first).
+        
+        Returns:
+            List of version records as dicts
+        """
+        async with self.get_connection() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT * FROM feature_registry_versions
+                ORDER BY created_at DESC
+                """
+            )
+            return [self._normalize_datetime_in_dict(dict(row)) for row in rows]
+    
+    async def get_feature_registry_version(self, version: str) -> Optional[dict]:
+        """
+        Get a specific Feature Registry version by version string.
+        
+        Args:
+            version: Version identifier
+            
+        Returns:
+            Version record as dict or None if not found
+        """
+        async with self.get_connection() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT * FROM feature_registry_versions
+                WHERE version = $1
+                """,
+                version,
+            )
+            if row is None:
+                return None
+            return self._normalize_datetime_in_dict(dict(row))
+    
+    async def check_version_usage(self, version: str) -> int:
+        """
+        Check how many datasets are using a specific Feature Registry version.
+        
+        Args:
+            version: Version identifier
+            
+        Returns:
+            Number of datasets using this version
+        """
+        async with self.get_connection() as conn:
+            count = await conn.fetchval(
+                """
+                SELECT COUNT(*) FROM datasets
+                WHERE feature_registry_version = $1
+                """,
+                version,
+            )
+            return int(count) if count is not None else 0
+    
+    async def rollback_feature_registry_version(self) -> Optional[dict]:
+        """
+        Rollback to previous Feature Registry version.
+        
+        Returns:
+            Activated version record as dict or None if no previous version exists
+        """
+        async with self.transaction() as conn:
+            # Get current active version
+            current_active = await conn.fetchrow(
+                """
+                SELECT previous_version FROM feature_registry_versions
+                WHERE is_active = true
+                LIMIT 1
+                """
+            )
+            
+            if current_active is None or current_active["previous_version"] is None:
+                logger.warning("no_previous_version_for_rollback")
+                return None
+            
+            previous_version = current_active["previous_version"]
+            
+            # Activate previous version
+            return await self.activate_feature_registry_version(
+                previous_version,
+                activated_by="system",
+                activation_reason="rollback",
+            )
+    
+    async def delete_feature_registry_version(self, version: str) -> bool:
+        """
+        Delete Feature Registry version record from database.
+        
+        Args:
+            version: Version identifier
+            
+        Returns:
+            True if version was deleted, False if not found
+            
+        Note:
+            This only deletes the DB record. File deletion should be handled separately.
+        """
+        async with self.transaction() as conn:
+            result = await conn.execute(
+                """
+                DELETE FROM feature_registry_versions WHERE version = $1
+                """,
+                version,
+            )
+            # result is the number of rows affected
+            deleted = result == "DELETE 1"
+            if deleted:
+                logger.info("feature_registry_version_deleted", version=version)
+            else:
+                logger.warning("feature_registry_version_not_found_for_deletion", version=version)
             return deleted
 

@@ -5,11 +5,16 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any
 import pandas as pd
 import structlog
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from src.services.feature_registry import FeatureRegistryLoader
 
 from src.models.feature_vector import FeatureVector
 from src.models.orderbook_state import OrderbookState
 from src.models.rolling_windows import RollingWindows
 from src.services.orderbook_manager import OrderbookManager
+from src.services.feature_registry import FeatureRegistryLoader
 from src.features.price_features import compute_all_price_features
 from src.features.orderflow_features import compute_all_orderflow_features
 from src.features.orderbook_features import compute_all_orderbook_features
@@ -22,14 +27,60 @@ logger = structlog.get_logger(__name__)
 class OfflineEngine:
     """Offline feature computation engine for historical data."""
     
-    def __init__(self, feature_registry_version: str = "1.0.0"):
+    def __init__(
+        self,
+        feature_registry_version: str = "1.0.0",
+        feature_registry_loader: Optional["FeatureRegistryLoader"] = None,
+    ):
         """
         Initialize offline engine.
         
         Args:
             feature_registry_version: Feature Registry version to use
+            feature_registry_loader: Optional FeatureRegistryLoader for filtering features
         """
         self._feature_registry_version = feature_registry_version
+        self._feature_registry_loader = feature_registry_loader
+        
+        # Cache allowed feature names from Feature Registry
+        self._allowed_feature_names: Optional[set] = None
+        self._update_allowed_features()
+    
+    def _update_allowed_features(self) -> None:
+        """Update allowed feature names from Feature Registry."""
+        if self._feature_registry_loader is None:
+            self._allowed_feature_names = None
+            return
+        
+        try:
+            registry_model = self._feature_registry_loader._registry_model
+            if registry_model:
+                self._allowed_feature_names = {f.name for f in registry_model.features}
+                logger.debug(
+                    "feature_registry_features_loaded",
+                    count=len(self._allowed_feature_names),
+                    features=list(self._allowed_feature_names),
+                )
+            else:
+                # Try to load config
+                try:
+                    config = self._feature_registry_loader.get_config()
+                    if config and "features" in config:
+                        self._allowed_feature_names = {
+                            f.get("name") for f in config["features"] if f.get("name")
+                        }
+                except Exception as e:
+                    logger.warning(
+                        "failed_to_load_feature_registry_for_filtering",
+                        error=str(e),
+                    )
+                    self._allowed_feature_names = None
+        except Exception as e:
+            logger.warning(
+                "failed_to_update_allowed_features",
+                error=str(e),
+            )
+            self._allowed_feature_names = None
     
     async def compute_features_at_timestamp(
         self,
@@ -135,6 +186,21 @@ class OfflineEngine:
                 k: v for k, v in all_features.items()
                 if v is not None and not (isinstance(v, float) and (math.isnan(v) or math.isinf(v)))
             }
+            
+            # Filter features by Feature Registry (if enabled)
+            if self._allowed_feature_names is not None:
+                registry_filtered_features = {
+                    k: v for k, v in filtered_features.items()
+                    if k in self._allowed_feature_names
+                }
+                if len(registry_filtered_features) < len(filtered_features):
+                    logger.debug(
+                        "features_filtered_by_registry",
+                        original_count=len(filtered_features),
+                        filtered_count=len(registry_filtered_features),
+                        removed_features=set(filtered_features.keys()) - set(registry_filtered_features.keys()),
+                    )
+                filtered_features = registry_filtered_features
             
             # Create feature vector
             return FeatureVector(

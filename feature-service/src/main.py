@@ -11,6 +11,12 @@ from src.api.health import router as health_router
 from src.api.features import router as features_router, set_feature_computer
 from src.api.dataset import router as dataset_router, set_metadata_storage, set_dataset_builder
 from src.api.backfill import router as backfill_router, set_backfilling_service
+from src.api.feature_registry import (
+    router as feature_registry_router,
+    set_feature_registry_loader,
+    set_feature_registry_version_manager as set_feature_registry_version_manager_api,
+    set_metadata_storage_for_registry,
+)
 from src.api.middleware.auth import verify_api_key
 from src.logging import setup_logging, get_logger
 from src.config import config
@@ -21,6 +27,7 @@ from src.http.client import HTTPClient
 from src.services.orderbook_manager import OrderbookManager
 from src.services.feature_computer import FeatureComputer
 from src.services.feature_registry import FeatureRegistryLoader
+from src.services.feature_registry_version_manager import FeatureRegistryVersionManager
 from src.consumers.market_data_consumer import MarketDataConsumer
 from src.publishers.feature_publisher import FeaturePublisher
 from src.publishers.dataset_publisher import DatasetPublisher
@@ -47,6 +54,7 @@ http_client: HTTPClient = None
 orderbook_manager: OrderbookManager = None
 feature_computer: FeatureComputer = None
 feature_registry_loader: FeatureRegistryLoader = None
+feature_registry_version_manager: FeatureRegistryVersionManager = None
 market_data_consumer: MarketDataConsumer = None
 feature_publisher: FeaturePublisher = None
 feature_scheduler: FeatureScheduler = None
@@ -60,6 +68,7 @@ app.include_router(health_router)
 app.include_router(backfill_router)
 app.include_router(features_router)
 app.include_router(dataset_router)
+app.include_router(feature_registry_router)
 
 # Add authentication middleware to all routes except health
 @app.middleware("http")
@@ -91,7 +100,8 @@ async def root():
 async def startup():
     """Application startup event."""
     global mq_manager, http_client, orderbook_manager, feature_computer
-    global feature_registry_loader, market_data_consumer, feature_publisher, feature_scheduler
+    global feature_registry_loader, feature_registry_version_manager
+    global market_data_consumer, feature_publisher, feature_scheduler
     global metadata_storage, dataset_builder, data_storage, backfilling_service
     
     logger.info("Feature Service starting up")
@@ -105,24 +115,127 @@ async def startup():
         )
         orderbook_manager = OrderbookManager()
         
-        # Load Feature Registry
-        feature_registry_loader = FeatureRegistryLoader(config_path=config.feature_registry_path)
-        registry_config = feature_registry_loader.load()
-        registry_version = registry_config.get("version", "1.0.0")
+        # Initialize Metadata Storage (needed for Feature Registry version management)
+        metadata_storage = MetadataStorage()
+        await metadata_storage.initialize()
+        set_metadata_storage(metadata_storage)
+        
+        # Initialize Feature Registry Version Manager (if database-driven mode enabled)
+        registry_config = None
+        registry_version = "1.0.0"
+        use_db_mode = config.feature_registry_use_db
+        
+        if use_db_mode:
+            try:
+                # Initialize FeatureRegistryVersionManager
+                feature_registry_version_manager = FeatureRegistryVersionManager(
+                    metadata_storage=metadata_storage,
+                    versions_dir=config.feature_registry_versions_dir,
+                )
+                
+                # Try to load active version from database
+                try:
+                    config_data = await feature_registry_version_manager.load_active_version()
+                    registry_version = config_data.get("version", "1.0.0")
+                    registry_config = config_data  # Store config for later use
+                    logger.info(
+                        "Feature Registry loaded from database",
+                        version=registry_version,
+                        mode="database",
+                    )
+                except FileNotFoundError as e:
+                    # No active version in DB - try automatic migration from legacy file
+                    if config.feature_registry_auto_migrate:
+                        logger.info(
+                            "No active version in database, attempting automatic migration from legacy file"
+                        )
+                        try:
+                            migrated_version = await feature_registry_version_manager.migrate_legacy_to_db()
+                            config_data = await feature_registry_version_manager.load_active_version()
+                            registry_config = config_data
+                            registry_version = config_data.get("version", "1.0.0")
+                            logger.info(
+                                "Feature Registry migrated from legacy file to database",
+                                version=registry_version,
+                                migrated_version=migrated_version["version"],
+                            )
+                        except Exception as migration_error:
+                            logger.warning(
+                                "Automatic migration failed, falling back to file mode",
+                                error=str(migration_error),
+                            )
+                            use_db_mode = False
+                            feature_registry_version_manager = None
+                    else:
+                        logger.warning(
+                            "No active version in database and auto_migrate disabled, falling back to file mode"
+                        )
+                        use_db_mode = False
+                        feature_registry_version_manager = None
+                
+            except Exception as db_error:
+                logger.warning(
+                    "Failed to initialize database-driven mode, falling back to file mode",
+                    error=str(db_error),
+                )
+                use_db_mode = False
+                feature_registry_version_manager = None
+        
+        # Initialize Feature Registry Loader
+        if use_db_mode and feature_registry_version_manager:
+            # Database-driven mode
+            feature_registry_loader = FeatureRegistryLoader(
+                config_path=config.feature_registry_path,
+                use_db=True,
+                version_manager=feature_registry_version_manager,
+            )
+            # Config already loaded, just set it
+            if registry_config:
+                feature_registry_loader.set_config(registry_config)
+            else:
+                # Fallback: try to load from DB again (async)
+                registry_config = await feature_registry_loader.load_async()
+                registry_version = registry_config.get("version", "1.0.0")
+        else:
+            # Legacy file mode
+            feature_registry_loader = FeatureRegistryLoader(
+                config_path=config.feature_registry_path,
+                use_db=False,
+            )
+            registry_config = feature_registry_loader.load()
+            registry_version = registry_config.get("version", "1.0.0")
+            logger.info(
+                "Feature Registry loaded from file",
+                version=registry_version,
+                mode="file",
+                path=str(config.feature_registry_path),
+            )
         
         # Initialize Feature Computer
         feature_computer = FeatureComputer(
             orderbook_manager=orderbook_manager,
             feature_registry_version=registry_version,
+            feature_registry_loader=feature_registry_loader,
         )
         
         # Set feature computer for API
         set_feature_computer(feature_computer)
         
-        # Initialize Metadata Storage
-        metadata_storage = MetadataStorage()
-        await metadata_storage.initialize()
-        set_metadata_storage(metadata_storage)
+        # Set Feature Registry components for API
+        set_feature_registry_loader(feature_registry_loader)
+        if feature_registry_version_manager:
+            set_feature_registry_version_manager_api(feature_registry_version_manager)
+        set_metadata_storage_for_registry(metadata_storage)
+        
+        # Set components for hot reload
+        from src.api.feature_registry import (
+            set_feature_computer_for_registry,
+            set_dataset_builder_for_registry,
+            set_orderbook_manager_for_registry,
+        )
+        set_feature_computer_for_registry(feature_computer)
+        set_dataset_builder_for_registry(dataset_builder)
+        set_orderbook_manager_for_registry(orderbook_manager)
         
         # Initialize Parquet Storage
         parquet_storage = ParquetStorage(base_path=config.feature_service_raw_data_path)
@@ -153,12 +266,12 @@ async def startup():
         dataset_publisher = DatasetPublisher(mq_manager=mq_manager)
         await dataset_publisher.initialize()
         
-        # Initialize Dataset Builder
+        # Initialize Dataset Builder (use version from loaded config)
         dataset_builder = DatasetBuilder(
             metadata_storage=metadata_storage,
             parquet_storage=parquet_storage,
             dataset_storage_path=config.feature_service_dataset_storage_path,
-            feature_registry_version=registry_version,
+            feature_registry_version=registry_version,  # Use version from loaded config
             feature_registry_loader=feature_registry_loader,
             backfilling_service=backfilling_service,
             dataset_publisher=dataset_publisher,
