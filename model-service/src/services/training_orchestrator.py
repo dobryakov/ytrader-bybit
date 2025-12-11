@@ -508,6 +508,24 @@ class TrainingOrchestrator:
                 logger.error("Empty dataset after loading", training_id=training_id, dataset_id=str(dataset_id), trace_id=trace_id)
                 return
 
+            # Perform data quality validation if enabled
+            if settings.model_training_quality_checks_enabled:
+                quality_issues = self._validate_data_quality(
+                    features_df=features_df,
+                    labels_series=labels_series,
+                    training_id=training_id,
+                    trace_id=trace_id,
+                )
+                if quality_issues.get("critical", False):
+                    logger.error(
+                        "Data quality validation failed with critical issues",
+                        training_id=training_id,
+                        dataset_id=str(dataset_id),
+                        issues=quality_issues,
+                        trace_id=trace_id,
+                    )
+                    return
+
             # Create TrainingDataset object
             dataset = TrainingDataset(
                 dataset_id=str(dataset_id),
@@ -884,6 +902,148 @@ class TrainingOrchestrator:
                 await self._cancel_current_training()
             except Exception as e:
                 logger.error("Error while waiting for training to complete during shutdown", error=str(e), exc_info=True)
+
+    def _validate_data_quality(
+        self,
+        features_df: pd.DataFrame,
+        labels_series: pd.Series,
+        training_id: str,
+        trace_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Validate data quality before training.
+
+        Checks for:
+        - Missing values in features
+        - Infinite values in features
+        - Constant features (zero variance)
+        - Duplicate samples
+        - Data leakage (future information in features)
+
+        Args:
+            features_df: Feature DataFrame
+            labels_series: Target labels Series
+            training_id: Training ID for logging
+            trace_id: Optional trace ID for request flow tracking
+
+        Returns:
+            Dictionary with quality check results and issues
+        """
+        issues = {
+            "critical": False,
+            "warnings": [],
+            "missing_values": {},
+            "infinite_values": {},
+            "constant_features": [],
+            "duplicate_samples": 0,
+            "data_leakage": False,
+        }
+
+        # Check for missing values in features
+        missing_counts = features_df.isnull().sum()
+        missing_features = missing_counts[missing_counts > 0]
+        if len(missing_features) > 0:
+            issues["missing_values"] = {col: int(count) for col, count in missing_features.items()}
+            issues["warnings"].append(f"Found missing values in {len(missing_features)} features")
+            logger.warning(
+                "Data quality check: missing values found",
+                training_id=training_id,
+                missing_features=issues["missing_values"],
+                trace_id=trace_id,
+            )
+
+        # Check for infinite values in features
+        infinite_counts = {}
+        for col in features_df.columns:
+            infinite_count = np.isinf(features_df[col]).sum()
+            if infinite_count > 0:
+                infinite_counts[col] = int(infinite_count)
+        if infinite_counts:
+            issues["infinite_values"] = infinite_counts
+            issues["warnings"].append(f"Found infinite values in {len(infinite_counts)} features")
+            logger.warning(
+                "Data quality check: infinite values found",
+                training_id=training_id,
+                infinite_features=issues["infinite_values"],
+                trace_id=trace_id,
+            )
+
+        # Check for constant features (zero variance)
+        constant_features = []
+        for col in features_df.columns:
+            if features_df[col].nunique() <= 1:
+                constant_features.append(col)
+        if constant_features:
+            issues["constant_features"] = constant_features
+            issues["warnings"].append(f"Found {len(constant_features)} constant features (zero variance)")
+            logger.warning(
+                "Data quality check: constant features found",
+                training_id=training_id,
+                constant_features=constant_features,
+                trace_id=trace_id,
+            )
+
+        # Check for duplicate samples
+        # Create a combined DataFrame to check for exact duplicates
+        combined_df = features_df.copy()
+        combined_df["_label"] = labels_series.values
+        duplicate_count = combined_df.duplicated().sum()
+        if duplicate_count > 0:
+            issues["duplicate_samples"] = int(duplicate_count)
+            duplicate_pct = (duplicate_count / len(combined_df)) * 100
+            issues["warnings"].append(f"Found {duplicate_count} duplicate samples ({duplicate_pct:.2f}%)")
+            logger.warning(
+                "Data quality check: duplicate samples found",
+                training_id=training_id,
+                duplicate_count=duplicate_count,
+                duplicate_percentage=round(duplicate_pct, 2),
+                trace_id=trace_id,
+            )
+
+        # Check for data leakage (future information in features)
+        # This is a heuristic check: look for features that might contain future information
+        # Common patterns: features with "future", "next", "ahead" in name, or features that correlate perfectly with target
+        leakage_features = []
+        for col in features_df.columns:
+            col_lower = col.lower()
+            # Check for suspicious feature names
+            if any(keyword in col_lower for keyword in ["future", "next", "ahead", "forward", "predicted"]):
+                leakage_features.append(col)
+            # Check for perfect correlation with target (might indicate leakage)
+            elif len(features_df[col].unique()) == len(labels_series.unique()):
+                # If feature has same number of unique values as target, check correlation
+                correlation = abs(features_df[col].corr(pd.Series(labels_series.values, index=features_df.index)))
+                if correlation > 0.99:  # Very high correlation might indicate leakage
+                    leakage_features.append(col)
+
+        if leakage_features:
+            issues["data_leakage"] = True
+            issues["critical"] = True  # Data leakage is a critical issue
+            issues["warnings"].append(f"Potential data leakage detected in {len(leakage_features)} features")
+            logger.error(
+                "Data quality check: potential data leakage detected",
+                training_id=training_id,
+                leakage_features=leakage_features,
+                trace_id=trace_id,
+            )
+
+        # Log quality check summary
+        logger.info(
+            "Data quality validation completed",
+            training_id=training_id,
+            total_features=len(features_df.columns),
+            total_samples=len(features_df),
+            missing_features_count=len(issues["missing_values"]),
+            infinite_features_count=len(issues["infinite_values"]),
+            constant_features_count=len(issues["constant_features"]),
+            duplicate_samples_count=issues["duplicate_samples"],
+            data_leakage_detected=issues["data_leakage"],
+            warnings_count=len(issues["warnings"]),
+            critical_issues=issues["critical"],
+            trace_id=trace_id,
+        )
+
+        return issues
 
     def get_status(self) -> Dict[str, Any]:
         """

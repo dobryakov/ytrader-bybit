@@ -558,6 +558,34 @@ The model service uses a three-way data split (train/validation/test) for proper
 3. **Test Evaluation**: Model is evaluated on the test split (out-of-sample data). This provides the final quality assessment.
 4. **Model Activation**: Model activation decisions use **test set metrics** (not validation metrics) to ensure generalization. If test split is unavailable, the system falls back to validation metrics with a warning.
 
+### Class Balancing for Imbalanced Datasets
+
+The model service automatically handles class imbalance in training datasets using XGBoost's built-in balancing mechanisms:
+
+#### Binary Classification
+
+For binary classification tasks (2 classes), the service uses `scale_pos_weight` parameter:
+
+- **Formula**: `scale_pos_weight = negative_count / positive_count`
+- **Purpose**: Automatically adjusts the weight of positive class samples to balance the dataset
+- **Effect**: Improves recall for minority classes by giving more weight to positive samples during training
+- **Example**: If negative class has 800 samples and positive class has 200 samples, `scale_pos_weight = 800/200 = 4.0`
+
+The service logs class distribution percentages and calculated `scale_pos_weight` value for monitoring.
+
+#### Multi-Class Classification
+
+For multi-class classification tasks (3+ classes), the service uses `sample_weight` array:
+
+- **Formula**: `class_weight = total_samples / (number_of_classes * class_count)`
+- **Purpose**: Assigns higher weights to minority classes and lower weights to majority classes
+- **Effect**: Ensures that minority classes (e.g., "down" with 20.24% of samples) receive higher weights than majority classes (e.g., "flat" with 48.78% of samples)
+- **Verification**: The service verifies that minority classes receive higher weights and logs the weight ratio for monitoring
+
+**Current Use Case**: The service handles 3-class classification (flat, up, down) where class distribution may be imbalanced. The `sample_weight` array is automatically created and passed to `model.fit()` to ensure balanced learning.
+
+Both balancing methods are automatically applied when training XGBoost models. The service logs detailed information about class distribution, calculated weights, and weight ratios for observability.
+
 ### Quality Metrics Storage
 
 Quality metrics are stored separately for each dataset split:

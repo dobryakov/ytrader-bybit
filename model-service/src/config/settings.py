@@ -52,6 +52,14 @@ class Settings(BaseSettings):
     model_quality_threshold_accuracy: float = Field(default=0.75, alias="MODEL_QUALITY_THRESHOLD_ACCURACY")
     model_retraining_schedule: Optional[str] = Field(default=None, alias="MODEL_RETRAINING_SCHEDULE")
     
+    # Class Balancing and Hyperparameter Tuning Configuration
+    model_training_use_smote: bool = Field(default=False, alias="MODEL_TRAINING_USE_SMOTE")
+    model_training_class_weight_method: str = Field(default="inverse_frequency", alias="MODEL_TRAINING_CLASS_WEIGHT_METHOD")
+    model_training_hyperparameter_tuning: bool = Field(default=False, alias="MODEL_TRAINING_HYPERPARAMETER_TUNING")
+    model_training_tuning_method: str = Field(default="grid_search", alias="MODEL_TRAINING_TUNING_METHOD")
+    model_training_tuning_max_iterations: int = Field(default=50, alias="MODEL_TRAINING_TUNING_MAX_ITERATIONS")
+    model_training_quality_checks_enabled: bool = Field(default=True, alias="MODEL_TRAINING_QUALITY_CHECKS_ENABLED")
+    
     # Time-Based Retraining Configuration (for market-data-only training)
     model_retraining_interval_days: int = Field(default=7, alias="MODEL_RETRAINING_INTERVAL_DAYS")
     model_retraining_train_period_days: int = Field(default=30, alias="MODEL_RETRAINING_TRAIN_PERIOD_DAYS")
@@ -243,6 +251,34 @@ class Settings(BaseSettings):
         """Validate test period length is positive."""
         if v <= 0:
             raise ValueError("MODEL_RETRAINING_TEST_PERIOD_DAYS must be positive")
+        return v
+
+    @field_validator("model_training_class_weight_method")
+    @classmethod
+    def validate_class_weight_method(cls, v: str) -> str:
+        """Validate class weight method is one of the supported options."""
+        valid_methods = {"inverse_frequency", "balanced", "custom"}
+        v_lower = v.lower()
+        if v_lower not in valid_methods:
+            raise ValueError(f"MODEL_TRAINING_CLASS_WEIGHT_METHOD must be one of {valid_methods}, got {v}")
+        return v_lower
+
+    @field_validator("model_training_tuning_method")
+    @classmethod
+    def validate_tuning_method(cls, v: str) -> str:
+        """Validate tuning method is one of the supported options."""
+        valid_methods = {"grid_search", "bayesian"}
+        v_lower = v.lower()
+        if v_lower not in valid_methods:
+            raise ValueError(f"MODEL_TRAINING_TUNING_METHOD must be one of {valid_methods}, got {v}")
+        return v_lower
+
+    @field_validator("model_training_tuning_max_iterations")
+    @classmethod
+    def validate_tuning_max_iterations(cls, v: int) -> int:
+        """Validate tuning max iterations is positive."""
+        if v <= 0:
+            raise ValueError("MODEL_TRAINING_TUNING_MAX_ITERATIONS must be positive")
         return v
 
     @field_validator("buffer_max_recovery_events")
