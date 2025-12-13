@@ -16,6 +16,7 @@ from src.storage.parquet_storage import ParquetStorage
 from src.services.offline_engine import OfflineEngine
 from src.services.feature_registry import FeatureRegistryLoader
 from src.services.backfilling_service import BackfillingService
+from src.config import config
 
 if TYPE_CHECKING:
     from src.publishers.dataset_publisher import DatasetPublisher
@@ -454,6 +455,32 @@ class DatasetBuilder:
                 )
                 return
             
+            # Validate features quality (check for NaN/None values)
+            logger.info("validating_features_quality", dataset_id=dataset_id)
+            validation_result = await self._validate_features_quality(features_df, dataset_id)
+            if not validation_result["valid"]:
+                error_msg = validation_result["error_message"]
+                await self._metadata_storage.update_dataset(
+                    dataset_id,
+                    {
+                        "status": DatasetStatus.FAILED.value,
+                        "error_message": error_msg,
+                        "completed_at": datetime.now(timezone.utc),
+                    },
+                )
+                return
+            
+            # Update features_df if rows were filtered
+            if validation_result.get("filtered_rows", 0) > 0:
+                features_df = validation_result["filtered_features_df"]
+                logger.info(
+                    "features_quality_filtered",
+                    dataset_id=dataset_id,
+                    rows_before=validation_result["rows_before"],
+                    rows_after=len(features_df),
+                    filtered_rows=validation_result["filtered_rows"],
+                )
+            
             # Compute targets
             logger.info("computing_targets", dataset_id=dataset_id)
             targets_df = await self._compute_targets(
@@ -613,6 +640,12 @@ class DatasetBuilder:
             sample_klines = None
             
             # Check trades
+            logger.debug(
+                "checking_trades_availability",
+                symbol=symbol,
+                start_date=start_date_obj.isoformat(),
+                end_date=end_date_obj.isoformat(),
+            )
             try:
                 sample_trades = await self._parquet_storage.read_trades_range(
                     symbol, start_date_obj, end_date_obj
@@ -637,6 +670,12 @@ class DatasetBuilder:
                 sample_trades = pd.DataFrame()
             
             # Check klines
+            logger.debug(
+                "checking_klines_availability",
+                symbol=symbol,
+                start_date=start_date_obj.isoformat(),
+                end_date=end_date_obj.isoformat(),
+            )
             try:
                 sample_klines = await self._parquet_storage.read_klines_range(
                     symbol, start_date_obj, end_date_obj
@@ -1076,6 +1115,176 @@ class DatasetBuilder:
         )
         
         return pd.DataFrame(features_list)
+    
+    async def _validate_features_quality(
+        self,
+        features_df: pd.DataFrame,
+        dataset_id: str,
+    ) -> Dict[str, Any]:
+        """
+        Validate features quality and check for NaN/None values.
+        
+        Args:
+            features_df: DataFrame with computed features
+            dataset_id: Dataset ID for logging
+            
+        Returns:
+            Dict with validation results:
+                - valid: bool - whether dataset is valid
+                - error_message: str - error message if invalid
+                - filtered_features_df: pd.DataFrame - filtered DataFrame if rows were removed
+                - filtered_rows: int - number of rows filtered
+                - rows_before: int - number of rows before filtering
+                - nan_stats: dict - statistics about NaN values
+        """
+        if features_df.empty:
+            return {
+                "valid": False,
+                "error_message": "Features DataFrame is empty after validation",
+            }
+        
+        # Identify feature columns (exclude metadata columns)
+        metadata_columns = {"timestamp", "symbol"}
+        feature_columns = [col for col in features_df.columns if col not in metadata_columns]
+        
+        if not feature_columns:
+            return {
+                "valid": False,
+                "error_message": "No feature columns found in DataFrame",
+            }
+        
+        # Count NaN values per feature column
+        nan_counts_per_feature = {}
+        nan_ratios_per_feature = {}
+        total_rows = len(features_df)
+        
+        for col in feature_columns:
+            nan_count = features_df[col].isna().sum()
+            nan_ratio = nan_count / total_rows if total_rows > 0 else 0.0
+            nan_counts_per_feature[col] = int(nan_count)
+            nan_ratios_per_feature[col] = float(nan_ratio)
+        
+        # Find features with high NaN ratio
+        max_nan_ratio = config.dataset_max_feature_nan_ratio
+        high_nan_features = {
+            col: ratio
+            for col, ratio in nan_ratios_per_feature.items()
+            if ratio > max_nan_ratio
+        }
+        
+        # Count NaN values per row (across all features)
+        features_only_df = features_df[feature_columns]
+        nan_counts_per_row = features_only_df.isna().sum(axis=1)
+        nan_ratios_per_row = nan_counts_per_row / len(feature_columns)
+        
+        # Find rows with high NaN ratio
+        max_row_nan_ratio = config.dataset_max_row_nan_ratio
+        min_valid_features_ratio = config.dataset_min_valid_features_ratio
+        
+        # Filter rows: drop rows where NaN ratio is too high OR valid features ratio is too low
+        rows_to_keep = (
+            (nan_ratios_per_row <= max_row_nan_ratio) &
+            ((1.0 - nan_ratios_per_row) >= min_valid_features_ratio)
+        )
+        
+        filtered_features_df = features_df[rows_to_keep].copy()
+        filtered_rows_count = int((~rows_to_keep).sum())
+        
+        # Calculate statistics
+        total_nan_values = int(features_only_df.isna().sum().sum())
+        total_cells = len(feature_columns) * total_rows
+        overall_nan_ratio = total_nan_values / total_cells if total_cells > 0 else 0.0
+        
+        # Log statistics
+        logger.info(
+            "features_quality_check",
+            dataset_id=dataset_id,
+            total_rows=total_rows,
+            total_features=len(feature_columns),
+            total_nan_values=total_nan_values,
+            overall_nan_ratio=f"{overall_nan_ratio:.2%}",
+            features_with_high_nan=len(high_nan_features),
+            rows_filtered=filtered_rows_count,
+            rows_after_filtering=len(filtered_features_df),
+        )
+        
+        # Log features with high NaN ratio (top 10)
+        if high_nan_features:
+            sorted_high_nan = sorted(
+                high_nan_features.items(),
+                key=lambda x: x[1],
+                reverse=True
+            )[:10]
+            logger.warning(
+                "features_with_high_nan_ratio",
+                dataset_id=dataset_id,
+                max_allowed_ratio=f"{max_nan_ratio:.2%}",
+                high_nan_features=[
+                    {"feature": col, "nan_ratio": f"{ratio:.2%}", "nan_count": nan_counts_per_feature[col]}
+                    for col, ratio in sorted_high_nan
+                ],
+            )
+        
+        # Check if dataset should fail due to high NaN ratio
+        if config.dataset_fail_on_high_nan_ratio and high_nan_features:
+            error_msg = (
+                f"Dataset build failed: {len(high_nan_features)} feature(s) have NaN ratio "
+                f"above threshold ({max_nan_ratio:.2%}). "
+                f"Top problematic features: {', '.join([f'{col} ({ratio:.2%})' for col, ratio in sorted(high_nan_features.items(), key=lambda x: x[1], reverse=True)[:5]])}"
+            )
+            return {
+                "valid": False,
+                "error_message": error_msg,
+                "nan_stats": {
+                    "high_nan_features": high_nan_features,
+                    "overall_nan_ratio": overall_nan_ratio,
+                },
+            }
+        
+        # Check if too many rows were filtered
+        rows_after = len(filtered_features_df)
+        if rows_after == 0:
+            error_msg = (
+                f"Dataset build failed: All rows were filtered out due to high NaN ratio. "
+                f"Original rows: {total_rows}, filtered: {filtered_rows_count}"
+            )
+            return {
+                "valid": False,
+                "error_message": error_msg,
+                "nan_stats": {
+                    "rows_before": total_rows,
+                    "rows_after": 0,
+                    "filtered_rows": filtered_rows_count,
+                },
+            }
+        
+        # Log summary statistics
+        if rows_after < total_rows * 0.5:
+            logger.warning(
+                "features_quality_warning_high_filtering",
+                dataset_id=dataset_id,
+                rows_before=total_rows,
+                rows_after=rows_after,
+                filtered_ratio=f"{(filtered_rows_count / total_rows):.2%}",
+                warning="More than 50% of rows were filtered due to high NaN ratio",
+            )
+        
+        return {
+            "valid": True,
+            "filtered_features_df": filtered_features_df,
+            "filtered_rows": filtered_rows_count,
+            "rows_before": total_rows,
+            "rows_after": rows_after,
+            "nan_stats": {
+                "overall_nan_ratio": overall_nan_ratio,
+                "high_nan_features": high_nan_features,
+                "nan_counts_per_feature": nan_counts_per_feature,
+                "nan_ratios_per_feature": nan_ratios_per_feature,
+                "rows_filtered": filtered_rows_count,
+                "rows_before": total_rows,
+                "rows_after": rows_after,
+            },
+        }
     
     async def _compute_targets(
         self,

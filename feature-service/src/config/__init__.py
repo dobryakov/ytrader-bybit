@@ -59,6 +59,12 @@ class Config(BaseSettings):
     # Model Training Configuration
     model_classification_threshold: float = Field(default=0.005, env="MODEL_CLASSIFICATION_THRESHOLD", description="Classification threshold for target computation (default: 0.005 = 0.5%)")
     
+    # Dataset Quality Control Configuration
+    dataset_max_feature_nan_ratio: float = Field(default=0.5, env="DATASET_MAX_FEATURE_NAN_RATIO", description="Maximum ratio of NaN values per feature column (0.0-1.0, default: 0.5 = 50%)")
+    dataset_max_row_nan_ratio: float = Field(default=0.8, env="DATASET_MAX_ROW_NAN_RATIO", description="Maximum ratio of NaN values per row across all features (0.0-1.0, default: 0.8 = 80%). Rows exceeding this will be dropped.")
+    dataset_min_valid_features_ratio: float = Field(default=0.3, env="DATASET_MIN_VALID_FEATURES_RATIO", description="Minimum ratio of valid (non-NaN) features per row (0.0-1.0, default: 0.3 = 30%). Rows below this will be dropped.")
+    dataset_fail_on_high_nan_ratio: bool = Field(default=False, env="DATASET_FAIL_ON_HIGH_NAN_RATIO", description="Fail dataset build if any feature has NaN ratio above threshold (default: False, only logs warning)")
+    
     @property
     def bybit_rest_base_url(self) -> str:
         """Get Bybit REST API base URL based on environment."""

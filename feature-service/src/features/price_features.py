@@ -400,9 +400,8 @@ def compute_all_price_features(
     # Price to EMA21 ratio
     features["price_ema21_ratio"] = compute_price_ema21_ratio(rolling_windows, current_price)
     
-    # Technical indicators
-    from src.features.technical_indicators import compute_rsi_14
-    features["rsi_14"] = compute_rsi_14(rolling_windows)
+    # Note: rsi_14 and ema_21 are computed in compute_all_technical_indicators()
+    # to avoid duplication. They will be added separately.
     
     # Volume ratio
     # Get current volume from latest kline or use volume_1m

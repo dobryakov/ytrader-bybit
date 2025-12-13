@@ -44,11 +44,24 @@ class OfflineEngine:
         
         # Cache allowed feature names from Feature Registry
         self._allowed_feature_names: Optional[set] = None
-        self._update_allowed_features()
+        self._allowed_features_updated = False  # Track if we've tried to update
+        # Try to update, but don't fail if registry not loaded yet
+        try:
+            self._update_allowed_features()
+        except Exception as e:
+            logger.warning(
+                "failed_to_update_allowed_features_on_init",
+                error=str(e),
+                message="Will retry on first feature computation",
+            )
     
     def _update_allowed_features(self) -> None:
         """Update allowed feature names from Feature Registry."""
         if self._feature_registry_loader is None:
+            logger.info(
+                "feature_registry_filtering_disabled_no_loader",
+                message="Feature Registry loader is None, no filtering will be applied",
+            )
             self._allowed_feature_names = None
             return
         
@@ -56,10 +69,11 @@ class OfflineEngine:
             registry_model = self._feature_registry_loader._registry_model
             if registry_model:
                 self._allowed_feature_names = {f.name for f in registry_model.features}
-                logger.debug(
+                logger.info(
                     "feature_registry_features_loaded",
                     count=len(self._allowed_feature_names),
                     features=list(self._allowed_feature_names),
+                    version=self._feature_registry_version,
                 )
             else:
                 # Try to load config
@@ -69,16 +83,32 @@ class OfflineEngine:
                         self._allowed_feature_names = {
                             f.get("name") for f in config["features"] if f.get("name")
                         }
+                        logger.info(
+                            "feature_registry_features_loaded_from_config",
+                            count=len(self._allowed_feature_names),
+                            features=list(self._allowed_feature_names),
+                            version=self._feature_registry_version,
+                        )
+                    else:
+                        logger.warning(
+                            "feature_registry_config_empty",
+                            has_config=config is not None,
+                            has_features_key="features" in config if config else False,
+                        )
+                        self._allowed_feature_names = None
                 except Exception as e:
                     logger.warning(
                         "failed_to_load_feature_registry_for_filtering",
                         error=str(e),
+                        error_type=type(e).__name__,
                     )
                     self._allowed_feature_names = None
         except Exception as e:
             logger.warning(
                 "failed_to_update_allowed_features",
                 error=str(e),
+                error_type=type(e).__name__,
+                exc_info=True,
             )
             self._allowed_feature_names = None
     
@@ -113,6 +143,18 @@ class OfflineEngine:
             FeatureVector at the target timestamp, or None if insufficient data
         """
         try:
+            # Ensure allowed features are updated (lazy initialization)
+            if not self._allowed_features_updated or self._allowed_feature_names is None:
+                try:
+                    self._update_allowed_features()
+                    self._allowed_features_updated = True
+                except Exception as e:
+                    logger.warning(
+                        "failed_to_update_allowed_features_on_compute",
+                        error=str(e),
+                        message="Feature filtering may not work correctly",
+                    )
+            
             # Reconstruct orderbook state up to timestamp (if snapshots available)
             orderbook = None
             if not orderbook_snapshots.empty:
@@ -162,6 +204,11 @@ class OfflineEngine:
             )
             all_features.update(price_features)
             
+            # Technical indicators (EMA, RSI, etc.)
+            from src.features.technical_indicators import compute_all_technical_indicators
+            technical_indicators = compute_all_technical_indicators(rolling_windows)
+            all_features.update(technical_indicators)
+            
             # Orderflow features
             orderflow_features = compute_all_orderflow_features(rolling_windows)
             all_features.update(orderflow_features)
@@ -199,8 +246,29 @@ class OfflineEngine:
                         original_count=len(filtered_features),
                         filtered_count=len(registry_filtered_features),
                         removed_features=set(filtered_features.keys()) - set(registry_filtered_features.keys()),
+                        allowed_features=list(self._allowed_feature_names)[:20],  # First 20 for logging
                     )
                 filtered_features = registry_filtered_features
+            else:
+                logger.debug(
+                    "feature_registry_filtering_disabled",
+                    computed_features_count=len(filtered_features),
+                    computed_features=list(filtered_features.keys())[:20],  # First 20 for logging
+                )
+            
+            # Log final feature count for debugging
+            if len(filtered_features) == 0:
+                logger.error(
+                    "no_features_after_filtering",
+                    original_features_count=len(all_features),
+                    filtered_features_count=len(filtered_features),
+                    allowed_feature_names=list(self._allowed_feature_names)[:20] if self._allowed_feature_names else None,
+                    allowed_feature_names_count=len(self._allowed_feature_names) if self._allowed_feature_names else 0,
+                    computed_feature_names=list(all_features.keys())[:20],
+                    feature_registry_loader_present=self._feature_registry_loader is not None,
+                    symbol=symbol,
+                    timestamp=timestamp.isoformat(),
+                )
             
             # Create feature vector
             return FeatureVector(
@@ -365,36 +433,51 @@ class OfflineEngine:
                         windows[window_name] = window_trades.copy()
         
         # Get klines for 1-minute window
+        # Need to add ALL klines up to timestamp for lookback windows (EMA, RSI, etc.)
         if not klines.empty:
             klines_before = klines[klines["timestamp"] <= timestamp].copy()
             
             if not klines_before.empty:
-                # Use latest kline for 1-minute features
-                latest_kline = klines_before.iloc[-1]
-                kline_time = latest_kline["timestamp"]
-                if isinstance(kline_time, str):
-                    kline_time = pd.to_datetime(kline_time)
+                # Convert klines to proper format with open/high/low/close/volume
+                # This is needed for get_klines_for_window() which is used by EMA, RSI, etc.
+                kline_rows = []
+                for _, kline in klines_before.iterrows():
+                    kline_time = kline["timestamp"]
+                    if isinstance(kline_time, str):
+                        kline_time = pd.to_datetime(kline_time)
+                    elif not isinstance(kline_time, datetime):
+                        kline_time = pd.to_datetime(kline_time)
+                    
+                    # Ensure timezone-aware
+                    if isinstance(kline_time, datetime) and kline_time.tzinfo is None:
+                        kline_time = kline_time.replace(tzinfo=timezone.utc)
+                    
+                    kline_rows.append({
+                        "timestamp": kline_time,
+                        "open": float(kline.get("open", 0)),
+                        "high": float(kline.get("high", 0)),
+                        "low": float(kline.get("low", 0)),
+                        "close": float(kline.get("close", 0)),
+                        "volume": float(kline.get("volume", 0)),
+                    })
                 
-                # Add kline data to 1m window
-                kline_data = pd.DataFrame([{
-                    "timestamp": kline_time,
-                    "price": float(latest_kline.get("close", 0)),
-                    "volume": float(latest_kline.get("volume", 0)),
-                    "side": "Buy",  # Kline doesn't have side
-                }])
-                
-                # Fix FutureWarning: handle empty DataFrame before concat
-                # If windows["1m"] is empty, just assign the new data
-                # Otherwise, concat with explicit dtype preservation
-                if windows["1m"].empty:
-                    windows["1m"] = kline_data
-                else:
-                    # Use concat with sort=False to preserve column order and avoid FutureWarning
-                    windows["1m"] = pd.concat(
-                        [windows["1m"], kline_data], 
-                        ignore_index=True,
-                        sort=False
-                    )
+                if kline_rows:
+                    kline_data = pd.DataFrame(kline_rows)
+                    
+                    # Fix FutureWarning: handle empty DataFrame before concat
+                    # If windows["1m"] is empty, just assign the new data
+                    # Otherwise, concat with explicit dtype preservation
+                    if windows["1m"].empty:
+                        windows["1m"] = kline_data
+                    else:
+                        # Use concat with sort=False to preserve column order and avoid FutureWarning
+                        windows["1m"] = pd.concat(
+                            [windows["1m"], kline_data], 
+                            ignore_index=True,
+                            sort=False
+                        )
+                    # Ensure timestamps are sorted
+                    windows["1m"] = windows["1m"].sort_values("timestamp").reset_index(drop=True)
         
         return RollingWindows(
             symbol=symbol,
