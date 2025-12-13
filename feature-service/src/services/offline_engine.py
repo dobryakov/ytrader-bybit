@@ -112,6 +112,120 @@ class OfflineEngine:
             )
             self._allowed_feature_names = None
     
+    def _compute_max_lookback_minutes(self) -> int:
+        """
+        Compute maximum lookback period (in minutes) required by features in Feature Registry.
+        
+        Uses the same logic as DatasetBuilder._compute_max_lookback_minutes().
+        
+        Returns:
+            Maximum lookback period in minutes (default: 30 if registry not available)
+        """
+        # Feature lookback mapping (same as DatasetBuilder.FEATURE_LOOKBACK_MAPPING)
+        FEATURE_LOOKBACK_MAPPING = {
+            # Technical indicators
+            "ema_21": 26,  # 21 minutes + 5 minute buffer
+            "rsi_14": 19,  # 14 minutes + 5 minute buffer (requires period+1)
+            # Price features
+            "price_ema21_ratio": 26,  # Depends on ema_21
+            "volume_ratio_20": 20,  # 20 minutes lookback
+            "volatility_5m": 6,  # 5 minutes + buffer
+            "returns_5m": 6,  # 5 minutes + buffer
+            # Orderflow features (no lookback for klines, but for trades windows)
+            "signed_volume_1m": 1,  # 1 minute window
+            "signed_volume_15s": 1,  # 15 seconds
+            "signed_volume_3s": 1,  # 3 seconds
+            # Default for features with lookback_window in registry
+            "_default_buffer": 5,  # Additional buffer for safety
+        }
+        
+        max_lookback = 0
+        
+        # Try to get lookback from Feature Registry if available
+        if self._feature_registry_loader is not None:
+            try:
+                registry_model = self._feature_registry_loader._registry_model
+                if registry_model and registry_model.features:
+                    for feature in registry_model.features:
+                        feature_name = feature.name
+                        lookback_window = feature.lookback_window
+                        
+                        # Check if feature has specific mapping (includes implementation buffers)
+                        if feature_name in FEATURE_LOOKBACK_MAPPING:
+                            feature_lookback = FEATURE_LOOKBACK_MAPPING[feature_name]
+                            max_lookback = max(max_lookback, feature_lookback)
+                        else:
+                            # Parse lookback_window from registry (e.g., "21m", "5m", "0s")
+                            parsed_lookback = self._parse_lookback_window(lookback_window)
+                            if parsed_lookback is not None:
+                                # Add default buffer for safety
+                                feature_lookback = parsed_lookback + FEATURE_LOOKBACK_MAPPING.get("_default_buffer", 5)
+                                max_lookback = max(max_lookback, feature_lookback)
+                    
+                    logger.debug(
+                        "computed_max_lookback_from_registry",
+                        max_lookback_minutes=max_lookback,
+                        registry_version=registry_model.version if registry_model else None,
+                    )
+            except Exception as e:
+                logger.warning(
+                    "failed_to_compute_lookback_from_registry",
+                    error=str(e),
+                    fallback="using_default_30_minutes",
+                )
+        
+        # Use default if no registry or computation failed, or if computed value is too small
+        # Minimum required lookback is 26 minutes (for ema_21)
+        # If computed value is less than minimum, use default to ensure all features can compute
+        if max_lookback == 0 or max_lookback < 26:
+            default_lookback = 30  # Default fallback (covers ema_21: 26 min + buffer)
+            if max_lookback > 0 and max_lookback < 26:
+                logger.warning(
+                    "computed_lookback_too_small",
+                    computed_lookback=max_lookback,
+                    minimum_required=26,
+                    using_default=default_lookback,
+                )
+            else:
+                logger.debug(
+                    "using_default_lookback",
+                    max_lookback_minutes=default_lookback,
+                )
+            max_lookback = default_lookback
+        
+        return max_lookback
+    
+    def _parse_lookback_window(self, lookback_window: str) -> Optional[int]:
+        """
+        Parse lookback_window string to minutes.
+        
+        Args:
+            lookback_window: Lookback window string (e.g., "21m", "5m", "0s", "1h")
+            
+        Returns:
+            Lookback period in minutes, or None if parsing fails
+        """
+        if not lookback_window:
+            return None
+        
+        try:
+            unit = lookback_window[-1]
+            value = int(lookback_window[:-1])
+            
+            # Convert to minutes
+            if unit == "s":
+                return value // 60  # Convert seconds to minutes
+            elif unit == "m":
+                return value
+            elif unit == "h":
+                return value * 60
+            elif unit == "d":
+                return value * 24 * 60
+            else:
+                return None
+        except (ValueError, IndexError):
+            return None
+    
     async def compute_features_at_timestamp(
         self,
         symbol: str,
@@ -726,7 +840,9 @@ class OfflineEngine:
         rolling_windows.last_update = timestamp
         
         # Trim old data (automatic via add_trade/add_kline, but ensure it's done)
-        rolling_windows.trim_old_data()
+        # Use computed max_lookback from Feature Registry to ensure all features have sufficient data
+        max_lookback_minutes = self._compute_max_lookback_minutes()
+        rolling_windows.trim_old_data(max_lookback_minutes_1m=max_lookback_minutes)
         
         return rolling_windows
     

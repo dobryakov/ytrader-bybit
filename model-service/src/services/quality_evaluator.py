@@ -17,6 +17,7 @@ from sklearn.metrics import (
     mean_squared_error,
     mean_absolute_error,
     r2_score,
+    roc_curve,
 )
 
 from ..config.logging import get_logger
@@ -306,5 +307,113 @@ class QualityEvaluator:
 
 
 # Global quality evaluator instance
+    def calibrate_prediction_thresholds(
+        self,
+        y_true: pd.Series,
+        y_pred_proba: np.ndarray,
+        target_recall: float = 0.5,
+    ) -> Dict[int, float]:
+        """
+        Calibrate prediction thresholds for each class to improve recall for minority classes.
+        
+        Uses ROC curve to find optimal thresholds that achieve target recall for each class.
+        Lower thresholds improve recall but may decrease precision.
+        
+        Args:
+            y_true: True labels
+            y_pred_proba: Predicted probabilities (2D array: n_samples, n_classes)
+            target_recall: Target recall to achieve (default: 0.5)
+            
+        Returns:
+            Dictionary mapping class index to optimal threshold
+        """
+        if y_pred_proba.ndim != 2:
+            logger.warning(
+                "Cannot calibrate thresholds: probabilities must be 2D array",
+                shape=y_pred_proba.shape if hasattr(y_pred_proba, 'shape') else None,
+            )
+            return {}
+        
+        unique_labels = sorted(y_true.unique().tolist())
+        num_classes = len(unique_labels)
+        
+        if num_classes != y_pred_proba.shape[1]:
+            logger.warning(
+                "Cannot calibrate thresholds: number of classes doesn't match probability columns",
+                num_classes=num_classes,
+                prob_columns=y_pred_proba.shape[1],
+            )
+            return {}
+        
+        thresholds = {}
+        
+        # For each class, find threshold that achieves target recall
+        for class_idx, class_label in enumerate(unique_labels):
+            # Create binary labels: 1 for this class, 0 for others
+            y_binary = (y_true == class_label).astype(int)
+            
+            # Get probabilities for this class
+            class_probs = y_pred_proba[:, class_idx]
+            
+            # Calculate ROC curve
+            try:
+                fpr, tpr, threshold_candidates = roc_curve(y_binary, class_probs)
+                
+                # Find threshold that achieves target recall (TPR)
+                # Find closest threshold to target recall
+                recall_diff = np.abs(tpr - target_recall)
+                best_idx = np.argmin(recall_diff)
+                
+                if best_idx < len(threshold_candidates):
+                    optimal_threshold = float(threshold_candidates[best_idx])
+                    actual_recall = float(tpr[best_idx])
+                    
+                    thresholds[class_label] = optimal_threshold
+                    
+                    logger.info(
+                        "Threshold calibrated for class",
+                        class_label=class_label,
+                        class_idx=class_idx,
+                        optimal_threshold=optimal_threshold,
+                        target_recall=target_recall,
+                        actual_recall=actual_recall,
+                    )
+                else:
+                    # Fallback: use threshold that maximizes TPR - FPR (Youden's J statistic)
+                    youden_j = tpr - fpr
+                    best_idx = np.argmax(youden_j)
+                    optimal_threshold = float(threshold_candidates[best_idx])
+                    thresholds[class_label] = optimal_threshold
+                    
+                    logger.info(
+                        "Threshold calibrated using Youden's J statistic",
+                        class_label=class_label,
+                        class_idx=class_idx,
+                        optimal_threshold=optimal_threshold,
+                        recall=float(tpr[best_idx]),
+                        precision=float(1 - fpr[best_idx]) if best_idx < len(fpr) else None,
+                    )
+            except Exception as e:
+                logger.warning(
+                    "Failed to calibrate threshold for class",
+                    class_label=class_label,
+                    class_idx=class_idx,
+                    error=str(e),
+                )
+                # Use default threshold based on class distribution
+                class_freq = (y_true == class_label).sum() / len(y_true)
+                # Lower threshold for minority classes
+                default_threshold = max(0.1, min(0.5, class_freq * 2))
+                thresholds[class_label] = default_threshold
+                logger.info(
+                    "Using default threshold for class",
+                    class_label=class_label,
+                    default_threshold=default_threshold,
+                    class_frequency=class_freq,
+                )
+        
+        return thresholds
+
+
 quality_evaluator = QualityEvaluator()
 

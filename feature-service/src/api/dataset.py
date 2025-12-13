@@ -89,6 +89,19 @@ async def build_dataset(
         raise HTTPException(status_code=503, detail="Dataset builder not initialized")
     
     try:
+        # Log received request to debug validation periods
+        logger.info(
+            "Dataset build request received",
+            symbol=request.symbol,
+            split_strategy=request.split_strategy.value,
+            train_period_start=request.train_period_start.isoformat() if request.train_period_start else None,
+            train_period_end=request.train_period_end.isoformat() if request.train_period_end else None,
+            validation_period_start=request.validation_period_start.isoformat() if request.validation_period_start else None,
+            validation_period_end=request.validation_period_end.isoformat() if request.validation_period_end else None,
+            test_period_start=request.test_period_start.isoformat() if request.test_period_start else None,
+            test_period_end=request.test_period_end.isoformat() if request.test_period_end else None,
+        )
+        
         dataset_id = await _dataset_builder.build_dataset(
             symbol=request.symbol,
             split_strategy=request.split_strategy,

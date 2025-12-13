@@ -85,8 +85,10 @@ class TrainingOrchestrator:
 
         # Build dataset request
         # Format datetime as ISO string with Z suffix for UTC
-        def format_dt(dt: datetime) -> str:
+        def format_dt(dt: Optional[datetime]) -> Optional[str]:
             """Format datetime as ISO string with Z suffix."""
+            if dt is None:
+                return None
             if dt.tzinfo is None:
                 # If naive, assume UTC
                 return dt.replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
@@ -110,6 +112,20 @@ class TrainingOrchestrator:
             "feature_registry_version": "latest",  # Use latest feature registry version
             "output_format": "parquet",
         }
+
+        # Log request to debug validation periods
+        logger.info(
+            "Dataset build request prepared",
+            symbol=symbol,
+            strategy_id=strategy_id,
+            train_period_start=request["train_period_start"],
+            train_period_end=request["train_period_end"],
+            validation_period_start=request["validation_period_start"],
+            validation_period_end=request["validation_period_end"],
+            test_period_start=request["test_period_start"],
+            test_period_end=request["test_period_end"],
+            periods_raw=periods,
+        )
 
         # Request dataset build from Feature Service
         trace_id = str(uuid4())

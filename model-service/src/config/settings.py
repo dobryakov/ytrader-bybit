@@ -88,6 +88,32 @@ class Settings(BaseSettings):
     
     # Classification Threshold Configuration
     model_classification_threshold: float = Field(default=0.005, alias="MODEL_CLASSIFICATION_THRESHOLD")
+    
+    # Prediction Threshold Configuration (for improving recall of minority classes)
+    # These thresholds are applied to class probabilities instead of using argmax
+    # If probability for a class exceeds its threshold, that class is predicted
+    # If multiple classes exceed thresholds, the one with highest probability is chosen
+    # If no class exceeds threshold, falls back to argmax
+    model_prediction_threshold_class_0: Optional[float] = Field(
+        default=None, 
+        alias="MODEL_PREDICTION_THRESHOLD_CLASS_0",
+        description="Prediction threshold for class 0 (flat). If None, uses argmax. Range: 0.0-1.0"
+    )
+    model_prediction_threshold_class_1: Optional[float] = Field(
+        default=None,
+        alias="MODEL_PREDICTION_THRESHOLD_CLASS_1", 
+        description="Prediction threshold for class 1 (up). If None, uses argmax. Lower threshold improves recall. Range: 0.0-1.0"
+    )
+    model_prediction_threshold_class_neg1: Optional[float] = Field(
+        default=None,
+        alias="MODEL_PREDICTION_THRESHOLD_CLASS_NEG1",
+        description="Prediction threshold for class -1 (down). If None, uses argmax. Lower threshold improves recall. Range: 0.0-1.0"
+    )
+    model_prediction_use_threshold_calibration: bool = Field(
+        default=False,
+        alias="MODEL_PREDICTION_USE_THRESHOLD_CALIBRATION",
+        description="If True, use threshold-based prediction instead of argmax for classification"
+    )
 
     # Training Buffer Persistence Configuration
     buffer_persistence_enabled: bool = Field(default=True, alias="BUFFER_PERSISTENCE_ENABLED")
@@ -228,6 +254,14 @@ class Settings(BaseSettings):
         """Validate accuracy threshold is between 0 and 1."""
         if not 0.0 <= v <= 1.0:
             raise ValueError("Accuracy threshold must be between 0.0 and 1.0")
+        return v
+    
+    @field_validator("model_prediction_threshold_class_0", "model_prediction_threshold_class_1", "model_prediction_threshold_class_neg1")
+    @classmethod
+    def validate_prediction_threshold(cls, v: Optional[float]) -> Optional[float]:
+        """Validate prediction threshold is between 0 and 1 if provided."""
+        if v is not None and not 0.0 <= v <= 1.0:
+            raise ValueError("Prediction threshold must be between 0.0 and 1.0")
         return v
 
     @field_validator("model_training_min_dataset_size")

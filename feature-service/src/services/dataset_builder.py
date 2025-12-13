@@ -671,6 +671,23 @@ class DatasetBuilder:
             total_val = len(splits["validation"])
             total_test = len(splits["test"])
             
+            # Validate that all splits have records
+            if total_train == 0:
+                raise ValueError(
+                    f"Train split is empty (0 records). Dataset cannot be used for training. "
+                    f"Check train_period_start={dataset.get('train_period_start')} and train_period_end={dataset.get('train_period_end')}"
+                )
+            if total_val == 0:
+                raise ValueError(
+                    f"Validation split is empty (0 records). Dataset cannot be used for training. "
+                    f"Check validation_period_start={dataset.get('validation_period_start')} and validation_period_end={dataset.get('validation_period_end')}"
+                )
+            if total_test == 0:
+                raise ValueError(
+                    f"Test split is empty (0 records). Dataset cannot be used for training. "
+                    f"Check test_period_start={dataset.get('test_period_start')} and test_period_end={dataset.get('test_period_end')}"
+                )
+            
             await self._metadata_storage.update_dataset(
                 dataset_id,
                 {
@@ -1927,14 +1944,14 @@ class DatasetBuilder:
                 train_period_end = train_period_end.astimezone(timezone.utc)
         
         validation_period_start = dataset["validation_period_start"]
-        if isinstance(validation_period_start, datetime):
+        if validation_period_start is not None and isinstance(validation_period_start, datetime):
             if validation_period_start.tzinfo is None:
                 validation_period_start = validation_period_start.replace(tzinfo=timezone.utc)
             else:
                 validation_period_start = validation_period_start.astimezone(timezone.utc)
         
         validation_period_end = dataset["validation_period_end"]
-        if isinstance(validation_period_end, datetime):
+        if validation_period_end is not None and isinstance(validation_period_end, datetime):
             if validation_period_end.tzinfo is None:
                 validation_period_end = validation_period_end.replace(tzinfo=timezone.utc)
             else:
@@ -1963,10 +1980,21 @@ class DatasetBuilder:
             (merged["timestamp"] <= train_period_end)
         ]
         
-        validation = merged[
-            (merged["timestamp"] >= validation_period_start) &
-            (merged["timestamp"] <= validation_period_end)
-        ]
+        # Handle validation split - only create if both start and end are provided
+        if validation_period_start is not None and validation_period_end is not None:
+            validation = merged[
+                (merged["timestamp"] >= validation_period_start) &
+                (merged["timestamp"] <= validation_period_end)
+            ]
+        else:
+            logger.warning(
+                "validation_period_not_provided",
+                dataset_id=dataset.get("id"),
+                validation_period_start=validation_period_start,
+                validation_period_end=validation_period_end,
+                note="Validation split will be empty because validation periods were not provided in dataset request",
+            )
+            validation = pd.DataFrame()
         
         test = merged[
             (merged["timestamp"] >= test_period_start) &
@@ -2323,6 +2351,23 @@ class DatasetBuilder:
         total_train = len(new_splits["train"])
         total_val = len(new_splits["validation"])
         total_test = len(new_splits["test"])
+        
+        # Validate that all splits have records
+        if total_train == 0:
+            raise ValueError(
+                f"Train split is empty (0 records) after resplit. Dataset cannot be used for training. "
+                f"Check train_period_start={new_periods.get('train_period_start')} and train_period_end={new_periods.get('train_period_end')}"
+            )
+        if total_val == 0:
+            raise ValueError(
+                f"Validation split is empty (0 records) after resplit. Dataset cannot be used for training. "
+                f"Check validation_period_start={new_periods.get('validation_period_start')} and validation_period_end={new_periods.get('validation_period_end')}"
+            )
+        if total_test == 0:
+            raise ValueError(
+                f"Test split is empty (0 records) after resplit. Dataset cannot be used for training. "
+                f"Check test_period_start={new_periods.get('test_period_start')} and test_period_end={new_periods.get('test_period_end')}"
+            )
         
         update_data = {
             "train_records": total_train,

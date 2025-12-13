@@ -155,8 +155,21 @@ class RollingWindows(BaseModel):
             self.last_update = datetime.now(timezone.utc)
         self.trim_old_data()
     
-    def trim_old_data(self, window_seconds: Optional[int] = None) -> None:
-        """Trim old data outside window boundaries."""
+    def trim_old_data(
+        self, 
+        window_seconds: Optional[int] = None,
+        max_lookback_minutes_1m: Optional[int] = None,
+    ) -> None:
+        """
+        Trim old data outside window boundaries.
+        
+        Args:
+            window_seconds: Override window size in seconds for all intervals
+            max_lookback_minutes_1m: Maximum lookback in minutes for "1m" window.
+                If None, uses default 30 minutes. Should be computed from Feature Registry
+                using DatasetBuilder._compute_max_lookback_minutes() to ensure all features
+                have sufficient historical data after trimming.
+        """
         from datetime import timezone
         # Ensure now is always a timezone-aware datetime object
         now = self.last_update
@@ -180,11 +193,22 @@ class RollingWindows(BaseModel):
             now = now.replace(tzinfo=timezone.utc)
             self.last_update = now
         
+        # Window sizes for trimming old data
+        # For "1m" window, use max_lookback_minutes_1m if provided, otherwise default to 30 minutes
+        # This ensures all features have sufficient historical data after trimming
+        # Default 30 minutes covers maximum feature lookback (26 min for ema_21) + buffer
+        default_1m_window_seconds = 1800  # 30 minutes default
+        if max_lookback_minutes_1m is not None:
+            # Add 5 minute buffer to max_lookback for safety
+            window_size_1m_seconds = (max_lookback_minutes_1m + 5) * 60
+        else:
+            window_size_1m_seconds = default_1m_window_seconds
+        
         window_sizes = {
             "1s": 1,
             "3s": 3,
             "15s": 15,
-            "1m": 60,
+            "1m": window_size_1m_seconds,
         }
         
         for interval, df in self.windows.items():

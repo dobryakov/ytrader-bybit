@@ -409,7 +409,13 @@ class ModelInference:
             if hasattr(model, "predict_proba"):
                 # Classification model
                 probabilities = model.predict_proba(features)[0]
-                prediction = model.predict(features)[0]
+                
+                # Use threshold-based prediction if enabled and thresholds are configured
+                if settings.model_prediction_use_threshold_calibration:
+                    prediction = self._predict_with_thresholds(probabilities)
+                else:
+                    # Default: use argmax
+                    prediction = model.predict(features)[0]
 
                 # Calculate confidence as max probability
                 confidence = float(np.max(probabilities))
@@ -452,6 +458,78 @@ class ModelInference:
         except Exception as e:
             logger.error("Model prediction failed", error=str(e), exc_info=True)
             raise ModelInferenceError(f"Model prediction failed: {e}") from e
+    
+    def _predict_with_thresholds(self, probabilities: np.ndarray) -> int:
+        """
+        Predict class using threshold-based approach instead of argmax.
+        
+        This improves recall for minority classes by using lower thresholds.
+        If a class probability exceeds its threshold, that class is predicted.
+        If multiple classes exceed thresholds, the one with highest probability is chosen.
+        If no class exceeds threshold, falls back to argmax.
+        
+        Args:
+            probabilities: Array of class probabilities [prob_class_0, prob_class_1, ...]
+            
+        Returns:
+            Predicted class index
+        """
+        thresholds = {
+            0: settings.model_prediction_threshold_class_0,
+            1: settings.model_prediction_threshold_class_1,
+            -1: settings.model_prediction_threshold_class_neg1,
+        }
+        
+        # Determine class mapping based on number of classes
+        # For 3 classes: [0, 1, 2] might map to [-1, 0, 1] or [0, 1, 2]
+        num_classes = len(probabilities)
+        
+        # If we have 3 classes, assume mapping: [0, 1, 2] -> [-1, 0, 1] or [0, 1, 2]
+        # We'll check thresholds for both mappings
+        candidate_classes = []
+        
+        if num_classes == 3:
+            # Try mapping [0, 1, 2] -> [-1, 0, 1]
+            for model_class_idx, original_class in enumerate([-1, 0, 1]):
+                threshold = thresholds.get(original_class)
+                if threshold is not None and probabilities[model_class_idx] >= threshold:
+                    candidate_classes.append((model_class_idx, probabilities[model_class_idx]))
+            
+            # If no candidates with [-1, 0, 1] mapping, try [0, 1, 2] mapping
+            if not candidate_classes:
+                for model_class_idx in range(num_classes):
+                    threshold = thresholds.get(model_class_idx)
+                    if threshold is not None and probabilities[model_class_idx] >= threshold:
+                        candidate_classes.append((model_class_idx, probabilities[model_class_idx]))
+        else:
+            # For other numbers of classes, use direct mapping
+            for model_class_idx in range(num_classes):
+                threshold = thresholds.get(model_class_idx)
+                if threshold is not None and probabilities[model_class_idx] >= threshold:
+                    candidate_classes.append((model_class_idx, probabilities[model_class_idx]))
+        
+        # If we have candidates, choose the one with highest probability
+        if candidate_classes:
+            # Sort by probability descending
+            candidate_classes.sort(key=lambda x: x[1], reverse=True)
+            predicted_class = candidate_classes[0][0]
+            logger.debug(
+                "Threshold-based prediction",
+                predicted_class=predicted_class,
+                probability=float(candidate_classes[0][1]),
+                candidates=[(c, float(p)) for c, p in candidate_classes],
+            )
+            return predicted_class
+        
+        # Fallback to argmax if no class exceeds threshold
+        predicted_class = int(np.argmax(probabilities))
+        logger.debug(
+            "Threshold-based prediction: no class exceeded threshold, using argmax",
+            predicted_class=predicted_class,
+            probabilities=probabilities.tolist(),
+            thresholds=thresholds,
+        )
+        return predicted_class
 
 
 # Global model inference instance
