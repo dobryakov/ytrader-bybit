@@ -165,19 +165,29 @@ class BackfillingService:
                     last_datetime=datetime.fromtimestamp(last_timestamp_in_response / 1000, tz=timezone.utc).isoformat() if last_timestamp_in_response else None,
                 )
                 
-                # Convert to internal format
+                # Convert to internal format using unified normalizer
+                from src.storage.data_normalizer import normalize_kline_data
+                
                 for kline in klines:
                     # Bybit format: [startTime, open, high, low, close, volume, turnover]
-                    # Internal format: timestamp, open, high, low, close, volume
-                    internal_kline = {
-                        "timestamp": datetime.fromtimestamp(int(kline[0]) / 1000, tz=timezone.utc),
-                        "open": float(kline[1]),
-                        "high": float(kline[2]),
-                        "low": float(kline[3]),
-                        "close": float(kline[4]),
-                        "volume": float(kline[5]),
+                    # Convert to dict format for normalizer
+                    kline_dict = {
+                        "start": int(kline[0]),
+                        "open": kline[1],
+                        "high": kline[2],
+                        "low": kline[3],
+                        "close": kline[4],
+                        "volume": kline[5],
                         "symbol": symbol,
+                        "interval": str(interval),  # Add interval from function parameter
                     }
+                    # Normalize to unified format (adds interval, internal_timestamp, exchange_timestamp)
+                    internal_kline = normalize_kline_data(
+                        kline_dict,
+                        source="backfilling",
+                        internal_timestamp=None,  # Backfilling doesn't have internal timestamp
+                        exchange_timestamp=None,  # Will use timestamp from data
+                    )
                     all_klines.append(internal_kline)
                 
                 # Check for duplicates in current response
@@ -360,9 +370,9 @@ class BackfillingService:
                 )
                 return all_trades
             
-            # Convert to internal format
-            # Bybit format: {"execId", "symbol", "price", "size", "side", "time", "isBlockTrade"}
-            # Internal format: timestamp, price, quantity, side, symbol
+            # Convert to internal format using unified normalizer
+            from src.storage.data_normalizer import normalize_trade_data
+            
             for trade in trades:
                 trade_timestamp_ms = int(trade["time"])
                 trade_datetime = datetime.fromtimestamp(trade_timestamp_ms / 1000, tz=timezone.utc)
@@ -371,13 +381,22 @@ class BackfillingService:
                 if trade_datetime.date() < start_date or trade_datetime.date() > end_date:
                     continue
                 
-                internal_trade = {
-                    "timestamp": trade_datetime,
-                    "price": float(trade["price"]),
-                    "quantity": float(trade["size"]),
+                # Convert to dict format for normalizer
+                trade_dict = {
+                    "timestamp": trade_timestamp_ms,
+                    "price": trade["price"],
+                    "quantity": trade["size"],
                     "side": trade["side"],  # "Buy" or "Sell"
                     "symbol": symbol,
                 }
+                
+                # Normalize to unified format (adds internal_timestamp, exchange_timestamp)
+                internal_trade = normalize_trade_data(
+                    trade_dict,
+                    source="backfilling",
+                    internal_timestamp=None,  # Backfilling doesn't have internal timestamp
+                    exchange_timestamp=None,  # Will use timestamp from data
+                )
                 all_trades.append(internal_trade)
             
             logger.info(
@@ -642,18 +661,25 @@ class BackfillingService:
                     # No more data available, stop pagination
                     break
                 
-                # Convert to internal format
-                # Bybit format: [{"symbol", "fundingRate", "fundingRateTimestamp"}]
-                # Internal format: timestamp, funding_rate, symbol
+                # Convert to internal format using unified normalizer
+                from src.storage.data_normalizer import normalize_funding_data
+                
                 for funding in funding_list:
-                    funding_timestamp_ms = int(funding["fundingRateTimestamp"])
-                    funding_datetime = datetime.fromtimestamp(funding_timestamp_ms / 1000, tz=timezone.utc)
-                    
-                    internal_funding = {
-                        "timestamp": funding_datetime,
-                        "funding_rate": float(funding["fundingRate"]),
+                    # Convert to dict format for normalizer
+                    funding_dict = {
+                        "fundingRateTimestamp": int(funding["fundingRateTimestamp"]),
+                        "fundingRate": funding["fundingRate"],
                         "symbol": symbol,
+                        "nextFundingTime": funding.get("nextFundingTime"),  # May not be present
                     }
+                    
+                    # Normalize to unified format (adds internal_timestamp, exchange_timestamp)
+                    internal_funding = normalize_funding_data(
+                        funding_dict,
+                        source="backfilling",
+                        internal_timestamp=None,  # Backfilling doesn't have internal timestamp
+                        exchange_timestamp=None,  # Will use timestamp from data
+                    )
                     all_funding.append(internal_funding)
                 
                 # Check if we got fewer records than requested (last page)

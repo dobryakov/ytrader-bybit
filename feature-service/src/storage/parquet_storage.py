@@ -202,6 +202,30 @@ class ParquetStorage:
                 try:
                     existing_table = pq.read_table(file_path)
                     existing_df = existing_table.to_pandas()
+                    
+                    # Unify schemas: add missing columns with NaN values
+                    # This ensures smooth merging of data from WebSocket and backfilling
+                    all_columns = set(existing_df.columns) | set(data.columns)
+                    
+                    # Add missing columns to existing_df
+                    for col in all_columns:
+                        if col not in existing_df.columns:
+                            existing_df[col] = None
+                    
+                    # Add missing columns to new data
+                    for col in all_columns:
+                        if col not in data.columns:
+                            data[col] = None
+                    
+                    # Ensure column order is consistent (sort alphabetically, but keep timestamp first if present)
+                    if 'timestamp' in all_columns:
+                        column_order = ['timestamp'] + sorted([c for c in all_columns if c != 'timestamp'])
+                    else:
+                        column_order = sorted(all_columns)
+                    
+                    existing_df = existing_df[column_order]
+                    data = data[column_order]
+                    
                     # Combine data
                     combined_df = pd.concat([existing_df, data], ignore_index=True)
                     

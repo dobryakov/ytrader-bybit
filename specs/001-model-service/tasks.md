@@ -718,3 +718,27 @@ Note: Take profit threshold uses MODEL_SERVICE_TAKE_PROFIT_PCT (unified with int
 - Fallback to validation metrics if test split is unavailable (with warning)
 - SC-005 specification updated to reference test set instead of validation set
 - Documentation updated to reflect test set evaluation workflow
+
+---
+
+## Phase 12: Dataset Period Calculation Fix (Priority: P2)
+
+**Goal**: Fix dataset period calculation to ensure guaranteed 24-hour coverage by shifting reference time one day earlier.
+
+**Context**: Current implementation calculates periods ending at yesterday's end of day (23:59:59), which is correct for excluding incomplete current day data. However, this creates a gap until the end of the current day. By shifting the reference time to 2 days ago instead of 1 day ago, we ensure that the period always includes complete 24-hour days with guaranteed data availability.
+
+**Problem**: When calculating periods, if today is December 11:
+- Current: `reference_time = December 10` (yesterday), `test_period_end = December 10 23:59:59`
+- This creates a gap until the end of December 11
+- Data for December 10 may not be fully collected yet if calculation happens early in the day
+
+**Solution**: Shift reference time calculation to use 2 days ago instead of 1 day ago:
+- New: `reference_time = December 9` (2 days ago), `test_period_end = December 9 23:59:59`
+- This guarantees that all data for the period is fully collected
+- Period will always end at the start of yesterday, ensuring complete 24-hour coverage
+
+**Independent Test**: Can be fully tested by verifying that calculated periods end 2 days ago instead of 1 day ago, and that all periods (train/validation/test) are correctly shifted backward by 1 day.
+
+### Implementation for Dataset Period Calculation Fix
+
+- [ ] T190 [US2] [Bugfix] Update dataset period calculation to use 2 days ago as reference time in model-service/src/services/training_orchestrator.py (change `reference_time = datetime.now(timezone.utc) - timedelta(days=1)` to `reference_time = datetime.now(timezone.utc) - timedelta(days=2)` in `_calculate_dataset_periods` method, update docstring to reflect that reference_time is now 2 days ago to ensure guaranteed 24-hour coverage, ensure all period calculations (train/validation/test) are correctly shifted backward by 1 day, add structured logging to show calculated reference_date and explain why 2 days ago is used for guaranteed data completeness, verify that test_period_end, validation_period_end, and train_period_end are all correctly calculated from the new reference_date)

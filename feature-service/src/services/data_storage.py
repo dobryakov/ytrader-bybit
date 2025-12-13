@@ -276,7 +276,78 @@ class DataStorageService:
                 
                 await self.store_trade(normalized_trade_event)
             elif event_type == "kline":
-                await self.store_kline(event)
+                # Normalize kline event format (ws-gateway sends data in payload)
+                payload = event.get("payload", {})
+                
+                # Log payload structure for debugging
+                logger.debug(
+                    "kline_event_processing",
+                    symbol=symbol,
+                    payload_type=type(payload).__name__,
+                    payload_keys=list(payload.keys()) if isinstance(payload, dict) else None,
+                    payload_preview=str(payload)[:200] if payload else None,
+                )
+                
+                # ws-gateway sends kline data directly in payload
+                # Bybit format: {"start": timestamp, "open": price, "high": price, "low": price, "close": price, "volume": volume, "interval": "1", ...}
+                # Or array format: [startTime, open, high, low, close, volume, turnover]
+                kline_data = payload if isinstance(payload, dict) else {}
+                
+                # If payload is a list (array format from Bybit)
+                if isinstance(payload, list) and len(payload) >= 6:
+                    # Bybit array format: [startTime, open, high, low, close, volume, turnover]
+                    kline_data = {
+                        "start": payload[0],
+                        "open": payload[1],
+                        "high": payload[2],
+                        "low": payload[3],
+                        "close": payload[4],
+                        "volume": payload[5],
+                    }
+                
+                # Extract and normalize kline fields
+                # Bybit format: "start" = timestamp (ms), "open"/"high"/"low"/"close" = prices, "volume" = volume, "interval" = "1"
+                normalized_kline_event = {
+                    **event,
+                    "event_type": "kline",
+                    "symbol": kline_data.get("s") or kline_data.get("symbol") or symbol,
+                    "interval": kline_data.get("interval") or event.get("interval", "1m"),
+                    "open": kline_data.get("open"),
+                    "high": kline_data.get("high"),
+                    "low": kline_data.get("low"),
+                    "close": kline_data.get("close"),
+                    "volume": kline_data.get("volume"),
+                    "timestamp": kline_data.get("start") or kline_data.get("timestamp") or event.get("timestamp") or event.get("exchange_timestamp"),
+                }
+                
+                # Convert prices and volume to float if they are strings
+                for field in ["open", "high", "low", "close", "volume"]:
+                    if normalized_kline_event.get(field):
+                        try:
+                            normalized_kline_event[field] = float(normalized_kline_event[field])
+                        except (ValueError, TypeError):
+                            logger.warning(
+                                "kline_field_conversion_failed",
+                                field=field,
+                                value=normalized_kline_event.get(field),
+                                symbol=symbol,
+                            )
+                            normalized_kline_event[field] = 0.0
+                    else:
+                        normalized_kline_event[field] = 0.0
+                
+                # Log normalized event for debugging
+                logger.debug(
+                    "kline_event_normalized",
+                    symbol=normalized_kline_event.get("symbol"),
+                    open=normalized_kline_event.get("open"),
+                    high=normalized_kline_event.get("high"),
+                    low=normalized_kline_event.get("low"),
+                    close=normalized_kline_event.get("close"),
+                    volume=normalized_kline_event.get("volume"),
+                )
+                
+                await self.store_kline(normalized_kline_event)
             elif event_type == "ticker":
                 await self.store_ticker(event)
             elif event_type == "funding_rate":
@@ -411,8 +482,10 @@ class DataStorageService:
         Store trade event.
         
         Args:
-            event: Trade event dictionary
+            event: Trade event dictionary (already normalized in store_market_data_event)
         """
+        from src.storage.data_normalizer import normalize_trade_data
+        
         symbol = event.get("symbol")
         if not symbol:
             logger.warning("trade_missing_symbol", event_data=str(event))
@@ -427,17 +500,19 @@ class DataStorageService:
         
         date_str = timestamp.date().strftime("%Y-%m-%d")
         
+        # Normalize to unified format
+        internal_timestamp = self._parse_timestamp(event.get("internal_timestamp", timestamp_str)) if event.get("internal_timestamp") else None
+        exchange_timestamp = self._parse_timestamp(event.get("exchange_timestamp", timestamp_str)) if event.get("exchange_timestamp") else None
+        
+        normalized_trade = normalize_trade_data(
+            event,
+            source="websocket",
+            internal_timestamp=internal_timestamp,
+            exchange_timestamp=exchange_timestamp,
+        )
+        
         # Convert to DataFrame
-        df = pd.DataFrame([{
-            "timestamp": timestamp,
-            "symbol": symbol,
-            "price": event.get("price", 0.0),
-            "quantity": event.get("quantity", 0.0),
-            "side": event.get("side", "Buy"),
-            "trade_time": self._parse_timestamp(event.get("trade_time", timestamp_str)),
-            "internal_timestamp": self._parse_timestamp(event.get("internal_timestamp", timestamp_str)),
-            "exchange_timestamp": self._parse_timestamp(event.get("exchange_timestamp", timestamp_str)),
-        }])
+        df = pd.DataFrame([normalized_trade])
         
         try:
             await self._parquet_storage.write_trades(symbol, date_str, df)
@@ -461,8 +536,10 @@ class DataStorageService:
         Store kline/candlestick event.
         
         Args:
-            event: Kline event dictionary
+            event: Kline event dictionary (already normalized in store_market_data_event)
         """
+        from src.storage.data_normalizer import normalize_kline_data
+        
         symbol = event.get("symbol")
         timestamp_str = event.get("timestamp") or event.get("internal_timestamp")
         
@@ -473,19 +550,19 @@ class DataStorageService:
         
         date_str = timestamp.date().strftime("%Y-%m-%d")
         
+        # Normalize to unified format
+        internal_timestamp = self._parse_timestamp(event.get("internal_timestamp", timestamp_str)) if event.get("internal_timestamp") else None
+        exchange_timestamp = self._parse_timestamp(event.get("exchange_timestamp", timestamp_str)) if event.get("exchange_timestamp") else None
+        
+        normalized_kline = normalize_kline_data(
+            event,
+            source="websocket",
+            internal_timestamp=internal_timestamp,
+            exchange_timestamp=exchange_timestamp,
+        )
+        
         # Convert to DataFrame
-        df = pd.DataFrame([{
-            "timestamp": timestamp,
-            "symbol": symbol,
-            "interval": event.get("interval", "1m"),
-            "open": event.get("open", 0.0),
-            "high": event.get("high", 0.0),
-            "low": event.get("low", 0.0),
-            "close": event.get("close", 0.0),
-            "volume": event.get("volume", 0.0),
-            "internal_timestamp": self._parse_timestamp(event.get("internal_timestamp", timestamp_str)),
-            "exchange_timestamp": self._parse_timestamp(event.get("exchange_timestamp", timestamp_str)),
-        }])
+        df = pd.DataFrame([normalized_kline])
         
         try:
             await self._parquet_storage.write_klines(symbol, date_str, df)
@@ -566,15 +643,21 @@ class DataStorageService:
         
         date_str = timestamp.date().strftime("%Y-%m-%d")
         
+        # Normalize to unified format
+        from src.storage.data_normalizer import normalize_funding_data
+        
+        internal_timestamp = self._parse_timestamp(event.get("internal_timestamp", timestamp_str)) if event.get("internal_timestamp") else None
+        exchange_timestamp = self._parse_timestamp(event.get("exchange_timestamp", timestamp_str)) if event.get("exchange_timestamp") else None
+        
+        normalized_funding = normalize_funding_data(
+            event,
+            source="websocket",
+            internal_timestamp=internal_timestamp,
+            exchange_timestamp=exchange_timestamp,
+        )
+        
         # Convert to DataFrame
-        df = pd.DataFrame([{
-            "timestamp": timestamp,
-            "symbol": symbol,
-            "funding_rate": event.get("funding_rate", 0.0),
-            "next_funding_time": event.get("next_funding_time"),
-            "internal_timestamp": self._parse_timestamp(event.get("internal_timestamp", timestamp_str)),
-            "exchange_timestamp": self._parse_timestamp(event.get("exchange_timestamp", timestamp_str)),
-        }])
+        df = pd.DataFrame([normalized_funding])
         
         try:
             await self._parquet_storage.write_funding(symbol, date_str, df)

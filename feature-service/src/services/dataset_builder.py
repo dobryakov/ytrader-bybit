@@ -1085,25 +1085,86 @@ class DatasetBuilder:
     ) -> pd.DataFrame:
         """Compute target variables."""
         if features_df.empty:
+            logger.warning("_compute_targets: features_df is empty")
             return pd.DataFrame()
         
         # Merge with price data for target computation
         # Use klines for price data
         price_df = historical_data["klines"].copy()
         if price_df.empty:
+            logger.warning("_compute_targets: klines is empty, trying trades")
             # Fallback to trades
             price_df = historical_data["trades"].copy()
             if not price_df.empty:
                 price_df = price_df.groupby("timestamp")["price"].last().reset_index()
         
         if price_df.empty:
+            logger.warning("_compute_targets: price_df is empty after fallback")
             return pd.DataFrame()
         
+        # Check available columns in price_df
+        logger.info(
+            "_compute_targets: price_df info",
+            columns=list(price_df.columns),
+            shape=price_df.shape,
+            timestamp_dtype=str(price_df["timestamp"].dtype) if "timestamp" in price_df.columns else "missing",
+        )
+        
+        # Determine price column name (could be "close" or "price")
+        price_col = None
+        if "close" in price_df.columns:
+            price_col = "close"
+        elif "price" in price_df.columns:
+            price_col = "price"
+        else:
+            logger.error(
+                "_compute_targets: no price column found",
+                available_columns=list(price_df.columns),
+            )
+            return pd.DataFrame()
+        
+        logger.info(
+            "_compute_targets: features_df info before merge",
+            features_shape=features_df.shape,
+            features_timestamp_dtype=str(features_df["timestamp"].dtype) if "timestamp" in features_df.columns else "missing",
+            features_timestamp_sample=features_df["timestamp"].head(3).tolist() if "timestamp" in features_df.columns and not features_df.empty else [],
+        )
+        
+        logger.info(
+            "_compute_targets: price_df info before merge",
+            price_shape=price_df.shape,
+            price_timestamp_sample=price_df["timestamp"].head(3).tolist() if "timestamp" in price_df.columns and not price_df.empty else [],
+            price_col=price_col,
+            price_col_sample=price_df[price_col].head(5).tolist() if price_col and not price_df.empty else [],
+            price_col_min=float(price_df[price_col].min()) if price_col and not price_df.empty else None,
+            price_col_max=float(price_df[price_col].max()) if price_col and not price_df.empty else None,
+        )
+        
         # Merge features with prices
+        price_for_merge = price_df[["timestamp", price_col]].rename(columns={price_col: "price"})
+        logger.info(
+            "_compute_targets: price_for_merge",
+            columns=list(price_for_merge.columns),
+            shape=price_for_merge.shape,
+            price_sample=price_for_merge["price"].head(5).tolist() if "price" in price_for_merge.columns else [],
+        )
+        
         merged = features_df.merge(
-            price_df[["timestamp", "close"]].rename(columns={"close": "price"}),
+            price_for_merge,
             on="timestamp",
             how="left",
+        )
+        
+        logger.info(
+            "_compute_targets: after merge",
+            merged_shape=merged.shape,
+            merged_columns=list(merged.columns),
+            features_count=len(features_df),
+            price_count=len(price_df),
+            merged_with_price_count=merged["price"].notna().sum() if "price" in merged.columns else 0,
+            merged_price_sample=merged["price"].head(5).tolist() if "price" in merged.columns else [],
+            merged_price_min=float(merged["price"].min()) if "price" in merged.columns and merged["price"].notna().any() else None,
+            merged_price_max=float(merged["price"].max()) if "price" in merged.columns and merged["price"].notna().any() else None,
         )
         
         # Compute targets based on type
@@ -1129,6 +1190,27 @@ class DatasetBuilder:
             data: DataFrame with timestamp and price columns
             horizon: Prediction horizon in seconds
         """
+        if data.empty:
+            logger.warning("_compute_regression_targets: input data is empty")
+            return pd.DataFrame()
+        
+        if "price" not in data.columns:
+            logger.error("_compute_regression_targets: 'price' column not found", columns=list(data.columns))
+            return pd.DataFrame()
+        
+        # Check how many rows have valid prices
+        valid_prices = data["price"].notna().sum()
+        logger.info(
+            "_compute_regression_targets: input data",
+            total_rows=len(data),
+            valid_prices=valid_prices,
+            price_nan_count=data["price"].isna().sum(),
+        )
+        
+        if valid_prices == 0:
+            logger.warning("_compute_regression_targets: no valid prices in data")
+            return pd.DataFrame()
+        
         # Sort by timestamp
         data = data.sort_values("timestamp").copy()
         
@@ -1136,14 +1218,45 @@ class DatasetBuilder:
         # Create future timestamps
         data["future_timestamp"] = data["timestamp"] + pd.Timedelta(seconds=horizon)
         
-        # Create price lookup DataFrame
+        # Save original price column BEFORE any sorting or merging
+        # Store as DataFrame with timestamp for reliable merge
+        original_price_df = data[["timestamp", "price"]].copy()
+        
+        logger.info(
+            "_compute_regression_targets: before creating price_lookup",
+            data_price_sample=data["price"].head(5).tolist(),
+            data_price_min=float(data["price"].min()) if data["price"].notna().any() else None,
+            data_price_max=float(data["price"].max()) if data["price"].notna().any() else None,
+        )
+        
+        # Create price lookup DataFrame - only use rows with valid prices
+        # Rename price to future_price in lookup to avoid conflict
         price_lookup = data[["timestamp", "price"]].copy()
+        price_lookup = price_lookup[price_lookup["price"].notna()].copy()
+        price_lookup = price_lookup.rename(columns={"price": "future_price"})
         price_lookup = price_lookup.sort_values("timestamp")
+        
+        if price_lookup.empty:
+            logger.warning("_compute_regression_targets: price_lookup is empty after filtering")
+            return pd.DataFrame()
+        
+        logger.info(
+            "_compute_regression_targets: before merge_asof",
+            data_rows=len(data),
+            price_lookup_rows=len(price_lookup),
+            horizon_seconds=horizon,
+            data_columns=list(data.columns),
+            price_lookup_columns=list(price_lookup.columns),
+            price_lookup_future_price_sample=price_lookup["future_price"].head(5).tolist(),
+        )
+        
+        # Sort data by future_timestamp for merge_asof
+        data_sorted = data.sort_values("future_timestamp").copy()
         
         # Use merge_asof to find nearest future price
         # direction='forward' ensures we only look forward in time
-        data = pd.merge_asof(
-            data.sort_values("future_timestamp"),
+        data_merged = pd.merge_asof(
+            data_sorted,
             price_lookup,
             left_on="future_timestamp",
             right_on="timestamp",
@@ -1151,17 +1264,133 @@ class DatasetBuilder:
             suffixes=("", "_future"),
         )
         
-        # Rename future price column
-        data = data.rename(columns={"price_future": "future_price"})
+        # Restore original price column by merging with original_price_df
+        # This ensures we get the correct price for each timestamp
+        data_merged = data_merged.merge(
+            original_price_df,
+            on="timestamp",
+            how="left",
+            suffixes=("", "_original"),
+        )
+        
+        # Use the original price (from merge), drop the one that might have been overwritten
+        if "price_original" in data_merged.columns:
+            data_merged["price"] = data_merged["price_original"]
+            data_merged = data_merged.drop(columns=["price_original"])
+        
+        logger.info(
+            "_compute_regression_targets: after merge_asof and price restoration",
+            price_sample=data_merged["price"].head(5).tolist() if "price" in data_merged.columns else [],
+            price_min=float(data_merged["price"].min()) if "price" in data_merged.columns and data_merged["price"].notna().any() else None,
+            price_max=float(data_merged["price"].max()) if "price" in data_merged.columns and data_merged["price"].notna().any() else None,
+            price_notna_count=data_merged["price"].notna().sum() if "price" in data_merged.columns else 0,
+            timestamp_sample=data_merged["timestamp"].head(3).tolist() if "timestamp" in data_merged.columns else [],
+        )
+        
+        data = data_merged
+        
+        # Log columns after merge_asof
+        logger.info(
+            "_compute_regression_targets: after merge_asof",
+            columns=list(data.columns),
+            total_rows=len(data),
+            future_price_exists="future_price" in data.columns,
+            price_exists="price" in data.columns,
+            future_price_notna=data["future_price"].notna().sum() if "future_price" in data.columns else 0,
+            price_notna=data["price"].notna().sum() if "price" in data.columns else 0,
+        )
+        
+        # Check that future_price column exists (we renamed it before merge)
+        if "future_price" not in data.columns:
+            logger.error(
+                "_compute_regression_targets: future_price column not found after merge_asof",
+                available_columns=list(data.columns),
+            )
+            return pd.DataFrame()
         
         # Drop helper column
         data = data.drop(columns=["future_timestamp", "timestamp_future"], errors="ignore")
         
+        # Check how many rows have future prices
+        future_price_count = data["future_price"].notna().sum()
+        price_count = data["price"].notna().sum() if "price" in data.columns else 0
+        
+        logger.info(
+            "_compute_regression_targets: after merge_asof (after rename)",
+            total_rows=len(data),
+            columns=list(data.columns),
+            future_price_count=future_price_count,
+            future_price_nan_count=data["future_price"].isna().sum(),
+            price_count=price_count,
+            price_nan_count=data["price"].isna().sum() if "price" in data.columns else 0,
+            both_prices_valid=(data["future_price"].notna() & data["price"].notna()).sum() if "price" in data.columns else 0,
+        )
+        
+        if future_price_count == 0:
+            logger.warning("_compute_regression_targets: no future prices found after merge_asof")
+            return pd.DataFrame()
+        
+        if price_count == 0:
+            logger.warning("_compute_regression_targets: no current prices found after merge_asof")
+            return pd.DataFrame()
+        
+        # Check for rows where both prices are valid
+        valid_rows = data["future_price"].notna() & data["price"].notna()
+        if valid_rows.sum() == 0:
+            logger.warning(
+                "_compute_regression_targets: no rows with both future_price and price valid",
+                future_price_valid=future_price_count,
+                price_valid=price_count,
+            )
+            return pd.DataFrame()
+        
+        # Compute return only for rows with both prices valid
+        logger.info(
+            "_compute_regression_targets: before target computation",
+            valid_rows_count=valid_rows.sum(),
+            sample_price=data["price"][valid_rows].head(3).tolist() if valid_rows.any() else [],
+            sample_future_price=data["future_price"][valid_rows].head(3).tolist() if valid_rows.any() else [],
+        )
+        
         # Compute return
         data["target"] = (data["future_price"] - data["price"]) / data["price"]
         
-        # Remove rows where target cannot be computed
+        # Check target values before dropna
+        target_stats = {
+            "total": len(data),
+            "notna": data["target"].notna().sum(),
+            "isna": data["target"].isna().sum(),
+            "inf": (data["target"] == float("inf")).sum() if "target" in data.columns else 0,
+            "neginf": (data["target"] == float("-inf")).sum() if "target" in data.columns else 0,
+        }
+        
+        if "target" in data.columns and data["target"].notna().any():
+            target_stats["min"] = float(data["target"].min())
+            target_stats["max"] = float(data["target"].max())
+            target_stats["mean"] = float(data["target"].mean())
+        
+        logger.info(
+            "_compute_regression_targets: target computation stats",
+            **target_stats,
+        )
+        
+        # Remove rows where target cannot be computed (NaN, inf, -inf)
         data = data.dropna(subset=["target"])
+        data = data[~data["target"].isin([float("inf"), float("-inf")])]
+        
+        logger.info(
+            "_compute_regression_targets: final result",
+            target_rows=len(data),
+            target_computed_count=data["target"].notna().sum() if "target" in data.columns else 0,
+        )
+        
+        if data.empty:
+            logger.warning(
+                "_compute_regression_targets: result is empty after filtering",
+                original_rows=target_stats["total"],
+                dropped_na=target_stats["isna"],
+                dropped_inf=target_stats["inf"] + target_stats["neginf"],
+            )
         
         return data[["timestamp", "target"]]
     
@@ -1206,13 +1435,46 @@ class DatasetBuilder:
         targets_df: pd.DataFrame,
     ) -> bool:
         """Validate no data leakage in features or targets."""
-        if features_df.empty or targets_df.empty:
+        logger.debug(
+            "_validate_no_data_leakage: input",
+            features_shape=features_df.shape,
+            features_columns=list(features_df.columns) if not features_df.empty else [],
+            targets_shape=targets_df.shape,
+            targets_columns=list(targets_df.columns) if not targets_df.empty else [],
+        )
+        
+        if features_df.empty:
+            logger.warning("_validate_no_data_leakage: features_df is empty")
+            return False
+        
+        if targets_df.empty:
+            logger.warning("_validate_no_data_leakage: targets_df is empty")
             return False
         
         # Merge to check timestamps
         merged = features_df.merge(targets_df, on="timestamp", how="inner")
         
+        logger.debug(
+            "_validate_no_data_leakage: after merge",
+            merged_shape=merged.shape,
+            features_timestamps_count=len(features_df["timestamp"].unique()) if "timestamp" in features_df.columns else 0,
+            targets_timestamps_count=len(targets_df["timestamp"].unique()) if "timestamp" in targets_df.columns else 0,
+        )
+        
         if merged.empty:
+            logger.warning(
+                "_validate_no_data_leakage: merged is empty",
+                features_timestamp_range=(
+                    (features_df["timestamp"].min(), features_df["timestamp"].max())
+                    if "timestamp" in features_df.columns and not features_df.empty
+                    else None
+                ),
+                targets_timestamp_range=(
+                    (targets_df["timestamp"].min(), targets_df["timestamp"].max())
+                    if "timestamp" in targets_df.columns and not targets_df.empty
+                    else None
+                ),
+            )
             return False
         
         # For each row, verify:
@@ -1220,6 +1482,7 @@ class DatasetBuilder:
         # - Targets use only data > timestamp
         # This is a simplified check - in production would validate against Feature Registry
         
+        logger.debug("_validate_no_data_leakage: validation passed", merged_rows=len(merged))
         return True
     
     async def _split_time_based(
