@@ -1166,6 +1166,15 @@ class DatasetBuilder:
         features_list = []
         total = len(sorted_timestamps)
         
+        # Initialize state for incremental updates
+        orderbook_state = None
+        rolling_windows = None
+        last_processed_timestamp = None
+        
+        # Hardcoded snapshot refresh interval (3600 seconds = 1 hour)
+        # TODO: Move to configuration in T333
+        snapshot_refresh_interval = 3600
+        
         for i, timestamp in enumerate(sorted_timestamps):
             if i % self._batch_size == 0:
                 # Update progress (non-blocking to avoid connection pool exhaustion)
@@ -1202,19 +1211,67 @@ class DatasetBuilder:
                     progress=f"{progress:.1f}%",
                     processed=i,
                     total=total,
+                    incremental_mode=orderbook_state is not None or rolling_windows is not None,
                 )
             
-            # Compute features at timestamp
-            feature_vector = await self._offline_engine.compute_features_at_timestamp(
-                symbol=symbol,
-                timestamp=timestamp if isinstance(timestamp, datetime) else pd.to_datetime(timestamp),
-                orderbook_snapshots=historical_data["snapshots"],
-                orderbook_deltas=historical_data["deltas"],
-                trades=historical_data["trades"],
-                klines=historical_data["klines"],
-                ticker=historical_data.get("ticker"),
-                funding=historical_data.get("funding"),
-            )
+            # Convert timestamp to datetime if needed
+            timestamp_dt = timestamp if isinstance(timestamp, datetime) else pd.to_datetime(timestamp)
+            
+            # Compute features at timestamp with incremental updates
+            try:
+                result = await self._offline_engine.compute_features_at_timestamp(
+                    symbol=symbol,
+                    timestamp=timestamp_dt,
+                    orderbook_snapshots=historical_data["snapshots"],
+                    orderbook_deltas=historical_data["deltas"],
+                    trades=historical_data["trades"],
+                    klines=historical_data["klines"],
+                    ticker=historical_data.get("ticker"),
+                    funding=historical_data.get("funding"),
+                    previous_orderbook_state=orderbook_state,
+                    previous_rolling_windows=rolling_windows,
+                    last_timestamp=last_processed_timestamp,
+                    snapshot_refresh_interval=snapshot_refresh_interval,
+                    return_state=True,  # Request state for incremental updates
+                )
+                
+                # Unpack result (tuple when return_state=True, or FeatureVector when False)
+                if isinstance(result, tuple):
+                    feature_vector, updated_orderbook_state, updated_rolling_windows = result
+                else:
+                    feature_vector = result
+                    updated_orderbook_state = None
+                    updated_rolling_windows = None
+                
+                # Update state for next iteration (if feature computation succeeded)
+                if feature_vector:
+                    if updated_orderbook_state is not None:
+                        orderbook_state = updated_orderbook_state
+                    if updated_rolling_windows is not None:
+                        rolling_windows = updated_rolling_windows
+                    last_processed_timestamp = timestamp_dt
+                else:
+                    # If feature computation failed, reset state
+                    orderbook_state = None
+                    rolling_windows = None
+                    last_processed_timestamp = None
+                        
+            except Exception as e:
+                # Log error and continue with next timestamp
+                logger.warning(
+                    "feature_computation_error",
+                    dataset_id=dataset_id,
+                    symbol=symbol,
+                    timestamp=timestamp_dt.isoformat(),
+                    error=str(e),
+                    error_type=type(e).__name__,
+                    exc_info=True,
+                )
+                feature_vector = None
+                # Reset state on error
+                orderbook_state = None
+                rolling_windows = None
+                last_processed_timestamp = None
             
             if feature_vector:
                 # Convert to DataFrame row

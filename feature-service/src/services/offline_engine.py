@@ -2,7 +2,7 @@
 Offline feature engine for computing features from historical data.
 """
 from datetime import datetime, timezone, timedelta
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple, Union
 import pandas as pd
 import structlog
 from typing import TYPE_CHECKING
@@ -122,12 +122,19 @@ class OfflineEngine:
         klines: pd.DataFrame,
         ticker: Optional[pd.DataFrame] = None,
         funding: Optional[pd.DataFrame] = None,
-    ) -> Optional[FeatureVector]:
+        previous_orderbook_state: Optional[OrderbookState] = None,
+        previous_rolling_windows: Optional[RollingWindows] = None,
+        last_timestamp: Optional[datetime] = None,
+        snapshot_refresh_interval: int = 3600,
+        return_state: bool = False,
+    ) -> Union[Optional[FeatureVector], Optional[Tuple[FeatureVector, Optional[OrderbookState], RollingWindows]]]:
         """
         Compute features at a specific timestamp from historical data.
         
         This method reconstructs orderbook state and rolling windows up to
         the target timestamp, then computes features identically to online mode.
+        
+        Supports incremental updates to improve performance for batch processing.
         
         Args:
             symbol: Trading pair symbol
@@ -138,9 +145,15 @@ class OfflineEngine:
             klines: Historical klines
             ticker: Historical ticker data (optional)
             funding: Historical funding rate data (optional)
+            previous_orderbook_state: Optional previous OrderbookState for incremental update
+            previous_rolling_windows: Optional previous RollingWindows for incremental update
+            last_timestamp: Optional last processed timestamp for incremental update
+            snapshot_refresh_interval: Snapshot refresh interval in seconds (default: 3600 = 1 hour)
+            return_state: If True, return tuple (FeatureVector, OrderbookState, RollingWindows) for incremental updates
             
         Returns:
-            FeatureVector at the target timestamp, or None if insufficient data
+            FeatureVector at the target timestamp, or None if insufficient data.
+            If return_state=True, returns tuple (FeatureVector, OrderbookState, RollingWindows).
         """
         try:
             # Ensure allowed features are updated (lazy initialization)
@@ -163,6 +176,9 @@ class OfflineEngine:
                     timestamp=timestamp,
                     snapshots=orderbook_snapshots,
                     deltas=orderbook_deltas,
+                    previous_orderbook_state=previous_orderbook_state,
+                    last_timestamp=last_timestamp,
+                    snapshot_refresh_interval=snapshot_refresh_interval,
                 )
             
             # Reconstruct rolling windows up to timestamp
@@ -171,6 +187,8 @@ class OfflineEngine:
                 timestamp=timestamp,
                 trades=trades,
                 klines=klines,
+                previous_rolling_windows=previous_rolling_windows,
+                last_timestamp=last_timestamp,
             )
             
             # Get current price from orderbook or klines
@@ -271,12 +289,18 @@ class OfflineEngine:
                 )
             
             # Create feature vector
-            return FeatureVector(
+            feature_vector = FeatureVector(
                 timestamp=timestamp,
                 symbol=symbol,
                 features=filtered_features,
                 feature_registry_version=self._feature_registry_version,
             )
+            
+            # Return state if requested (for incremental updates)
+            if return_state:
+                return (feature_vector, orderbook, rolling_windows)
+            
+            return feature_vector
         
         except Exception as e:
             logger.error(
@@ -284,6 +308,8 @@ class OfflineEngine:
                 error=str(e),
                 exc_info=True,
             )
+            if return_state:
+                return (None, None, None)
             return None
     
     async def _reconstruct_orderbook_state(
@@ -292,19 +318,40 @@ class OfflineEngine:
         timestamp: datetime,
         snapshots: pd.DataFrame,
         deltas: pd.DataFrame,
+        previous_orderbook_state: Optional[OrderbookState] = None,
+        last_timestamp: Optional[datetime] = None,
+        snapshot_refresh_interval: int = 3600,
     ) -> Optional[OrderbookState]:
         """
         Reconstruct orderbook state at a specific timestamp.
+        
+        Supports incremental updates to avoid full reconstruction for each timestamp.
         
         Args:
             symbol: Trading pair symbol
             timestamp: Target timestamp
             snapshots: Historical orderbook snapshots
             deltas: Historical orderbook deltas
+            previous_orderbook_state: Optional previous OrderbookState for incremental update
+            last_timestamp: Optional last processed timestamp for incremental update
+            snapshot_refresh_interval: Snapshot refresh interval in seconds (default: 3600 = 1 hour)
             
         Returns:
             OrderbookState at timestamp, or None if insufficient data
         """
+        # If previous state provided, use incremental update
+        if previous_orderbook_state is not None and last_timestamp is not None:
+            return await self._reconstruct_orderbook_state_incremental(
+                symbol=symbol,
+                timestamp=timestamp,
+                snapshots=snapshots,
+                deltas=deltas,
+                previous_orderbook_state=previous_orderbook_state,
+                last_timestamp=last_timestamp,
+                snapshot_refresh_interval=snapshot_refresh_interval,
+            )
+        
+        # Full reconstruction (backward compatibility)
         if snapshots.empty:
             return None
         
@@ -356,6 +403,9 @@ class OfflineEngine:
         orderbook_manager.apply_snapshot(snapshot_dict)
         
         # Apply deltas in sequence order (or timestamp order if no sequence)
+        # For historical data, we apply deltas directly to orderbook state
+        # to avoid sequence gap checks (gaps are normal in historical data)
+        orderbook_state = orderbook_manager.get_orderbook(symbol)
         for _, delta_row in deltas_after.iterrows():
             delta_dict = {
                 "event_type": "orderbook_delta",
@@ -370,10 +420,132 @@ class OfflineEngine:
             if has_sequence and "sequence" in delta_row:
                 delta_dict["sequence"] = int(delta_row["sequence"])
             
-            orderbook_manager.apply_delta(delta_dict)
+            # For historical reconstruction, apply delta directly to orderbook state
+            # This bypasses sequence gap checks which are not relevant for historical data
+            if orderbook_state:
+                orderbook_state.apply_delta(delta_dict)
+            else:
+                # Fallback to manager if state not available
+                orderbook_manager.apply_delta(delta_dict)
+                orderbook_state = orderbook_manager.get_orderbook(symbol)
         
         # Get final orderbook state
         return orderbook_manager.get_orderbook(symbol)
+    
+    async def _reconstruct_orderbook_state_incremental(
+        self,
+        symbol: str,
+        timestamp: datetime,
+        snapshots: pd.DataFrame,
+        deltas: pd.DataFrame,
+        previous_orderbook_state: OrderbookState,
+        last_timestamp: datetime,
+        snapshot_refresh_interval: int = 3600,
+    ) -> Optional[OrderbookState]:
+        """
+        Incremental reconstruction of orderbook state.
+        
+        Reuses existing OrderbookState and applies only new deltas between
+        last_timestamp and current timestamp. Periodically refreshes snapshot
+        to prevent delta accumulation errors.
+        
+        Args:
+            symbol: Trading pair symbol
+            timestamp: Target timestamp
+            snapshots: Historical orderbook snapshots
+            deltas: Historical orderbook deltas
+            previous_orderbook_state: Previous OrderbookState to reuse
+            last_timestamp: Last processed timestamp
+            snapshot_refresh_interval: Snapshot refresh interval in seconds
+            
+        Returns:
+            OrderbookState with incremental updates, or None if refresh needed
+        """
+        # Check if snapshot refresh is needed
+        time_since_last_snapshot = None
+        if previous_orderbook_state.last_snapshot_at:
+            time_since_last_snapshot = (timestamp - previous_orderbook_state.last_snapshot_at).total_seconds()
+        
+        needs_refresh = (
+            previous_orderbook_state.last_snapshot_at is None or
+            time_since_last_snapshot is None or
+            time_since_last_snapshot >= snapshot_refresh_interval or
+            previous_orderbook_state.delta_count > 1000  # Too many deltas since snapshot
+        )
+        
+        if needs_refresh:
+            logger.debug(
+                "orderbook_snapshot_refresh_needed",
+                symbol=symbol,
+                timestamp=timestamp.isoformat(),
+                last_snapshot_at=previous_orderbook_state.last_snapshot_at.isoformat() if previous_orderbook_state.last_snapshot_at else None,
+                delta_count=previous_orderbook_state.delta_count,
+                time_since_snapshot=time_since_last_snapshot,
+            )
+            # Fall back to full reconstruction
+            return await self._reconstruct_orderbook_state(
+                symbol=symbol,
+                timestamp=timestamp,
+                snapshots=snapshots,
+                deltas=deltas,
+            )
+        
+        # Reuse previous orderbook state and apply only new deltas directly
+        # Create a copy to avoid mutating the original
+        from copy import deepcopy
+        orderbook_state = deepcopy(previous_orderbook_state)
+        
+        # Get only new deltas between last_timestamp and timestamp
+        has_sequence = "sequence" in deltas.columns if not deltas.empty else False
+        
+        if has_sequence:
+            last_sequence = previous_orderbook_state.sequence
+            new_deltas = deltas[
+                (deltas["sequence"] > last_sequence) &
+                (deltas["timestamp"] > last_timestamp) &
+                (deltas["timestamp"] <= timestamp)
+            ].sort_values("sequence")
+        else:
+            new_deltas = deltas[
+                (deltas["timestamp"] > last_timestamp) &
+                (deltas["timestamp"] <= timestamp)
+            ].sort_values("timestamp")
+        
+        logger.debug(
+            "orderbook_incremental_update",
+            symbol=symbol,
+            timestamp=timestamp.isoformat(),
+            last_timestamp=last_timestamp.isoformat(),
+            new_deltas_count=len(new_deltas),
+        )
+        
+        # Apply new deltas directly to orderbook state (bypassing gap checks for historical data)
+        for _, delta_row in new_deltas.iterrows():
+            delta_dict = {
+                "event_type": "orderbook_delta",
+                "symbol": symbol,
+                "timestamp": delta_row["timestamp"].isoformat() if isinstance(delta_row["timestamp"], datetime) else str(delta_row["timestamp"]),
+                "delta_type": delta_row.get("delta_type", "update"),
+                "side": delta_row.get("side", "bid"),
+                "price": float(delta_row.get("price", 0)),
+                "quantity": float(delta_row.get("quantity", 0)),
+            }
+            if has_sequence and "sequence" in delta_row:
+                delta_dict["sequence"] = int(delta_row["sequence"])
+            # Apply directly to orderbook state (bypassing gap checks for historical data)
+            orderbook_state.apply_delta(delta_dict)
+        
+        return orderbook_state
+    
+    @staticmethod
+    def get_orderbook_snapshot_refresh_interval() -> int:
+        """
+        Get recommended orderbook snapshot refresh interval.
+        
+        Returns:
+            Recommended refresh interval in seconds (default: 3600 = 1 hour)
+        """
+        return 3600
     
     async def _reconstruct_rolling_windows(
         self,
@@ -381,19 +553,38 @@ class OfflineEngine:
         timestamp: datetime,
         trades: pd.DataFrame,
         klines: pd.DataFrame,
+        previous_rolling_windows: Optional[RollingWindows] = None,
+        last_timestamp: Optional[datetime] = None,
     ) -> RollingWindows:
         """
         Reconstruct rolling windows at a specific timestamp.
+        
+        OPTIMIZED: Uses vectorized pandas operations instead of row-by-row loops.
+        Supports incremental updates to avoid O(n²) complexity.
         
         Args:
             symbol: Trading pair symbol
             timestamp: Target timestamp
             trades: Historical trades
             klines: Historical klines
+            previous_rolling_windows: Optional previous RollingWindows object for incremental update
+            last_timestamp: Optional last processed timestamp for incremental update
             
         Returns:
             RollingWindows with data up to timestamp
         """
+        # If previous state provided, use incremental update
+        if previous_rolling_windows is not None and last_timestamp is not None:
+            return await self._reconstruct_rolling_windows_incremental(
+                symbol=symbol,
+                timestamp=timestamp,
+                trades=trades,
+                klines=klines,
+                previous_rolling_windows=previous_rolling_windows,
+                last_timestamp=last_timestamp,
+            )
+        
+        # Full reconstruction (backward compatibility)
         # Initialize empty windows
         windows = {
             "1s": pd.DataFrame(columns=["timestamp", "price", "volume", "side"]),
@@ -407,83 +598,137 @@ class OfflineEngine:
             trades_before = trades[trades["timestamp"] <= timestamp].copy()
             
             if not trades_before.empty:
-                # Convert trades to window format
-                trade_data = []
-                for _, trade in trades_before.iterrows():
-                    trade_time = trade["timestamp"]
-                    if isinstance(trade_time, str):
-                        trade_time = pd.to_datetime(trade_time)
-                    
-                    # Only include trades within 1 minute lookback
-                    if (timestamp - trade_time).total_seconds() <= 60:
-                        trade_data.append({
-                            "timestamp": trade_time,
-                            "price": float(trade.get("price", 0)),
-                            "volume": float(trade.get("quantity", 0)),
-                            "side": trade.get("side", "Buy"),
-                        })
+                # OPTIMIZED: Use vectorized operations instead of iterrows()
+                # Filter trades within 1 minute lookback using boolean indexing
+                trade_time_diff = (timestamp - pd.to_datetime(trades_before["timestamp"])).dt.total_seconds()
+                trades_within_window = trades_before[trade_time_diff <= 60].copy()
                 
-                if trade_data:
-                    trade_df = pd.DataFrame(trade_data)
+                if not trades_within_window.empty:
+                    # Convert to proper format using vectorized operations
+                    trade_df = pd.DataFrame({
+                        "timestamp": pd.to_datetime(trades_within_window["timestamp"], utc=True),
+                        "price": pd.to_numeric(trades_within_window.get("price", 0), errors='coerce').fillna(0.0),
+                        "volume": pd.to_numeric(trades_within_window.get("quantity", trades_within_window.get("volume", 0)), errors='coerce').fillna(0.0),
+                        "side": trades_within_window.get("side", "Buy"),
+                    })
                     
-                    # Filter by window sizes
+                    # Filter by window sizes using vectorized operations
                     for window_name, window_seconds in [("1s", 1), ("3s", 3), ("15s", 15), ("1m", 60)]:
                         window_start = timestamp - timedelta(seconds=window_seconds)
-                        window_trades = trade_df[trade_df["timestamp"] > window_start]
-                        windows[window_name] = window_trades.copy()
+                        window_trades = trade_df[trade_df["timestamp"] > window_start].copy()
+                        windows[window_name] = window_trades
         
-        # Get klines for 1-minute window
-        # Need to add ALL klines up to timestamp for lookback windows (EMA, RSI, etc.)
+        # OPTIMIZED: Process klines using vectorized operations
+        # CRITICAL PERFORMANCE FIX: Avoid O(n²) complexity from iterrows() + concat + sort_values
         if not klines.empty:
+            # Pre-filter klines once using vectorized boolean indexing
             klines_before = klines[klines["timestamp"] <= timestamp].copy()
             
             if not klines_before.empty:
-                # Convert klines to proper format with open/high/low/close/volume
-                # This is needed for get_klines_for_window() which is used by EMA, RSI, etc.
-                kline_rows = []
-                for _, kline in klines_before.iterrows():
-                    kline_time = kline["timestamp"]
-                    if isinstance(kline_time, str):
-                        kline_time = pd.to_datetime(kline_time)
-                    elif not isinstance(kline_time, datetime):
-                        kline_time = pd.to_datetime(kline_time)
-                    
-                    # Ensure timezone-aware
-                    if isinstance(kline_time, datetime) and kline_time.tzinfo is None:
-                        kline_time = kline_time.replace(tzinfo=timezone.utc)
-                    
-                    kline_rows.append({
-                        "timestamp": kline_time,
-                        "open": float(kline.get("open", 0)),
-                        "high": float(kline.get("high", 0)),
-                        "low": float(kline.get("low", 0)),
-                        "close": float(kline.get("close", 0)),
-                        "volume": float(kline.get("volume", 0)),
-                    })
+                # OPTIMIZED: Use vectorized operations instead of iterrows() loop
+                # Convert timestamps to datetime in one operation
+                kline_timestamps = pd.to_datetime(klines_before["timestamp"], utc=True)
                 
-                if kline_rows:
-                    kline_data = pd.DataFrame(kline_rows)
-                    
-                    # Fix FutureWarning: handle empty DataFrame before concat
-                    # If windows["1m"] is empty, just assign the new data
-                    # Otherwise, concat with explicit dtype preservation
-                    if windows["1m"].empty:
-                        windows["1m"] = kline_data
-                    else:
-                        # Use concat with sort=False to preserve column order and avoid FutureWarning
-                        windows["1m"] = pd.concat(
-                            [windows["1m"], kline_data], 
-                            ignore_index=True,
-                            sort=False
-                        )
-                    # Ensure timestamps are sorted
-                    windows["1m"] = windows["1m"].sort_values("timestamp").reset_index(drop=True)
+                # Ensure timezone-aware
+                if kline_timestamps.dt.tz is None:
+                    kline_timestamps = kline_timestamps.dt.tz_localize(timezone.utc)
+                
+                # Create kline DataFrame using vectorized operations
+                kline_data = pd.DataFrame({
+                    "timestamp": kline_timestamps,
+                    "open": pd.to_numeric(klines_before.get("open", 0), errors='coerce').fillna(0.0),
+                    "high": pd.to_numeric(klines_before.get("high", 0), errors='coerce').fillna(0.0),
+                    "low": pd.to_numeric(klines_before.get("low", 0), errors='coerce').fillna(0.0),
+                    "close": pd.to_numeric(klines_before.get("close", 0), errors='coerce').fillna(0.0),
+                    "volume": pd.to_numeric(klines_before.get("volume", 0), errors='coerce').fillna(0.0),
+                })
+                
+                # OPTIMIZED: Sort once instead of per-timestamp
+                kline_data = kline_data.sort_values("timestamp").reset_index(drop=True)
+                
+                # Assign directly (no concat needed for full reconstruction)
+                windows["1m"] = kline_data
         
         return RollingWindows(
             symbol=symbol,
             windows=windows,
             last_update=timestamp,
         )
+    
+    async def _reconstruct_rolling_windows_incremental(
+        self,
+        symbol: str,
+        timestamp: datetime,
+        trades: pd.DataFrame,
+        klines: pd.DataFrame,
+        previous_rolling_windows: RollingWindows,
+        last_timestamp: datetime,
+    ) -> RollingWindows:
+        """
+        Incremental reconstruction of rolling windows.
+        
+        Reuses existing RollingWindows object and adds only new trades/klines
+        between last_timestamp and current timestamp.
+        
+        Args:
+            symbol: Trading pair symbol
+            timestamp: Target timestamp
+            trades: Historical trades
+            klines: Historical klines
+            previous_rolling_windows: Previous RollingWindows object to reuse
+            last_timestamp: Last processed timestamp
+            
+        Returns:
+            RollingWindows with incremental updates
+        """
+        # Reuse existing RollingWindows object
+        rolling_windows = previous_rolling_windows
+        
+        # Add new trades between last_timestamp and timestamp
+        if not trades.empty:
+            new_trades = trades[
+                (trades["timestamp"] > last_timestamp) & 
+                (trades["timestamp"] <= timestamp)
+            ].copy()
+            
+            if not new_trades.empty:
+                # Add trades using RollingWindows.add_trade() method
+                for _, trade in new_trades.iterrows():
+                    trade_dict = {
+                        "timestamp": trade["timestamp"],
+                        "price": trade.get("price", 0),
+                        "quantity": trade.get("quantity", trade.get("volume", 0)),
+                        "side": trade.get("side", "Buy"),
+                    }
+                    rolling_windows.add_trade(trade_dict)
+        
+        # Add new klines between last_timestamp and timestamp
+        if not klines.empty:
+            new_klines = klines[
+                (klines["timestamp"] > last_timestamp) & 
+                (klines["timestamp"] <= timestamp)
+            ].copy()
+            
+            if not new_klines.empty:
+                # Add klines using RollingWindows.add_kline() method
+                for _, kline in new_klines.iterrows():
+                    kline_dict = {
+                        "timestamp": kline["timestamp"],
+                        "open": kline.get("open", 0),
+                        "high": kline.get("high", 0),
+                        "low": kline.get("low", 0),
+                        "close": kline.get("close", 0),
+                        "volume": kline.get("volume", 0),
+                    }
+                    rolling_windows.add_kline(kline_dict)
+        
+        # Update last_update timestamp
+        rolling_windows.last_update = timestamp
+        
+        # Trim old data (automatic via add_trade/add_kline, but ensure it's done)
+        rolling_windows.trim_old_data()
+        
+        return rolling_windows
     
     async def validate_feature_identity(
         self,
