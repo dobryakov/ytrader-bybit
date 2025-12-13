@@ -69,6 +69,23 @@ class Settings(BaseSettings):
     # Prediction Horizon Configuration
     model_prediction_horizon_seconds: int = Field(default=60, alias="MODEL_PREDICTION_HORIZON_SECONDS")
     
+    # Timestamp Continuity Validation Configuration
+    model_training_min_dataset_coverage_ratio: float = Field(
+        default=0.8,
+        alias="MODEL_TRAINING_MIN_DATASET_COVERAGE_RATIO",
+        description="Minimum acceptable timestamp coverage ratio for training datasets. Datasets with coverage below this ratio will trigger warnings. Default: 0.8 (80% coverage). Lower coverage may indicate missing data periods that could affect model training quality."
+    )
+    model_training_warn_on_large_gaps: bool = Field(
+        default=True,
+        alias="MODEL_TRAINING_WARN_ON_LARGE_GAPS",
+        description="Enable warnings for large timestamp gaps in training datasets. Default: true. Large gaps may indicate missing trading sessions or data collection issues."
+    )
+    model_training_critical_gap_threshold_seconds: int = Field(
+        default=3600,
+        alias="MODEL_TRAINING_CRITICAL_GAP_THRESHOLD_SECONDS",
+        description="Critical gap threshold in seconds. Gaps exceeding this duration will trigger warnings. Default: 3600 (1 hour). Gaps larger than this may significantly affect temporal dependencies in model training."
+    )
+    
     # Classification Threshold Configuration
     model_classification_threshold: float = Field(default=0.005, alias="MODEL_CLASSIFICATION_THRESHOLD")
 
@@ -251,6 +268,22 @@ class Settings(BaseSettings):
         """Validate test period length is positive."""
         if v <= 0:
             raise ValueError("MODEL_RETRAINING_TEST_PERIOD_DAYS must be positive")
+        return v
+
+    @field_validator("model_training_min_dataset_coverage_ratio")
+    @classmethod
+    def validate_min_dataset_coverage_ratio(cls, v: float) -> float:
+        """Validate minimum dataset coverage ratio is between 0 and 1."""
+        if not 0.0 <= v <= 1.0:
+            raise ValueError("MODEL_TRAINING_MIN_DATASET_COVERAGE_RATIO must be between 0.0 and 1.0")
+        return v
+
+    @field_validator("model_training_critical_gap_threshold_seconds")
+    @classmethod
+    def validate_critical_gap_threshold_seconds(cls, v: int) -> int:
+        """Validate critical gap threshold is positive."""
+        if v <= 0:
+            raise ValueError("MODEL_TRAINING_CRITICAL_GAP_THRESHOLD_SECONDS must be positive")
         return v
 
     @field_validator("model_training_class_weight_method")
@@ -546,6 +579,18 @@ class Settings(BaseSettings):
 
         if self.model_training_max_duration_seconds <= 0:
             errors.append(f"MODEL_TRAINING_MAX_DURATION_SECONDS must be positive, got {self.model_training_max_duration_seconds}")
+
+        # Validate timestamp continuity validation configuration
+        if not 0.0 <= self.model_training_min_dataset_coverage_ratio <= 1.0:
+            errors.append(
+                f"MODEL_TRAINING_MIN_DATASET_COVERAGE_RATIO must be between 0.0 and 1.0, "
+                f"got {self.model_training_min_dataset_coverage_ratio}"
+            )
+        if self.model_training_critical_gap_threshold_seconds <= 0:
+            errors.append(
+                f"MODEL_TRAINING_CRITICAL_GAP_THRESHOLD_SECONDS must be positive, "
+                f"got {self.model_training_critical_gap_threshold_seconds}"
+            )
 
         # Validate signal generation configuration
         if self.signal_generation_rate_limit <= 0:

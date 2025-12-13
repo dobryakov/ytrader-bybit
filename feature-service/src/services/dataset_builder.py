@@ -27,6 +27,128 @@ logger = structlog.get_logger(__name__)
 class DatasetBuilder:
     """Service for building training datasets from historical data."""
     
+    # Mapping of feature names to their actual lookback requirements (in minutes)
+    # These values include implementation buffers (e.g., EMA uses period + 5min buffer)
+    # This mapping represents real lookback requirements from feature computation code
+    FEATURE_LOOKBACK_MAPPING = {
+        # Technical indicators
+        "ema_21": 26,  # 21 minutes + 5 minute buffer
+        "rsi_14": 19,  # 14 minutes + 5 minute buffer (requires period+1)
+        # Price features
+        "price_ema21_ratio": 26,  # Depends on ema_21
+        "volume_ratio_20": 20,  # 20 minutes lookback
+        "volatility_5m": 6,  # 5 minutes + buffer
+        "returns_5m": 6,  # 5 minutes + buffer
+        # Orderflow features (no lookback for klines, but for trades windows)
+        "signed_volume_1m": 1,  # 1 minute window
+        "signed_volume_15s": 1,  # 15 seconds
+        "signed_volume_3s": 1,  # 3 seconds
+        # Default for features with lookback_window in registry
+        "_default_buffer": 5,  # Additional buffer for safety
+    }
+    
+    def _compute_max_lookback_minutes(
+        self,
+        feature_registry_loader: Optional["FeatureRegistryLoader"] = None,
+    ) -> int:
+        """
+        Compute maximum lookback period (in minutes) required by features in Feature Registry.
+        
+        Uses feature-specific lookback mapping for known features, and falls back to
+        parsing lookback_window from Feature Registry for unknown features.
+        
+        Args:
+            feature_registry_loader: Optional FeatureRegistryLoader instance
+            
+        Returns:
+            Maximum lookback period in minutes (default: 30 if registry not available)
+        """
+        max_lookback = 0
+        
+        # Try to get lookback from Feature Registry if available
+        if feature_registry_loader is not None:
+            try:
+                registry_model = feature_registry_loader._registry_model
+                if registry_model and registry_model.features:
+                    for feature in registry_model.features:
+                        feature_name = feature.name
+                        lookback_window = feature.lookback_window
+                        
+                        # Check if feature has specific mapping (includes implementation buffers)
+                        if feature_name in self.FEATURE_LOOKBACK_MAPPING:
+                            feature_lookback = self.FEATURE_LOOKBACK_MAPPING[feature_name]
+                            max_lookback = max(max_lookback, feature_lookback)
+                        else:
+                            # Parse lookback_window from registry (e.g., "21m", "5m", "0s")
+                            parsed_lookback = self._parse_lookback_window(lookback_window)
+                            if parsed_lookback is not None:
+                                # Add default buffer for safety
+                                feature_lookback = parsed_lookback + self.FEATURE_LOOKBACK_MAPPING.get("_default_buffer", 5)
+                                max_lookback = max(max_lookback, feature_lookback)
+                    
+                    logger.debug(
+                        "computed_max_lookback_from_registry",
+                        max_lookback_minutes=max_lookback,
+                        registry_version=registry_model.version if registry_model else None,
+                    )
+            except Exception as e:
+                logger.warning(
+                    "failed_to_compute_lookback_from_registry",
+                    error=str(e),
+                    fallback="using_default_30_minutes",
+                )
+        
+        # Use default if no registry or computation failed
+        if max_lookback == 0:
+            max_lookback = 30  # Default fallback
+            logger.debug(
+                "using_default_lookback",
+                max_lookback_minutes=max_lookback,
+            )
+        
+        return max_lookback
+    
+    def _parse_lookback_window(self, lookback_window: str) -> Optional[int]:
+        """
+        Parse lookback_window string to minutes.
+        
+        Args:
+            lookback_window: Lookback window string (e.g., "21m", "5m", "0s", "1h")
+            
+        Returns:
+            Lookback period in minutes, or None if parsing fails
+        """
+        if not lookback_window:
+            return None
+        
+        try:
+            unit = lookback_window[-1]
+            value = int(lookback_window[:-1])
+            
+            # Convert to minutes
+            if unit == "s":
+                return value // 60  # Convert seconds to minutes (integer division)
+            elif unit == "m":
+                return value
+            elif unit == "h":
+                return value * 60
+            elif unit == "d":
+                return value * 24 * 60
+            else:
+                logger.warning(
+                    "unknown_lookback_unit",
+                    unit=unit,
+                    lookback_window=lookback_window,
+                )
+                return None
+        except (ValueError, IndexError) as e:
+            logger.warning(
+                "failed_to_parse_lookback_window",
+                lookback_window=lookback_window,
+                error=str(e),
+            )
+            return None
+    
     def __init__(
         self,
         metadata_storage: MetadataStorage,
@@ -333,31 +455,33 @@ class DatasetBuilder:
                 dataset_id_type=str(type(dataset.get("id"))),
             )
             
-            # Determine date range
-            logger.info(
-                "determining_date_range",
-                dataset_id=dataset_id,
-                split_strategy=split_strategy.value,
-            )
+            # Determine date range with lookback buffer
             logger.info(
                 "determining_date_range",
                 dataset_id=dataset_id,
                 split_strategy=split_strategy.value,
             )
             if split_strategy == SplitStrategy.TIME_BASED:
-                start_date = dataset["train_period_start"]
+                train_period_start = dataset["train_period_start"]
                 end_date = dataset["test_period_end"]
+                
+                # Compute maximum lookback period required by features in Feature Registry
+                max_lookback_minutes = self._compute_max_lookback_minutes(self._feature_registry_loader)
+                
+                # Add lookback buffer to the left of train period start
+                # This ensures features requiring historical data (e.g., EMA, RSI) can be computed
+                # for the first timestamps in train split without NaN values
+                lookback_delta = timedelta(minutes=max_lookback_minutes)
+                start_date = train_period_start - lookback_delta
+                
                 logger.info(
                     "date_range_determined",
                     dataset_id=dataset_id,
-                    start_date=start_date.isoformat() if start_date else None,
+                    train_period_start=train_period_start.isoformat() if train_period_start else None,
+                    data_load_start=start_date.isoformat() if start_date else None,
                     end_date=end_date.isoformat() if end_date else None,
-                )
-                logger.info(
-                    "date_range_determined",
-                    dataset_id=dataset_id,
-                    start_date=start_date.isoformat() if start_date else None,
-                    end_date=end_date.isoformat() if end_date else None,
+                    lookback_buffer_minutes=max_lookback_minutes,
+                    note="Data load includes lookback buffer for feature computation; buffer rows will be filtered after splits",
                 )
             else:
                 # Walk-forward: use config dates
@@ -366,17 +490,34 @@ class DatasetBuilder:
                 # fromisoformat may return timezone-naive datetime if string doesn't contain timezone
                 start_date_str = wf_config["start_date"]
                 end_date_str = wf_config["end_date"]
-                start_date = datetime.fromisoformat(start_date_str)
+                walk_forward_start = datetime.fromisoformat(start_date_str)
                 end_date = datetime.fromisoformat(end_date_str)
                 # Ensure timezone-aware UTC
-                if start_date.tzinfo is None:
-                    start_date = start_date.replace(tzinfo=timezone.utc)
+                if walk_forward_start.tzinfo is None:
+                    walk_forward_start = walk_forward_start.replace(tzinfo=timezone.utc)
                 else:
-                    start_date = start_date.astimezone(timezone.utc)
+                    walk_forward_start = walk_forward_start.astimezone(timezone.utc)
                 if end_date.tzinfo is None:
                     end_date = end_date.replace(tzinfo=timezone.utc)
                 else:
                     end_date = end_date.astimezone(timezone.utc)
+                
+                # Compute maximum lookback period required by features in Feature Registry
+                max_lookback_minutes = self._compute_max_lookback_minutes(self._feature_registry_loader)
+                
+                # Add lookback buffer to the left of walk-forward start date
+                lookback_delta = timedelta(minutes=max_lookback_minutes)
+                start_date = walk_forward_start - lookback_delta
+                
+                logger.info(
+                    "date_range_determined",
+                    dataset_id=dataset_id,
+                    walk_forward_start=walk_forward_start.isoformat() if walk_forward_start else None,
+                    data_load_start=start_date.isoformat() if start_date else None,
+                    end_date=end_date.isoformat() if end_date else None,
+                    lookback_buffer_minutes=max_lookback_minutes,
+                    note="Data load includes lookback buffer for feature computation; buffer rows will be filtered after splits",
+                )
             
             # Check data availability
             logger.info(
@@ -1757,20 +1898,68 @@ class DatasetBuilder:
                 test_period_end = test_period_end.astimezone(timezone.utc)
         
         # Split by periods
+        # Use consistent boundaries: <= for all end dates to include all data within the period
+        # Note: Rows with timestamps before train_period_start are from lookback buffer
+        # and will be automatically filtered out by these conditions
         train = merged[
             (merged["timestamp"] >= train_period_start) &
-            (merged["timestamp"] < train_period_end)
+            (merged["timestamp"] <= train_period_end)
         ]
         
         validation = merged[
             (merged["timestamp"] >= validation_period_start) &
-            (merged["timestamp"] < validation_period_end)
+            (merged["timestamp"] <= validation_period_end)
         ]
         
         test = merged[
             (merged["timestamp"] >= test_period_start) &
             (merged["timestamp"] <= test_period_end)
         ]
+        
+        # Log buffer filtering statistics
+        buffer_rows_count = len(merged[merged["timestamp"] < train_period_start])
+        if buffer_rows_count > 0:
+            logger.info(
+                "lookback_buffer_filtered",
+                dataset_id=dataset.get("id"),
+                buffer_rows_count=buffer_rows_count,
+                train_period_start=train_period_start.isoformat(),
+                note="Lookback buffer rows (before train_period_start) were filtered out after feature computation",
+            )
+        
+        # Log class distribution for each split
+        if not train.empty and "target" in train.columns:
+            train_dist = train["target"].value_counts().to_dict()
+            train_dist_pct = {k: (v / len(train) * 100) for k, v in train_dist.items()}
+            logger.info(
+                "train_split_class_distribution",
+                dataset_id=dataset.get("id"),
+                total_records=len(train),
+                class_distribution=train_dist,
+                class_distribution_percentage={k: round(v, 2) for k, v in train_dist_pct.items()},
+            )
+        
+        if not validation.empty and "target" in validation.columns:
+            val_dist = validation["target"].value_counts().to_dict()
+            val_dist_pct = {k: (v / len(validation) * 100) for k, v in val_dist.items()}
+            logger.info(
+                "validation_split_class_distribution",
+                dataset_id=dataset.get("id"),
+                total_records=len(validation),
+                class_distribution=val_dist,
+                class_distribution_percentage={k: round(v, 2) for k, v in val_dist_pct.items()},
+            )
+        
+        if not test.empty and "target" in test.columns:
+            test_dist = test["target"].value_counts().to_dict()
+            test_dist_pct = {k: (v / len(test) * 100) for k, v in test_dist.items()}
+            logger.info(
+                "test_split_class_distribution",
+                dataset_id=dataset.get("id"),
+                total_records=len(test),
+                class_distribution=test_dist,
+                class_distribution_percentage={k: round(v, 2) for k, v in test_dist_pct.items()},
+            )
         
         return {
             "train": train,

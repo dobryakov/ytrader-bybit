@@ -101,7 +101,8 @@ class QualityEvaluator:
         # ROC AUC (for binary and multi-class classification with probabilities)
         if y_pred_proba is not None:
             try:
-                unique_classes = len(y_true.unique())
+                unique_labels = sorted(y_true.unique().tolist())
+                unique_classes = len(unique_labels)
                 
                 # Convert to numpy array if needed
                 if isinstance(y_pred_proba, pd.Series):
@@ -111,13 +112,26 @@ class QualityEvaluator:
                 else:
                     y_pred_proba_array = np.array(y_pred_proba)
                 
+                # Log information for debugging
+                logger.debug(
+                    "Calculating ROC AUC",
+                    unique_classes=unique_classes,
+                    unique_labels=unique_labels,
+                    y_pred_proba_shape=y_pred_proba_array.shape if hasattr(y_pred_proba_array, 'shape') else None,
+                    y_pred_proba_ndim=y_pred_proba_array.ndim if hasattr(y_pred_proba_array, 'ndim') else None,
+                )
+                
                 # Check if it's 1D or 2D
                 if y_pred_proba_array.ndim == 1:
                     # 1D array: binary classification probabilities
                     if unique_classes == 2:
                         metrics["roc_auc"] = float(roc_auc_score(y_true, y_pred_proba_array))
                     else:
-                        logger.warning("ROC AUC not calculated: 1D probabilities but more than 2 classes")
+                        logger.warning(
+                            "ROC AUC not calculated: 1D probabilities but more than 2 classes",
+                            unique_classes=unique_classes,
+                            unique_labels=unique_labels,
+                        )
                         metrics["roc_auc"] = 0.0
                 elif y_pred_proba_array.ndim == 2:
                     # 2D array: probabilities for each class (n_samples, n_classes)
@@ -130,16 +144,48 @@ class QualityEvaluator:
                             # Use probabilities for positive class (class 1)
                             metrics["roc_auc"] = float(roc_auc_score(y_true_array, y_pred_proba_array[:, 1]))
                         else:
-                            logger.warning("ROC AUC not calculated: binary classification but wrong number of probability columns")
+                            logger.warning(
+                                "ROC AUC not calculated: binary classification but wrong number of probability columns",
+                                expected_columns=2,
+                                actual_columns=y_pred_proba_array.shape[1],
+                            )
                             metrics["roc_auc"] = 0.0
                     elif unique_classes > 2:
                         # Multi-class classification: use one-vs-rest (ovr) or one-vs-one (ovo)
-                        # Use one-vs-rest averaging
-                        metrics["roc_auc"] = float(roc_auc_score(y_true, y_pred_proba_array, multi_class='ovr', average='weighted'))
+                        # Use one-vs-rest averaging with weighted average
+                        # Note: y_true should contain remapped labels [0, 1, 2, ...] after XGBoost remapping
+                        # If some classes are missing in y_true, sklearn will handle it automatically
+                        y_true_array = np.array(y_true)
+                        
+                        # Check if probability array has correct number of columns
+                        # XGBoost should output probabilities for all classes [0, 1, 2, ...] even if some are missing in y_true
+                        if y_pred_proba_array.shape[1] >= unique_classes:
+                            metrics["roc_auc"] = float(roc_auc_score(
+                                y_true_array,
+                                y_pred_proba_array,
+                                multi_class='ovr',
+                                average='weighted',
+                            ))
+                        else:
+                            logger.warning(
+                                "ROC AUC not calculated: multi-class but probability array has fewer columns than unique classes",
+                                unique_classes=unique_classes,
+                                unique_labels=unique_labels,
+                                probability_columns=y_pred_proba_array.shape[1],
+                            )
+                            metrics["roc_auc"] = 0.0
                     else:
+                        logger.warning(
+                            "ROC AUC not calculated: insufficient classes",
+                            unique_classes=unique_classes,
+                            unique_labels=unique_labels,
+                        )
                         metrics["roc_auc"] = 0.0
                 else:
-                    logger.warning("ROC AUC not calculated: unexpected probability array shape")
+                    logger.warning(
+                        "ROC AUC not calculated: unexpected probability array shape",
+                        ndim=y_pred_proba_array.ndim if hasattr(y_pred_proba_array, 'ndim') else None,
+                    )
                     metrics["roc_auc"] = 0.0
             except Exception as e:
                 logger.warning("Failed to calculate ROC AUC", error=str(e), exc_info=True)

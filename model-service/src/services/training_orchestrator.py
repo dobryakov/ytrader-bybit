@@ -507,6 +507,20 @@ class TrainingOrchestrator:
             if features_df.empty or labels_series.empty:
                 logger.error("Empty dataset after loading", training_id=training_id, dataset_id=str(dataset_id), trace_id=trace_id)
                 return
+            
+            # Log class distribution for train split
+            train_class_dist = labels_series.value_counts().to_dict()
+            train_class_dist_pct = {k: (v / len(labels_series) * 100) for k, v in train_class_dist.items()}
+            logger.info(
+                "Train dataset loaded with class distribution",
+                training_id=training_id,
+                dataset_id=str(dataset_id),
+                record_count=len(features_df),
+                class_distribution=train_class_dist,
+                class_distribution_percentage={k: round(v, 2) for k, v in train_class_dist_pct.items()},
+                unique_labels=sorted(labels_series.unique().tolist()),
+                trace_id=trace_id,
+            )
 
             # Perform data quality validation if enabled
             if settings.model_training_quality_checks_enabled:
@@ -583,12 +597,27 @@ class TrainingOrchestrator:
                         # Keep only numeric columns for features
                         validation_features = validation_features.select_dtypes(include=[np.number])
                         validation_labels = val_df[target_column]
-                        logger.info(
-                            "Validation dataset loaded",
-                            training_id=training_id,
-                            record_count=len(validation_features),
-                            trace_id=trace_id,
-                        )
+                        
+                        # Log class distribution for validation split
+                        if not validation_labels.empty:
+                            val_class_dist = validation_labels.value_counts().to_dict()
+                            val_class_dist_pct = {k: (v / len(validation_labels) * 100) for k, v in val_class_dist.items()}
+                            logger.info(
+                                "Validation dataset loaded",
+                                training_id=training_id,
+                                record_count=len(validation_features),
+                                class_distribution=val_class_dist,
+                                class_distribution_percentage={k: round(v, 2) for k, v in val_class_dist_pct.items()},
+                                unique_labels=sorted(validation_labels.unique().tolist()),
+                                trace_id=trace_id,
+                            )
+                        else:
+                            logger.info(
+                                "Validation dataset loaded",
+                                training_id=training_id,
+                                record_count=len(validation_features),
+                                trace_id=trace_id,
+                            )
                 except Exception as e:
                     logger.warning(
                         "Failed to load validation dataset, using train set for evaluation",
@@ -670,10 +699,16 @@ class TrainingOrchestrator:
                                     trace_id=trace_id,
                                 )
                             else:
+                                # Log class distribution for test split
+                                test_class_dist = test_labels.value_counts().to_dict()
+                                test_class_dist_pct = {k: (v / len(test_labels) * 100) for k, v in test_class_dist.items()}
                                 logger.info(
                                     "Test dataset loaded",
                                     training_id=training_id,
                                     record_count=len(test_features),
+                                    class_distribution=test_class_dist,
+                                    class_distribution_percentage={k: round(v, 2) for k, v in test_class_dist_pct.items()},
+                                    unique_labels=sorted(test_labels.unique().tolist()),
                                     trace_id=trace_id,
                                 )
 
