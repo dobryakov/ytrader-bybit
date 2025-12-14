@@ -157,7 +157,7 @@ def compute_all_candle_patterns_3m(
     
     if len(klines) < 3:
         # Return all features as None if insufficient data
-        return _get_empty_features_dict()
+        return _get_empty_features_dict_3m()
     
     # Sort by timestamp to ensure correct order (0 = oldest, 2 = newest/current)
     klines_sorted = klines.sort_values("timestamp").reset_index(drop=True)
@@ -168,7 +168,7 @@ def compute_all_candle_patterns_3m(
         idx = len(klines_sorted) + i
         candle_comp = _get_candle_components(klines_sorted, idx)
         if candle_comp is None:
-            return _get_empty_features_dict()
+            return _get_empty_features_dict_3m()
         candle_data.append(candle_comp)
     
     # Extract candle components (0 = oldest, 1 = middle, 2 = newest)
@@ -457,8 +457,8 @@ def compute_all_candle_patterns_3m(
     return features
 
 
-def _get_empty_features_dict() -> Dict[str, Optional[float]]:
-    """Return dictionary with all 77 features set to None."""
+def _get_empty_features_dict_3m() -> Dict[str, Optional[float]]:
+    """Return dictionary with all 77 features (v1.4.0 and earlier) set to None."""
     feature_names = [
         # Basic categorical (30)
         "candle_0_is_green", "candle_0_is_red", "candle_1_is_green", "candle_1_is_red",
@@ -496,6 +496,38 @@ def _get_empty_features_dict() -> Dict[str, Optional[float]]:
         "pattern_rising_three_methods", "pattern_falling_three_methods",
         "pattern_inside_bar", "pattern_inside_bar_bullish", "pattern_inside_bar_bearish",
         "pattern_hanging_man", "pattern_tweezers_top", "pattern_tweezers_bottom",
+    ]
+    return {name: None for name in feature_names}
+
+
+def _get_empty_features_dict() -> Dict[str, Optional[float]]:
+    """Return dictionary with all 34 features (v1.5.0) set to None."""
+    feature_names = [
+        # Свечные фичи (18 фич)
+        # Цвет свечи (3)
+        "candle_0_is_green", "candle_1_is_green", "candle_2_is_green",
+        # Размер тела (3)
+        "candle_0_body_ratio", "candle_1_body_ratio", "candle_2_body_ratio",
+        # Верхняя тень (3)
+        "candle_0_upper_shadow_ratio", "candle_1_upper_shadow_ratio", "candle_2_upper_shadow_ratio",
+        # Нижняя тень (3)
+        "candle_0_lower_shadow_ratio", "candle_1_lower_shadow_ratio", "candle_2_lower_shadow_ratio",
+        # Специальные паттерны (6)
+        "candle_0_is_doji", "candle_0_is_hammer",
+        "candle_1_is_doji", "candle_1_is_hammer",
+        "candle_2_is_doji", "candle_2_is_hammer",
+        # Многосвечные паттерны (16 фич)
+        # Цветовые (4)
+        "pattern_all_green", "pattern_all_red", "pattern_green_red_green", "pattern_red_green_red",
+        # Размер тела (2)
+        "pattern_body_increasing", "pattern_body_decreasing",
+        # Объём (4)
+        "pattern_volume_increasing", "pattern_volume_decreasing",
+        "pattern_green_large_volume", "pattern_red_large_volume",
+        # Классические разворотные паттерны (6)
+        "pattern_bullish_engulfing", "pattern_bearish_engulfing",
+        "pattern_morning_star", "pattern_evening_star",
+        "pattern_inside_bar_bullish", "pattern_inside_bar_bearish",
     ]
     return {name: None for name in feature_names}
 

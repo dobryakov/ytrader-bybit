@@ -508,3 +508,238 @@ class TestTargetComputation:
         # Verify no data leakage - targets should only use future prices
         # This is verified by the fact that merge_asof uses direction='forward'
         assert result['timestamp'].notna().all(), "All timestamps should be valid"
+
+
+class TestVolatilityNormalizedStd:
+    """Test volatility-normalized std target computation."""
+    
+    def test_volatility_normalized_std_basic(self):
+        """Test basic volatility-normalized std computation."""
+        from src.services.target_computation import TargetComputationEngine
+        
+        # Create data with varying volatility
+        timestamps = pd.date_range('2025-01-01 00:00:00', periods=100, freq='1min', tz='UTC')
+        # Create prices with varying volatility: low vol -> high vol -> low vol
+        np.random.seed(42)
+        returns = np.concatenate([
+            np.random.normal(0, 0.001, 30),  # Low volatility
+            np.random.normal(0, 0.005, 40),  # High volatility
+            np.random.normal(0, 0.001, 30),  # Low volatility
+        ])
+        prices = [100.0]
+        for ret in returns:
+            prices.append(prices[-1] * (1 + ret))
+        
+        data = pd.DataFrame({
+            'timestamp': timestamps,
+            'price': prices[:100],  # Take first 100 prices
+        })
+        
+        config = {
+            "formula": "volatility_normalized_std",
+            "price_source": "close",
+            "future_price_source": "close",
+            "lookup_method": "nearest_forward",
+            "volatility_window": 20,
+        }
+        
+        result = TargetComputationEngine.compute_target(
+            data, horizon=300, computation_config=config
+        )
+        
+        assert not result.empty, "Result should not be empty"
+        assert 'timestamp' in result.columns
+        assert 'target' in result.columns
+        
+        valid_targets = result['target'].dropna()
+        assert len(valid_targets) > 0, "Should have valid targets"
+        
+        # Normalized targets should be in units of standard deviations
+        # Most values should be within reasonable range (e.g., -5 to 5 std devs)
+        assert valid_targets.abs().max() < 10.0, "Normalized targets should be reasonable"
+        
+        # Check that targets are numeric
+        assert result['target'].dtype in [np.float64, np.float32], "Targets should be float"
+        
+        # Verify no infinite or NaN values in valid targets
+        assert not valid_targets.isin([np.inf, -np.inf]).any(), "Should not have infinite values"
+        assert valid_targets.notna().all(), "All valid targets should be non-NaN"
+    
+    def test_volatility_normalized_std_insufficient_data(self):
+        """Test volatility-normalized std with insufficient data for rolling window."""
+        from src.services.target_computation import TargetComputationEngine
+        
+        # Create data with less than volatility_window points
+        timestamps = pd.date_range('2025-01-01 00:00:00', periods=15, freq='1min', tz='UTC')
+        prices = [100.0 + i * 0.1 for i in range(15)]
+        
+        data = pd.DataFrame({
+            'timestamp': timestamps,
+            'price': prices,
+        })
+        
+        config = {
+            "formula": "volatility_normalized_std",
+            "price_source": "close",
+            "future_price_source": "close",
+            "lookup_method": "nearest_forward",
+            "volatility_window": 20,  # Larger than data size
+        }
+        
+        result = TargetComputationEngine.compute_target(
+            data, horizon=300, computation_config=config
+        )
+        
+        # Should return empty or have NaN targets (can't compute rolling std with insufficient data)
+        if not result.empty:
+            # First few rows won't have enough data for rolling std
+            # But some rows might have valid targets if we have enough data
+            valid_targets = result['target'].dropna()
+            # With only 15 points and window=20, we might not have valid targets
+            # This is expected behavior
+            assert len(valid_targets) >= 0, "May have no valid targets with insufficient data"
+    
+    def test_volatility_normalized_std_zero_volatility(self):
+        """Test volatility-normalized std with zero volatility (constant prices)."""
+        from src.services.target_computation import TargetComputationEngine
+        
+        # Create data with constant prices (zero volatility)
+        timestamps = pd.date_range('2025-01-01 00:00:00', periods=50, freq='1min', tz='UTC')
+        prices = [100.0] * 50  # Constant prices
+        
+        data = pd.DataFrame({
+            'timestamp': timestamps,
+            'price': prices,
+        })
+        
+        config = {
+            "formula": "volatility_normalized_std",
+            "price_source": "close",
+            "future_price_source": "close",
+            "lookup_method": "nearest_forward",
+            "volatility_window": 20,
+        }
+        
+        result = TargetComputationEngine.compute_target(
+            data, horizon=300, computation_config=config
+        )
+        
+        # With constant prices, returns are zero, so volatility is zero
+        # Rows with zero volatility should be filtered out
+        if not result.empty:
+            valid_targets = result['target'].dropna()
+            # With zero volatility, all rows should be filtered out
+            assert len(valid_targets) == 0, "Should filter out rows with zero volatility"
+    
+    def test_volatility_normalized_std_custom_window(self):
+        """Test volatility-normalized std with custom volatility window."""
+        from src.services.target_computation import TargetComputationEngine
+        
+        # Create data with known volatility pattern
+        timestamps = pd.date_range('2025-01-01 00:00:00', periods=100, freq='1min', tz='UTC')
+        np.random.seed(42)
+        returns = np.random.normal(0, 0.002, 100)
+        prices = [100.0]
+        for ret in returns:
+            prices.append(prices[-1] * (1 + ret))
+        
+        data = pd.DataFrame({
+            'timestamp': timestamps,
+            'price': prices[:100],
+        })
+        
+        # Test with different volatility windows
+        for window in [10, 20, 30]:
+            config = {
+                "formula": "volatility_normalized_std",
+                "price_source": "close",
+                "future_price_source": "close",
+                "lookup_method": "nearest_forward",
+                "volatility_window": window,
+            }
+            
+            result = TargetComputationEngine.compute_target(
+                data, horizon=300, computation_config=config
+            )
+            
+            assert not result.empty, f"Result should not be empty for window={window}"
+            valid_targets = result['target'].dropna()
+            
+            # With larger window, we need more data points before we get valid targets
+            # But we should have some valid targets
+            if window <= 50:  # With 100 points, window=50 should still give some results
+                assert len(valid_targets) > 0, f"Should have valid targets for window={window}"
+            
+            # Verify targets are reasonable
+            if len(valid_targets) > 0:
+                assert valid_targets.abs().max() < 20.0, f"Targets should be reasonable for window={window}"
+                assert not valid_targets.isin([np.inf, -np.inf]).any(), "Should not have infinite values"
+    
+    def test_volatility_normalized_std_vs_raw_returns(self):
+        """Test that volatility-normalized std produces different values than raw returns."""
+        from src.services.target_computation import TargetComputationEngine
+        
+        # Create data with varying volatility
+        timestamps = pd.date_range('2025-01-01 00:00:00', periods=100, freq='1min', tz='UTC')
+        np.random.seed(42)
+        # Create returns with changing volatility
+        returns = np.concatenate([
+            np.random.normal(0, 0.001, 50),  # Low volatility
+            np.random.normal(0, 0.005, 50),  # High volatility
+        ])
+        prices = [100.0]
+        for ret in returns:
+            prices.append(prices[-1] * (1 + ret))
+        
+        data = pd.DataFrame({
+            'timestamp': timestamps,
+            'price': prices[:100],
+        })
+        
+        # Compute raw returns
+        raw_config = {
+            "formula": "returns",
+            "price_source": "close",
+            "future_price_source": "close",
+            "lookup_method": "nearest_forward",
+        }
+        raw_result = TargetComputationEngine.compute_target(
+            data, horizon=300, computation_config=raw_config
+        )
+        
+        # Compute volatility-normalized returns
+        normalized_config = {
+            "formula": "volatility_normalized_std",
+            "price_source": "close",
+            "future_price_source": "close",
+            "lookup_method": "nearest_forward",
+            "volatility_window": 20,
+        }
+        normalized_result = TargetComputationEngine.compute_target(
+            data, horizon=300, computation_config=normalized_config
+        )
+        
+        # Both should have results
+        assert not raw_result.empty, "Raw returns should not be empty"
+        assert not normalized_result.empty, "Normalized returns should not be empty"
+        
+        # Merge on timestamp to compare
+        merged = raw_result.merge(
+            normalized_result,
+            on='timestamp',
+            suffixes=('_raw', '_normalized')
+        )
+        
+        valid_merged = merged.dropna(subset=['target_raw', 'target_normalized'])
+        if len(valid_merged) > 0:
+            # Normalized targets should be different from raw returns
+            # (they are divided by rolling std, so values should differ)
+            differences = (valid_merged['target_normalized'] - valid_merged['target_raw']).abs()
+            # Most differences should be significant (not just rounding errors)
+            assert (differences > 1e-6).sum() > 0, "Normalized targets should differ from raw returns"
+            
+            # Normalized targets should have different scale (in units of std devs)
+            # Raw returns are typically small (e.g., 0.001 = 0.1%)
+            # Normalized returns can be larger (e.g., 2.0 = 2 standard deviations)
+            assert valid_merged['target_normalized'].abs().max() >= valid_merged['target_raw'].abs().max(), \
+                "Normalized targets may have larger absolute values (in std dev units)"

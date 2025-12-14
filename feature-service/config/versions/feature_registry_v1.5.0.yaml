@@ -378,23 +378,8 @@ features:
   - source: kline
     timestamp_required: true
 
-# 4️⃣ Orderflow фичи - 2 фичи
-# Подписанный объём
-- name: signed_volume_3m
-  input_sources:
-  - trades
-  lookback_window: 3m
-  lookahead_forbidden: true
-  max_lookback_days: 1
-  data_sources:
-  - source: trades
-    timestamp_required: true
-- name: signed_volume_5m
-  input_sources:
-  - trades
-  lookback_window: 5m
-  lookahead_forbidden: true
-  max_lookback_days: 1
-  data_sources:
-  - source: trades
-    timestamp_required: true
+# 4️⃣ Orderflow фичи
+# Примечание: signed_volume фичи исключены из v1.5.0, так как Bybit REST API
+# не предоставляет исторические trades данные (только последние 60 trades).
+# Эти фичи будут всегда 0.0 на исторических данных, что делает их бесполезными.
+# Для работы с orderflow фичами требуется WebSocket поток trades в реальном времени.

@@ -53,7 +53,7 @@ def set_target_registry_version_manager(manager: TargetRegistryVersionManager):
     _target_registry_version_manager = manager
 
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class DatasetBuildRequest(BaseModel):
