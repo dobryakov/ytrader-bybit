@@ -19,6 +19,7 @@ from src.features.orderflow_features import compute_all_orderflow_features
 from src.features.orderbook_features import compute_all_orderbook_features
 from src.features.perpetual_features import compute_all_perpetual_features
 from src.features.temporal_features import compute_all_temporal_features
+from src.features.candle_patterns import compute_all_candle_patterns_3m
 
 logger = structlog.get_logger(__name__)
 
@@ -164,6 +165,10 @@ class FeatureComputer:
             # Temporal features
             temporal_features = compute_all_temporal_features(timestamp)
             all_features.update(temporal_features)
+            
+            # Candlestick pattern features (3-minute window)
+            candle_pattern_features = compute_all_candle_patterns_3m(rolling_windows)
+            all_features.update(candle_pattern_features)
             
             # Filter out None values and NaN/Inf values (not JSON compliant)
             import math

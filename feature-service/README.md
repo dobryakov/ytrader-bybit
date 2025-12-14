@@ -296,6 +296,8 @@ GET /feature-registry/validate
 
 Manages Feature Registry configuration.
 
+**Current Version: 1.3.0** — includes 77 candlestick pattern features based on analysis of the last 3 minutes of kline data. See `docs/feature-service.md` for detailed feature descriptions.
+
 ### Data Quality
 
 ```bash

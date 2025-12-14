@@ -65,6 +65,27 @@ class Config(BaseSettings):
     dataset_min_valid_features_ratio: float = Field(default=0.3, env="DATASET_MIN_VALID_FEATURES_RATIO", description="Minimum ratio of valid (non-NaN) features per row (0.0-1.0, default: 0.3 = 30%). Rows below this will be dropped.")
     dataset_fail_on_high_nan_ratio: bool = Field(default=False, env="DATASET_FAIL_ON_HIGH_NAN_RATIO", description="Fail dataset build if any feature has NaN ratio above threshold (default: False, only logs warning)")
     
+    # Redis Configuration (PRIMARY cache)
+    redis_host: str = Field(default="redis", env="REDIS_HOST", description="Redis hostname (default: 'redis' for Docker service name)")
+    redis_port: int = Field(default=6379, env="REDIS_PORT", description="Redis port")
+    redis_db: int = Field(default=0, env="REDIS_DB", description="Redis database number")
+    redis_password: Optional[str] = Field(default=None, env="REDIS_PASSWORD", description="Redis password (optional)")
+    redis_max_connections: int = Field(default=10, env="REDIS_MAX_CONNECTIONS", description="Redis connection pool size")
+    redis_socket_timeout: int = Field(default=5, env="REDIS_SOCKET_TIMEOUT", description="Redis socket timeout in seconds")
+    redis_socket_connect_timeout: int = Field(default=5, env="REDIS_SOCKET_CONNECT_TIMEOUT", description="Redis socket connect timeout in seconds")
+    cache_redis_enabled: bool = Field(default=True, env="CACHE_REDIS_ENABLED", description="Enable Redis as primary cache (default: true). If false, will use memory cache only.")
+    
+    # Cache Configuration
+    cache_ttl_historical_data_seconds: int = Field(default=86400, env="CACHE_TTL_HISTORICAL_DATA_SECONDS", description="TTL for historical data cache entries in seconds (default: 86400 = 24 hours). Applies to both Redis and memory fallback cache.")
+    cache_ttl_features_seconds: int = Field(default=604800, env="CACHE_TTL_FEATURES_SECONDS", description="TTL for computed features cache entries in seconds (default: 604800 = 7 days). Applies to both Redis and memory fallback cache.")
+    cache_max_size_mb: int = Field(default=1024, env="CACHE_MAX_SIZE_MB", description="Maximum cache size in MB for memory fallback cache only (default: 1024 = 1GB). Redis uses maxmemory setting from Redis configuration.")
+    cache_max_entries: int = Field(default=10000, env="CACHE_MAX_ENTRIES", description="Maximum number of cache entries for memory fallback cache only (default: 10000). Redis uses maxmemory-policy from Redis configuration.")
+    dataset_builder_cache_enabled: bool = Field(default=True, env="DATASET_BUILDER_CACHE_ENABLED", description="Enable caching for dataset building (default: true). Uses Redis if available, falls back to memory cache.")
+    dataset_builder_cache_historical_data_enabled: bool = Field(default=True, env="DATASET_BUILDER_CACHE_HISTORICAL_DATA_ENABLED", description="Enable historical data caching (default: true). Uses Redis if available, falls back to memory cache.")
+    dataset_builder_cache_features_enabled: bool = Field(default=True, env="DATASET_BUILDER_CACHE_FEATURES_ENABLED", description="Enable computed features caching (default: true). Uses Redis if available, falls back to memory cache.")
+    cache_invalidation_on_registry_change: bool = Field(default=True, env="CACHE_INVALIDATION_ON_REGISTRY_CHANGE", description="Automatically invalidate cache when Feature Registry version changes (default: true). Works for both Redis and memory cache.")
+    cache_invalidation_on_data_change: bool = Field(default=True, env="CACHE_INVALIDATION_ON_DATA_CHANGE", description="Automatically invalidate cache when historical data files are modified (default: true). Works for both Redis and memory cache.")
+    
     @property
     def bybit_rest_base_url(self) -> str:
         """Get Bybit REST API base URL based on environment."""
@@ -84,7 +105,7 @@ class Config(BaseSettings):
         extra="ignore"
     )
     
-    @field_validator("postgres_port", "rabbitmq_port", "feature_service_port", "ws_gateway_port")
+    @field_validator("postgres_port", "rabbitmq_port", "feature_service_port", "ws_gateway_port", "redis_port")
     @classmethod
     def validate_port(cls, value: int) -> int:
         """Validate port range."""

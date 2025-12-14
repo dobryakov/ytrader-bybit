@@ -87,7 +87,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: redis
-    command: redis-server --appendonly yes
+    command: redis-server --appendonly yes --maxmemory 2gb --maxmemory-policy allkeys-lru
     volumes:
       - redis_data:/data
     networks:
@@ -243,6 +243,23 @@ services:
       - DATASET_MAX_ROW_NAN_RATIO=${DATASET_MAX_ROW_NAN_RATIO:-0.8}
       - DATASET_MIN_VALID_FEATURES_RATIO=${DATASET_MIN_VALID_FEATURES_RATIO:-0.3}
       - DATASET_FAIL_ON_HIGH_NAN_RATIO=${DATASET_FAIL_ON_HIGH_NAN_RATIO:-false}
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - REDIS_DB=${REDIS_DB:-0}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - REDIS_MAX_CONNECTIONS=${REDIS_MAX_CONNECTIONS:-10}
+      - REDIS_SOCKET_TIMEOUT=${REDIS_SOCKET_TIMEOUT:-5}
+      - REDIS_SOCKET_CONNECT_TIMEOUT=${REDIS_SOCKET_CONNECT_TIMEOUT:-5}
+      - CACHE_REDIS_ENABLED=${CACHE_REDIS_ENABLED:-true}
+      - CACHE_TTL_HISTORICAL_DATA_SECONDS=${CACHE_TTL_HISTORICAL_DATA_SECONDS:-86400}
+      - CACHE_TTL_FEATURES_SECONDS=${CACHE_TTL_FEATURES_SECONDS:-604800}
+      - CACHE_MAX_SIZE_MB=${CACHE_MAX_SIZE_MB:-1024}
+      - CACHE_MAX_ENTRIES=${CACHE_MAX_ENTRIES:-10000}
+      - DATASET_BUILDER_CACHE_ENABLED=${DATASET_BUILDER_CACHE_ENABLED:-true}
+      - DATASET_BUILDER_CACHE_HISTORICAL_DATA_ENABLED=${DATASET_BUILDER_CACHE_HISTORICAL_DATA_ENABLED:-true}
+      - DATASET_BUILDER_CACHE_FEATURES_ENABLED=${DATASET_BUILDER_CACHE_FEATURES_ENABLED:-true}
+      - CACHE_INVALIDATION_ON_REGISTRY_CHANGE=${CACHE_INVALIDATION_ON_REGISTRY_CHANGE:-true}
+      - CACHE_INVALIDATION_ON_DATA_CHANGE=${CACHE_INVALIDATION_ON_DATA_CHANGE:-true}
     volumes:
       - ./feature-service/src:/app/src
       - ./feature-service/config:/app/config
@@ -255,6 +272,8 @@ services:
       postgres:
         condition: service_healthy
       rabbitmq:
+        condition: service_healthy
+      redis:
         condition: service_healthy
       ws-gateway:
         condition: service_started

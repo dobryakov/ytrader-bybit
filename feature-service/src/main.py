@@ -11,6 +11,7 @@ from src.api.health import router as health_router
 from src.api.features import router as features_router, set_feature_computer
 from src.api.dataset import router as dataset_router, set_metadata_storage, set_dataset_builder
 from src.api.backfill import router as backfill_router, set_backfilling_service
+from src.api.cache import router as cache_router, set_cache_service
 from src.api.feature_registry import (
     router as feature_registry_router,
     set_feature_registry_loader,
@@ -37,6 +38,7 @@ from src.storage.parquet_storage import ParquetStorage
 from src.services.dataset_builder import DatasetBuilder
 from src.services.data_storage import DataStorageService
 from src.services.backfilling_service import BackfillingService
+from src.services.cache_service import CacheServiceFactory
 
 # Setup logging
 setup_logging(level=config.feature_service_log_level)
@@ -69,6 +71,7 @@ app.include_router(backfill_router)
 app.include_router(features_router)
 app.include_router(dataset_router)
 app.include_router(feature_registry_router)
+app.include_router(cache_router)
 
 # Add authentication middleware to all routes except health
 @app.middleware("http")
@@ -266,6 +269,29 @@ async def startup():
         dataset_publisher = DatasetPublisher(mq_manager=mq_manager)
         await dataset_publisher.initialize()
         
+        # Initialize cache service
+        cache_service = None
+        if config.dataset_builder_cache_enabled:
+            try:
+                cache_service = await CacheServiceFactory.create(
+                    redis_host=config.redis_host,
+                    redis_port=config.redis_port,
+                    redis_db=config.redis_db,
+                    redis_password=config.redis_password,
+                    redis_max_connections=config.redis_max_connections,
+                    redis_socket_timeout=config.redis_socket_timeout,
+                    redis_socket_connect_timeout=config.redis_socket_connect_timeout,
+                    cache_redis_enabled=config.cache_redis_enabled,
+                    cache_max_size_mb=config.cache_max_size_mb,
+                    cache_max_entries=config.cache_max_entries,
+                )
+                logger.info("Cache service initialized", type=type(cache_service).__name__)
+                # Set cache service for API endpoints
+                set_cache_service(cache_service)
+            except Exception as e:
+                logger.warning("Failed to initialize cache service, caching disabled", error=str(e))
+                cache_service = None
+        
         # Initialize Dataset Builder (use version from loaded config)
         dataset_builder = DatasetBuilder(
             metadata_storage=metadata_storage,
@@ -275,6 +301,7 @@ async def startup():
             feature_registry_loader=feature_registry_loader,
             backfilling_service=backfilling_service,
             dataset_publisher=dataset_publisher,
+            cache_service=cache_service,
         )
         set_dataset_builder(dataset_builder)
         

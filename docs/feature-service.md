@@ -124,6 +124,80 @@ Feature Service обязан:
 - time_of_day (числовой)
 - rolling z-score (стандартизация последних N значений)
 
+### Свечные паттерны (Feature Registry v1.3.0)
+
+Новая версия Feature Registry 1.3.0 добавляет 77 признаков свечных паттернов на основе анализа последних 3 минутных свечей:
+
+#### Базовые категориальные признаки (30 признаков)
+
+Для каждой из 3 последних свечей (candle_0, candle_1, candle_2, где 0 — самая старая, 2 — самая новая):
+
+- **Цвет свечи** (6 признаков):
+  - `candle_N_is_green` / `candle_N_is_red` — зелёная или красная свеча
+
+- **Размер тела** (6 признаков):
+  - `candle_N_body_large` / `candle_N_body_small` — большое или малое тело (относительный порог)
+
+- **Верхняя тень** (6 признаков):
+  - `candle_N_upper_shadow_large` / `candle_N_upper_shadow_small` — большая или малая верхняя тень
+
+- **Нижняя тень** (6 признаков):
+  - `candle_N_lower_shadow_large` / `candle_N_lower_shadow_small` — большая или малая нижняя тень
+
+- **Объём** (6 признаков):
+  - `candle_N_volume_large` / `candle_N_volume_small` — большой или малый объём
+
+#### Специальные паттерны одной свечи (15 признаков)
+
+Для каждой свечи:
+- `candle_N_is_doji` — доджи (очень малое тело)
+- `candle_N_is_hammer` — молот
+- `candle_N_is_inverted_hammer` — перевёрнутый молот
+- `candle_N_is_pin_bar` — пин-бар
+- `candle_N_is_shooting_star` — падающая звезда
+
+#### Последовательные паттерны (32 признака)
+
+- **Цветовые последовательности** (6):
+  - `pattern_all_green` / `pattern_all_red` — все 3 свечи одного цвета (Три белых солдата / Три чёрные вороны)
+  - `pattern_green_red_green`, `pattern_red_green_red`, `pattern_green_green_red`, `pattern_red_red_green` — различные комбинации
+
+- **Тренды размеров тела** (4):
+  - `pattern_body_increasing` / `pattern_body_decreasing` — нарастание/убывание размеров
+  - `pattern_body_middle_peak` / `pattern_body_middle_low` — пик/минимум посередине
+
+- **Тренды объёмов** (3):
+  - `pattern_volume_increasing` / `pattern_volume_decreasing` / `pattern_volume_middle_peak`
+
+- **Комбинации цена + объём** (4):
+  - `pattern_green_large_volume`, `pattern_red_large_volume`, `pattern_green_small_volume`, `pattern_red_small_volume`
+
+- **Классические разворотные паттерны**:
+  - `pattern_bullish_engulfing` / `pattern_bearish_engulfing` — бычье/медвежье поглощение
+  - `pattern_evening_star` / `pattern_morning_star` — вечерняя/утренняя звезда
+  - `pattern_doji_star` — доджи-звезда
+  - `pattern_bullish_harami` / `pattern_bearish_harami` — бычья/медвежья харами
+  - `pattern_hanging_man` — повешенный
+  - `pattern_tweezers_top` / `pattern_tweezers_bottom` — пинцеты
+
+- **Паттерны продолжения** (2):
+  - `pattern_rising_three_methods` / `pattern_falling_three_methods` — восходящая/нисходящая модель трёх методов
+
+- **Внутренний бар** (3):
+  - `pattern_inside_bar`, `pattern_inside_bar_bullish`, `pattern_inside_bar_bearish`
+
+- **Тренды теней** (2):
+  - `pattern_upper_shadows_increasing` / `pattern_lower_shadows_increasing`
+
+#### Особенности реализации
+
+- **Относительные пороги**: все пороги (большое/малое) вычисляются относительно среднего значения за 3 свечи
+- **Lookback window**: 3 минуты (3 последние минутные свечи)
+- **Все признаки бинарные**: значения 0.0 или 1.0
+- **Объёмы**: используются объёмы из kline данных
+
+Все признаки требуют наличия как минимум 3 завершённых минутных свечей. При недостаточном количестве данных все признаки возвращают `None`.
+
 ### Формат online выдачи
 
 [timestamp, symbol, feature_vector(N)]

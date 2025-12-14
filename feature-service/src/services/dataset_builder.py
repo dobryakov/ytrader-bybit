@@ -8,6 +8,7 @@ from uuid import uuid4
 from pathlib import Path
 import pandas as pd
 import structlog
+import hashlib
 
 from src.models.dataset import Dataset, DatasetStatus, SplitStrategy, TargetConfig
 from src.models.feature_vector import FeatureVector
@@ -16,6 +17,7 @@ from src.storage.parquet_storage import ParquetStorage
 from src.services.offline_engine import OfflineEngine
 from src.services.feature_registry import FeatureRegistryLoader
 from src.services.backfilling_service import BackfillingService
+from src.services.cache_service import CacheService, CacheServiceFactory
 from src.config import config
 
 if TYPE_CHECKING:
@@ -170,6 +172,7 @@ class DatasetBuilder:
         feature_registry_loader: Optional[FeatureRegistryLoader] = None,
         backfilling_service: Optional[BackfillingService] = None,
         dataset_publisher: Optional["DatasetPublisher"] = None,
+        cache_service: Optional[CacheService] = None,
     ):
         """
         Initialize dataset builder.
@@ -182,6 +185,7 @@ class DatasetBuilder:
             feature_registry_version: Feature Registry version to use
             feature_registry_loader: Optional Feature Registry loader for data type optimization
             backfilling_service: Optional backfilling service for automatic data fetching
+            cache_service: Optional cache service for caching historical data and features
         """
         self._metadata_storage = metadata_storage
         self._parquet_storage = parquet_storage
@@ -197,6 +201,10 @@ class DatasetBuilder:
         self._feature_registry_loader = feature_registry_loader
         self._backfilling_service = backfilling_service
         self._dataset_publisher = dataset_publisher
+        self._cache_service = cache_service
+        self._cache_enabled = config.dataset_builder_cache_enabled
+        self._cache_historical_data_enabled = config.dataset_builder_cache_historical_data_enabled
+        self._cache_features_enabled = config.dataset_builder_cache_features_enabled
     
     async def recover_incomplete_builds(self) -> None:
         """
@@ -1020,6 +1028,62 @@ class DatasetBuilder:
             )
             return None
     
+    def _compute_data_hash(self, data: Dict[str, pd.DataFrame]) -> str:
+        """
+        Compute hash for historical data to detect changes.
+        
+        Args:
+            data: Dictionary of DataFrames (trades, klines, snapshots, deltas, etc.)
+            
+        Returns:
+            MD5 hash string of sorted DataFrame content
+        """
+        combined = []
+        for key in sorted(data.keys()):
+            df = data[key]
+            if not df.empty:
+                # Sort by timestamp if available
+                if "timestamp" in df.columns:
+                    df_sorted = df.sort_values("timestamp")
+                else:
+                    df_sorted = df.sort_index()
+                # Convert to string representation
+                combined.append(f"{key}:{df_sorted.to_string()}")
+        combined_str = "|".join(combined)
+        return hashlib.md5(combined_str.encode()).hexdigest()
+    
+    def _generate_historical_data_cache_key(
+        self,
+        symbol: str,
+        start_date: datetime,
+        end_date: datetime,
+        registry_version: str,
+        data_hash: str,
+    ) -> str:
+        """
+        Generate cache key for historical data.
+        
+        Format: "historical_data:{symbol}:{start_date}:{end_date}:{registry_version}:{data_hash}"
+        """
+        start_date_str = start_date.isoformat()
+        end_date_str = end_date.isoformat()
+        return f"historical_data:{symbol}:{start_date_str}:{end_date_str}:{registry_version}:{data_hash}"
+    
+    def _generate_features_cache_key(
+        self,
+        symbol: str,
+        timestamp: datetime,
+        registry_version: str,
+        data_hash: str,
+    ) -> str:
+        """
+        Generate cache key for computed features.
+        
+        Format: "features:{symbol}:{timestamp}:{registry_version}:{data_hash}"
+        """
+        timestamp_str = timestamp.isoformat()
+        return f"features:{symbol}:{timestamp_str}:{registry_version}:{data_hash}"
+    
     async def _read_historical_data(
         self,
         symbol: str,
@@ -1031,9 +1095,83 @@ class DatasetBuilder:
         
         Uses Feature Registry to determine which data types to load if available.
         Falls back to loading all data types if Feature Registry not provided.
+        Uses cache if enabled and available.
         """
         start_date_obj = start_date.date()
         end_date_obj = end_date.date()
+        
+        # Get registry version
+        registry_version = "1.0.0"
+        if self._feature_registry_loader and hasattr(self._feature_registry_loader, '_registry_model'):
+            if self._feature_registry_loader._registry_model:
+                registry_version = self._feature_registry_loader._registry_model.version
+        
+        # Check cache if enabled
+        if self._cache_enabled and self._cache_historical_data_enabled and self._cache_service:
+            # For cache key generation, we need data_hash
+            # Strategy: Read data first, compute hash, then check cache with full key
+            # This ensures correctness but requires reading data even on cache hit
+            # TODO: Optimize by using file mtime or other metadata for preliminary cache check
+            
+            # Read data from Parquet
+            data = await self._read_historical_data_from_parquet(
+                symbol, start_date, end_date, start_date_obj, end_date_obj
+            )
+            
+            # Compute data hash
+            data_hash = self._compute_data_hash(data)
+            
+            # Generate cache key
+            cache_key = self._generate_historical_data_cache_key(
+                symbol, start_date, end_date, registry_version, data_hash
+            )
+            
+            # Check cache (even though we already read, we can store for next time)
+            cached_data = await self._cache_service.get(cache_key)
+            if cached_data is not None:
+                logger.info(
+                    "historical_data_cache_hit",
+                    symbol=symbol,
+                    start_date=start_date.isoformat(),
+                    end_date=end_date.isoformat(),
+                    registry_version=registry_version,
+                )
+                return cached_data
+            
+            # Cache miss - store in cache for next time
+            logger.info(
+                "historical_data_cache_miss",
+                symbol=symbol,
+                start_date=start_date.isoformat(),
+                end_date=end_date.isoformat(),
+                registry_version=registry_version,
+            )
+            
+            # Store in cache with TTL
+            ttl = config.cache_ttl_historical_data_seconds
+            await self._cache_service.set(cache_key, data, ttl=ttl)
+            
+            return data
+        else:
+            # Cache disabled - read directly from Parquet
+            return await self._read_historical_data_from_parquet(
+                symbol, start_date, end_date, start_date_obj, end_date_obj
+            )
+    
+    async def _read_historical_data_from_parquet(
+        self,
+        symbol: str,
+        start_date: datetime,
+        end_date: datetime,
+        start_date_obj,
+        end_date_obj,
+    ) -> Dict[str, pd.DataFrame]:
+        """
+        Read historical data from Parquet storage (internal method).
+        
+        This is the actual Parquet reading logic, extracted from _read_historical_data
+        to support caching.
+        """
         
         # Determine required data types from Feature Registry if available
         required_data_types = None
@@ -1161,7 +1299,7 @@ class DatasetBuilder:
         historical_data: Dict[str, pd.DataFrame],
         dataset_id: str,
     ) -> pd.DataFrame:
-        """Compute features for all timestamps in batch."""
+        """Compute features for all timestamps in batch with caching support."""
         # Get all unique timestamps from trades and klines
         timestamps = set()
         
@@ -1189,6 +1327,37 @@ class DatasetBuilder:
             symbol=symbol,
             total_timestamps=len(sorted_timestamps),
         )
+        
+        # Get registry version and data hash for cache keys
+        registry_version = "1.0.0"
+        if self._feature_registry_loader and hasattr(self._feature_registry_loader, '_registry_model'):
+            if self._feature_registry_loader._registry_model:
+                registry_version = self._feature_registry_loader._registry_model.version
+        
+        data_hash = self._compute_data_hash(historical_data)
+        
+        # Cache statistics
+        cache_hits = 0
+        cache_misses = 0
+        
+        # Batch cache retrieval if caching enabled
+        cached_features = {}
+        if self._cache_enabled and self._cache_features_enabled and self._cache_service:
+            # Try to retrieve multiple features from cache in batch
+            cache_keys = []
+            for timestamp in sorted_timestamps:
+                timestamp_dt = timestamp if isinstance(timestamp, datetime) else pd.to_datetime(timestamp)
+                cache_key = self._generate_features_cache_key(
+                    symbol, timestamp_dt, registry_version, data_hash
+                )
+                cache_keys.append((timestamp_dt, cache_key))
+            
+            # Batch retrieve from cache (for Redis, use mget; for memory, individual gets)
+            # For simplicity, we'll do individual gets but can optimize later
+            for timestamp_dt, cache_key in cache_keys:
+                cached_feature = await self._cache_service.get(cache_key)
+                if cached_feature is not None:
+                    cached_features[timestamp_dt] = cached_feature
         
         # Compute features for each timestamp
         features_list = []
@@ -1245,61 +1414,94 @@ class DatasetBuilder:
             # Convert timestamp to datetime if needed
             timestamp_dt = timestamp if isinstance(timestamp, datetime) else pd.to_datetime(timestamp)
             
-            # Compute features at timestamp with incremental updates
-            try:
-                result = await self._offline_engine.compute_features_at_timestamp(
-                    symbol=symbol,
-                    timestamp=timestamp_dt,
-                    orderbook_snapshots=historical_data["snapshots"],
-                    orderbook_deltas=historical_data["deltas"],
-                    trades=historical_data["trades"],
-                    klines=historical_data["klines"],
-                    ticker=historical_data.get("ticker"),
-                    funding=historical_data.get("funding"),
-                    previous_orderbook_state=orderbook_state,
-                    previous_rolling_windows=rolling_windows,
-                    last_timestamp=last_processed_timestamp,
-                    snapshot_refresh_interval=snapshot_refresh_interval,
-                    return_state=True,  # Request state for incremental updates
-                )
-                
-                # Unpack result (tuple when return_state=True, or FeatureVector when False)
-                if isinstance(result, tuple):
-                    feature_vector, updated_orderbook_state, updated_rolling_windows = result
+            # Check cache first
+            feature_vector = None
+            if self._cache_enabled and self._cache_features_enabled and self._cache_service:
+                if timestamp_dt in cached_features:
+                    # Cache hit
+                    feature_vector = cached_features[timestamp_dt]
+                    cache_hits += 1
+                    logger.debug(
+                        "features_cache_hit",
+                        dataset_id=dataset_id,
+                        symbol=symbol,
+                        timestamp=timestamp_dt.isoformat(),
+                    )
                 else:
-                    feature_vector = result
-                    updated_orderbook_state = None
-                    updated_rolling_windows = None
-                
-                # Update state for next iteration (if feature computation succeeded)
-                if feature_vector:
-                    if updated_orderbook_state is not None:
-                        orderbook_state = updated_orderbook_state
-                    if updated_rolling_windows is not None:
-                        rolling_windows = updated_rolling_windows
-                    last_processed_timestamp = timestamp_dt
-                else:
-                    # If feature computation failed, reset state
+                    # Cache miss - will compute below
+                    cache_misses += 1
+            
+            # Compute features if not cached
+            if feature_vector is None:
+                # Compute features at timestamp with incremental updates
+                try:
+                    result = await self._offline_engine.compute_features_at_timestamp(
+                        symbol=symbol,
+                        timestamp=timestamp_dt,
+                        orderbook_snapshots=historical_data["snapshots"],
+                        orderbook_deltas=historical_data["deltas"],
+                        trades=historical_data["trades"],
+                        klines=historical_data["klines"],
+                        ticker=historical_data.get("ticker"),
+                        funding=historical_data.get("funding"),
+                        previous_orderbook_state=orderbook_state,
+                        previous_rolling_windows=rolling_windows,
+                        last_timestamp=last_processed_timestamp,
+                        snapshot_refresh_interval=snapshot_refresh_interval,
+                        return_state=True,  # Request state for incremental updates
+                    )
+                    
+                    # Unpack result (tuple when return_state=True, or FeatureVector when False)
+                    if isinstance(result, tuple):
+                        feature_vector, updated_orderbook_state, updated_rolling_windows = result
+                    else:
+                        feature_vector = result
+                        updated_orderbook_state = None
+                        updated_rolling_windows = None
+                    
+                    # Update state for next iteration (if feature computation succeeded)
+                    if feature_vector:
+                        if updated_orderbook_state is not None:
+                            orderbook_state = updated_orderbook_state
+                        if updated_rolling_windows is not None:
+                            rolling_windows = updated_rolling_windows
+                        last_processed_timestamp = timestamp_dt
+                        
+                        # Store in cache if enabled
+                        if self._cache_enabled and self._cache_features_enabled and self._cache_service:
+                            cache_key = self._generate_features_cache_key(
+                                symbol, timestamp_dt, registry_version, data_hash
+                            )
+                            ttl = config.cache_ttl_features_seconds
+                            await self._cache_service.set(cache_key, feature_vector, ttl=ttl)
+                            logger.debug(
+                                "features_cached",
+                                dataset_id=dataset_id,
+                                symbol=symbol,
+                                timestamp=timestamp_dt.isoformat(),
+                            )
+                    else:
+                        # If feature computation failed, reset state
+                        orderbook_state = None
+                        rolling_windows = None
+                        last_processed_timestamp = None
+                            
+                except Exception as e:
+                    # Log error and continue with next timestamp
+                    logger.warning(
+                        "feature_computation_error",
+                        dataset_id=dataset_id,
+                        symbol=symbol,
+                        timestamp=timestamp_dt.isoformat(),
+                        error=str(e),
+                        error_type=type(e).__name__,
+                        exc_info=True,
+                    )
+                    feature_vector = None
+                    # Reset state on error
                     orderbook_state = None
                     rolling_windows = None
                     last_processed_timestamp = None
-                        
-            except Exception as e:
-                # Log error and continue with next timestamp
-                logger.warning(
-                    "feature_computation_error",
-                    dataset_id=dataset_id,
-                    symbol=symbol,
-                    timestamp=timestamp_dt.isoformat(),
-                    error=str(e),
-                    error_type=type(e).__name__,
-                    exc_info=True,
-                )
-                feature_vector = None
-                # Reset state on error
-                orderbook_state = None
-                rolling_windows = None
-                last_processed_timestamp = None
             
             if feature_vector:
                 # Convert to DataFrame row
@@ -1330,6 +1532,19 @@ class DatasetBuilder:
                 features_computed=len(features_list),
             )
             return pd.DataFrame()
+        
+        # Log cache statistics
+        if self._cache_enabled and self._cache_features_enabled:
+            cache_hit_rate = (cache_hits / total * 100) if total > 0 else 0.0
+            logger.info(
+                "features_cache_statistics",
+                dataset_id=dataset_id,
+                symbol=symbol,
+                cache_hits=cache_hits,
+                cache_misses=cache_misses,
+                cache_hit_rate=f"{cache_hit_rate:.1f}%",
+                total_timestamps=total,
+            )
         
         logger.info(
             "features_computation_completed",
