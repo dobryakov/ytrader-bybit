@@ -7,6 +7,7 @@ Loads trained models from file system, validates model files, and caches active 
 from typing import Optional, Dict, Any
 from pathlib import Path
 import joblib
+import json
 from xgboost import XGBClassifier, XGBRegressor
 
 from ..database.repositories.model_version_repo import ModelVersionRepository
@@ -50,7 +51,19 @@ class ModelLoader:
         version = model_version["version"]
         model_type = model_version["model_type"]
         file_path = model_version["file_path"]
-
+        
+        # Extract task_type from training_config if available
+        task_type = None
+        training_config = model_version.get("training_config")
+        if training_config:
+            if isinstance(training_config, str):
+                try:
+                    training_config = json.loads(training_config)
+                except (json.JSONDecodeError, TypeError):
+                    training_config = None
+            if isinstance(training_config, dict):
+                task_type = training_config.get("task_type")
+        
         # Check cache
         cache_key = f"{strategy_id or 'default'}:{version}"
         if not force_reload and cache_key in self._model_cache:
@@ -59,7 +72,7 @@ class ModelLoader:
 
         # Load model from file system
         try:
-            model = self._load_model_from_file(file_path, model_type, version)
+            model = self._load_model_from_file(file_path, model_type, version, task_type=task_type)
             if model:
                 # Cache the model
                 self._model_cache[cache_key] = model
@@ -80,6 +93,7 @@ class ModelLoader:
         file_path: str,
         model_type: str,
         version: str,
+        task_type: Optional[str] = None,
     ) -> Any:
         """
         Load a model from file system.
@@ -88,6 +102,7 @@ class ModelLoader:
             file_path: Path to model file
             model_type: Type of model ('xgboost', 'random_forest', etc.)
             version: Model version identifier
+            task_type: Task type ('classification' or 'regression') from training_config if available
 
         Returns:
             Loaded model object
@@ -103,27 +118,41 @@ class ModelLoader:
 
         try:
             if model_type == "xgboost":
-                # Determine task type from file extension or default to classification
-                # XGBoost models saved as .json
-                if file_path.endswith(".json"):
-                    # Try classification first (most common for trading signals)
-                    try:
-                        model = XGBClassifier()
-                        model.load_model(file_path)
-                        logger.debug("Loaded XGBoost classifier", file_path=file_path, version=version)
-                        return model
-                    except Exception:
-                        # Try regression if classification fails
-                        model = XGBRegressor()
-                        model.load_model(file_path)
-                        logger.debug("Loaded XGBoost regressor", file_path=file_path, version=version)
-                        return model
-                else:
-                    # Fallback: try classification
+                # Use task_type from training_config if available, otherwise try both
+                if task_type == "regression":
+                    # Explicitly regression
+                    model = XGBRegressor()
+                    model.load_model(file_path)
+                    logger.debug("Loaded XGBoost regressor", file_path=file_path, version=version, task_type=task_type)
+                    return model
+                elif task_type == "classification":
+                    # Explicitly classification
                     model = XGBClassifier()
                     model.load_model(file_path)
-                    logger.debug("Loaded XGBoost model", file_path=file_path, version=version)
+                    logger.debug("Loaded XGBoost classifier", file_path=file_path, version=version, task_type=task_type)
                     return model
+                else:
+                    # task_type not available: try classification first (backward compatibility)
+                    # XGBoost models saved as .json
+                    if file_path.endswith(".json"):
+                        # Try classification first (most common for trading signals)
+                        try:
+                            model = XGBClassifier()
+                            model.load_model(file_path)
+                            logger.debug("Loaded XGBoost classifier (fallback)", file_path=file_path, version=version)
+                            return model
+                        except Exception:
+                            # Try regression if classification fails
+                            model = XGBRegressor()
+                            model.load_model(file_path)
+                            logger.debug("Loaded XGBoost regressor (fallback)", file_path=file_path, version=version)
+                            return model
+                    else:
+                        # Fallback: try classification
+                        model = XGBClassifier()
+                        model.load_model(file_path)
+                        logger.debug("Loaded XGBoost model (fallback)", file_path=file_path, version=version)
+                        return model
             else:
                 # Load scikit-learn models using joblib
                 model = joblib.load(file_path)
@@ -162,10 +191,22 @@ class ModelLoader:
 
         model_type = model_version["model_type"]
         file_path = model_version["file_path"]
+        
+        # Extract task_type from training_config if available
+        task_type = None
+        training_config = model_version.get("training_config")
+        if training_config:
+            if isinstance(training_config, str):
+                try:
+                    training_config = json.loads(training_config)
+                except (json.JSONDecodeError, TypeError):
+                    training_config = None
+            if isinstance(training_config, dict):
+                task_type = training_config.get("task_type")
 
         # Load model from file system
         try:
-            model = self._load_model_from_file(file_path, model_type, version)
+            model = self._load_model_from_file(file_path, model_type, version, task_type=task_type)
             if model:
                 # Cache the model
                 self._model_cache[version] = model
@@ -240,8 +281,8 @@ class ModelLoader:
             return False
 
         try:
-            # Try to load the model to validate it
-            self._load_model_from_file(file_path, model_type, "validation")
+            # Try to load the model to validate it (task_type not available for validation)
+            self._load_model_from_file(file_path, model_type, "validation", task_type=None)
             logger.debug("Model file validated", file_path=file_path, model_type=model_type)
             return True
         except Exception as e:

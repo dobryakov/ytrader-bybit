@@ -59,13 +59,19 @@ class TrainingOrchestrator:
         }
         self._last_queue_metrics_update: Optional[datetime] = None
 
-    async def request_dataset_build(self, strategy_id: Optional[str] = None, symbol: Optional[str] = None) -> Optional[UUID]:
+    async def request_dataset_build(
+        self, 
+        strategy_id: Optional[str] = None, 
+        symbol: Optional[str] = None,
+        target_type: str = "classification"
+    ) -> Optional[UUID]:
         """
         Request dataset build from Feature Service.
 
         Args:
             strategy_id: Trading strategy identifier
             symbol: Trading pair symbol (e.g., 'BTCUSDT'). If None, uses first symbol from configured strategies.
+            target_type: Target type - 'classification' or 'regression'. Default: 'classification'
 
         Returns:
             Dataset ID (UUID) if request successful, None otherwise
@@ -105,9 +111,9 @@ class TrainingOrchestrator:
             "test_period_start": format_dt(periods["test_period_start"]),
             "test_period_end": format_dt(periods["test_period_end"]),
             "target_config": {
-                "type": "classification",
+                "type": target_type,
                 "horizon": settings.model_prediction_horizon_seconds,  # Configurable horizon in seconds
-                "threshold": settings.model_classification_threshold,  # Configurable threshold for classification
+                "threshold": settings.model_classification_threshold if target_type == "classification" else None,  # Threshold only for classification
             },
             "feature_registry_version": "latest",  # Use latest feature registry version
             "output_format": "parquet",
@@ -473,6 +479,16 @@ class TrainingOrchestrator:
                 )
                 return
 
+            # Extract task_type from target_config
+            task_type = dataset_meta.target_config.type
+            logger.info(
+                "Dataset task type determined",
+                training_id=training_id,
+                dataset_id=str(dataset_id),
+                task_type=task_type,
+                trace_id=trace_id,
+            )
+
             if self._training_cancelled:
                 logger.info("Training cancelled before dataset download", training_id=training_id)
                 return
@@ -524,19 +540,33 @@ class TrainingOrchestrator:
                 logger.error("Empty dataset after loading", training_id=training_id, dataset_id=str(dataset_id), trace_id=trace_id)
                 return
             
-            # Log class distribution for train split
-            train_class_dist = labels_series.value_counts().to_dict()
-            train_class_dist_pct = {k: (v / len(labels_series) * 100) for k, v in train_class_dist.items()}
-            logger.info(
-                "Train dataset loaded with class distribution",
-                training_id=training_id,
-                dataset_id=str(dataset_id),
-                record_count=len(features_df),
-                class_distribution=train_class_dist,
-                class_distribution_percentage={k: round(v, 2) for k, v in train_class_dist_pct.items()},
-                unique_labels=sorted(labels_series.unique().tolist()),
-                trace_id=trace_id,
-            )
+            # Log distribution for train split (class distribution for classification, statistics for regression)
+            if task_type == "classification":
+                train_class_dist = labels_series.value_counts().to_dict()
+                train_class_dist_pct = {k: (v / len(labels_series) * 100) for k, v in train_class_dist.items()}
+                logger.info(
+                    "Train dataset loaded with class distribution",
+                    training_id=training_id,
+                    dataset_id=str(dataset_id),
+                    record_count=len(features_df),
+                    class_distribution=train_class_dist,
+                    class_distribution_percentage={k: round(v, 2) for k, v in train_class_dist_pct.items()},
+                    unique_labels=sorted(labels_series.unique().tolist()),
+                    trace_id=trace_id,
+                )
+            else:  # regression
+                logger.info(
+                    "Train dataset loaded with target statistics",
+                    training_id=training_id,
+                    dataset_id=str(dataset_id),
+                    record_count=len(features_df),
+                    target_mean=float(labels_series.mean()),
+                    target_std=float(labels_series.std()),
+                    target_min=float(labels_series.min()),
+                    target_max=float(labels_series.max()),
+                    target_median=float(labels_series.median()),
+                    trace_id=trace_id,
+                )
 
             # Perform data quality validation if enabled
             if settings.model_training_quality_checks_enabled:
@@ -589,7 +619,7 @@ class TrainingOrchestrator:
             model = model_trainer.train_model(
                 dataset=dataset,
                 model_type="xgboost",  # Default to XGBoost, could be configurable
-                task_type="classification",
+                task_type=task_type,  # Use task_type from dataset target_config
             )
 
             if self._training_cancelled:
@@ -614,19 +644,32 @@ class TrainingOrchestrator:
                         validation_features = validation_features.select_dtypes(include=[np.number])
                         validation_labels = val_df[target_column]
                         
-                        # Log class distribution for validation split
+                        # Log distribution for validation split (class distribution for classification, statistics for regression)
                         if not validation_labels.empty:
-                            val_class_dist = validation_labels.value_counts().to_dict()
-                            val_class_dist_pct = {k: (v / len(validation_labels) * 100) for k, v in val_class_dist.items()}
-                            logger.info(
-                                "Validation dataset loaded",
-                                training_id=training_id,
-                                record_count=len(validation_features),
-                                class_distribution=val_class_dist,
-                                class_distribution_percentage={k: round(v, 2) for k, v in val_class_dist_pct.items()},
-                                unique_labels=sorted(validation_labels.unique().tolist()),
-                                trace_id=trace_id,
-                            )
+                            if task_type == "classification":
+                                val_class_dist = validation_labels.value_counts().to_dict()
+                                val_class_dist_pct = {k: (v / len(validation_labels) * 100) for k, v in val_class_dist.items()}
+                                logger.info(
+                                    "Validation dataset loaded",
+                                    training_id=training_id,
+                                    record_count=len(validation_features),
+                                    class_distribution=val_class_dist,
+                                    class_distribution_percentage={k: round(v, 2) for k, v in val_class_dist_pct.items()},
+                                    unique_labels=sorted(validation_labels.unique().tolist()),
+                                    trace_id=trace_id,
+                                )
+                            else:  # regression
+                                logger.info(
+                                    "Validation dataset loaded",
+                                    training_id=training_id,
+                                    record_count=len(validation_features),
+                                    target_mean=float(validation_labels.mean()),
+                                    target_std=float(validation_labels.std()),
+                                    target_min=float(validation_labels.min()),
+                                    target_max=float(validation_labels.max()),
+                                    target_median=float(validation_labels.median()),
+                                    trace_id=trace_id,
+                                )
                         else:
                             logger.info(
                                 "Validation dataset loaded",
@@ -652,8 +695,8 @@ class TrainingOrchestrator:
             # For binary classification, this will still work correctly
             y_pred_proba = model.predict_proba(eval_features) if hasattr(model, "predict_proba") else None
 
-            # Log prediction statistics before evaluation
-            if y_pred_proba is not None:
+            # Log prediction statistics before evaluation (only for classification)
+            if task_type == "classification" and y_pred_proba is not None:
                 if isinstance(y_pred_proba, np.ndarray) and y_pred_proba.ndim == 2:
                     # Log average probabilities per class
                     avg_probs = np.mean(y_pred_proba, axis=0)
@@ -672,12 +715,23 @@ class TrainingOrchestrator:
                         avg_class_probability=float(np.mean(y_pred_proba)),
                         prediction_threshold="argmax (default)",
                     )
+            elif task_type == "regression":
+                # Log regression prediction statistics
+                logger.info(
+                    "model_predictions_before_evaluation",
+                    split="validation",
+                    training_id=training_id,
+                    avg_predicted_return=float(np.mean(y_pred)),
+                    min_predicted_return=float(np.min(y_pred)),
+                    max_predicted_return=float(np.max(y_pred)),
+                    std_predicted_return=float(np.std(y_pred)),
+                )
 
             validation_metrics = quality_evaluator.evaluate(
                 y_true=eval_labels,
                 y_pred=pd.Series(y_pred),
-                y_pred_proba=y_pred_proba,  # Pass 2D array directly for multi-class
-                task_type="classification",
+                y_pred_proba=y_pred_proba,  # Pass 2D array directly for multi-class (None for regression)
+                task_type=task_type,  # Use task_type from dataset target_config
             )
 
             # Note: Trading metrics are not calculated here since we don't have execution_events
@@ -736,18 +790,42 @@ class TrainingOrchestrator:
                                     trace_id=trace_id,
                                 )
                             else:
-                                # Log class distribution for test split
-                                test_class_dist = test_labels.value_counts().to_dict()
-                                test_class_dist_pct = {k: (v / len(test_labels) * 100) for k, v in test_class_dist.items()}
-                                logger.info(
-                                    "Test dataset loaded",
-                                    training_id=training_id,
-                                    record_count=len(test_features),
-                                    class_distribution=test_class_dist,
-                                    class_distribution_percentage={k: round(v, 2) for k, v in test_class_dist_pct.items()},
-                                    unique_labels=sorted(test_labels.unique().tolist()),
-                                    trace_id=trace_id,
-                                )
+                                # Log distribution for test split (class distribution for classification, statistics for regression)
+                                if task_type == "classification":
+                                    test_class_dist = test_labels.value_counts().to_dict()
+                                    test_class_dist_pct = {k: (v / len(test_labels) * 100) for k, v in test_class_dist.items()}
+                                    logger.info(
+                                        "Test dataset loaded",
+                                        training_id=training_id,
+                                        record_count=len(test_features),
+                                        class_distribution=test_class_dist,
+                                        class_distribution_percentage={k: round(v, 2) for k, v in test_class_dist_pct.items()},
+                                        unique_labels=sorted(test_labels.unique().tolist()),
+                                        trace_id=trace_id,
+                                    )
+                                else:  # regression
+                                    logger.info(
+                                        "Test dataset loaded",
+                                        training_id=training_id,
+                                        record_count=len(test_features),
+                                        target_mean=float(test_labels.mean()),
+                                        target_std=float(test_labels.std()),
+                                        target_min=float(test_labels.min()),
+                                        target_max=float(test_labels.max()),
+                                        target_median=float(test_labels.median()),
+                                        trace_id=trace_id,
+                                    )
+                                    logger.info(
+                                        "Test dataset loaded",
+                                        training_id=training_id,
+                                        record_count=len(test_features),
+                                        target_mean=float(test_labels.mean()),
+                                        target_std=float(test_labels.std()),
+                                        target_min=float(test_labels.min()),
+                                        target_max=float(test_labels.max()),
+                                        target_median=float(test_labels.median()),
+                                        trace_id=trace_id,
+                                    )
 
                                 # Evaluate model on test set
                                 test_y_pred = model.predict(test_features)
@@ -756,8 +834,8 @@ class TrainingOrchestrator:
                                     model.predict_proba(test_features) if hasattr(model, "predict_proba") else None
                                 )
 
-                                # Log prediction statistics before evaluation
-                                if test_y_pred_proba is not None:
+                                # Log prediction statistics before evaluation (only for classification)
+                                if task_type == "classification" and test_y_pred_proba is not None:
                                     if isinstance(test_y_pred_proba, np.ndarray) and test_y_pred_proba.ndim == 2:
                                         # Log average probabilities per class
                                         avg_probs = np.mean(test_y_pred_proba, axis=0)
@@ -776,12 +854,23 @@ class TrainingOrchestrator:
                                             avg_class_probability=float(np.mean(test_y_pred_proba)),
                                             prediction_threshold="argmax (default)",
                                         )
+                                elif task_type == "regression":
+                                    # Log regression prediction statistics
+                                    logger.info(
+                                        "model_predictions_before_evaluation",
+                                        split="test",
+                                        training_id=training_id,
+                                        avg_predicted_return=float(np.mean(test_y_pred)),
+                                        min_predicted_return=float(np.min(test_y_pred)),
+                                        max_predicted_return=float(np.max(test_y_pred)),
+                                        std_predicted_return=float(np.std(test_y_pred)),
+                                    )
 
                                 test_metrics = quality_evaluator.evaluate(
                                     y_true=test_labels,
                                     y_pred=pd.Series(test_y_pred),
-                                    y_pred_proba=test_y_pred_proba,  # Pass 2D array directly for multi-class
-                                    task_type="classification",
+                                    y_pred_proba=test_y_pred_proba,  # Pass 2D array directly for multi-class (None for regression)
+                                    task_type=task_type,  # Use task_type from dataset target_config
                                 )
 
                                 logger.info(
@@ -845,7 +934,7 @@ class TrainingOrchestrator:
                 training_dataset_size=dataset.get_record_count(),
                 training_config={
                     "model_type": "xgboost",
-                    "task_type": "classification",
+                    "task_type": task_type,  # Use task_type from dataset target_config
                     "feature_count": len(dataset.get_feature_names()),
                     "dataset_source": "feature_service",
                     "dataset_id": str(dataset_id),
@@ -879,13 +968,67 @@ class TrainingOrchestrator:
             final_metrics = test_metrics if test_metrics else validation_metrics
             metrics_source = "test" if test_metrics else "validation"
 
-            accuracy = final_metrics.get("accuracy", 0.0)
-            if accuracy >= settings.model_quality_threshold_accuracy:
+            # Determine activation based on task type
+            should_activate = False
+            quality_metric = None
+            quality_value = None
+            threshold_value = None
+
+            if task_type == "classification":
+                # For classification: use accuracy
+                quality_value = final_metrics.get("accuracy", 0.0)
+                threshold_value = settings.model_quality_threshold_accuracy
+                quality_metric = "accuracy"
+                should_activate = quality_value >= threshold_value
+            elif task_type == "regression":
+                # For regression: use R² score (primary) and optionally RMSE (secondary)
+                r2_score = final_metrics.get("r2_score", -float('inf'))
+                rmse = final_metrics.get("rmse", float('inf'))
+                
+                # Primary check: R² score should meet threshold
+                r2_meets_threshold = r2_score >= settings.model_quality_threshold_r2
+                
+                # Secondary check: RMSE (if threshold is configured)
+                rmse_meets_threshold = True
+                if settings.model_quality_threshold_rmse is not None:
+                    rmse_meets_threshold = rmse <= settings.model_quality_threshold_rmse
+                
+                quality_metric = "r2_score"
+                quality_value = r2_score
+                threshold_value = settings.model_quality_threshold_r2
+                should_activate = r2_meets_threshold and rmse_meets_threshold
+                
+                # Log additional RMSE info if threshold is configured
+                if settings.model_quality_threshold_rmse is not None:
+                    logger.debug(
+                        "Regression activation check",
+                        version=version,
+                        r2_score=r2_score,
+                        r2_threshold=settings.model_quality_threshold_r2,
+                        rmse=rmse,
+                        rmse_threshold=settings.model_quality_threshold_rmse,
+                        r2_ok=r2_meets_threshold,
+                        rmse_ok=rmse_meets_threshold,
+                        metrics_source=metrics_source,
+                        trace_id=trace_id,
+                    )
+            else:
+                logger.warning(
+                    "Unknown task type, skipping auto-activation",
+                    version=version,
+                    task_type=task_type,
+                    trace_id=trace_id,
+                )
+
+            if should_activate:
                 await model_version_manager.activate_version(model_version["id"], strategy_id)
                 logger.info(
                     "Model activated automatically",
                     version=version,
-                    accuracy=accuracy,
+                    task_type=task_type,
+                    quality_metric=quality_metric,
+                    quality_value=quality_value,
+                    threshold=threshold_value,
                     metrics_source=metrics_source,
                     trace_id=trace_id,
                 )
@@ -893,9 +1036,11 @@ class TrainingOrchestrator:
                 logger.info(
                     "Model quality below threshold, not activated",
                     version=version,
-                    accuracy=accuracy,
+                    task_type=task_type,
+                    quality_metric=quality_metric,
+                    quality_value=quality_value,
+                    threshold=threshold_value,
                     metrics_source=metrics_source,
-                    threshold=settings.model_quality_threshold_accuracy,
                     trace_id=trace_id,
                 )
 

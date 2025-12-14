@@ -442,14 +442,20 @@ class ModelInference:
             else:
                 # Regression model
                 prediction = model.predict(features)[0]
+                predicted_return = float(prediction)
+                
                 # For regression, confidence is based on prediction magnitude
-                # Normalize to 0-1 range (assuming predictions are in reasonable range)
-                confidence = min(1.0, max(0.0, abs(float(prediction)) / 100.0))  # Adjust divisor as needed
+                # Use configurable max expected return for normalization
+                from ..config.settings import settings
+                max_expected_return = settings.model_regression_max_expected_return
+                confidence = min(1.0, max(0.0, abs(predicted_return) / max_expected_return))
 
                 result = {
-                    "prediction": float(prediction),
+                    "prediction": predicted_return,
                     "confidence": confidence,
                     "probabilities": None,
+                    "predicted_return": predicted_return,  # Alias for clarity
+                    "predicted_return_pct": predicted_return * 100,  # Percentage for logging
                 }
 
             logger.debug("Model prediction completed", prediction=result.get("prediction"), confidence=result.get("confidence"))

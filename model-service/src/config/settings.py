@@ -49,7 +49,21 @@ class Settings(BaseSettings):
     # Model Training Configuration
     model_training_min_dataset_size: int = Field(default=1000, alias="MODEL_TRAINING_MIN_DATASET_SIZE")
     model_training_max_duration_seconds: int = Field(default=1800, alias="MODEL_TRAINING_MAX_DURATION_SECONDS")
-    model_quality_threshold_accuracy: float = Field(default=0.75, alias="MODEL_QUALITY_THRESHOLD_ACCURACY")
+    model_quality_threshold_accuracy: float = Field(
+        default=0.75, 
+        alias="MODEL_QUALITY_THRESHOLD_ACCURACY",
+        description="Minimum accuracy threshold for classification models to be auto-activated. Default: 0.75 (75%)"
+    )
+    model_quality_threshold_r2: float = Field(
+        default=0.0,
+        alias="MODEL_QUALITY_THRESHOLD_R2",
+        description="Minimum R² score threshold for regression models to be auto-activated. R² > 0 means model is better than predicting mean. Default: 0.0 (model should be at least as good as mean prediction)"
+    )
+    model_quality_threshold_rmse: Optional[float] = Field(
+        default=None,
+        alias="MODEL_QUALITY_THRESHOLD_RMSE",
+        description="Maximum RMSE threshold for regression models to be auto-activated (optional). If set, model will be activated only if RMSE <= this value. Default: None (not used)"
+    )
     model_retraining_schedule: Optional[str] = Field(default=None, alias="MODEL_RETRAINING_SCHEDULE")
     
     # Class Balancing and Hyperparameter Tuning Configuration
@@ -88,6 +102,18 @@ class Settings(BaseSettings):
     
     # Classification Threshold Configuration
     model_classification_threshold: float = Field(default=0.005, alias="MODEL_CLASSIFICATION_THRESHOLD")
+    
+    # Regression Threshold Configuration (for converting predicted return to BUY/SELL/HOLD signal)
+    model_regression_threshold: float = Field(
+        default=0.001,
+        alias="MODEL_REGRESSION_THRESHOLD",
+        description="Threshold for regression models to convert predicted return to signal. If predicted_return > threshold: BUY, if < -threshold: SELL, else: HOLD. Default: 0.001 (0.1%)"
+    )
+    model_regression_max_expected_return: float = Field(
+        default=0.01,
+        alias="MODEL_REGRESSION_MAX_EXPECTED_RETURN",
+        description="Maximum expected return for confidence calculation in regression models. Used to normalize confidence (0-1). Default: 0.01 (1%)"
+    )
     
     # Prediction Threshold Configuration (for improving recall of minority classes)
     # These thresholds are applied to class probabilities instead of using argmax

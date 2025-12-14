@@ -44,6 +44,10 @@ class DatasetBuildRequest(BaseModel):
 
     strategy_id: Optional[str] = Field(None, description="Trading strategy identifier")
     symbol: Optional[str] = Field(None, description="Trading pair symbol (e.g., 'BTCUSDT'). If not provided, uses default.")
+    target_type: Optional[str] = Field(
+        "classification",
+        description="Target type: 'classification' or 'regression'. Default: 'classification'"
+    )
 
 
 class DatasetBuildResponse(BaseModel):
@@ -159,7 +163,12 @@ async def request_dataset_build(request: Optional[DatasetBuildRequest] = None) -
         symbol = request.symbol if request else None
 
         # Request dataset build from Feature Service
-        dataset_id = await training_orchestrator.request_dataset_build(strategy_id=strategy_id, symbol=symbol)
+        target_type = request.target_type if request else "classification"
+        dataset_id = await training_orchestrator.request_dataset_build(
+            strategy_id=strategy_id, 
+            symbol=symbol,
+            target_type=target_type
+        )
 
         if not dataset_id:
             raise HTTPException(

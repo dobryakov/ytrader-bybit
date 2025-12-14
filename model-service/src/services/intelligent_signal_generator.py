@@ -167,19 +167,47 @@ class IntelligentSignalGenerator:
             # Determine signal type from prediction
             signal_type = self._determine_signal_type(prediction_result)
             
-            # Log prediction probabilities for debugging
-            buy_probability = prediction_result.get("buy_probability", 0.0)
-            sell_probability = prediction_result.get("sell_probability", 0.0)
-            logger.info(
-                "Model prediction probabilities",
-                asset=asset,
-                strategy_id=strategy_id,
-                buy_probability=buy_probability,
-                sell_probability=sell_probability,
-                determined_signal_type=signal_type,
-                confidence=confidence,
-                trace_id=trace_id,
-            )
+            # If regression model returned None (HOLD), skip signal generation
+            if signal_type is None:
+                logger.debug(
+                    "Regression model predicted HOLD (return within threshold range)",
+                    asset=asset,
+                    strategy_id=strategy_id,
+                    predicted_return=prediction_result.get("prediction"),
+                    threshold=settings.model_regression_threshold,
+                    trace_id=trace_id,
+                )
+                return None
+            
+            # Log prediction details for debugging
+            prediction = prediction_result.get("prediction")
+            if isinstance(prediction, float):
+                # Regression model
+                logger.info(
+                    "Model prediction (regression)",
+                    asset=asset,
+                    strategy_id=strategy_id,
+                    predicted_return=prediction,
+                    predicted_return_pct=prediction * 100,
+                    determined_signal_type=signal_type,
+                    confidence=confidence,
+                    threshold=settings.model_regression_threshold,
+                    trace_id=trace_id,
+                )
+            else:
+                # Classification model
+                buy_probability = prediction_result.get("buy_probability", 0.0)
+                sell_probability = prediction_result.get("sell_probability", 0.0)
+                logger.info(
+                    "Model prediction probabilities",
+                    asset=asset,
+                    strategy_id=strategy_id,
+                    buy_probability=buy_probability,
+                    sell_probability=sell_probability,
+                    determined_signal_type=signal_type,
+                    confidence=confidence,
+                    trace_id=trace_id,
+                )
 
             # Check for opposite orders if configured (after determining signal_type)
             if settings.signal_generation_skip_if_open_order and settings.signal_generation_check_opposite_orders_only:
@@ -216,7 +244,14 @@ class IntelligentSignalGenerator:
                 return None
 
             # Calculate order amount from model
-            model_amount = self._calculate_amount(asset, order_position_state, current_price, confidence)
+            # Pass prediction_result for regression models to use predicted_return for position sizing
+            model_amount = self._calculate_amount(
+                asset, 
+                order_position_state, 
+                current_price, 
+                confidence,
+                prediction_result=prediction_result
+            )
             
             # Check available balance and adapt amount
             # For SELL signals, pass current_price to convert quote currency to base currency
@@ -425,17 +460,41 @@ class IntelligentSignalGenerator:
             "order_status": existing_order.status,
         }
 
-    def _determine_signal_type(self, prediction_result: Dict[str, Any]) -> str:
+    def _determine_signal_type(self, prediction_result: Dict[str, Any]) -> Optional[str]:
         """
         Determine signal type from model prediction.
 
+        Supports both classification and regression models:
+        - Classification: Uses buy/sell probabilities
+        - Regression: Converts predicted return to signal using threshold
+
         Args:
             prediction_result: Prediction result from model inference
+                - For classification: contains "buy_probability", "sell_probability"
+                - For regression: contains "prediction" (float, predicted return value)
 
         Returns:
-            'buy' or 'sell'
+            'buy', 'sell', or None (for HOLD in regression)
         """
-        # For classification models, use buy/sell probabilities
+        from ..config.settings import settings
+        
+        # Check if this is a regression model (prediction is a float, not int)
+        prediction = prediction_result.get("prediction")
+        
+        if prediction is not None and isinstance(prediction, float):
+            # Regression model: convert predicted return to signal
+            predicted_return = float(prediction)
+            threshold = settings.model_regression_threshold
+            
+            if predicted_return > threshold:
+                return "buy"
+            elif predicted_return < -threshold:
+                return "sell"
+            else:
+                # HOLD: predicted return is within threshold range
+                return None
+        
+        # Classification model: use buy/sell probabilities
         buy_probability = prediction_result.get("buy_probability", 0.0)
         sell_probability = prediction_result.get("sell_probability", 0.0)
 
@@ -450,24 +509,65 @@ class IntelligentSignalGenerator:
         order_position_state: OrderPositionState,
         current_price: float,
         confidence: float,
+        prediction_result: Optional[Dict[str, Any]] = None,
     ) -> float:
         """
         Calculate order amount based on confidence and position state.
+
+        For regression models, can use predicted_return for more sophisticated position sizing.
 
         Args:
             asset: Trading pair symbol
             order_position_state: Current order and position state
             current_price: Current market price
             confidence: Signal confidence score
+            prediction_result: Optional prediction result (for regression models)
 
         Returns:
             Order amount in quote currency
         """
+        from ..config.settings import settings
+        
         # Base amount
         base_amount = (self.min_amount + self.max_amount) / 2
 
-        # Adjust based on confidence (higher confidence = larger amount, up to max)
-        confidence_multiplier = 0.5 + (confidence * 0.5)  # Range: 0.5 to 1.0
+        # For regression models, can use predicted_return for position sizing
+        # This allows larger positions for stronger predicted movements
+        if prediction_result is not None:
+            prediction = prediction_result.get("prediction")
+            if isinstance(prediction, float):
+                # Regression model: use predicted_return for position sizing
+                predicted_return = float(prediction)
+                max_expected_return = settings.model_regression_max_expected_return
+                
+                # Calculate confidence multiplier based on predicted return magnitude
+                # Larger predicted returns get larger position sizes (up to max)
+                return_magnitude = abs(predicted_return)
+                return_based_multiplier = min(1.0, return_magnitude / max_expected_return)
+                
+                # Combine return-based multiplier with confidence
+                # confidence_multiplier ranges from 0.5 to 1.0
+                # return_based_multiplier also ranges from 0 to 1.0
+                # Use average or max of both for more aggressive sizing based on predicted return
+                confidence_multiplier = 0.5 + (max(confidence, return_based_multiplier) * 0.5)
+                
+                logger.debug(
+                    "Calculating amount for regression model",
+                    asset=asset,
+                    predicted_return=predicted_return,
+                    predicted_return_pct=predicted_return * 100,
+                    return_magnitude=return_magnitude,
+                    return_based_multiplier=return_based_multiplier,
+                    confidence=confidence,
+                    confidence_multiplier=confidence_multiplier,
+                )
+            else:
+                # Classification model: use confidence only
+                confidence_multiplier = 0.5 + (confidence * 0.5)  # Range: 0.5 to 1.0
+        else:
+            # Fallback: use confidence only
+            confidence_multiplier = 0.5 + (confidence * 0.5)  # Range: 0.5 to 1.0
+
         amount = base_amount * confidence_multiplier
 
         # Adjust based on position state (reduce if already have large position)
