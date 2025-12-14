@@ -81,7 +81,7 @@ class Settings(BaseSettings):
     model_retraining_test_period_days: int = Field(default=1, alias="MODEL_RETRAINING_TEST_PERIOD_DAYS")
     
     # Prediction Horizon Configuration
-    model_prediction_horizon_seconds: int = Field(default=60, alias="MODEL_PREDICTION_HORIZON_SECONDS")
+    model_prediction_horizon_seconds: int = Field(default=180, alias="MODEL_PREDICTION_HORIZON_SECONDS", description="Prediction horizon in seconds. Default: 180 (3 minutes) for better market movement capture.")
     
     # Timestamp Continuity Validation Configuration
     model_training_min_dataset_coverage_ratio: float = Field(

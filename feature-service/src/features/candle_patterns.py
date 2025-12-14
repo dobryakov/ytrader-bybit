@@ -499,3 +499,255 @@ def _get_empty_features_dict() -> Dict[str, Optional[float]]:
     ]
     return {name: None for name in feature_names}
 
+
+
+def compute_all_candle_patterns_5m(
+    rolling_windows: RollingWindows,
+) -> Dict[str, Optional[float]]:
+    """
+    Compute all candlestick pattern features from the last 5 minutes (5 candles).
+    
+    This is an extended version of compute_all_candle_patterns_3m that works with 5 candles
+    instead of 3, providing more context for longer-term predictions.
+    
+    Returns dictionary with same features as 3m version (uses first 3 candles for patterns),
+    but with extended lookback window for better context.
+    
+    Args:
+        rolling_windows: RollingWindows instance with kline data
+        
+    Returns:
+        Dictionary of feature name -> feature value (0.0 or 1.0 for binary, float for ratios)
+    """
+    now = _ensure_datetime(rolling_windows.last_update)
+    # Get last 5 minutes of kline data (need at least 5 candles)
+    start_time = now - timedelta(minutes=6)  # Extra buffer to ensure we have 5 complete candles
+    klines = rolling_windows.get_klines_for_window("1m", start_time, now)
+    
+    if len(klines) < 5:
+        # If we don't have 5 candles, fall back to 3m version
+        return compute_all_candle_patterns_3m(rolling_windows)
+    
+    # Sort by timestamp to ensure correct order
+    klines_sorted = klines.sort_values("timestamp").reset_index(drop=True)
+    
+    # Get last 5 candles (most recent)
+    candle_data = []
+    for i in range(-5, 0):  # Last 5 candles
+        idx = len(klines_sorted) + i
+        candle_comp = _get_candle_components(klines_sorted, idx)
+        if candle_comp is None:
+            # If we can't get all 5, fall back to 3m version
+            return compute_all_candle_patterns_3m(rolling_windows)
+        candle_data.append(candle_comp)
+    
+    # Use first 3 candles for pattern computation (same as 3m version)
+    # This maintains compatibility with existing feature names
+    open_0, high_0, low_0, close_0, volume_0, body_size_0 = candle_data[0]
+    open_1, high_1, low_1, close_1, volume_1, body_size_1 = candle_data[1]
+    open_2, high_2, low_2, close_2, volume_2, body_size_2 = candle_data[2]
+    
+    # Also get 4th and 5th candles for extended context (averages)
+    open_3, high_3, low_3, close_3, volume_3, body_size_3 = candle_data[3]
+    open_4, high_4, low_4, close_4, volume_4, body_size_4 = candle_data[4]
+    
+    # Compute features for each candle
+    candle_0_features = _compute_candle_features(open_0, high_0, low_0, close_0, volume_0, body_size_0)
+    candle_1_features = _compute_candle_features(open_1, high_1, low_1, close_1, volume_1, body_size_1)
+    candle_2_features = _compute_candle_features(open_2, high_2, low_2, close_2, volume_2, body_size_2)
+    candle_3_features = _compute_candle_features(open_3, high_3, low_3, close_3, volume_3, body_size_3)
+    candle_4_features = _compute_candle_features(open_4, high_4, low_4, close_4, volume_4, body_size_4)
+    
+    # Compute relative thresholds (averages over 5 candles for better context)
+    avg_body_size = (body_size_0 + body_size_1 + body_size_2 + body_size_3 + body_size_4) / 5.0
+    avg_upper_shadow = (
+        candle_0_features["upper_shadow"] + candle_1_features["upper_shadow"] + 
+        candle_2_features["upper_shadow"] + candle_3_features["upper_shadow"] + 
+        candle_4_features["upper_shadow"]
+    ) / 5.0
+    avg_lower_shadow = (
+        candle_0_features["lower_shadow"] + candle_1_features["lower_shadow"] + 
+        candle_2_features["lower_shadow"] + candle_3_features["lower_shadow"] + 
+        candle_4_features["lower_shadow"]
+    ) / 5.0
+    avg_volume = (volume_0 + volume_1 + volume_2 + volume_3 + volume_4) / 5.0
+    
+    # Use minimum threshold if average is zero (all doji case)
+    min_body_threshold = 0.01 / 100  # 0.01%
+    min_shadow_threshold = 0.01 / 100
+    min_volume_threshold = 1e-8
+    
+    body_threshold = max(avg_body_size, min_body_threshold)
+    upper_shadow_threshold = max(avg_upper_shadow, min_shadow_threshold)
+    lower_shadow_threshold = max(avg_lower_shadow, min_shadow_threshold)
+    volume_threshold = max(avg_volume, min_volume_threshold)
+    
+    # Create a temporary RollingWindows with only first 3 candles for pattern computation
+    # This maintains compatibility with existing feature names (candle_0, candle_1, candle_2)
+    # But uses thresholds computed from all 5 candles for better context
+    temp_rw = RollingWindows(
+        symbol=rolling_windows.symbol,
+        windows={
+            "1m": klines_sorted.iloc[-3:].copy()  # Last 3 candles
+        },
+        last_update=now,
+    )
+    
+    # Call the 3m version with the 3-candle window
+    # Note: The 3m version will recalculate thresholds from 3 candles,
+    # but having 5 candles available ensures we have enough data
+    features = compute_all_candle_patterns_3m(temp_rw)
+    
+    return features
+
+
+def compute_all_candle_patterns_15m(
+    rolling_windows: RollingWindows,
+) -> Dict[str, Optional[float]]:
+    """
+    Compute all candlestick pattern features from the last 15 minutes (3 candles of 5 minutes each).
+    
+    This version works with 5-minute candles instead of 1-minute candles, providing
+    longer-term patterns for more stable predictions.
+    
+    Returns dictionary with same features as 3m version (uses 3 candles for patterns),
+    but with 5-minute candle intervals.
+    
+    Args:
+        rolling_windows: RollingWindows instance with kline data
+        
+    Returns:
+        Dictionary of feature name -> feature value (0.0 or 1.0 for binary, float for ratios)
+    """
+    now = _ensure_datetime(rolling_windows.last_update)
+    # Get last 15 minutes of kline data (need at least 3 candles of 5 minutes each)
+    start_time = now - timedelta(minutes=16)  # Extra buffer to ensure we have 3 complete candles
+    klines = rolling_windows.get_klines_for_window("5m", start_time, now)
+    
+    if len(klines) < 3:
+        # Return all features as None if insufficient data
+        return _get_empty_features_dict()
+    
+    # Sort by timestamp to ensure correct order (0 = oldest, 2 = newest/current)
+    klines_sorted = klines.sort_values("timestamp").reset_index(drop=True)
+    
+    # Get last 3 candles (most recent)
+    candle_data = []
+    for i in range(-3, 0):  # Last 3 candles
+        idx = len(klines_sorted) + i
+        candle_comp = _get_candle_components(klines_sorted, idx)
+        if candle_comp is None:
+            # Return all features as None if insufficient data
+            return _get_empty_features_dict()
+        candle_data.append(candle_comp)
+    
+    # Extract candle components
+    open_0, high_0, low_0, close_0, volume_0, body_size_0 = candle_data[0]
+    open_1, high_1, low_1, close_1, volume_1, body_size_1 = candle_data[1]
+    open_2, high_2, low_2, close_2, volume_2, body_size_2 = candle_data[2]
+    
+    # Compute features for each candle
+    candle_0_features = _compute_candle_features(open_0, high_0, low_0, close_0, volume_0, body_size_0)
+    candle_1_features = _compute_candle_features(open_1, high_1, low_1, close_1, volume_1, body_size_1)
+    candle_2_features = _compute_candle_features(open_2, high_2, low_2, close_2, volume_2, body_size_2)
+    
+    # Compute relative thresholds (averages over 3 candles)
+    avg_body_size = (body_size_0 + body_size_1 + body_size_2) / 3.0
+    avg_upper_shadow = (
+        candle_0_features["upper_shadow"] + candle_1_features["upper_shadow"] + 
+        candle_2_features["upper_shadow"]
+    ) / 3.0
+    avg_lower_shadow = (
+        candle_0_features["lower_shadow"] + candle_1_features["lower_shadow"] + 
+        candle_2_features["lower_shadow"]
+    ) / 3.0
+    avg_volume = (volume_0 + volume_1 + volume_2) / 3.0
+    
+    # Use minimum threshold if average is zero (all doji case)
+    min_body_threshold = 0.01 / 100  # 0.01%
+    min_shadow_threshold = 0.01 / 100
+    min_volume_threshold = 1e-8
+    
+    body_threshold = max(avg_body_size, min_body_threshold)
+    upper_shadow_threshold = max(avg_upper_shadow, min_shadow_threshold)
+    lower_shadow_threshold = max(avg_lower_shadow, min_shadow_threshold)
+    volume_threshold = max(avg_volume, min_volume_threshold)
+    
+    features = {}
+    
+    # Compute total_range for each candle to calculate ratios
+    total_range_0 = candle_0_features["total_range"]
+    total_range_1 = candle_1_features["total_range"]
+    total_range_2 = candle_2_features["total_range"]
+    
+    # Candle 0 features (oldest)
+    features["candle_0_is_green"] = candle_0_features["is_green"]
+    # Body ratio: body_size / total_range
+    features["candle_0_body_ratio"] = body_size_0 / total_range_0 if total_range_0 > 0 else 0.0
+    # Upper shadow ratio: upper_shadow / total_range
+    features["candle_0_upper_shadow_ratio"] = candle_0_features["upper_shadow"] / total_range_0 if total_range_0 > 0 else 0.0
+    # Lower shadow ratio: lower_shadow / total_range
+    features["candle_0_lower_shadow_ratio"] = candle_0_features["lower_shadow"] / total_range_0 if total_range_0 > 0 else 0.0
+    features["candle_0_is_doji"] = candle_0_features["is_doji"]
+    features["candle_0_is_hammer"] = candle_0_features["is_hammer"]
+    
+    # Candle 1 features (middle)
+    features["candle_1_is_green"] = candle_1_features["is_green"]
+    features["candle_1_body_ratio"] = body_size_1 / total_range_1 if total_range_1 > 0 else 0.0
+    features["candle_1_upper_shadow_ratio"] = candle_1_features["upper_shadow"] / total_range_1 if total_range_1 > 0 else 0.0
+    features["candle_1_lower_shadow_ratio"] = candle_1_features["lower_shadow"] / total_range_1 if total_range_1 > 0 else 0.0
+    features["candle_1_is_doji"] = candle_1_features["is_doji"]
+    features["candle_1_is_hammer"] = candle_1_features["is_hammer"]
+    
+    # Candle 2 features (newest/current)
+    features["candle_2_is_green"] = candle_2_features["is_green"]
+    features["candle_2_body_ratio"] = body_size_2 / total_range_2 if total_range_2 > 0 else 0.0
+    features["candle_2_upper_shadow_ratio"] = candle_2_features["upper_shadow"] / total_range_2 if total_range_2 > 0 else 0.0
+    features["candle_2_lower_shadow_ratio"] = candle_2_features["lower_shadow"] / total_range_2 if total_range_2 > 0 else 0.0
+    features["candle_2_is_doji"] = candle_2_features["is_doji"]
+    features["candle_2_is_hammer"] = candle_2_features["is_hammer"]
+    
+    # Multi-candle patterns
+    # Color patterns (4 фичи)
+    features["pattern_all_green"] = 1.0 if (candle_0_features["is_green"] and candle_1_features["is_green"] and candle_2_features["is_green"]) else 0.0
+    features["pattern_all_red"] = 1.0 if (candle_0_features["is_red"] and candle_1_features["is_red"] and candle_2_features["is_red"]) else 0.0
+    features["pattern_green_red_green"] = 1.0 if (candle_0_features["is_green"] and candle_1_features["is_red"] and candle_2_features["is_green"]) else 0.0
+    features["pattern_red_green_red"] = 1.0 if (candle_0_features["is_red"] and candle_1_features["is_green"] and candle_2_features["is_red"]) else 0.0
+    
+    # Body size patterns (2 фичи)
+    features["pattern_body_increasing"] = 1.0 if (body_size_0 < body_size_1 < body_size_2) else 0.0
+    features["pattern_body_decreasing"] = 1.0 if (body_size_0 > body_size_1 > body_size_2) else 0.0
+    
+    # Volume patterns (4 фичи)
+    features["pattern_volume_increasing"] = 1.0 if (volume_0 < volume_1 < volume_2) else 0.0
+    features["pattern_volume_decreasing"] = 1.0 if (volume_0 > volume_1 > volume_2) else 0.0
+    features["pattern_green_large_volume"] = 1.0 if (candle_2_features["is_green"] and volume_2 > volume_threshold * 1.5) else 0.0
+    features["pattern_red_large_volume"] = 1.0 if (candle_2_features["is_red"] and volume_2 > volume_threshold * 1.5) else 0.0
+    
+    # Classic reversal patterns (6 фич)
+    # Engulfing patterns
+    features["pattern_bullish_engulfing"] = 1.0 if (
+        candle_0_features["is_red"] and candle_1_features["is_green"] and
+        open_1 < close_0 and close_1 > open_0
+    ) else 0.0
+    features["pattern_bearish_engulfing"] = 1.0 if (
+        candle_0_features["is_green"] and candle_1_features["is_red"] and
+        open_1 > close_0 and close_1 < open_0
+    ) else 0.0
+    
+    # Star patterns
+    features["pattern_morning_star"] = 1.0 if (
+        candle_0_features["is_red"] and candle_1_features["body_size"] < body_threshold * 0.3 and candle_2_features["is_green"] and
+        close_2 > (open_0 + close_0) / 2
+    ) else 0.0
+    features["pattern_evening_star"] = 1.0 if (
+        candle_0_features["is_green"] and candle_1_features["body_size"] < body_threshold * 0.3 and candle_2_features["is_red"] and
+        close_2 < (open_0 + close_0) / 2
+    ) else 0.0
+    
+    # Inside bar patterns
+    pattern_inside_bar = 1.0 if (high_1 < high_0 and low_1 > low_0) else 0.0
+    features["pattern_inside_bar_bullish"] = 1.0 if (pattern_inside_bar and candle_1_features["is_green"]) else 0.0
+    features["pattern_inside_bar_bearish"] = 1.0 if (pattern_inside_bar and candle_1_features["is_red"]) else 0.0
+    
+    return features

@@ -1,0 +1,400 @@
+version: 1.5.0
+features:
+# 1️⃣ Свечные фичи (15 минут lookback, 3 свечи × 5m) - 21 фича
+# Цвет свечи (1 бинарная на свечу)
+- name: candle_0_is_green
+  input_sources:
+  - kline
+  lookback_window: 15m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: candle_1_is_green
+  input_sources:
+  - kline
+  lookback_window: 15m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: candle_2_is_green
+  input_sources:
+  - kline
+  lookback_window: 15m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+# Размер тела (числовое отношение body/total_range)
+- name: candle_0_body_ratio
+  input_sources:
+  - kline
+  lookback_window: 15m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: candle_1_body_ratio
+  input_sources:
+  - kline
+  lookback_window: 15m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: candle_2_body_ratio
+  input_sources:
+  - kline
+  lookback_window: 15m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+# Верхняя тень (числовое отношение)
+- name: candle_0_upper_shadow_ratio
+  input_sources:
+  - kline
+  lookback_window: 15m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: candle_1_upper_shadow_ratio
+  input_sources:
+  - kline
+  lookback_window: 15m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: candle_2_upper_shadow_ratio
+  input_sources:
+  - kline
+  lookback_window: 15m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+# Нижняя тень (числовое отношение)
+- name: candle_0_lower_shadow_ratio
+  input_sources:
+  - kline
+  lookback_window: 15m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: candle_1_lower_shadow_ratio
+  input_sources:
+  - kline
+  lookback_window: 15m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: candle_2_lower_shadow_ratio
+  input_sources:
+  - kline
+  lookback_window: 15m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+# Специальные паттерны одной свечи (только часто встречающиеся)
+- name: candle_0_is_doji
+  input_sources:
+  - kline
+  lookback_window: 15m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: candle_0_is_hammer
+  input_sources:
+  - kline
+  lookback_window: 15m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: candle_1_is_doji
+  input_sources:
+  - kline
+  lookback_window: 15m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: candle_1_is_hammer
+  input_sources:
+  - kline
+  lookback_window: 15m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: candle_2_is_doji
+  input_sources:
+  - kline
+  lookback_window: 15m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: candle_2_is_hammer
+  input_sources:
+  - kline
+  lookback_window: 15m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+
+# 2️⃣ Многосвечные паттерны (15 минут lookback) - 18 фич
+# Цветовые
+- name: pattern_all_green
+  input_sources:
+  - kline
+  lookback_window: 15m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: pattern_all_red
+  input_sources:
+  - kline
+  lookback_window: 15m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: pattern_green_red_green
+  input_sources:
+  - kline
+  lookback_window: 15m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: pattern_red_green_red
+  input_sources:
+  - kline
+  lookback_window: 15m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+# Размер тела
+- name: pattern_body_increasing
+  input_sources:
+  - kline
+  lookback_window: 15m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: pattern_body_decreasing
+  input_sources:
+  - kline
+  lookback_window: 15m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+# Объём
+- name: pattern_volume_increasing
+  input_sources:
+  - kline
+  lookback_window: 15m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: pattern_volume_decreasing
+  input_sources:
+  - kline
+  lookback_window: 15m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: pattern_green_large_volume
+  input_sources:
+  - kline
+  lookback_window: 15m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: pattern_red_large_volume
+  input_sources:
+  - kline
+  lookback_window: 15m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+# Классические разворотные паттерны (выбор по частоте и значимости)
+- name: pattern_bullish_engulfing
+  input_sources:
+  - kline
+  lookback_window: 15m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: pattern_bearish_engulfing
+  input_sources:
+  - kline
+  lookback_window: 15m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: pattern_morning_star
+  input_sources:
+  - kline
+  lookback_window: 15m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: pattern_evening_star
+  input_sources:
+  - kline
+  lookback_window: 15m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: pattern_inside_bar_bullish
+  input_sources:
+  - kline
+  lookback_window: 15m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: pattern_inside_bar_bearish
+  input_sources:
+  - kline
+  lookback_window: 15m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+
+# 3️⃣ Ценовые фичи (разные окна) - 6 фич
+# Доходность
+- name: returns_3m
+  input_sources:
+  - kline
+  lookback_window: 3m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: returns_5m
+  input_sources:
+  - kline
+  lookback_window: 5m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+# VWAP
+- name: vwap_3m
+  input_sources:
+  - trades
+  lookback_window: 3m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: trades
+    timestamp_required: true
+- name: vwap_5m
+  input_sources:
+  - trades
+  lookback_window: 5m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: trades
+    timestamp_required: true
+# Волатильность
+- name: volatility_10m
+  input_sources:
+  - kline
+  lookback_window: 10m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: volatility_15m
+  input_sources:
+  - kline
+  lookback_window: 15m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+
+# 4️⃣ Orderflow фичи - 2 фичи
+# Подписанный объём
+- name: signed_volume_3m
+  input_sources:
+  - trades
+  lookback_window: 3m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: trades
+    timestamp_required: true
+- name: signed_volume_5m
+  input_sources:
+  - trades
+  lookback_window: 5m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: trades
+    timestamp_required: true

@@ -1,0 +1,20 @@
+version: "1.4.0"
+config:
+  type: "regression"
+  horizon: 180
+  threshold: null
+  computation:
+    preset: "returns"
+    # Ожидаемая доходность за фиксированное время
+    # Формула: (future_price - price) / price
+    # Модель учится отвечать на вопрос:
+    # «Если войти сейчас, сколько процентов рынок в среднем даст через N секунд?»
+    # Большое положительное число → можно думать о лонге
+    # Большое отрицательное → можно думать о шорте
+    # Маленькое → лучше не торговать
+    overrides:
+      price_source: "close"
+      future_price_source: "close"
+      lookup_method: "nearest_forward"
+description: "Initial Target Registry version 1.4.0 - regression target with 180 seconds horizon. Expected return over fixed time: (future_price - price) / price. Synchronized with Feature Registry 1.4.0"
+

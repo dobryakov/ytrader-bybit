@@ -407,18 +407,83 @@ class ModelTrainer:
         try:
             # Remove _label_mapping if it somehow got back in
             hyperparameters.pop("_label_mapping", None)
+            
+            # Handle early stopping for XGBoost
+            early_stopping_rounds = hyperparameters.pop("early_stopping_rounds", None)
+            eval_set = None
+            eval_metric = None
+            X_val = None
+            
+            if early_stopping_rounds is not None and model_type == "xgboost":
+                # Create validation set (20% of training data)
+                from sklearn.model_selection import train_test_split
+                X_train, X_val, y_train, y_val = train_test_split(
+                    X, y, test_size=0.2, random_state=42, shuffle=True
+                )
+                
+                # Prepare validation set for XGBoost
+                eval_set = [(X_val, y_val)]
+                
+                # Set eval_metric based on task type
+                if task_type == "classification":
+                    eval_metric = "mlogloss" if len(y.unique()) > 2 else "logloss"
+                else:  # regression
+                    eval_metric = "rmse"
+                
+                # Update X, y to use training split (not validation!)
+                X = X_train
+                y = y_train
+                
+                # Also update sample_weight if provided
+                if sample_weight is not None:
+                    sample_weight_train, sample_weight_val = train_test_split(
+                        sample_weight, test_size=0.2, random_state=42, shuffle=True
+                    )
+                    sample_weight = sample_weight_train
+                
+                logger.info(
+                    "Using early stopping for XGBoost training",
+                    early_stopping_rounds=early_stopping_rounds,
+                    eval_metric=eval_metric,
+                    train_size=len(X),
+                    validation_size=len(X_val),
+                )
+            
             model = model_class(**hyperparameters)
+            
             # Use sample_weight for multi-class balancing if calculated
             if sample_weight is not None:
-                model.fit(X, y, sample_weight=sample_weight)
+                if eval_set is not None:
+                    model.fit(
+                        X, y,
+                        sample_weight=sample_weight,
+                        eval_set=eval_set,
+                        eval_metric=eval_metric,
+                        early_stopping_rounds=early_stopping_rounds,
+                        verbose=False,
+                    )
+                else:
+                    model.fit(X, y, sample_weight=sample_weight)
             else:
-                model.fit(X, y)
+                if eval_set is not None:
+                    model.fit(
+                        X, y,
+                        eval_set=eval_set,
+                        eval_metric=eval_metric,
+                        early_stopping_rounds=early_stopping_rounds,
+                        verbose=False,
+                    )
+                else:
+                    model.fit(X, y)
 
             logger.info(
                 "Model training completed",
                 model_type=model_type,
                 task_type=task_type,
                 dataset_size=dataset.get_record_count(),
+                training_samples=len(X),
+                validation_samples=len(X_val) if X_val is not None else 0,
+                early_stopping_used=early_stopping_rounds is not None,
             )
 
             return model
@@ -535,12 +600,17 @@ class ModelTrainer:
                     "eval_metric": "mlogloss",
                 },
                 "regression": {
-                    "n_estimators": 100,
-                    "max_depth": 6,
-                    "learning_rate": 0.1,
-                    "subsample": 0.8,
-                    "colsample_bytree": 0.8,
+                    "objective": "reg:pseudohubererror",  # Робастная функция потерь для финансовых данных
+                    "n_estimators": 500,
+                    "max_depth": 4,  # Консервативная глубина для снижения переобучения
+                    "learning_rate": 0.03,  # Медленное обучение для лучшей обобщающей способности
+                    "min_child_weight": 15,  # Умеренная регуляризация (снижено с предложенных 50)
+                    "subsample": 0.8,  # 80% сэмплов для каждого дерева
+                    "colsample_bytree": 0.8,  # 80% признаков для каждого дерева
+                    "reg_alpha": 0.5,  # L1 регуляризация (снижено с предложенных 1.0)
+                    "reg_lambda": 2.0,  # L2 регуляризация (снижено с предложенных 5.0)
                     "random_state": 42,
+                    "early_stopping_rounds": 50,  # Early stopping для оптимизации обучения
                 },
             },
             "random_forest": {

@@ -20,7 +20,7 @@ from src.features.orderflow_features import compute_all_orderflow_features
 from src.features.orderbook_features import compute_all_orderbook_features
 from src.features.perpetual_features import compute_all_perpetual_features
 from src.features.temporal_features import compute_all_temporal_features
-from src.features.candle_patterns import compute_all_candle_patterns_3m
+from src.features.candle_patterns import compute_all_candle_patterns_3m, compute_all_candle_patterns_5m, compute_all_candle_patterns_15m
 
 logger = structlog.get_logger(__name__)
 
@@ -360,8 +360,16 @@ class OfflineEngine:
             temporal_features = compute_all_temporal_features(timestamp)
             all_features.update(temporal_features)
             
-            # Candle pattern features (from Feature Registry v1.3.0)
-            candle_pattern_features = compute_all_candle_patterns_3m(rolling_windows)
+            # Candle pattern features
+            # Use 15m version (5-minute candles) if Feature Registry version >= 1.5.0
+            # Use 5m version (1-minute candles) if Feature Registry version >= 1.4.0
+            # Otherwise use 3m version
+            if self._feature_registry_version and self._feature_registry_version >= "1.5.0":
+                candle_pattern_features = compute_all_candle_patterns_15m(rolling_windows)
+            elif self._feature_registry_version and self._feature_registry_version >= "1.4.0":
+                candle_pattern_features = compute_all_candle_patterns_5m(rolling_windows)
+            else:
+                candle_pattern_features = compute_all_candle_patterns_3m(rolling_windows)
             all_features.update(candle_pattern_features)
             
             # Filter out None values and NaN/Inf values (not JSON compliant)

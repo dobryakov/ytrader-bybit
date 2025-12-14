@@ -131,6 +131,9 @@ def compute_all_orderflow_features(
     features["signed_volume_3s"] = compute_signed_volume(rolling_windows, 3)
     features["signed_volume_15s"] = compute_signed_volume(rolling_windows, 15)
     features["signed_volume_1m"] = compute_signed_volume(rolling_windows, 60)
+    # Long-term signed volume
+    features["signed_volume_3m"] = compute_signed_volume(rolling_windows, 180)
+    features["signed_volume_5m"] = compute_signed_volume(rolling_windows, 300)
     
     # Buy/sell ratio
     features["buy_sell_volume_ratio"] = compute_buy_sell_volume_ratio(rolling_windows, 3)

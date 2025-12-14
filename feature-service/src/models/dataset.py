@@ -21,6 +21,47 @@ class SplitStrategy(str, Enum):
     WALK_FORWARD = "walk_forward"
 
 
+class TargetComputationOverrides(BaseModel):
+    """Overrides for target computation preset."""
+    price_source: Optional[str] = Field(
+        default=None,
+        description="Price source: 'close', 'open', 'high', 'low', 'price'"
+    )
+    future_price_source: Optional[str] = Field(
+        default=None,
+        description="Future price source: 'close', 'open', 'high', 'low', 'price'"
+    )
+    lookup_method: Optional[str] = Field(
+        default=None,
+        description="Lookup method: 'nearest_forward', 'nearest_backward', 'nearest', 'exact'"
+    )
+    tolerance_seconds: Optional[int] = Field(
+        default=None,
+        description="Maximum time tolerance for future price lookup (seconds)"
+    )
+
+
+class TargetComputationConfig(BaseModel):
+    """Target computation configuration."""
+    preset: Literal[
+        "returns",
+        "log_returns",
+        "sharpe_ratio",
+        "price_change",
+        "volatility_normalized_std",
+    ] = Field(
+        description="Preset computation method"
+    )
+    overrides: Optional[TargetComputationOverrides] = Field(
+        default=None,
+        description="Optional overrides for preset defaults"
+    )
+    options: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Additional options (e.g., volatility_window for sharpe_ratio)"
+    )
+
+
 class TargetConfig(BaseModel):
     """Target variable configuration."""
     type: Literal["regression", "classification", "risk_adjusted"] = Field(
@@ -32,6 +73,10 @@ class TargetConfig(BaseModel):
     threshold: Optional[float] = Field(
         default=None,
         description="Threshold for classification (default 0.005 = 0.5%)"
+    )
+    computation: Optional[TargetComputationConfig] = Field(
+        default=None,
+        description="Target computation configuration (if not provided, uses default 'returns' preset)"
     )
 
 
@@ -85,7 +130,7 @@ class Dataset(BaseModel):
         description="Walk-forward configuration (for walk_forward)"
     )
     
-    target_config: TargetConfig = Field(description="Target configuration")
+    target_registry_version: str = Field(description="Target Registry version used")
     feature_registry_version: str = Field(description="Feature Registry version used")
     
     train_records: int = Field(default=0, description="Number of records in train split")
@@ -145,13 +190,6 @@ class Dataset(BaseModel):
                 raise
         return v
     
-    @field_validator("target_config", mode="before")
-    @classmethod
-    def validate_target_config(cls, v):
-        """Validate target config - convert dict to TargetConfig if needed."""
-        if isinstance(v, dict):
-            return TargetConfig(**v)
-        return v
     
     @model_validator(mode='after')
     def validate_periods(self):

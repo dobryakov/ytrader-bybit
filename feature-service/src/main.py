@@ -9,7 +9,8 @@ from fastapi import FastAPI, Depends
 from fastapi.responses import JSONResponse
 from src.api.health import router as health_router
 from src.api.features import router as features_router, set_feature_computer
-from src.api.dataset import router as dataset_router, set_metadata_storage, set_dataset_builder
+from src.api.dataset import router as dataset_router, set_metadata_storage, set_dataset_builder, set_target_registry_version_manager as set_target_registry_version_manager_dataset
+from src.api.target_registry import router as target_registry_router, set_target_registry_version_manager, set_metadata_storage_for_target_registry
 from src.api.backfill import router as backfill_router, set_backfilling_service
 from src.api.cache import router as cache_router, set_cache_service
 from src.api.feature_registry import (
@@ -29,6 +30,7 @@ from src.services.orderbook_manager import OrderbookManager
 from src.services.feature_computer import FeatureComputer
 from src.services.feature_registry import FeatureRegistryLoader
 from src.services.feature_registry_version_manager import FeatureRegistryVersionManager
+from src.services.target_registry_version_manager import TargetRegistryVersionManager
 from src.consumers.market_data_consumer import MarketDataConsumer
 from src.publishers.feature_publisher import FeaturePublisher
 from src.publishers.dataset_publisher import DatasetPublisher
@@ -57,6 +59,7 @@ orderbook_manager: OrderbookManager = None
 feature_computer: FeatureComputer = None
 feature_registry_loader: FeatureRegistryLoader = None
 feature_registry_version_manager: FeatureRegistryVersionManager = None
+target_registry_version_manager: TargetRegistryVersionManager = None
 market_data_consumer: MarketDataConsumer = None
 feature_publisher: FeaturePublisher = None
 feature_scheduler: FeatureScheduler = None
@@ -71,6 +74,7 @@ app.include_router(backfill_router)
 app.include_router(features_router)
 app.include_router(dataset_router)
 app.include_router(feature_registry_router)
+app.include_router(target_registry_router)
 app.include_router(cache_router)
 
 # Add authentication middleware to all routes except health
@@ -103,7 +107,7 @@ async def root():
 async def startup():
     """Application startup event."""
     global mq_manager, http_client, orderbook_manager, feature_computer
-    global feature_registry_loader, feature_registry_version_manager
+    global feature_registry_loader, feature_registry_version_manager, target_registry_version_manager
     global market_data_consumer, feature_publisher, feature_scheduler
     global metadata_storage, dataset_builder, data_storage, backfilling_service
     
@@ -230,6 +234,15 @@ async def startup():
             set_feature_registry_version_manager_api(feature_registry_version_manager)
         set_metadata_storage_for_registry(metadata_storage)
         
+        # Initialize Target Registry Version Manager
+        target_registry_version_manager = TargetRegistryVersionManager(
+            metadata_storage=metadata_storage,
+            versions_dir=config.feature_registry_versions_dir,  # Reuse same directory
+        )
+        set_target_registry_version_manager(target_registry_version_manager)
+        set_metadata_storage_for_target_registry(metadata_storage)
+        set_target_registry_version_manager_dataset(target_registry_version_manager)
+        
         # Set components for hot reload
         from src.api.feature_registry import (
             set_feature_computer_for_registry,
@@ -302,6 +315,7 @@ async def startup():
             backfilling_service=backfilling_service,
             dataset_publisher=dataset_publisher,
             cache_service=cache_service,
+            target_registry_version_manager=target_registry_version_manager,
         )
         set_dataset_builder(dataset_builder)
         

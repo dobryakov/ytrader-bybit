@@ -127,40 +127,45 @@ class TestPriceFeatures:
         assert "volume_3s" in features
 
     def test_compute_returns_5m(self, sample_rolling_windows_klines):
-        """Test returns_5m computation for 5-minute window."""
+        """Test returns_5m computation for 5-minute window using universal function."""
         from src.models.rolling_windows import RollingWindows
-        from src.features.price_features import compute_returns_5m
+        from src.features.price_features import compute_returns
         from datetime import timedelta
         import pandas as pd
         
         base_time = datetime.now(timezone.utc)
         
-        # Create rolling windows with klines spanning 5+ minutes
-        # Add klines in chronological order to ensure they're all in the window
-        klines_data = []
-        for i in range(6):  # 6 klines over 5 minutes
-            klines_data.append({
+        # compute_returns uses get_window_data("300s") which expects trades with "price" column
+        # Create trades data spanning 5+ minutes
+        trades_data = []
+        # Add trade at the start (5 minutes ago) with price 49900.0
+        trades_data.append({
+            "timestamp": base_time - timedelta(minutes=5),
+            "price": 49900.0,
+            "volume": 1.0,
+            "side": "Buy",
+        })
+        # Add a few more trades in between
+        for i in range(1, 5):
+            trades_data.append({
                 "timestamp": base_time - timedelta(minutes=5-i),
-                "open": 49900.0 + i * 20.0,
-                "high": 49910.0 + i * 20.0,
-                "low": 49890.0 + i * 20.0,
-                "close": 49900.0 + i * 20.0,
-                "volume": 5.0 + i,
+                "price": 49900.0 + i * 20.0,
+                "volume": 1.0,
+                "side": "Buy",
             })
         
-        # Create DataFrame with all klines
-        klines_df = pd.DataFrame(klines_data)
+        # Create DataFrame with trades
+        trades_df = pd.DataFrame(trades_data)
         
         rw = RollingWindows(
             symbol="BTCUSDT",
-            windows={"1m": klines_df},
+            windows={"300s": trades_df},  # Use "300s" window as expected by compute_returns
             last_update=base_time,
         )
         
-        # Don't call trim_old_data to keep all klines
-        # Or manually add klines without trimming
         current_price = 50005.0
-        returns = compute_returns_5m(rw, current_price)
+        # Use universal function with 300 seconds (5 minutes)
+        returns = compute_returns(rw, 300, current_price)
         
         # Should compute return: (50005.0 - 49900.0) / 49900.0 ≈ 0.0021
         assert returns is not None
@@ -168,21 +173,22 @@ class TestPriceFeatures:
         assert abs(returns - expected_return) < 0.01  # More lenient tolerance
     
     def test_compute_returns_5m_insufficient_data(self, sample_rolling_windows_klines):
-        """Test returns_5m with insufficient data."""
+        """Test returns_5m with insufficient data using universal function."""
         from src.models.rolling_windows import RollingWindows
-        from src.features.price_features import compute_returns_5m
+        from src.features.price_features import compute_returns
         
         rw = RollingWindows(**sample_rolling_windows_klines)
         # Only 1 kline, need at least 2 (current and 5m ago)
         current_price = 50005.0
-        returns = compute_returns_5m(rw, current_price)
+        # Use universal function with 300 seconds (5 minutes)
+        returns = compute_returns(rw, 300, current_price)
         
         assert returns is None
     
     def test_compute_returns_5m_zero_price(self, sample_rolling_windows_klines):
-        """Test returns_5m with zero historical price."""
+        """Test returns_5m with zero historical price using universal function."""
         from src.models.rolling_windows import RollingWindows
-        from src.features.price_features import compute_returns_5m
+        from src.features.price_features import compute_returns
         from datetime import timedelta
         
         rw = RollingWindows(**sample_rolling_windows_klines)
@@ -200,51 +206,60 @@ class TestPriceFeatures:
         rw.add_kline(kline_5m_ago)
         
         current_price = 50005.0
-        returns = compute_returns_5m(rw, current_price)
+        # Use universal function with 300 seconds (5 minutes)
+        returns = compute_returns(rw, 300, current_price)
         
         assert returns is None
     
     def test_compute_returns_5m_empty_klines(self, sample_rolling_windows_empty):
-        """Test returns_5m with empty klines."""
+        """Test returns_5m with empty klines using universal function."""
         from src.models.rolling_windows import RollingWindows
-        from src.features.price_features import compute_returns_5m
+        from src.features.price_features import compute_returns
         
         rw = RollingWindows(**sample_rolling_windows_empty)
         current_price = 50005.0
-        returns = compute_returns_5m(rw, current_price)
+        # Use universal function with 300 seconds (5 minutes)
+        returns = compute_returns(rw, 300, current_price)
         
         assert returns is None
     
     def test_compute_returns_5m_different_intervals(self, sample_rolling_windows_klines):
-        """Test returns_5m with different candle intervals."""
+        """Test returns_5m with different candle intervals using universal function."""
         from src.models.rolling_windows import RollingWindows
-        from src.features.price_features import compute_returns_5m
+        from src.features.price_features import compute_returns
         from datetime import timedelta
+        import pandas as pd
         
-        rw = RollingWindows(**sample_rolling_windows_klines)
-        base_time = rw.last_update
+        base_time = datetime.now(timezone.utc)
         
-        # Add 3-minute interval klines (should still work with 5m lookback)
-        kline_5m_ago = {
+        # compute_returns uses get_window_data("300s") which expects trades with "price" column
+        # Add trade 5 minutes ago
+        trades_data = [{
             "timestamp": base_time - timedelta(minutes=5),
-            "open": 49900.0,
-            "high": 49910.0,
-            "low": 49890.0,
-            "close": 49900.0,
-            "volume": 5.0,
-        }
-        rw.add_kline(kline_5m_ago)
+            "price": 49900.0,
+            "volume": 1.0,
+            "side": "Buy",
+        }]
+        
+        trades_df = pd.DataFrame(trades_data)
+        
+        rw = RollingWindows(
+            symbol="BTCUSDT",
+            windows={"300s": trades_df},
+            last_update=base_time,
+        )
         
         current_price = 50005.0
-        returns = compute_returns_5m(rw, current_price)
+        # Use universal function with 300 seconds (5 minutes)
+        returns = compute_returns(rw, 300, current_price)
         
         # Should still compute correctly
         assert returns is not None
 
     def test_compute_volatility_5m(self, sample_rolling_windows_klines):
-        """Test volatility_5m computation for 5-minute window."""
+        """Test volatility_5m computation for 5-minute window using universal function."""
         from src.models.rolling_windows import RollingWindows
-        from src.features.price_features import compute_volatility_5m
+        from src.features.price_features import compute_volatility
         from datetime import timedelta
         import numpy as np
         
@@ -264,7 +279,8 @@ class TestPriceFeatures:
             }
             rw.add_kline(kline)
         
-        volatility = compute_volatility_5m(rw)
+        # Use universal function with 300 seconds (5 minutes)
+        volatility = compute_volatility(rw, 300)
         
         # Should compute volatility as std of returns
         assert volatility is not None
@@ -272,20 +288,42 @@ class TestPriceFeatures:
         assert volatility >= 0
     
     def test_compute_volatility_5m_insufficient_data(self, sample_rolling_windows_klines):
-        """Test volatility_5m with insufficient data."""
+        """Test volatility_5m with insufficient data using universal function."""
         from src.models.rolling_windows import RollingWindows
-        from src.features.price_features import compute_volatility_5m
+        from src.features.price_features import compute_volatility
+        from datetime import timedelta
         
-        rw = RollingWindows(**sample_rolling_windows_klines)
-        # Only 1 kline, need at least 2 for returns calculation
-        volatility = compute_volatility_5m(rw)
+        base_time = datetime.now(timezone.utc)
+        
+        # compute_volatility uses get_klines_for_window("1m", ...)
+        # Add only 1 kline (need at least 2 for returns calculation)
+        klines_data = [{
+            "timestamp": base_time - timedelta(minutes=2),
+            "open": 49900.0,
+            "high": 49910.0,
+            "low": 49890.0,
+            "close": 49900.0,
+            "volume": 5.0,
+        }]
+        
+        import pandas as pd
+        klines_df = pd.DataFrame(klines_data)
+        
+        rw = RollingWindows(
+            symbol="BTCUSDT",
+            windows={"1m": klines_df},
+            last_update=base_time,
+        )
+        
+        # Use universal function with 300 seconds (5 minutes)
+        volatility = compute_volatility(rw, 300)
         
         assert volatility is None
     
     def test_compute_volatility_5m_less_than_2_candles(self, sample_rolling_windows_klines):
-        """Test volatility_5m with less than 2 candles."""
+        """Test volatility_5m with less than 2 candles using universal function."""
         from src.models.rolling_windows import RollingWindows
-        from src.features.price_features import compute_volatility_5m
+        from src.features.price_features import compute_volatility
         from datetime import timedelta
         
         rw = RollingWindows(**sample_rolling_windows_klines)
@@ -302,24 +340,26 @@ class TestPriceFeatures:
         }
         rw.add_kline(kline)
         
-        volatility = compute_volatility_5m(rw)
+        # Use universal function with 300 seconds (5 minutes)
+        volatility = compute_volatility(rw, 300)
         
         assert volatility is None
     
     def test_compute_volatility_5m_empty_klines(self, sample_rolling_windows_empty):
-        """Test volatility_5m with empty klines."""
+        """Test volatility_5m with empty klines using universal function."""
         from src.models.rolling_windows import RollingWindows
-        from src.features.price_features import compute_volatility_5m
+        from src.features.price_features import compute_volatility
         
         rw = RollingWindows(**sample_rolling_windows_empty)
-        volatility = compute_volatility_5m(rw)
+        # Use universal function with 300 seconds (5 minutes)
+        volatility = compute_volatility(rw, 300)
         
         assert volatility is None
     
     def test_compute_volatility_5m_zero_prices(self, sample_rolling_windows_klines):
-        """Test volatility_5m with zero prices."""
+        """Test volatility_5m with zero prices using universal function."""
         from src.models.rolling_windows import RollingWindows
-        from src.features.price_features import compute_volatility_5m
+        from src.features.price_features import compute_volatility
         from datetime import timedelta
         
         rw = RollingWindows(**sample_rolling_windows_klines)
@@ -337,7 +377,8 @@ class TestPriceFeatures:
             }
             rw.add_kline(kline)
         
-        volatility = compute_volatility_5m(rw)
+        # Use universal function with 300 seconds (5 minutes)
+        volatility = compute_volatility(rw, 300)
         
         # Should return None due to zero prices (filtered out)
         assert volatility is None

@@ -11,6 +11,10 @@ import structlog
 import hashlib
 
 from src.models.dataset import Dataset, DatasetStatus, SplitStrategy, TargetConfig
+from src.services.target_computation import (
+    TargetComputationPresets,
+    TargetComputationEngine,
+)
 from src.models.feature_vector import FeatureVector
 from src.storage.metadata_storage import MetadataStorage
 from src.storage.parquet_storage import ParquetStorage
@@ -18,6 +22,7 @@ from src.services.offline_engine import OfflineEngine
 from src.services.feature_registry import FeatureRegistryLoader
 from src.services.backfilling_service import BackfillingService
 from src.services.cache_service import CacheService, CacheServiceFactory
+from src.services.target_registry_version_manager import TargetRegistryVersionManager
 from src.config import config
 
 if TYPE_CHECKING:
@@ -173,6 +178,7 @@ class DatasetBuilder:
         backfilling_service: Optional[BackfillingService] = None,
         dataset_publisher: Optional["DatasetPublisher"] = None,
         cache_service: Optional[CacheService] = None,
+        target_registry_version_manager: Optional[TargetRegistryVersionManager] = None,
     ):
         """
         Initialize dataset builder.
@@ -205,6 +211,7 @@ class DatasetBuilder:
         self._cache_enabled = config.dataset_builder_cache_enabled
         self._cache_historical_data_enabled = config.dataset_builder_cache_historical_data_enabled
         self._cache_features_enabled = config.dataset_builder_cache_features_enabled
+        self._target_registry_version_manager = target_registry_version_manager
     
     async def recover_incomplete_builds(self) -> None:
         """
@@ -362,7 +369,7 @@ class DatasetBuilder:
         self,
         symbol: str,
         split_strategy: SplitStrategy,
-        target_config: TargetConfig,
+        target_registry_version: str,
         train_period_start: Optional[datetime] = None,
         train_period_end: Optional[datetime] = None,
         validation_period_start: Optional[datetime] = None,
@@ -379,7 +386,7 @@ class DatasetBuilder:
         Args:
             symbol: Trading pair symbol
             split_strategy: Split strategy (time_based or walk_forward)
-            target_config: Target variable configuration
+            target_registry_version: Target Registry version
             train_period_start: Train period start (for time_based)
             train_period_end: Train period end (for time_based)
             validation_period_start: Validation period start (for time_based)
@@ -392,6 +399,15 @@ class DatasetBuilder:
         Returns:
             Dataset ID (UUID string)
         """
+        # Load target config from Target Registry
+        if self._target_registry_version_manager is None:
+            raise ValueError("Target Registry version manager not initialized")
+        
+        target_config_dict = await self._target_registry_version_manager.get_version(target_registry_version)
+        if target_config_dict is None:
+            raise ValueError(f"Target Registry version not found: {target_registry_version}")
+        
+        target_config = TargetConfig(**target_config_dict)
         # Normalize datetime objects to timezone-aware UTC before storing
         # This prevents asyncpg from mixing timezone-aware and timezone-naive datetimes
         def normalize_dt(dt: Optional[datetime]) -> Optional[datetime]:
@@ -418,7 +434,7 @@ class DatasetBuilder:
             "test_period_start": normalize_dt(test_period_start),
             "test_period_end": normalize_dt(test_period_end),
             "walk_forward_config": walk_forward_config,
-            "target_config": target_config.model_dump(),
+            "target_registry_version": target_registry_version,
             "feature_registry_version": registry_version,
             "output_format": output_format,
         }
@@ -1817,17 +1833,45 @@ class DatasetBuilder:
             merged_price_max=float(merged["price"].max()) if "price" in merged.columns and merged["price"].notna().any() else None,
         )
         
+        # Get computation configuration from Target Registry
+        computation_config = TargetComputationPresets.get_computation_config(
+            target_config.computation
+        )
+        
+        # Prepare historical data for future price lookup
+        # We need original price data (klines or trades) for finding future prices
+        historical_price_data = price_df.copy()
+        
         # Compute targets based on type
         if target_config.type == "regression":
-            return self._compute_regression_targets(merged, target_config.horizon)
+            # Use new computation engine
+            return TargetComputationEngine.compute_target(
+                merged, target_config.horizon, computation_config, historical_price_data
+            )
         elif target_config.type == "classification":
             from src.config import config
             threshold = target_config.threshold or config.model_classification_threshold
-            return self._compute_classification_targets(
-                merged, target_config.horizon, threshold
+            # Compute base targets first
+            targets_df = TargetComputationEngine.compute_target(
+                merged, target_config.horizon, computation_config, historical_price_data
             )
+            # Classify: 1 for positive above threshold, -1 for negative below -threshold, 0 otherwise
+            targets_df["target"] = targets_df["target"].apply(
+                lambda x: 1 if x > threshold else (-1 if x < -threshold else 0)
+            )
+            return targets_df
         else:  # risk_adjusted
-            return self._compute_risk_adjusted_targets(merged, target_config.horizon)
+            # For risk_adjusted, use sharpe_ratio preset if not specified
+            if not target_config.computation or target_config.computation.preset != "sharpe_ratio":
+                # Override to sharpe_ratio
+                risk_config = TargetComputationPresets.get_preset("sharpe_ratio")
+                if target_config.computation and target_config.computation.options:
+                    risk_config.update(target_config.computation.options)
+                computation_config = risk_config
+            
+            return TargetComputationEngine.compute_target(
+                merged, target_config.horizon, computation_config, historical_price_data
+            )
     
     def _compute_regression_targets(
         self,
@@ -1836,10 +1880,17 @@ class DatasetBuilder:
     ) -> pd.DataFrame:
         """Compute regression targets (returns).
         
+        DEPRECATED: This method is kept for backward compatibility with tests.
+        New code should use TargetComputationEngine.compute_target().
+        
         Args:
             data: DataFrame with timestamp and price columns
             horizon: Prediction horizon in seconds
         """
+        # Use new computation engine with default "returns" preset
+        # Pass None for historical_price_data - will use data itself
+        computation_config = TargetComputationPresets.get_preset("returns")
+        return TargetComputationEngine.compute_target(data, horizon, computation_config, historical_price_data=None)
         if data.empty:
             logger.warning("_compute_regression_targets: input data is empty")
             return pd.DataFrame()
@@ -2050,9 +2101,19 @@ class DatasetBuilder:
         horizon: int,
         threshold: float,
     ) -> pd.DataFrame:
-        """Compute classification targets (direction)."""
-        # First compute returns
-        targets_df = self._compute_regression_targets(data, horizon)
+        """Compute classification targets (direction).
+        
+        DEPRECATED: This method is kept for backward compatibility with tests.
+        New code should use TargetComputationEngine.compute_target() with classification type.
+        
+        Args:
+            data: DataFrame with timestamp and price columns
+            horizon: Prediction horizon in seconds
+            threshold: Classification threshold
+        """
+        # First compute returns using new engine
+        computation_config = TargetComputationPresets.get_preset("returns")
+        targets_df = TargetComputationEngine.compute_target(data, horizon, computation_config)
         
         # Classify: 1 for positive above threshold, -1 for negative below -threshold, 0 otherwise
         targets_df["target"] = targets_df["target"].apply(
@@ -2066,18 +2127,18 @@ class DatasetBuilder:
         data: pd.DataFrame,
         horizon: int,
     ) -> pd.DataFrame:
-        """Compute risk-adjusted targets (Sharpe ratio)."""
-        # Compute returns first
-        returns_df = self._compute_regression_targets(data, horizon)
+        """Compute risk-adjusted targets (Sharpe ratio).
         
-        # Compute rolling volatility
-        returns_df["volatility"] = returns_df["target"].rolling(window=20).std()
+        DEPRECATED: This method is kept for backward compatibility with tests.
+        New code should use TargetComputationEngine.compute_target() with "sharpe_ratio" preset.
         
-        # Compute Sharpe ratio
-        returns_df["target"] = returns_df["target"] / returns_df["volatility"]
-        returns_df = returns_df.dropna(subset=["target"])
-        
-        return returns_df[["timestamp", "target"]]
+        Args:
+            data: DataFrame with timestamp and price columns
+            horizon: Prediction horizon in seconds
+        """
+        # Use new computation engine with sharpe_ratio preset
+        computation_config = TargetComputationPresets.get_preset("sharpe_ratio")
+        return TargetComputationEngine.compute_target(data, horizon, computation_config)
     
     async def _validate_no_data_leakage(
         self,

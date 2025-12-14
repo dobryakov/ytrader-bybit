@@ -21,6 +21,7 @@ from src.models.dataset import (
 from src.api.middleware.auth import verify_api_key
 from src.storage.metadata_storage import MetadataStorage
 from src.services.dataset_builder import DatasetBuilder
+from src.services.target_registry_version_manager import TargetRegistryVersionManager
 from src.storage.parquet_storage import ParquetStorage
 from src.config import config
 
@@ -31,6 +32,7 @@ router = APIRouter(prefix="/dataset", tags=["Datasets"])
 # Global instances (will be set by main.py)
 _metadata_storage: Optional[MetadataStorage] = None
 _dataset_builder: Optional[DatasetBuilder] = None
+_target_registry_version_manager: Optional[TargetRegistryVersionManager] = None
 
 
 def set_metadata_storage(storage: MetadataStorage):
@@ -43,6 +45,12 @@ def set_dataset_builder(builder: DatasetBuilder):
     """Set dataset builder instance."""
     global _dataset_builder
     _dataset_builder = builder
+
+
+def set_target_registry_version_manager(manager: TargetRegistryVersionManager):
+    """Set target registry version manager instance."""
+    global _target_registry_version_manager
+    _target_registry_version_manager = manager
 
 
 from pydantic import BaseModel
@@ -59,7 +67,7 @@ class DatasetBuildRequest(BaseModel):
     test_period_start: Optional[datetime] = None
     test_period_end: Optional[datetime] = None
     walk_forward_config: Optional[Dict[str, Any]] = None
-    target_config: TargetConfig
+    target_registry_version: str = Field(description="Target Registry version")
     feature_registry_version: str
     output_format: str = "parquet"
 
@@ -105,7 +113,7 @@ async def build_dataset(
         dataset_id = await _dataset_builder.build_dataset(
             symbol=request.symbol,
             split_strategy=request.split_strategy,
-            target_config=request.target_config,
+            target_registry_version=request.target_registry_version,
             train_period_start=request.train_period_start,
             train_period_end=request.train_period_end,
             validation_period_start=request.validation_period_start,

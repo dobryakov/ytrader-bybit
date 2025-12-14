@@ -1,0 +1,30 @@
+version: "1.5.0"
+config:
+  type: "regression"
+  horizon: 1200
+  threshold: null
+  computation:
+    preset: "volatility_normalized_std"
+    # Нормализация таргета по волатильности через rolling_std
+    # Формула: y = raw_return / rolling_std(raw_return, window=X)
+    # где raw_return = (future_price - current_price) / current_price
+    # 
+    # Преимущества:
+    # - Стабильность таргета во времени (не зависит от абсолютной волатильности рынка)
+    # - Учет текущих рыночных условий (высокая/низкая волатильность)
+    # - Улучшение обучения модели (более стабильное распределение таргета)
+    # - Сравнимость между разными периодами рынка
+    #
+    # Интерпретация:
+    # - Таргет показывает доходность в единицах стандартного отклонения
+    # - Большое положительное число → сильное движение вверх (в единицах волатильности)
+    # - Большое отрицательное → сильное движение вниз (в единицах волатильности)
+    # - Маленькое → слабое движение относительно текущей волатильности
+    overrides:
+      price_source: "close"
+      future_price_source: "close"
+      lookup_method: "nearest_forward"
+    options:
+      volatility_window: 12  # Окно для вычисления rolling_std (в количестве свечей/сэмплов)
+description: "Target Registry version 1.5.0 - volatility-normalized returns using rolling_std. Formula: raw_return / rolling_std(raw_return, window=20). Provides stable target across different market volatility regimes."
+

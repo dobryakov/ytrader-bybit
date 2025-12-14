@@ -190,93 +190,6 @@ def compute_volatility(
     return float(volatility)
 
 
-def compute_returns_5m(
-    rolling_windows: RollingWindows,
-    current_price: Optional[float],
-) -> Optional[float]:
-    """
-    Compute 5-minute returns.
-    
-    Gets close price 5 minutes ago from klines and computes return as:
-    (current_price - price_5m_ago) / price_5m_ago
-    
-    Args:
-        rolling_windows: RollingWindows instance with kline data
-        current_price: Current price (from latest kline close or provided parameter)
-        
-    Returns:
-        Returns value or None if insufficient data or zero historical price
-    """
-    if current_price is None:
-        return None
-    
-    now = _ensure_datetime(rolling_windows.last_update)
-    # Get klines for 5-minute window (extend to 6 minutes to ensure we capture boundary)
-    start_time = now - timedelta(minutes=6)
-    klines = rolling_windows.get_klines_for_window("1m", start_time, now)
-    
-    if len(klines) == 0:
-        return None
-    
-    if "close" not in klines.columns or "timestamp" not in klines.columns:
-        return None
-    
-    # Sort by timestamp
-    klines_sorted = klines.sort_values("timestamp")
-    if len(klines_sorted) == 0:
-        return None
-    
-    # Find kline closest to 5 minutes ago
-    target_time = now - timedelta(minutes=5)
-    # Filter klines that are at or before target_time (with 1 minute tolerance)
-    klines_before = klines_sorted[klines_sorted["timestamp"] <= target_time + timedelta(minutes=1)]
-    
-    if len(klines_before) == 0:
-        # If no klines before target, use the earliest available kline
-        price_5m_ago = pd.to_numeric(klines_sorted.iloc[0]["close"], errors='coerce')
-    else:
-        # Use the kline closest to target_time (prefer earlier ones)
-        time_diffs = (klines_before["timestamp"] - target_time).abs()
-        closest_idx = time_diffs.idxmin()
-        price_5m_ago = pd.to_numeric(klines_before.loc[closest_idx]["close"], errors='coerce')
-    if pd.isna(price_5m_ago) or price_5m_ago == 0:
-        return None
-    
-    # Compute return: (current_price - price_5m_ago) / price_5m_ago
-    return float((current_price - price_5m_ago) / price_5m_ago)
-
-
-def compute_volatility_5m(
-    rolling_windows: RollingWindows,
-) -> Optional[float]:
-    """
-    Compute 5-minute volatility (standard deviation of returns).
-    
-    Gets klines for 5-minute period, computes returns between consecutive candles,
-    and returns std(returns) as volatility.
-    
-    Args:
-        rolling_windows: RollingWindows instance with kline data
-        
-    Returns:
-        Volatility value or None if insufficient data
-    """
-    now = _ensure_datetime(rolling_windows.last_update)
-    start_time = now - timedelta(minutes=5)
-    
-    # Get klines for 5-minute window
-    klines = rolling_windows.get_klines_for_window("1m", start_time, now)
-    
-    if len(klines) < 2:
-        return None
-    
-    if "close" not in klines.columns:
-        return None
-    
-    # Reuse existing compute_volatility function with window_seconds=300 (5 minutes)
-    return compute_volatility(rolling_windows, 300)
-
-
 def compute_price_ema21_ratio(
     rolling_windows: RollingWindows,
     current_price: Optional[float],
@@ -391,21 +304,32 @@ def compute_all_price_features(
     features["returns_1s"] = compute_returns(rolling_windows, 1, current_price)
     features["returns_3s"] = compute_returns(rolling_windows, 3, current_price)
     features["returns_1m"] = compute_returns(rolling_windows, 60, current_price)
-    features["returns_5m"] = compute_returns_5m(rolling_windows, current_price)
+    # Long-term returns
+    features["returns_3m"] = compute_returns(rolling_windows, 180, current_price)
+    features["returns_5m"] = compute_returns(rolling_windows, 300, current_price)
     
     # VWAP
     features["vwap_3s"] = compute_vwap(rolling_windows, 3)
     features["vwap_15s"] = compute_vwap(rolling_windows, 15)
     features["vwap_1m"] = compute_vwap(rolling_windows, 60)
+    # Long-term VWAP
+    features["vwap_3m"] = compute_vwap(rolling_windows, 180)
+    features["vwap_5m"] = compute_vwap(rolling_windows, 300)
     
     # Volume
     features["volume_3s"] = compute_volume(rolling_windows, 3)
     features["volume_15s"] = compute_volume(rolling_windows, 15)
     features["volume_1m"] = compute_volume(rolling_windows, 60)
+    # Long-term volume
+    features["volume_3m"] = compute_volume(rolling_windows, 180)
+    features["volume_5m"] = compute_volume(rolling_windows, 300)
     
     # Volatility
     features["volatility_1m"] = compute_volatility(rolling_windows, 60)
-    features["volatility_5m"] = compute_volatility_5m(rolling_windows)
+    features["volatility_5m"] = compute_volatility(rolling_windows, 300)
+    # Long-term volatility
+    features["volatility_10m"] = compute_volatility(rolling_windows, 600)
+    features["volatility_15m"] = compute_volatility(rolling_windows, 900)
     
     # Price to EMA21 ratio
     features["price_ema21_ratio"] = compute_price_ema21_ratio(rolling_windows, current_price)

@@ -304,10 +304,10 @@ class MetadataStorage:
                         tzinfo=timezone.utc
                     )
         
-        # Normalize datetime objects in nested structures (walk_forward_config, target_config)
+        # Normalize datetime objects in nested structures (walk_forward_config)
         # These may contain datetime objects that need to be normalized
         walk_forward_config = self._normalize_datetime_in_dict(dataset_data.get("walk_forward_config"))
-        target_config = self._normalize_datetime_in_dict(dataset_data.get("target_config"))
+        target_registry_version = dataset_data.get("target_registry_version")
         
         # Final verification: ensure ALL datetime objects are timezone-aware UTC
         # This is critical - asyncpg compares ALL datetime objects in the query,
@@ -340,8 +340,6 @@ class MetadataStorage:
             logger.error("CRITICAL: Some datetime objects are not properly normalized!")
         if walk_forward_config and not check_all_datetimes(walk_forward_config, "walk_forward_config"):
             logger.error("CRITICAL: walk_forward_config contains improperly normalized datetime objects!")
-        if target_config and not check_all_datetimes(target_config, "target_config"):
-            logger.error("CRITICAL: target_config contains improperly normalized datetime objects!")
         
         # Log datetime parameters at debug level (only if needed for troubleshooting)
         # Note: structlog doesn't support isEnabledFor, so we just log at debug level
@@ -365,7 +363,7 @@ class MetadataStorage:
                 datetime_params[4],  # test_period_start
                 datetime_params[5],  # test_period_end
                 walk_forward_config,
-                target_config,
+                target_registry_version,
                 dataset_data["feature_registry_version"],
                 dataset_data.get("output_format", "parquet"),
             ]
@@ -442,15 +440,7 @@ class MetadataStorage:
                 walk_forward_config_final = self._convert_datetime_to_iso_string(walk_forward_config_final)
                 walk_forward_config_final = json.dumps(walk_forward_config_final)
             
-            target_config_final = query_params[10]
-            if isinstance(target_config_final, dict):
-                # Convert datetime objects to ISO strings before JSON serialization
-                target_config_final = self._convert_datetime_to_iso_string(target_config_final)
-                target_config_final = json.dumps(target_config_final)
-            elif target_config_final is not None and not isinstance(target_config_final, str):
-                # Convert datetime objects to ISO strings before JSON serialization
-                target_config_final = self._convert_datetime_to_iso_string(target_config_final)
-                target_config_final = json.dumps(target_config_final)
+            target_registry_version_final = query_params[10]
             
             final_params = [
                 query_params[0],  # symbol
@@ -463,7 +453,7 @@ class MetadataStorage:
                 final_datetime_params[4],  # test_period_start
                 final_datetime_params[5],  # test_period_end
                 walk_forward_config_final,  # walk_forward_config (JSON string or None)
-                target_config_final,  # target_config (JSON string)
+                target_registry_version_final,  # target_registry_version (string)
                 query_params[11],  # feature_registry_version
                 query_params[12],  # output_format
             ]
@@ -500,7 +490,7 @@ class MetadataStorage:
                         train_period_start, train_period_end,
                         validation_period_start, validation_period_end,
                         test_period_start, test_period_end,
-                        walk_forward_config, target_config,
+                        walk_forward_config, target_registry_version,
                         feature_registry_version, output_format
                     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
                     RETURNING id
@@ -524,7 +514,7 @@ class MetadataStorage:
                             train_period_start, train_period_end,
                             validation_period_start, validation_period_end,
                             test_period_start, test_period_end,
-                            walk_forward_config, target_config,
+                            walk_forward_config, target_registry_version,
                             feature_registry_version, output_format
                         ) VALUES (
                             $1, $2, $3,
@@ -584,7 +574,7 @@ class MetadataStorage:
                             train_period_start, train_period_end,
                             validation_period_start, validation_period_end,
                             test_period_start, test_period_end,
-                            walk_forward_config, target_config,
+                            walk_forward_config, target_registry_version,
                             feature_registry_version, output_format
                         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
                         RETURNING id
@@ -1150,4 +1140,210 @@ class MetadataStorage:
             else:
                 logger.warning("feature_registry_version_not_found_for_deletion", version=version)
             return deleted
+    
+    # ========== Target Registry Methods ==========
+    
+    async def get_active_target_registry_version(self) -> Optional[dict]:
+        """
+        Get active Target Registry version from database.
+        
+        Returns:
+            Dict with version metadata or None if no active version exists
+        """
+        async with self.get_connection() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT * FROM target_registry_versions
+                WHERE is_active = true
+                LIMIT 1
+                """
+            )
+            if row is None:
+                return None
+            return self._normalize_datetime_in_dict(dict(row))
+    
+    async def create_target_registry_version(
+        self,
+        version: str,
+        config: dict,
+        is_active: bool = False,
+        created_by: Optional[str] = None,
+        description: Optional[str] = None,
+        file_path: Optional[str] = None,
+        validated_at: Optional[datetime] = None,
+        validation_errors: Optional[list] = None,
+    ) -> dict:
+        """
+        Create a new Target Registry version record.
+        
+        Args:
+            version: Version identifier (e.g., "1.4.0")
+            config: Target configuration dict (type, horizon, threshold)
+            is_active: Whether this version is active (default: False)
+            created_by: User who created this version (optional)
+            description: Description of this version (optional)
+            file_path: Path to YAML file (optional)
+            validated_at: When validation was performed (optional)
+            validation_errors: List of validation errors (optional)
+            
+        Returns:
+            Created version record as dict
+        """
+        async with self.transaction() as conn:
+            validated_at_normalized = self._normalize_datetime(validated_at) if validated_at else None
+            
+            row = await conn.fetchrow(
+                """
+                INSERT INTO target_registry_versions (
+                    version, config, is_active, created_by, description, file_path,
+                    validated_at, validation_errors, created_at
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+                RETURNING *
+                """,
+                version,
+                config,
+                is_active,
+                created_by,
+                description,
+                file_path,
+                validated_at_normalized,
+                validation_errors,
+            )
+            
+            logger.info(
+                "target_registry_version_created",
+                version=version,
+                is_active=is_active,
+            )
+            
+            return self._normalize_datetime_in_dict(dict(row))
+    
+    async def activate_target_registry_version(
+        self,
+        version: str,
+        activated_by: Optional[str] = None,
+        activation_reason: Optional[str] = None,
+    ) -> dict:
+        """
+        Activate a Target Registry version (atomically deactivate old, activate new).
+        
+        Args:
+            version: Version identifier to activate
+            activated_by: User who activated this version (optional)
+            activation_reason: Reason for activation (optional)
+            
+        Returns:
+            Activated version record as dict
+            
+        Raises:
+            ValueError: If version not found
+        """
+        async with self.transaction() as conn:
+            # Get current active version
+            current_active = await conn.fetchrow(
+                """
+                SELECT version FROM target_registry_versions
+                WHERE is_active = true
+                LIMIT 1
+                """
+            )
+            previous_version = current_active["version"] if current_active else None
+            
+            # Deactivate all versions
+            await conn.execute(
+                """
+                UPDATE target_registry_versions
+                SET is_active = false
+                WHERE is_active = true
+                """
+            )
+            
+            # Activate new version
+            row = await conn.fetchrow(
+                """
+                UPDATE target_registry_versions
+                SET is_active = true,
+                    activated_at = NOW(),
+                    activated_by = $1,
+                    activation_reason = $2,
+                    previous_version = $3
+                WHERE version = $4
+                RETURNING *
+                """,
+                activated_by,
+                activation_reason,
+                previous_version,
+                version,
+            )
+            
+            if row is None:
+                raise ValueError(f"Target Registry version not found: {version}")
+            
+            logger.info(
+                "target_registry_version_activated",
+                version=version,
+                previous_version=previous_version,
+                activated_by=activated_by,
+            )
+            
+            return self._normalize_datetime_in_dict(dict(row))
+    
+    async def list_target_registry_versions(self) -> list:
+        """
+        List all Target Registry versions ordered by creation date (newest first).
+        
+        Returns:
+            List of version records as dicts
+        """
+        async with self.get_connection() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT * FROM target_registry_versions
+                ORDER BY created_at DESC
+                """
+            )
+            return [self._normalize_datetime_in_dict(dict(row)) for row in rows]
+    
+    async def get_target_registry_version(self, version: str) -> Optional[dict]:
+        """
+        Get a specific Target Registry version by version string.
+        
+        Args:
+            version: Version identifier
+            
+        Returns:
+            Version record as dict or None if not found
+        """
+        async with self.get_connection() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT * FROM target_registry_versions
+                WHERE version = $1
+                """,
+                version,
+            )
+            if row is None:
+                return None
+            return self._normalize_datetime_in_dict(dict(row))
+    
+    async def check_target_version_usage(self, version: str) -> int:
+        """
+        Check how many datasets are using a specific Target Registry version.
+        
+        Args:
+            version: Version identifier
+            
+        Returns:
+            Number of datasets using this version
+        """
+        async with self.get_connection() as conn:
+            count = await conn.fetchval(
+                """
+                SELECT COUNT(*) FROM datasets
+                WHERE target_registry_version = $1
+                """,
+                version,
+            )
+            return int(count) if count is not None else 0
 

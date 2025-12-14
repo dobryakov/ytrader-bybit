@@ -1,0 +1,472 @@
+"""
+Target computation presets and logic.
+"""
+from typing import Dict, Any, Optional
+import pandas as pd
+import numpy as np
+from src.models.dataset import TargetComputationConfig, TargetComputationOverrides
+from src.logging import get_logger
+
+logger = get_logger(__name__)
+
+
+class TargetComputationPresets:
+    """Preset configurations for target computation."""
+    
+    PRESETS: Dict[str, Dict[str, Any]] = {
+        "returns": {
+            "formula": "returns",
+            "price_source": "close",
+            "future_price_source": "close",
+            "lookup_method": "nearest_forward",
+            "description": "Expected return over fixed time: (future_price - price) / price",
+        },
+        "log_returns": {
+            "formula": "log_returns",
+            "price_source": "close",
+            "future_price_source": "close",
+            "lookup_method": "nearest_forward",
+            "description": "Logarithmic returns: log(future_price / price)",
+        },
+        "sharpe_ratio": {
+            "formula": "sharpe_ratio",
+            "price_source": "close",
+            "future_price_source": "close",
+            "lookup_method": "nearest_forward",
+            "volatility_window": 20,
+            "description": "Risk-adjusted returns: returns / volatility",
+        },
+        "price_change": {
+            "formula": "price_change",
+            "price_source": "close",
+            "future_price_source": "close",
+            "lookup_method": "nearest_forward",
+            "description": "Absolute price change: future_price - price",
+        },
+        "volatility_normalized_std": {
+            "formula": "volatility_normalized_std",
+            "price_source": "close",
+            "future_price_source": "close",
+            "lookup_method": "nearest_forward",
+            "volatility_window": 20,
+            "description": "Volatility-normalized returns: raw_return / rolling_std(raw_return, window=X)",
+        },
+    }
+    
+    @classmethod
+    def get_preset(cls, preset_name: str) -> Dict[str, Any]:
+        """
+        Get preset configuration.
+        
+        Args:
+            preset_name: Preset name
+            
+        Returns:
+            Preset configuration dict
+            
+        Raises:
+            ValueError: If preset not found
+        """
+        if preset_name not in cls.PRESETS:
+            raise ValueError(
+                f"Unknown preset: {preset_name}. "
+                f"Available presets: {list(cls.PRESETS.keys())}"
+            )
+        return cls.PRESETS[preset_name].copy()
+    
+    @classmethod
+    def get_computation_config(
+        cls,
+        computation: Optional[TargetComputationConfig],
+    ) -> Dict[str, Any]:
+        """
+        Get final computation configuration with overrides applied.
+        
+        Args:
+            computation: Target computation configuration (optional)
+            
+        Returns:
+            Final computation configuration dict
+        """
+        # Default to "returns" preset if not specified
+        preset_name = "returns"
+        overrides = None
+        
+        if computation:
+            preset_name = computation.preset
+            overrides = computation.overrides
+        
+        # Get preset defaults
+        config = cls.get_preset(preset_name)
+        
+        # Apply overrides if provided
+        if overrides:
+            if overrides.price_source:
+                config["price_source"] = overrides.price_source
+            if overrides.future_price_source:
+                config["future_price_source"] = overrides.future_price_source
+            if overrides.lookup_method:
+                config["lookup_method"] = overrides.lookup_method
+            if overrides.tolerance_seconds is not None:
+                config["tolerance_seconds"] = overrides.tolerance_seconds
+        
+        # Apply additional options if provided
+        if computation and computation.options:
+            config.update(computation.options)
+        
+        return config
+
+
+class TargetComputationEngine:
+    """Engine for computing target values based on configuration."""
+    
+    @staticmethod
+    def compute_target(
+        data: pd.DataFrame,
+        horizon: int,
+        computation_config: Dict[str, Any],
+        historical_price_data: Optional[pd.DataFrame] = None,
+    ) -> pd.DataFrame:
+        """
+        Compute target values based on computation configuration.
+        
+        Args:
+            data: DataFrame with timestamp and price columns
+            horizon: Prediction horizon in seconds
+            computation_config: Computation configuration from preset
+            historical_price_data: Optional historical price data for future price lookup
+                                   (if None, uses data itself)
+            
+        Returns:
+            DataFrame with timestamp and target columns
+        """
+        formula = computation_config.get("formula", "returns")
+        
+        if formula == "returns":
+            return TargetComputationEngine._compute_returns(
+                data, horizon, computation_config, historical_price_data
+            )
+        elif formula == "log_returns":
+            return TargetComputationEngine._compute_log_returns(
+                data, horizon, computation_config, historical_price_data
+            )
+        elif formula == "sharpe_ratio":
+            return TargetComputationEngine._compute_sharpe_ratio(
+                data, horizon, computation_config, historical_price_data
+            )
+        elif formula == "price_change":
+            return TargetComputationEngine._compute_price_change(
+                data, horizon, computation_config, historical_price_data
+            )
+        elif formula == "volatility_normalized_std":
+            return TargetComputationEngine._compute_volatility_normalized_std(
+                data, horizon, computation_config, historical_price_data
+            )
+        else:
+            raise ValueError(f"Unknown formula: {formula}")
+    
+    @staticmethod
+    def _compute_returns(
+        data: pd.DataFrame,
+        horizon: int,
+        config: Dict[str, Any],
+        historical_price_data: Optional[pd.DataFrame] = None,
+    ) -> pd.DataFrame:
+        """Compute returns: (future_price - price) / price"""
+        return TargetComputationEngine._compute_base_target(
+            data, horizon, config, formula="returns", historical_price_data=historical_price_data
+        )
+    
+    @staticmethod
+    def _compute_log_returns(
+        data: pd.DataFrame,
+        horizon: int,
+        config: Dict[str, Any],
+        historical_price_data: Optional[pd.DataFrame] = None,
+    ) -> pd.DataFrame:
+        """Compute log returns: log(future_price / price)"""
+        result = TargetComputationEngine._compute_base_target(
+            data, horizon, config, formula="returns", historical_price_data=historical_price_data
+        )
+        if not result.empty and "target" in result.columns:
+            # Convert returns to log returns: log(1 + return) ≈ log(future_price / price)
+            result["target"] = np.log1p(result["target"])
+        return result
+    
+    @staticmethod
+    def _compute_price_change(
+        data: pd.DataFrame,
+        horizon: int,
+        config: Dict[str, Any],
+        historical_price_data: Optional[pd.DataFrame] = None,
+    ) -> pd.DataFrame:
+        """Compute absolute price change: future_price - price"""
+        result = TargetComputationEngine._compute_base_target(
+            data, horizon, config, formula="price_change", historical_price_data=historical_price_data
+        )
+        return result
+    
+    @staticmethod
+    def _compute_sharpe_ratio(
+        data: pd.DataFrame,
+        horizon: int,
+        config: Dict[str, Any],
+        historical_price_data: Optional[pd.DataFrame] = None,
+    ) -> pd.DataFrame:
+        """Compute Sharpe ratio: returns / volatility"""
+        # First compute returns
+        returns_df = TargetComputationEngine._compute_returns(
+            data, horizon, config, historical_price_data
+        )
+        
+        if returns_df.empty:
+            return pd.DataFrame(columns=["timestamp", "target"])
+        
+        # Compute rolling volatility
+        volatility_window = config.get("volatility_window", 20)
+        returns_df["volatility"] = returns_df["target"].rolling(window=volatility_window).std()
+        
+        # Compute Sharpe ratio: return / volatility
+        returns_df["target"] = returns_df["target"] / returns_df["volatility"]
+        returns_df = returns_df.dropna(subset=["target"])
+        
+        return returns_df[["timestamp", "target"]]
+    
+    @staticmethod
+    def _compute_volatility_normalized_std(
+        data: pd.DataFrame,
+        horizon: int,
+        config: Dict[str, Any],
+        historical_price_data: Optional[pd.DataFrame] = None,
+    ) -> pd.DataFrame:
+        """
+        Compute volatility-normalized returns: raw_return / rolling_std(raw_return, window=X).
+        
+        This normalizes the target by dividing raw returns by their rolling standard deviation,
+        making the target more stable across different market volatility regimes.
+        
+        Formula: y = ((future - current) / current) / rolling_std(returns, window=X)
+        
+        Args:
+            data: DataFrame with timestamp and price columns
+            horizon: Prediction horizon in seconds
+            config: Computation configuration
+            historical_price_data: Optional historical price data for future price lookup
+            
+        Returns:
+            DataFrame with timestamp and target columns
+        """
+        # First compute raw returns
+        returns_df = TargetComputationEngine._compute_returns(
+            data, horizon, config, historical_price_data
+        )
+        
+        if returns_df.empty:
+            return pd.DataFrame(columns=["timestamp", "target"])
+        
+        # Get volatility window from config
+        volatility_window = config.get("volatility_window", 20)
+        
+        # Compute rolling standard deviation of returns
+        # This measures the volatility of returns over the rolling window
+        returns_df["volatility"] = returns_df["target"].rolling(window=volatility_window).std()
+        
+        # Normalize returns by volatility: raw_return / rolling_std(raw_return)
+        # This gives us returns in units of standard deviations
+        returns_df["target"] = returns_df["target"] / returns_df["volatility"]
+        
+        # Remove rows where volatility is zero or NaN (can't normalize)
+        returns_df = returns_df.dropna(subset=["target", "volatility"])
+        returns_df = returns_df[returns_df["volatility"] > 0]
+        
+        # Remove infinite values
+        returns_df = returns_df[
+            ~returns_df["target"].isin([float("inf"), float("-inf")])
+        ]
+        
+        return returns_df[["timestamp", "target"]]
+    
+    @staticmethod
+    def _compute_base_target(
+        data: pd.DataFrame,
+        horizon: int,
+        config: Dict[str, Any],
+        formula: str = "returns",
+        historical_price_data: Optional[pd.DataFrame] = None,
+    ) -> pd.DataFrame:
+        """
+        Base computation for target values.
+        
+        Args:
+            data: DataFrame with timestamp and price columns
+            horizon: Prediction horizon in seconds
+            config: Computation configuration
+            formula: Formula type ("returns" or "price_change")
+            
+        Returns:
+            DataFrame with timestamp and target columns
+        """
+        if data.empty:
+            logger.warning("_compute_base_target: input data is empty")
+            return pd.DataFrame()
+        
+        # Get price source
+        price_source = config.get("price_source", "close")
+        future_price_source = config.get("future_price_source", "close")
+        lookup_method = config.get("lookup_method", "nearest_forward")
+        tolerance_seconds = config.get("tolerance_seconds")
+        
+        # Determine price column name
+        # Note: data may already have "price" column (from merge in _compute_targets)
+        # or may have original klines columns (close, open, etc.)
+        price_col = None
+        if "price" in data.columns:
+            # Data already has "price" column (from merge)
+            price_col = "price"
+        elif price_source in data.columns:
+            # Use requested source if available
+            price_col = price_source
+        elif "close" in data.columns:
+            # Fallback to close
+            price_col = "close"
+        else:
+            logger.error(
+                "_compute_base_target: no price column found",
+                available_columns=list(data.columns),
+                requested_source=price_source,
+            )
+            return pd.DataFrame()
+        
+        if price_col not in data.columns:
+            logger.error(
+                "_compute_base_target: price column not found",
+                requested=price_col,
+                available=list(data.columns),
+            )
+            return pd.DataFrame()
+        
+        # Sort by timestamp
+        data = data.sort_values("timestamp").copy()
+        
+        # Create future timestamps
+        data["future_timestamp"] = data["timestamp"] + pd.Timedelta(seconds=horizon)
+        
+        # Save original price column
+        original_price_df = data[["timestamp", price_col]].copy()
+        original_price_df = original_price_df.rename(columns={price_col: "price"})
+        
+        # Create price lookup DataFrame
+        # Use historical_price_data if provided (for finding future prices),
+        # otherwise use data itself
+        if historical_price_data is not None and not historical_price_data.empty:
+            # Use historical data for future price lookup
+            future_price_source = config.get("future_price_source", "close")
+            if future_price_source in historical_price_data.columns:
+                lookup_col = future_price_source
+            elif "close" in historical_price_data.columns:
+                lookup_col = "close"
+            elif "price" in historical_price_data.columns:
+                lookup_col = "price"
+            else:
+                logger.warning(
+                    "_compute_base_target: future_price_source not found in historical data, using data itself",
+                    available_columns=list(historical_price_data.columns),
+                )
+                lookup_col = price_col
+                historical_price_data = data
+            
+            price_lookup = historical_price_data[["timestamp", lookup_col]].copy()
+            price_lookup = price_lookup[price_lookup[lookup_col].notna()].copy()
+            price_lookup = price_lookup.rename(columns={lookup_col: "future_price"})
+        else:
+            # Use data itself for future price lookup
+            price_lookup = data[["timestamp", price_col]].copy()
+            price_lookup = price_lookup[price_lookup[price_col].notna()].copy()
+            price_lookup = price_lookup.rename(columns={price_col: "future_price"})
+        
+        price_lookup = price_lookup.sort_values("timestamp")
+        
+        if price_lookup.empty:
+            logger.warning("_compute_base_target: price_lookup is empty")
+            return pd.DataFrame()
+        
+        # Sort data by future_timestamp for merge_asof
+        data_sorted = data.sort_values("future_timestamp").copy()
+        
+        # Determine merge direction
+        direction_map = {
+            "nearest_forward": "forward",
+            "nearest_backward": "backward",
+            "nearest": "nearest",
+            "exact": "forward",  # For exact, we'll filter after merge
+        }
+        direction = direction_map.get(lookup_method, "forward")
+        
+        # Use merge_asof to find future price
+        data_merged = pd.merge_asof(
+            data_sorted,
+            price_lookup,
+            left_on="future_timestamp",
+            right_on="timestamp",
+            direction=direction,
+            suffixes=("", "_future"),
+        )
+        
+        # Apply tolerance if specified
+        if tolerance_seconds is not None:
+            time_diff = (data_merged["timestamp_future"] - data_merged["future_timestamp"]).abs()
+            data_merged = data_merged[time_diff <= pd.Timedelta(seconds=tolerance_seconds)]
+        
+        # Restore original price column
+        data_merged = data_merged.merge(
+            original_price_df,
+            on="timestamp",
+            how="left",
+            suffixes=("", "_original"),
+        )
+        
+        if "price_original" in data_merged.columns:
+            data_merged["price"] = data_merged["price_original"]
+            data_merged = data_merged.drop(columns=["price_original"], errors="ignore")
+        
+        # Drop helper columns
+        data_merged = data_merged.drop(
+            columns=["future_timestamp", "timestamp_future"],
+            errors="ignore"
+        )
+        
+        # Check for valid prices
+        if "future_price" not in data_merged.columns:
+            logger.error("_compute_base_target: future_price column not found after merge")
+            return pd.DataFrame()
+        
+        valid_rows = (
+            data_merged["future_price"].notna() & 
+            data_merged["price"].notna()
+        )
+        
+        if valid_rows.sum() == 0:
+            logger.warning("_compute_base_target: no rows with both prices valid")
+            return pd.DataFrame()
+        
+        # Compute target based on formula
+        if formula == "returns":
+            data_merged["target"] = (
+                (data_merged["future_price"] - data_merged["price"]) / 
+                data_merged["price"]
+            )
+        elif formula == "price_change":
+            data_merged["target"] = (
+                data_merged["future_price"] - data_merged["price"]
+            )
+        else:
+            raise ValueError(f"Unknown formula: {formula}")
+        
+        # Remove invalid values
+        data_merged = data_merged.dropna(subset=["target"])
+        data_merged = data_merged[
+            ~data_merged["target"].isin([float("inf"), float("-inf")])
+        ]
+        
+        return data_merged[["timestamp", "target"]]
+
