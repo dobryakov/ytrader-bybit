@@ -652,6 +652,27 @@ class TrainingOrchestrator:
             # For binary classification, this will still work correctly
             y_pred_proba = model.predict_proba(eval_features) if hasattr(model, "predict_proba") else None
 
+            # Log prediction statistics before evaluation
+            if y_pred_proba is not None:
+                if isinstance(y_pred_proba, np.ndarray) and y_pred_proba.ndim == 2:
+                    # Log average probabilities per class
+                    avg_probs = np.mean(y_pred_proba, axis=0)
+                    logger.info(
+                        "model_predictions_before_evaluation",
+                        split="validation",
+                        training_id=training_id,
+                        avg_class_probabilities={f"class_{i}": float(avg_probs[i]) for i in range(len(avg_probs))},
+                        prediction_threshold="argmax (default)",
+                    )
+                elif isinstance(y_pred_proba, np.ndarray) and y_pred_proba.ndim == 1:
+                    logger.info(
+                        "model_predictions_before_evaluation",
+                        split="validation",
+                        training_id=training_id,
+                        avg_class_probability=float(np.mean(y_pred_proba)),
+                        prediction_threshold="argmax (default)",
+                    )
+
             validation_metrics = quality_evaluator.evaluate(
                 y_true=eval_labels,
                 y_pred=pd.Series(y_pred),
@@ -734,6 +755,27 @@ class TrainingOrchestrator:
                                 test_y_pred_proba = (
                                     model.predict_proba(test_features) if hasattr(model, "predict_proba") else None
                                 )
+
+                                # Log prediction statistics before evaluation
+                                if test_y_pred_proba is not None:
+                                    if isinstance(test_y_pred_proba, np.ndarray) and test_y_pred_proba.ndim == 2:
+                                        # Log average probabilities per class
+                                        avg_probs = np.mean(test_y_pred_proba, axis=0)
+                                        logger.info(
+                                            "model_predictions_before_evaluation",
+                                            split="test",
+                                            training_id=training_id,
+                                            avg_class_probabilities={f"class_{i}": float(avg_probs[i]) for i in range(len(avg_probs))},
+                                            prediction_threshold="argmax (default)",
+                                        )
+                                    elif isinstance(test_y_pred_proba, np.ndarray) and test_y_pred_proba.ndim == 1:
+                                        logger.info(
+                                            "model_predictions_before_evaluation",
+                                            split="test",
+                                            training_id=training_id,
+                                            avg_class_probability=float(np.mean(test_y_pred_proba)),
+                                            prediction_threshold="argmax (default)",
+                                        )
 
                                 test_metrics = quality_evaluator.evaluate(
                                     y_true=test_labels,

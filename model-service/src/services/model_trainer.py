@@ -118,6 +118,9 @@ class ModelTrainer:
         label_mapping = None
         if task_type == "classification" and model_type == "xgboost":
             sorted_unique = sorted(unique_labels)
+            original_label_dist = y.value_counts().to_dict()
+            original_label_dist_pct = {k: (v / len(y) * 100) for k, v in original_label_dist.items()}
+            
             if sorted_unique[0] < 0 or sorted_unique != list(range(len(sorted_unique))):
                 # Need to remap labels to [0, 1, 2, ...]
                 # Convert numpy types to Python native types for JSON serialization
@@ -127,15 +130,31 @@ class ModelTrainer:
                 y = y.map(label_mapping)
                 # Update unique_labels after remapping to reflect new label values
                 unique_labels = sorted(y.unique())
+                
+                # Log distribution after remapping
+                remapped_label_dist = y.value_counts().to_dict()
+                remapped_label_dist_pct = {k: (v / len(y) * 100) for k, v in remapped_label_dist.items()}
+                
                 logger.info(
                     "Remapped class labels for XGBoost",
                     original_labels=sorted_unique_py,
                     mapped_labels=list(range(len(sorted_unique))),
                     mapping={str(k): v for k, v in label_mapping.items()},  # Convert keys to strings for JSON
+                    original_distribution=original_label_dist,
+                    original_distribution_percentage={k: round(v, 2) for k, v in original_label_dist_pct.items()},
+                    remapped_distribution=remapped_label_dist,
+                    remapped_distribution_percentage={k: round(v, 2) for k, v in remapped_label_dist_pct.items()},
                 )
                 # Store reverse mapping separately (not in hyperparameters - XGBoost doesn't accept it)
                 # We'll store it in model metadata after training
                 self._label_mapping_for_inference = {int(k): int(v) if isinstance(v, (np.integer, np.int64, np.int32)) else v for k, v in reverse_mapping.items()}
+            else:
+                logger.info(
+                    "Class labels already normalized for XGBoost",
+                    labels=unique_labels.tolist(),
+                    distribution=original_label_dist,
+                    distribution_percentage={k: round(v, 2) for k, v in original_label_dist_pct.items()},
+                )
         
         # Apply SMOTE oversampling for minority classes if enabled
         original_class_distribution = None

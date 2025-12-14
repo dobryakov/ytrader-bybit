@@ -98,13 +98,24 @@ class DatasetBuilder:
                     fallback="using_default_30_minutes",
                 )
         
-        # Use default if no registry or computation failed
-        if max_lookback == 0:
-            max_lookback = 30  # Default fallback
-            logger.debug(
-                "using_default_lookback",
-                max_lookback_minutes=max_lookback,
-            )
+        # Use default if no registry or computation failed, or if computed value is too small
+        # Minimum required lookback is 26 minutes (for ema_21)
+        # If computed value is less than minimum, use default to ensure all features can compute
+        if max_lookback == 0 or max_lookback < 26:
+            default_lookback = 30  # Default fallback (covers ema_21: 26 min + buffer)
+            if max_lookback > 0 and max_lookback < 26:
+                logger.warning(
+                    "computed_lookback_too_small",
+                    computed_lookback=max_lookback,
+                    minimum_required=26,
+                    using_default=default_lookback,
+                )
+            else:
+                logger.debug(
+                    "using_default_lookback",
+                    max_lookback_minutes=default_lookback,
+                )
+            max_lookback = default_lookback
         
         return max_lookback
     

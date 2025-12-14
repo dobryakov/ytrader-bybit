@@ -334,10 +334,11 @@ def compute_volume_ratio_20(
         return None
     
     now = _ensure_datetime(rolling_windows.last_update)
-    # Get enough history for 20 candles (assuming 1m candles, need 20 minutes)
-    start_time = now - timedelta(minutes=20)
+    # Get enough history for 20 completed candles (excluding current incomplete candle)
+    # Request 21 minutes to ensure we have 20 completed candles even if current one is included
+    start_time = now - timedelta(minutes=21)
     
-    # Get klines for window
+    # Get klines for window (may include current incomplete candle)
     klines = rolling_windows.get_klines_for_window(candle_interval, start_time, now)
     
     if len(klines) < 20:
@@ -346,13 +347,22 @@ def compute_volume_ratio_20(
     if "volume" not in klines.columns:
         return None
     
-    # Sort by timestamp and get last 20 candles
+    # Sort by timestamp
     klines_sorted = klines.sort_values("timestamp")
     if len(klines_sorted) < 20:
         return None
     
-    # Get last 20 volumes
-    volumes = pd.to_numeric(klines_sorted.tail(20)["volume"], errors='coerce').fillna(0.0)
+    # Get last 20 COMPLETED candles (exclude current incomplete candle if present)
+    # If we have more than 20 candles, take the 20 before the last one
+    if len(klines_sorted) > 20:
+        # Exclude the last (current) candle and take previous 20
+        completed_klines = klines_sorted.iloc[:-1].tail(20)
+    else:
+        # Exactly 20 candles - use all of them (assuming they're all completed)
+        completed_klines = klines_sorted.tail(20)
+    
+    # Get volumes from completed candles only
+    volumes = pd.to_numeric(completed_klines["volume"], errors='coerce').fillna(0.0)
     
     # Compute volume_ma_20 as simple moving average
     volume_ma_20 = float(volumes.mean())

@@ -18,6 +18,7 @@ from sklearn.metrics import (
     mean_absolute_error,
     r2_score,
     roc_curve,
+    confusion_matrix,
 )
 
 from ..config.logging import get_logger
@@ -85,6 +86,68 @@ class QualityEvaluator:
         """
         metrics = {}
 
+        # Log class distribution for debugging
+        true_dist = y_true.value_counts().to_dict()
+        pred_dist = pd.Series(y_pred).value_counts().to_dict()
+        true_dist_pct = {k: (v / len(y_true) * 100) for k, v in true_dist.items()}
+        pred_dist_pct = {k: (v / len(y_pred) * 100) for k, v in pred_dist.items()}
+        
+        logger.info(
+            "classification_evaluation_distribution",
+            total_samples=len(y_true),
+            true_class_distribution=true_dist,
+            true_class_distribution_percentage={k: round(v, 2) for k, v in true_dist_pct.items()},
+            pred_class_distribution=pred_dist,
+            pred_class_distribution_percentage={k: round(v, 2) for k, v in pred_dist_pct.items()},
+        )
+
+        # Compute confusion matrix
+        unique_classes = sorted(list(set(y_true.unique().tolist() + pd.Series(y_pred).unique().tolist())))
+        try:
+            cm = confusion_matrix(y_true, y_pred, labels=unique_classes)
+            
+            # Convert confusion matrix to dictionary format for logging
+            # Format: {f"{true_class}_{pred_class}": count}
+            cm_dict = {}
+            cm_dict_pct = {}
+            total_samples = len(y_true)
+            
+            for i, true_class in enumerate(unique_classes):
+                for j, pred_class in enumerate(unique_classes):
+                    count = int(cm[i, j])
+                    pct = (count / total_samples * 100) if total_samples > 0 else 0.0
+                    key = f"true_{true_class}_pred_{pred_class}"
+                    cm_dict[key] = count
+                    cm_dict_pct[key] = round(pct, 2)
+            
+            # Also log row-normalized (percentage of true class predicted as each class)
+            cm_row_pct = {}
+            for i, true_class in enumerate(unique_classes):
+                row_total = cm[i, :].sum()
+                if row_total > 0:
+                    for j, pred_class in enumerate(unique_classes):
+                        count = int(cm[i, j])
+                        pct = (count / row_total * 100) if row_total > 0 else 0.0
+                        key = f"true_{true_class}_pred_{pred_class}"
+                        cm_row_pct[key] = round(pct, 2)
+                else:
+                    # No samples of this true class
+                    for j, pred_class in enumerate(unique_classes):
+                        key = f"true_{true_class}_pred_{pred_class}"
+                        cm_row_pct[key] = 0.0
+            
+            logger.info(
+                "confusion_matrix",
+                total_samples=total_samples,
+                class_labels=unique_classes,
+                matrix_counts=cm_dict,
+                matrix_percentages_of_total=cm_dict_pct,
+                matrix_percentages_of_true_class=cm_row_pct,
+                note="matrix_counts shows absolute counts, matrix_percentages_of_total shows % of total samples, matrix_percentages_of_true_class shows % of each true class",
+            )
+        except Exception as e:
+            logger.warning("Failed to calculate confusion matrix", error=str(e), exc_info=True)
+
         # Basic classification metrics
         metrics["accuracy"] = float(accuracy_score(y_true, y_pred))
 
@@ -93,6 +156,27 @@ class QualityEvaluator:
             metrics["precision"] = float(precision_score(y_true, y_pred, average="weighted", zero_division=0))
             metrics["recall"] = float(recall_score(y_true, y_pred, average="weighted", zero_division=0))
             metrics["f1_score"] = float(f1_score(y_true, y_pred, average="weighted", zero_division=0))
+            
+            # Log per-class metrics for binary classification
+            # Use same unique_classes as defined earlier for confusion matrix
+            if len(unique_classes) == 2:
+                try:
+                    precision_per_class = precision_score(y_true, y_pred, average=None, zero_division=0)
+                    recall_per_class = recall_score(y_true, y_pred, average=None, zero_division=0)
+                    f1_per_class = f1_score(y_true, y_pred, average=None, zero_division=0)
+                    
+                    logger.info(
+                        "classification_per_class_metrics",
+                        class_0_precision=float(precision_per_class[0]) if len(precision_per_class) > 0 else None,
+                        class_0_recall=float(recall_per_class[0]) if len(recall_per_class) > 0 else None,
+                        class_0_f1=float(f1_per_class[0]) if len(f1_per_class) > 0 else None,
+                        class_1_precision=float(precision_per_class[1]) if len(precision_per_class) > 1 else None,
+                        class_1_recall=float(recall_per_class[1]) if len(recall_per_class) > 1 else None,
+                        class_1_f1=float(f1_per_class[1]) if len(f1_per_class) > 1 else None,
+                        class_labels=unique_classes,
+                    )
+                except Exception as e:
+                    logger.debug("Failed to calculate per-class metrics", error=str(e))
         except Exception as e:
             logger.warning("Failed to calculate precision/recall/f1", error=str(e))
             metrics["precision"] = 0.0

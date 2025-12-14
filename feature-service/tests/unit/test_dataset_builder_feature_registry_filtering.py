@@ -427,4 +427,62 @@ class TestDatasetBuilderFeatureRegistryFiltering:
             f"Filtered DataFrame should have feature columns. "
             f"Columns: {list(filtered_df.columns)}"
         )
+    
+    def test_compute_max_lookback_minutes_with_version_1_2_0(
+        self,
+        dataset_builder,
+        mock_feature_registry_loader,
+    ):
+        """Test that _compute_max_lookback_minutes correctly computes max lookback from Feature Registry version 1.2.0."""
+        # Version 1.2.0 has features with large lookback: ema_21 (26 min), rsi_14 (19 min), volume_ratio_20 (20 min)
+        max_lookback = dataset_builder._compute_max_lookback_minutes(mock_feature_registry_loader)
+        
+        # Should compute max lookback from FEATURE_LOOKBACK_MAPPING for ema_21 = 26 minutes
+        assert max_lookback == 26, (
+            f"Expected max_lookback=26 (from ema_21), got {max_lookback}. "
+            f"Feature Registry version: {mock_feature_registry_loader._registry_model.version if mock_feature_registry_loader._registry_model else 'None'}"
+        )
+    
+    def test_compute_max_lookback_minutes_without_loader(self, dataset_builder):
+        """Test that _compute_max_lookback_minutes returns default when loader is None."""
+        max_lookback = dataset_builder._compute_max_lookback_minutes(None)
+        
+        # Should return default 30 minutes when loader is None
+        assert max_lookback == 30, (
+            f"Expected max_lookback=30 (default), got {max_lookback}"
+        )
+    
+    def test_compute_max_lookback_minutes_with_small_lookback(
+        self,
+        dataset_builder,
+    ):
+        """Test that _compute_max_lookback_minutes uses default when computed value is too small."""
+        # Create mock loader with features that have small lookback (like version 1.0.0)
+        mock_loader = MagicMock(spec=FeatureRegistryLoader)
+        
+        # Create FeatureRegistry model with features that have small lookback (max 6 minutes from volatility_5m)
+        from src.models.feature_registry import FeatureRegistry, FeatureDefinition
+        
+        small_lookback_config = {
+            "version": "1.0.0",
+            "features": [
+                {
+                    "name": "volatility_5m",
+                    "input_sources": ["kline"],
+                    "lookback_window": "5m",
+                    "lookahead_forbidden": True,
+                    "max_lookback_days": 1,
+                    "data_sources": [{"source": "kline", "timestamp_required": True}],
+                },
+            ],
+        }
+        registry_model = FeatureRegistry(**small_lookback_config)
+        mock_loader._registry_model = registry_model
+        
+        max_lookback = dataset_builder._compute_max_lookback_minutes(mock_loader)
+        
+        # Should return default 30 minutes because computed value (6) < 26
+        assert max_lookback == 30, (
+            f"Expected max_lookback=30 (default, because computed 6 < 26), got {max_lookback}"
+        )
 

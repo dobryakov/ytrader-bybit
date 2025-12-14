@@ -520,10 +520,13 @@ class TestPriceFeatures:
         rw = RollingWindows(**sample_rolling_windows_klines)
         base_time = rw.last_update
         
-        # Add 20 klines with zero volumes
-        for i in range(20):
+        # Clear existing klines to control test data precisely
+        rw.windows["1m"] = pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"])
+        
+        # Add 21 klines: 20 completed with zero volumes + 1 current
+        for i in range(21):
             kline = {
-                "timestamp": base_time - timedelta(minutes=20-i),
+                "timestamp": base_time - timedelta(minutes=21-i),
                 "open": 50000.0,
                 "high": 50010.0,
                 "low": 49990.0,
@@ -603,10 +606,13 @@ class TestPriceFeatures:
         rw = RollingWindows(**sample_rolling_windows_klines)
         base_time = rw.last_update
         
-        # Add 20 klines with zero volumes
-        for i in range(20):
+        # Clear existing klines to control test data precisely
+        rw.windows["1m"] = pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"])
+        
+        # Add 21 klines: 20 completed with zero volumes + 1 current
+        for i in range(21):
             kline = {
-                "timestamp": base_time - timedelta(minutes=20-i),
+                "timestamp": base_time - timedelta(minutes=21-i),
                 "open": 50000.0,
                 "high": 50010.0,
                 "low": 49990.0,
@@ -631,11 +637,12 @@ class TestPriceFeatures:
         rw = RollingWindows(**sample_rolling_windows_klines)
         base_time = rw.last_update
         
-        # Add 20 klines with known volumes
-        volumes = [10.0 + i * 0.5 for i in range(20)]
+        # Add 21 klines: 20 completed + 1 current (for realistic scenario)
+        # MA20 should be computed from first 20 completed candles
+        volumes = [10.0 + i * 0.5 for i in range(21)]
         for i, volume in enumerate(volumes):
             kline = {
-                "timestamp": base_time - timedelta(minutes=20-i),
+                "timestamp": base_time - timedelta(minutes=21-i),
                 "open": 50000.0,
                 "high": 50010.0,
                 "low": 49990.0,
@@ -644,9 +651,9 @@ class TestPriceFeatures:
             }
             rw.add_kline(kline)
         
-        # Expected MA = mean of volumes
-        expected_ma = np.mean(volumes)
-        current_volume = 20.0
+        # Expected MA = mean of first 20 volumes (completed candles, excluding current)
+        expected_ma = np.mean(volumes[:20])
+        current_volume = volumes[20]  # Last volume (current candle)
         ratio = compute_volume_ratio_20(rw, current_volume)
         
         # Ratio should be current_volume / expected_ma
