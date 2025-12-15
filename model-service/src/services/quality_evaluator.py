@@ -19,6 +19,7 @@ from sklearn.metrics import (
     r2_score,
     roc_curve,
     confusion_matrix,
+    average_precision_score,
 )
 
 from ..config.logging import get_logger
@@ -157,13 +158,22 @@ class QualityEvaluator:
             metrics["recall"] = float(recall_score(y_true, y_pred, average="weighted", zero_division=0))
             metrics["f1_score"] = float(f1_score(y_true, y_pred, average="weighted", zero_division=0))
             
-            # Log per-class metrics for binary classification
+            # Per-class metrics for binary classification (and expose them in metrics)
             # Use same unique_classes as defined earlier for confusion matrix
             if len(unique_classes) == 2:
                 try:
                     precision_per_class = precision_score(y_true, y_pred, average=None, zero_division=0)
                     recall_per_class = recall_score(y_true, y_pred, average=None, zero_division=0)
                     f1_per_class = f1_score(y_true, y_pred, average=None, zero_division=0)
+                    # Map per-class metrics into metrics dict with explicit labels
+                    # unique_classes is sorted list of label values (e.g. [-1, 1] for candle color)
+                    for idx, class_label in enumerate(unique_classes):
+                        if idx < len(precision_per_class):
+                            metrics[f"precision_class_{class_label}"] = float(precision_per_class[idx])
+                        if idx < len(recall_per_class):
+                            metrics[f"recall_class_{class_label}"] = float(recall_per_class[idx])
+                        if idx < len(f1_per_class):
+                            metrics[f"f1_class_{class_label}"] = float(f1_per_class[idx])
                     
                     logger.info(
                         "classification_per_class_metrics",
@@ -183,7 +193,10 @@ class QualityEvaluator:
             metrics["recall"] = 0.0
             metrics["f1_score"] = 0.0
 
-        # ROC AUC (for binary and multi-class classification with probabilities)
+        # ROC AUC and PR-AUC (for binary and multi-class classification with probabilities)
+        metrics["roc_auc"] = 0.0
+        metrics["pr_auc"] = 0.0
+
         if y_pred_proba is not None:
             try:
                 unique_labels = sorted(y_true.unique().tolist())
@@ -210,7 +223,10 @@ class QualityEvaluator:
                 if y_pred_proba_array.ndim == 1:
                     # 1D array: binary classification probabilities
                     if unique_classes == 2:
+                        # ROC-AUC
                         metrics["roc_auc"] = float(roc_auc_score(y_true, y_pred_proba_array))
+                        # PR-AUC (average precision)
+                        metrics["pr_auc"] = float(average_precision_score(y_true, y_pred_proba_array))
                     else:
                         logger.warning(
                             "ROC AUC not calculated: 1D probabilities but more than 2 classes",
@@ -227,7 +243,10 @@ class QualityEvaluator:
                         if y_pred_proba_array.shape[1] == 2:
                             # Two columns: probabilities for class 0 and class 1
                             # Use probabilities for positive class (class 1)
-                            metrics["roc_auc"] = float(roc_auc_score(y_true_array, y_pred_proba_array[:, 1]))
+                            pos_proba = y_pred_proba_array[:, 1]
+                            metrics["roc_auc"] = float(roc_auc_score(y_true_array, pos_proba))
+                            # PR-AUC (average precision) for positive class
+                            metrics["pr_auc"] = float(average_precision_score(y_true_array, pos_proba))
                         else:
                             logger.warning(
                                 "ROC AUC not calculated: binary classification but wrong number of probability columns",
@@ -237,20 +256,22 @@ class QualityEvaluator:
                             metrics["roc_auc"] = 0.0
                     elif unique_classes > 2:
                         # Multi-class classification: use one-vs-rest (ovr) or one-vs-one (ovo)
-                        # Use one-vs-rest averaging with weighted average
-                        # Note: y_true should contain remapped labels [0, 1, 2, ...] after XGBoost remapping
-                        # If some classes are missing in y_true, sklearn will handle it automatically
+                        # Use one-vs-rest averaging with weighted average for ROC-AUC.
+                        # Note: y_true should contain remapped labels [0, 1, 2, ...] after XGBoost remapping.
+                        # If some classes are missing in y_true, sklearn will handle it automatically.
                         y_true_array = np.array(y_true)
                         
                         # Check if probability array has correct number of columns
                         # XGBoost should output probabilities for all classes [0, 1, 2, ...] even if some are missing in y_true
                         if y_pred_proba_array.shape[1] >= unique_classes:
-                            metrics["roc_auc"] = float(roc_auc_score(
-                                y_true_array,
-                                y_pred_proba_array,
-                                multi_class='ovr',
-                                average='weighted',
-                            ))
+                            metrics["roc_auc"] = float(
+                                roc_auc_score(
+                                    y_true_array,
+                                    y_pred_proba_array,
+                                    multi_class="ovr",
+                                    average="weighted",
+                                )
+                            )
                         else:
                             logger.warning(
                                 "ROC AUC not calculated: multi-class but probability array has fewer columns than unique classes",

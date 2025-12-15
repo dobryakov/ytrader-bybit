@@ -609,17 +609,55 @@ class TrainingOrchestrator:
                     )
                     return
 
-            # Determine task variant from dataset metadata / target registry
-            # For now we default to triple_classification for 3-class targets,
-            # and binary_classification for 2-class targets. This can be extended
-            # later using explicit metadata from Feature Service.
+            # Determine task variant.
+            # Prefer explicit configuration from Target Registry if available,
+            # fall back to heuristic based on number of unique labels.
             task_variant: Optional[str] = None
-            unique_label_values = sorted(labels_series.unique().tolist())
+            explicit_variant: Optional[str] = None
+
             if task_type == "classification":
-                if len(unique_label_values) == 2:
-                    task_variant = "binary_classification"
-                elif len(unique_label_values) == 3:
-                    task_variant = "triple_classification"
+                # 1) Try to read explicit task_variant from target_config.computation.options
+                # dataset_meta is a Pydantic model, not a dict, so we need to work with attributes.
+                try:
+                    target_cfg_obj = getattr(dataset_meta, "target_config", None)
+                except Exception:
+                    target_cfg_obj = None
+
+                target_cfg: Optional[dict] = None
+                if target_cfg_obj is not None:
+                    # Support both Pydantic v1 (.dict()) and v2 (.model_dump())
+                    try:
+                        if hasattr(target_cfg_obj, "model_dump"):
+                            target_cfg = target_cfg_obj.model_dump()
+                        elif hasattr(target_cfg_obj, "dict"):
+                            target_cfg = target_cfg_obj.dict()
+                    except Exception:
+                        target_cfg = None
+
+                if isinstance(target_cfg, dict):
+                    comp = target_cfg.get("computation") or {}
+                    opts = comp.get("options") or {}
+                    explicit_variant = opts.get("task_variant")
+                    if isinstance(explicit_variant, str) and explicit_variant:
+                        task_variant = explicit_variant
+
+                # 2) Fallback: infer from label support only if no explicit variant
+                if task_variant is None:
+                    unique_label_values = sorted(labels_series.unique().tolist())
+                    if len(unique_label_values) == 2:
+                        task_variant = "binary_classification"
+                    elif len(unique_label_values) == 3:
+                        task_variant = "triple_classification"
+
+                logger.info(
+                    "classification_task_variant_resolved",
+                    training_id=training_id,
+                    dataset_id=str(dataset_id),
+                    task_type=task_type,
+                    task_variant=task_variant,
+                    unique_labels=sorted(labels_series.unique().tolist()),
+                    source="target_config_explicit" if explicit_variant else "heuristic_label_count",
+                )
 
             # Create TrainingDataset object
             dataset = TrainingDataset(

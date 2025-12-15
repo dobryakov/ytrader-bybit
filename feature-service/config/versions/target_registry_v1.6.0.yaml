@@ -1,11 +1,11 @@
 version: "1.6.0"
 config:
-  # Three-class directional classification for the next candle.
-  # Base numeric target is forward return; mapping to {-1,0,1} is handled
-  # in the model layer (e.g. via thresholds) or dedicated presets.
+  # Binary directional classification for the next candle (candle color).
+  # Base numeric target is forward return; mapping to {-1,+1} is handled
+  # via sign(target) without explicit flat dead-zone.
   type: "classification"
   horizon: 1800
-  threshold: 0.001
+  threshold: null
   computation:
     preset: "next_candle_direction"
     overrides:
@@ -19,7 +19,7 @@ config:
       neutral_label: 0
       min_positive_support: 0.05
       min_negative_support: 0.05
-      task_variant: "triple_classification"
+      task_variant: "binary_classification"
       # Post-processing of numeric base target (returns) before class mapping.
       # Clipping: suppress extreme outliers in returns distribution.
       clip_method: "quantile"     # "quantile" | "fixed" | null
@@ -30,7 +30,9 @@ config:
       normalize: "sharpe"        # "sharpe" | "log" | "zscore" | null
       sharpe_window: 20          # rolling window for std in "sharpe" mode
 description: >
-  Target Registry version 1.6.0 - directional target based on forward return
-  for the next candle (300 seconds). Base numeric target is (future_close - close)
-  / close, computed via preset 'next_candle_direction'. Thresholds and mapping
-  to discrete classes are handled in the model configuration (e.g. triple_classification).
+  Target Registry version 1.6.0 - binary directional target (candle color)
+  based on forward return for the next candle (1800 seconds). Base numeric
+  target is (future_close - close) / close, computed via preset
+  'next_candle_direction'. Post-processing (clipping/normalization) is
+  applied to the numeric target, then mapping to {-1,+1} is done by sign
+  via task_variant 'binary_classification' (no explicit flat dead-zone).

@@ -154,6 +154,50 @@ class ModelTrainer:
         # Check for label diversity (critical for XGBoost with logistic loss)
         unique_labels = y.unique()
         
+        # Derive task_variant from dataset metadata (if present)
+        task_variant = None
+        if hasattr(dataset, "metadata") and isinstance(dataset.metadata, dict):
+            task_variant = dataset.metadata.get("task_variant")
+
+        # Optional: drop strictly zero-class samples for binary candle-color tasks.
+        # Policy is driven from hyperparameters config (drop_zero_class flag).
+        if (
+            task_type == "classification"
+            and model_type == "xgboost"
+            and task_variant == "binary_classification"
+        ):
+            # Resolve default hyperparams to read policy flag; user overrides (if any)
+            # from hyperparameters argument take precedence.
+            base_hparams = self._get_default_hyperparameters(
+                model_type=model_type,
+                task_type=task_type,
+                task_variant=task_variant,
+            )
+            drop_zero_flag = bool(base_hparams.get("drop_zero_class", False))
+            if hyperparameters is not None and "drop_zero_class" in hyperparameters:
+                drop_zero_flag = bool(hyperparameters.get("drop_zero_class"))
+
+            if drop_zero_flag:
+                # Work on original label space where 0 означает строго flat.
+                mask = y != 0
+                removed = int((~mask).sum())
+                if removed > 0:
+                    kept = int(mask.sum())
+                    X = X.loc[mask].reset_index(drop=True)
+                    y = y.loc[mask].reset_index(drop=True)
+                    unique_labels = y.unique()
+
+                    logger.info(
+                        "Dropped zero-target samples for binary classification",
+                        dataset_id=getattr(dataset, "dataset_id", None),
+                        removed_zero_samples=removed,
+                        kept_samples=kept,
+                        drop_zero_class=drop_zero_flag,
+                        remaining_labels=sorted(map(int, unique_labels.tolist()))
+                        if hasattr(unique_labels, "tolist")
+                        else list(unique_labels),
+                    )
+        
         # Normalize class labels for XGBoost (must start from 0 and be consecutive)
         # XGBoost requires classes to be [0, 1, 2, ...], but we might have [-1, 0, 1]
         label_mapping = None
@@ -161,41 +205,91 @@ class ModelTrainer:
             sorted_unique = sorted(unique_labels)
             original_label_dist = y.value_counts().to_dict()
             original_label_dist_pct = {k: (v / len(y) * 100) for k, v in original_label_dist.items()}
-            
-            if sorted_unique[0] < 0 or sorted_unique != list(range(len(sorted_unique))):
-                # Need to remap labels to [0, 1, 2, ...]
-                # Convert numpy types to Python native types for JSON serialization
-                sorted_unique_py = [int(x) if isinstance(x, (np.integer, np.int64, np.int32)) else float(x) if isinstance(x, (np.floating, np.float64, np.float32)) else x for x in sorted_unique]
-                label_mapping = {int(old_label) if isinstance(old_label, (np.integer, np.int64, np.int32)) else old_label: new_label for new_label, old_label in enumerate(sorted_unique)}
-                reverse_mapping = {new_label: int(old_label) if isinstance(old_label, (np.integer, np.int64, np.int32)) else old_label for old_label, new_label in label_mapping.items()}
+
+            # Special handling for binary_classification with {-1, +1} labels:
+            # map -1 -> 0, +1 -> 1 explicitly so that positive class is 1.
+            if task_variant == "binary_classification" and set(sorted_unique) == {-1, 1}:
+                label_mapping = {-1: 0, 1: 1}
+                reverse_mapping = {0: -1, 1: 1}
                 y = y.map(label_mapping)
-                # Update unique_labels after remapping to reflect new label values
                 unique_labels = sorted(y.unique())
-                
-                # Log distribution after remapping
+
                 remapped_label_dist = y.value_counts().to_dict()
                 remapped_label_dist_pct = {k: (v / len(y) * 100) for k, v in remapped_label_dist.items()}
-                
+
                 logger.info(
-                    "Remapped class labels for XGBoost",
-                    original_labels=sorted_unique_py,
-                    mapped_labels=list(range(len(sorted_unique))),
-                    mapping={str(k): v for k, v in label_mapping.items()},  # Convert keys to strings for JSON
+                    "Remapped binary class labels {-1,+1} to {0,1} for XGBoost",
+                    task_variant=task_variant,
+                    original_labels=[-1, 1],
+                    mapped_labels=[0, 1],
+                    mapping={str(k): v for k, v in label_mapping.items()},
                     original_distribution=original_label_dist,
                     original_distribution_percentage={k: round(v, 2) for k, v in original_label_dist_pct.items()},
                     remapped_distribution=remapped_label_dist,
                     remapped_distribution_percentage={k: round(v, 2) for k, v in remapped_label_dist_pct.items()},
                 )
-                # Store reverse mapping separately (not in hyperparameters - XGBoost doesn't accept it)
-                # We'll store it in model metadata after training
-                self._label_mapping_for_inference = {int(k): int(v) if isinstance(v, (np.integer, np.int64, np.int32)) else v for k, v in reverse_mapping.items()}
+                self._label_mapping_for_inference = reverse_mapping
             else:
-                logger.info(
-                    "Class labels already normalized for XGBoost",
-                    labels=unique_labels.tolist(),
-                    distribution=original_label_dist,
-                    distribution_percentage={k: round(v, 2) for k, v in original_label_dist_pct.items()},
-                )
+                if sorted_unique[0] < 0 or sorted_unique != list(range(len(sorted_unique))):
+                    # Need to remap labels to [0, 1, 2, ...]
+                    # Convert numpy types to Python native types for JSON serialization
+                    sorted_unique_py = [
+                        int(x)
+                        if isinstance(x, (np.integer, np.int64, np.int32))
+                        else float(x)
+                        if isinstance(x, (np.floating, np.float64, np.float32))
+                        else x
+                        for x in sorted_unique
+                    ]
+                    label_mapping = {
+                        int(old_label) if isinstance(old_label, (np.integer, np.int64, np.int32)) else old_label: new_label
+                        for new_label, old_label in enumerate(sorted_unique)
+                    }
+                    reverse_mapping = {
+                        new_label: int(old_label)
+                        if isinstance(old_label, (np.integer, np.int64, np.int32))
+                        else old_label
+                        for old_label, new_label in label_mapping.items()
+                    }
+                    y = y.map(label_mapping)
+                    # Update unique_labels after remapping to reflect new label values
+                    unique_labels = sorted(y.unique())
+                    
+                    # Log distribution after remapping
+                    remapped_label_dist = y.value_counts().to_dict()
+                    remapped_label_dist_pct = {
+                        k: (v / len(y) * 100) for k, v in remapped_label_dist.items()
+                    }
+                    
+                    logger.info(
+                        "Remapped class labels for XGBoost",
+                        original_labels=sorted_unique_py,
+                        mapped_labels=list(range(len(sorted_unique))),
+                        mapping={str(k): v for k, v in label_mapping.items()},  # Convert keys to strings for JSON
+                        original_distribution=original_label_dist,
+                        original_distribution_percentage={
+                            k: round(v, 2) for k, v in original_label_dist_pct.items()
+                        },
+                        remapped_distribution=remapped_label_dist,
+                        remapped_distribution_percentage={
+                            k: round(v, 2) for k, v in remapped_label_dist_pct.items()
+                        },
+                    )
+                    # Store reverse mapping separately (not in hyperparameters - XGBoost doesn't accept it)
+                    # We'll store it in model metadata after training
+                    self._label_mapping_for_inference = {
+                        int(k): int(v) if isinstance(v, (np.integer, np.int64, np.int32)) else v
+                        for k, v in reverse_mapping.items()
+                    }
+                else:
+                    logger.info(
+                        "Class labels already normalized for XGBoost",
+                        labels=unique_labels.tolist(),
+                        distribution=original_label_dist,
+                        distribution_percentage={
+                            k: round(v, 2) for k, v in original_label_dist_pct.items()
+                        },
+                    )
         
         # Apply SMOTE oversampling for minority classes if enabled
         original_class_distribution = None
@@ -409,11 +503,6 @@ class ModelTrainer:
         if hyperparameters is None:
             hyperparameters = {}
 
-        # Derive task_variant from dataset metadata (if present)
-        task_variant = None
-        if hasattr(dataset, "metadata") and isinstance(dataset.metadata, dict):
-            task_variant = dataset.metadata.get("task_variant")
-
         # Set default hyperparameters based on model type / task type / variant
         default_hyperparameters = self._get_default_hyperparameters(
             model_type=model_type,
@@ -422,13 +511,41 @@ class ModelTrainer:
         )
         hyperparameters = {**default_hyperparameters, **hyperparameters}
 
-        # For XGBoost multiclass classification ensure objective/num_class are set appropriately
+        # For XGBoost classification ensure objective/num_class and class weights are set appropriately
         if model_type == "xgboost" and task_type == "classification":
             num_classes = len(unique_labels)
             if num_classes > 2:
                 # Use probabilistic multiclass objective
                 hyperparameters.setdefault("objective", "multi:softprob")
                 hyperparameters.setdefault("num_class", num_classes)
+            else:
+                # Binary classification: dynamically adjust scale_pos_weight to handle imbalance.
+                # This relies on labels being {0,1} after any remapping, with 1 as positive class.
+                if task_variant == "binary_classification":
+                    y_array = np.array(y)
+                    n_pos = int(np.sum(y_array == 1))
+                    n_neg = int(np.sum(y_array == 0))
+
+                    if n_pos > 0 and n_neg > 0:
+                        ratio = n_neg / float(n_pos)
+                        cap = 20.0
+                        dynamic_spw = min(ratio, cap)
+                    else:
+                        dynamic_spw = 1.0
+
+                    yaml_spw = float(hyperparameters.get("scale_pos_weight", 1.0))
+                    hyperparameters["scale_pos_weight"] = dynamic_spw
+
+                    logger.info(
+                        "Binary classification class balance and scale_pos_weight",
+                        task_variant=task_variant,
+                        labels=list(map(int, unique_labels.tolist())) if hasattr(unique_labels, "tolist") else list(unique_labels),
+                        n_pos=n_pos,
+                        n_neg=n_neg,
+                        class_ratio=float(n_neg) / float(n_pos) if n_pos > 0 else None,
+                        scale_pos_weight_yaml=yaml_spw,
+                        scale_pos_weight_final=dynamic_spw,
+                    )
 
         # Add base_score for XGBoost if all labels are identical
         if model_type == "xgboost" and task_type == "classification" and len(unique_labels) == 1:

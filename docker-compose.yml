@@ -176,6 +176,8 @@ services:
       - model_datasets:/datasets
       - ./model-service/src:/app/src
       - ./model-service/tests:/app/tests
+      # Mount model hyperparameters and other config files into container
+      - ./model-service/config:/app/config
     depends_on:
       postgres:
         condition: service_healthy

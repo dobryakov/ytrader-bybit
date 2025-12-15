@@ -134,13 +134,23 @@ class OptimizedDatasetBuilder:
         # Load target config from Target Registry
         if self._target_registry_version_manager is None:
             raise ValueError("Target Registry version manager not initialized")
+
+        # Resolve alias like "latest" to a concrete version string before using it
+        # and before persisting to metadata, so that datasets are tied to a specific
+        # target registry snapshot and do not change semantics retroactively.
+        resolved_target_version = target_registry_version
+        if target_registry_version == "latest":
+            # Prefer DB as the single source of truth for active version
+            active_record = await self._metadata_storage.get_active_target_registry_version()
+            if active_record and active_record.get("version"):
+                resolved_target_version = active_record["version"]
         
         target_config_dict = await self._target_registry_version_manager.get_version(
-            target_registry_version
+            resolved_target_version
         )
         if target_config_dict is None:
             raise ValueError(
-                f"Target Registry version not found: {target_registry_version}"
+                f"Target Registry version not found: {resolved_target_version}"
             )
         
         target_config = TargetConfig(**target_config_dict)
@@ -211,7 +221,9 @@ class OptimizedDatasetBuilder:
             "test_period_start": normalize_dt(test_period_start),
             "test_period_end": normalize_dt(test_period_end),
             "walk_forward_config": walk_forward_config,
-            "target_registry_version": target_registry_version,
+            # Persist the resolved concrete Target Registry version (e.g. "1.6.0"),
+            # not the alias like "latest", so that dataset semantics are stable.
+            "target_registry_version": resolved_target_version,
             "feature_registry_version": registry_version,
             "output_format": output_format,
         }
@@ -486,6 +498,34 @@ class OptimizedDatasetBuilder:
                         "task_variant"
                     )
 
+                # Log raw numeric target distribution before class mapping
+                try:
+                    raw = targets_df["target"].astype(float)
+                    desc = {
+                        "count": int(raw.shape[0]),
+                        "mean": float(raw.mean()),
+                        "std": float(raw.std()),
+                        "min": float(raw.min()),
+                        "max": float(raw.max()),
+                        "p1": float(raw.quantile(0.01)),
+                        "p99": float(raw.quantile(0.99)),
+                    }
+                except Exception:
+                    desc = {"error": "failed_to_summarize_raw_target"}
+
+                logger.info(
+                    "classification_target_before_mapping",
+                    symbol=symbol,
+                    start_date=start_date,
+                    end_date=end_date,
+                    task_variant=task_variant,
+                    target_type=target_config.type,
+                    threshold=float(target_config.threshold)
+                    if getattr(target_config, "threshold", None) is not None
+                    else None,
+                    stats=desc,
+                )
+
                 # Triple-class classification: {-1, 0, +1} with dead-zone
                 if task_variant == "triple_classification":
                     # Use explicit threshold from TargetConfig if provided,
@@ -509,6 +549,17 @@ class OptimizedDatasetBuilder:
                     targets_df["target"] = targets_df["target"].apply(
                         lambda x: 1 if x > 0 else (-1 if x < 0 else 0)
                     )
+
+                # Log discrete class distribution after mapping
+                vc = targets_df["target"].value_counts(dropna=False).to_dict()
+                logger.info(
+                    "classification_target_after_mapping",
+                    symbol=symbol,
+                    start_date=start_date,
+                    end_date=end_date,
+                    task_variant=task_variant,
+                    class_distribution=vc,
+                )
         else:  # risk_adjusted
             if (
                 not target_config.computation

@@ -36,6 +36,13 @@ class TargetConfig(BaseModel):
         default=0.005,
         description="Threshold for classification (default 0.005 = 0.5%)"
     )
+    # Extra configuration for target computation (forward returns, presets, options).
+    # We keep it as a generic dict to stay compatible with Feature Service Target Registry,
+    # including nested fields like computation.options.task_variant.
+    computation: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Raw target computation configuration from Target Registry (including options/task_variant)",
+    )
 
 
 class WalkForwardConfig(BaseModel):

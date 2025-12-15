@@ -1,9 +1,7 @@
-"""
-Default model hyperparameters by model type and task type.
-
-These values are intended as sane, conservative defaults for training.
-They can be overridden per-environment via MODEL_HYPERPARAMS_CONFIG_PATH.
-"""
+# Default model hyperparameters by model type and task type.
+#
+# These values are intended as sane, conservative defaults for training.
+# They can be overridden per-environment via MODEL_HYPERPARAMS_CONFIG_PATH.
 
 xgboost:
   classification:
@@ -12,6 +10,16 @@ xgboost:
       # Binary classification (e.g. next_candle_color without flat class)
       common:
         objective: binary:logistic
+        # Primary metric for highly imbalanced binary classification.
+        # For directional candle color we care more about ranking of positives:
+        # use PR-AUC (average precision); ROC-AUC будет считаться отдельно в QualityEvaluator.
+        eval_metric: aucpr
+        # Class-weighting for imbalance. This default (1.0) can be overridden dynamically
+        # as ~ N_neg / N_pos on the training split if нужно более агрессивное смещение.
+        scale_pos_weight: 1.0
+        # For binary candle color we обычно не хотим обучаться на строго flat-движениях (target == 0),
+        # поэтому по умолчанию обучающий pipeline может отфильтровать такие объекты перед fit().
+        drop_zero_class: true
         n_estimators: 500
         max_depth: 4
         learning_rate: 0.05
@@ -22,7 +30,6 @@ xgboost:
         reg_alpha: 0.0
         reg_lambda: 1.0
         random_state: 42
-        eval_metric: logloss
     triple_classification:
       # Three-class classification (-1/0/+1) for directional move with flat zone
       common:
