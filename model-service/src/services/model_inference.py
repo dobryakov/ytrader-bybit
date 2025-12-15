@@ -443,10 +443,10 @@ class ModelInference:
                 # Regression model
                 prediction = model.predict(features)[0]
                 predicted_return = float(prediction)
-                
-                # For regression, confidence is based on prediction magnitude
-                # Use configurable max expected return for normalization
-                from ..config.settings import settings
+
+                # For regression, confidence is based on prediction magnitude.
+                # Use configurable max expected return for normalization.
+                # `settings` is imported at module level to avoid UnboundLocalError.
                 max_expected_return = settings.model_regression_max_expected_return
                 confidence = min(1.0, max(0.0, abs(predicted_return) / max_expected_return))
 

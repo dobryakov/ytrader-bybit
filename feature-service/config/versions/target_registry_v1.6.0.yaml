@@ -1,0 +1,36 @@
+version: "1.6.0"
+config:
+  # Three-class directional classification for the next candle.
+  # Base numeric target is forward return; mapping to {-1,0,1} is handled
+  # in the model layer (e.g. via thresholds) or dedicated presets.
+  type: "classification"
+  horizon: 1800
+  threshold: 0.001
+  computation:
+    preset: "next_candle_direction"
+    overrides:
+      price_source: "close"
+      future_price_source: "close"
+      lookup_method: "nearest_forward"
+      tolerance_seconds: 60
+    options:
+      positive_label: 1
+      negative_label: -1
+      neutral_label: 0
+      min_positive_support: 0.05
+      min_negative_support: 0.05
+      task_variant: "triple_classification"
+      # Post-processing of numeric base target (returns) before class mapping.
+      # Clipping: suppress extreme outliers in returns distribution.
+      clip_method: "quantile"     # "quantile" | "fixed" | null
+      clip_q_low: 0.01           # used when clip_method == "quantile"
+      clip_q_high: 0.99
+      clip_abs_max: null         # used when clip_method == "fixed"
+      # Normalization: stabilize scale across regimes.
+      normalize: "sharpe"        # "sharpe" | "log" | "zscore" | null
+      sharpe_window: 20          # rolling window for std in "sharpe" mode
+description: >
+  Target Registry version 1.6.0 - directional target based on forward return
+  for the next candle (300 seconds). Base numeric target is (future_close - close)
+  / close, computed via preset 'next_candle_direction'. Thresholds and mapping
+  to discrete classes are handled in the model configuration (e.g. triple_classification).

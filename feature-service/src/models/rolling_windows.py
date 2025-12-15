@@ -167,7 +167,7 @@ class RollingWindows(BaseModel):
             window_seconds: Override window size in seconds for all intervals
             max_lookback_minutes_1m: Maximum lookback in minutes for "1m" window.
                 If None, uses default 30 minutes. Should be computed from Feature Registry
-                using DatasetBuilder._compute_max_lookback_minutes() to ensure all features
+                using FeatureRequirementsAnalyzer to ensure all features
                 have sufficient historical data after trimming.
         """
         from datetime import timezone

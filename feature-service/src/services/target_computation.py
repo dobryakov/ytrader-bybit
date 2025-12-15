@@ -51,6 +51,15 @@ class TargetComputationPresets:
             "volatility_window": 20,
             "description": "Volatility-normalized returns: raw_return / rolling_std(raw_return, window=X)",
         },
+        # Direction of the next candle (binary or multi-class classification)
+        # Base computation is still returns; mapping to classes is done in DatasetBuilder/ModelTrainer.
+        "next_candle_direction": {
+            "formula": "returns",
+            "price_source": "close",
+            "future_price_source": "close",
+            "lookup_method": "nearest_forward",
+            "description": "Direction of next candle based on forward return sign; can be used for binary or 3-class targets.",
+        },
     }
     
     @classmethod
@@ -143,22 +152,27 @@ class TargetComputationEngine:
         formula = computation_config.get("formula", "returns")
         
         if formula == "returns":
-            return TargetComputationEngine._compute_returns(
+            result = TargetComputationEngine._compute_returns(
                 data, horizon, computation_config, historical_price_data
             )
+            return TargetComputationEngine._postprocess_target(result, computation_config)
         elif formula == "log_returns":
-            return TargetComputationEngine._compute_log_returns(
+            result = TargetComputationEngine._compute_log_returns(
                 data, horizon, computation_config, historical_price_data
             )
+            return TargetComputationEngine._postprocess_target(result, computation_config)
         elif formula == "sharpe_ratio":
+            # Sharpe уже нормализует таргет, дополнительная нормализация по умолчанию не нужна
             return TargetComputationEngine._compute_sharpe_ratio(
                 data, horizon, computation_config, historical_price_data
             )
         elif formula == "price_change":
-            return TargetComputationEngine._compute_price_change(
+            result = TargetComputationEngine._compute_price_change(
                 data, horizon, computation_config, historical_price_data
             )
+            return TargetComputationEngine._postprocess_target(result, computation_config)
         elif formula == "volatility_normalized_std":
+            # Здесь тоже уже встроена нормализация
             return TargetComputationEngine._compute_volatility_normalized_std(
                 data, horizon, computation_config, historical_price_data
             )
@@ -285,6 +299,85 @@ class TargetComputationEngine:
         ]
         
         return returns_df[["timestamp", "target"]]
+
+    @staticmethod
+    def _postprocess_target(
+        result: pd.DataFrame,
+        config: Dict[str, Any],
+    ) -> pd.DataFrame:
+        """
+        Apply optional clipping / normalization to numeric target according to config.
+        
+        This is intentionally generic and driven entirely from target registry options.
+        If no relevant options are provided, the result is returned as-is.
+        """
+        if result is None or result.empty or "target" not in result.columns:
+            return result
+
+        target = result["target"].astype("float64")
+
+        clip_method = config.get("clip_method")
+        normalize = config.get("normalize")
+
+        # --- Clipping ---
+        if clip_method in {"quantile", "fixed"}:
+            # Work on a copy to avoid pandas SettingWithCopy warnings
+            s = target.copy()
+
+            if clip_method == "quantile":
+                q_low = config.get("clip_q_low")
+                q_high = config.get("clip_q_high")
+                # Require both quantiles and sane ordering
+                if q_low is not None and q_high is not None and 0.0 <= q_low < q_high <= 1.0:
+                    try:
+                        lo = float(s.quantile(q_low))
+                        hi = float(s.quantile(q_high))
+                        s = s.clip(lower=lo, upper=hi)
+                    except Exception:
+                        # On any numeric issue just fall back to un-clipped target
+                        pass
+            elif clip_method == "fixed":
+                max_abs = config.get("clip_abs_max")
+                if max_abs is not None:
+                    try:
+                        m = float(max_abs)
+                        if m > 0:
+                            s = s.clip(lower=-m, upper=m)
+                    except Exception:
+                        pass
+
+            target = s
+
+        # --- Normalization ---
+        if normalize in {"sharpe", "log", "zscore"}:
+            s = target.copy()
+
+            if normalize == "sharpe":
+                # Rolling std of the series itself (like returns/std)
+                window = int(config.get("sharpe_window", 20))
+                if window > 1:
+                    vol = s.rolling(window=window, min_periods=1).std()
+                    # Avoid division by zero
+                    vol = vol.replace(0.0, np.nan)
+                    s = s / vol
+            elif normalize == "log":
+                # Symmetric log transform: sign(x) * log1p(|x|)
+                s = np.sign(s) * np.log1p(np.abs(s))
+            elif normalize == "zscore":
+                mu = float(s.mean())
+                sigma = float(s.std())
+                if sigma > 0:
+                    s = (s - mu) / sigma
+
+            target = s
+
+        # Replace infinities and drop rows where target is not usable
+        target = target.replace([np.inf, -np.inf], np.nan)
+        result = result.copy()
+        result["target"] = target
+        result = result.dropna(subset=["target"])
+
+        return result
     
     @staticmethod
     def _compute_base_target(

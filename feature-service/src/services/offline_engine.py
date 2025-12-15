@@ -117,12 +117,12 @@ class OfflineEngine:
         """
         Compute maximum lookback period (in minutes) required by features in Feature Registry.
         
-        Uses the same logic as DatasetBuilder._compute_max_lookback_minutes().
+        Uses the same logic as FeatureRequirementsAnalyzer for computing max lookback.
         
         Returns:
             Maximum lookback period in minutes (default: 30 if registry not available)
         """
-        # Feature lookback mapping (same as DatasetBuilder.FEATURE_LOOKBACK_MAPPING)
+        # Feature lookback mapping (same as FeatureRequirementsAnalyzer)
         FEATURE_LOOKBACK_MAPPING = {
             # Technical indicators
             "ema_21": 26,  # 21 minutes + 5 minute buffer

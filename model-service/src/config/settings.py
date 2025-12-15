@@ -86,6 +86,13 @@ class Settings(BaseSettings):
     # Target Registry Configuration
     target_registry_version: str = Field(default="latest", alias="TARGET_REGISTRY_VERSION", description="Target Registry version to use for dataset building. Default: 'latest'")
     
+    # Model Hyperparameters Configuration
+    model_hyperparams_config_path: str = Field(
+        default="config/model_hyperparams.yaml",
+        alias="MODEL_HYPERPARAMS_CONFIG_PATH",
+        description="Path to YAML file with default model hyperparameters by model/task type."
+    )
+    
     # Timestamp Continuity Validation Configuration
     model_training_min_dataset_coverage_ratio: float = Field(
         default=0.8,

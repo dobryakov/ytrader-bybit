@@ -1,0 +1,58 @@
+"""
+Default model hyperparameters by model type and task type.
+
+These values are intended as sane, conservative defaults for training.
+They can be overridden per-environment via MODEL_HYPERPARAMS_CONFIG_PATH.
+"""
+
+xgboost:
+  classification:
+    # Profiles for different classification tasks.
+    binary_classification:
+      # Binary classification (e.g. next_candle_color without flat class)
+      common:
+        objective: binary:logistic
+        n_estimators: 500
+        max_depth: 4
+        learning_rate: 0.05
+        subsample: 0.8
+        colsample_bytree: 0.8
+        min_child_weight: 1
+        gamma: 0.0
+        reg_alpha: 0.0
+        reg_lambda: 1.0
+        random_state: 42
+        eval_metric: logloss
+    triple_classification:
+      # Three-class classification (-1/0/+1) for directional move with flat zone
+      common:
+        objective: multi:softprob
+        n_estimators: 500
+        max_depth: 4
+        learning_rate: 0.05
+        subsample: 0.8
+        colsample_bytree: 0.8
+        min_child_weight: 1
+        gamma: 0.0
+        reg_alpha: 0.0
+        reg_lambda: 1.0
+        random_state: 42
+        eval_metric: mlogloss
+
+  regression:
+    common:
+      objective: reg:pseudohubererror
+      n_estimators: 500
+      max_depth: 4
+      learning_rate: 0.03
+      min_child_weight: 15
+      subsample: 0.8
+      colsample_bytree: 0.8
+      reg_alpha: 0.5
+      reg_lambda: 2.0
+      random_state: 42
+      early_stopping_rounds: 50
+    profiles:
+      default: {}
+
+

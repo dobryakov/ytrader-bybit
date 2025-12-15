@@ -6,7 +6,7 @@ from threading import Lock
 from src.logging import get_logger
 from src.services.feature_computer import FeatureComputer
 from src.services.orderbook_manager import OrderbookManager
-from src.services.dataset_builder import DatasetBuilder
+from src.services.optimized_dataset.optimized_builder import OptimizedDatasetBuilder
 from src.services.feature_registry import FeatureRegistryLoader
 from src.api.features import set_feature_computer
 
@@ -20,7 +20,7 @@ async def reload_registry_in_memory(
     new_config: Dict[str, Any],
     feature_computer: FeatureComputer,
     feature_registry_loader: FeatureRegistryLoader,
-    dataset_builder: Optional[DatasetBuilder],
+    dataset_builder: Optional[OptimizedDatasetBuilder],
     orderbook_manager: OrderbookManager,
 ) -> Dict[str, Any]:
     """
@@ -85,13 +85,12 @@ async def reload_registry_in_memory(
         # Update API reference
         set_feature_computer(new_feature_computer)
         
-        # Update DatasetBuilder version (for new datasets only)
+        # Update OptimizedDatasetBuilder - version is handled via feature_registry_loader
         # Note: Existing builds continue with old version, new builds use new version
+        # OptimizedDatasetBuilder uses feature_registry_loader which is already updated above
         if dataset_builder:
-            dataset_builder._feature_registry_version = new_version
-            # Recreate OfflineEngine with new version
-            from src.services.offline_engine import OfflineEngine
-            dataset_builder._offline_engine = OfflineEngine(new_version)
+            # Version is managed through feature_registry_loader, no direct update needed
+            pass
         
         logger.info(
             "Feature Registry hot reload completed successfully",
@@ -122,13 +121,10 @@ async def reload_registry_in_memory(
             if old_feature_computer:
                 set_feature_computer(old_feature_computer)
             
-            if old_version and dataset_builder:
-                dataset_builder._feature_registry_version = old_version
-                from src.services.offline_engine import OfflineEngine
-                dataset_builder._offline_engine = OfflineEngine(
-                    feature_registry_version=old_version,
-                    feature_registry_loader=feature_registry_loader,
-                )
+            # OptimizedDatasetBuilder version is managed through feature_registry_loader
+            # which is already rolled back above
+            if dataset_builder:
+                pass
             
             logger.info("Rollback completed", restored_version=old_version)
         except Exception as rollback_error:

@@ -37,7 +37,7 @@ from src.publishers.dataset_publisher import DatasetPublisher
 from src.services.feature_scheduler import FeatureScheduler
 from src.storage.metadata_storage import MetadataStorage
 from src.storage.parquet_storage import ParquetStorage
-from src.services.dataset_builder import DatasetBuilder
+from src.services.optimized_dataset.optimized_builder import OptimizedDatasetBuilder
 from src.services.data_storage import DataStorageService
 from src.services.backfilling_service import BackfillingService
 from src.services.cache_service import CacheServiceFactory
@@ -64,7 +64,7 @@ market_data_consumer: MarketDataConsumer = None
 feature_publisher: FeaturePublisher = None
 feature_scheduler: FeatureScheduler = None
 metadata_storage: MetadataStorage = None
-dataset_builder: DatasetBuilder = None
+dataset_builder: OptimizedDatasetBuilder = None
 data_storage: DataStorageService = None
 backfilling_service: BackfillingService = None
 
@@ -305,22 +305,18 @@ async def startup():
                 logger.warning("Failed to initialize cache service, caching disabled", error=str(e))
                 cache_service = None
         
-        # Initialize Dataset Builder (use version from loaded config)
-        dataset_builder = DatasetBuilder(
+        # Initialize Optimized Dataset Builder
+        dataset_builder = OptimizedDatasetBuilder(
             metadata_storage=metadata_storage,
             parquet_storage=parquet_storage,
             dataset_storage_path=config.feature_service_dataset_storage_path,
-            feature_registry_version=registry_version,  # Use version from loaded config
-            feature_registry_loader=feature_registry_loader,
-            backfilling_service=backfilling_service,
-            dataset_publisher=dataset_publisher,
             cache_service=cache_service,
+            feature_registry_loader=feature_registry_loader,
             target_registry_version_manager=target_registry_version_manager,
+            dataset_publisher=dataset_publisher,
+            batch_size=config.dataset_builder_batch_size,
         )
         set_dataset_builder(dataset_builder)
-        
-        # Recover incomplete dataset builds after restart
-        await dataset_builder.recover_incomplete_builds()
         
         # Get symbols from config
         symbols = []

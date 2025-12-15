@@ -88,11 +88,18 @@ def mock_logger():
 
 @pytest.fixture
 def mock_db_pool():
-    """Mock database connection pool."""
-    pool = AsyncMock()
-    pool.acquire = AsyncMock()
-    pool.release = AsyncMock()
-    return pool
+    """
+    Mock database connection pool.
+
+    For most tests we only need a pool object that can be passed around.
+    Tests that require real acquire/transaction semantics should use the
+    more detailed fixture from tests.fixtures.database (imported directly).
+    """
+    from tests.fixtures.database import mock_db_pool as detailed_pool_fixture
+
+    # Reuse the richer pool from fixtures/database.py so that async
+    # context manager semantics (pool.acquire) work with MetadataStorage.
+    return detailed_pool_fixture()
 
 
 # Import RabbitMQ fixtures from fixtures module

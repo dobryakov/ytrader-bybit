@@ -86,6 +86,9 @@ class Config(BaseSettings):
     cache_invalidation_on_registry_change: bool = Field(default=True, env="CACHE_INVALIDATION_ON_REGISTRY_CHANGE", description="Automatically invalidate cache when Feature Registry version changes (default: true). Works for both Redis and memory cache.")
     cache_invalidation_on_data_change: bool = Field(default=True, env="CACHE_INVALIDATION_ON_DATA_CHANGE", description="Automatically invalidate cache when historical data files are modified (default: true). Works for both Redis and memory cache.")
     
+    # Dataset Builder Configuration
+    dataset_builder_batch_size: int = Field(default=1000, env="DATASET_BUILDER_BATCH_SIZE", description="Batch size for processing timestamps in dataset builder (default: 1000)")
+    
     @property
     def bybit_rest_base_url(self) -> str:
         """Get Bybit REST API base URL based on environment."""

@@ -22,7 +22,7 @@ _feature_registry_loader: Optional[FeatureRegistryLoader] = None
 _feature_registry_version_manager: Optional[FeatureRegistryVersionManager] = None
 _metadata_storage: Optional[MetadataStorage] = None
 _feature_computer: Optional[Any] = None  # FeatureComputer instance
-_dataset_builder: Optional[Any] = None  # DatasetBuilder instance
+_dataset_builder: Optional[Any] = None  # OptimizedDatasetBuilder instance
 _orderbook_manager: Optional[Any] = None  # OrderbookManager instance
 
 

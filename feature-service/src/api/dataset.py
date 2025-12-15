@@ -20,7 +20,7 @@ from src.models.dataset import (
 )
 from src.api.middleware.auth import verify_api_key
 from src.storage.metadata_storage import MetadataStorage
-from src.services.dataset_builder import DatasetBuilder
+from src.services.optimized_dataset.optimized_builder import OptimizedDatasetBuilder
 from src.services.target_registry_version_manager import TargetRegistryVersionManager
 from src.storage.parquet_storage import ParquetStorage
 from src.config import config
@@ -31,7 +31,7 @@ router = APIRouter(prefix="/dataset", tags=["Datasets"])
 
 # Global instances (will be set by main.py)
 _metadata_storage: Optional[MetadataStorage] = None
-_dataset_builder: Optional[DatasetBuilder] = None
+_dataset_builder: Optional[OptimizedDatasetBuilder] = None
 _target_registry_version_manager: Optional[TargetRegistryVersionManager] = None
 
 
@@ -41,7 +41,7 @@ def set_metadata_storage(storage: MetadataStorage):
     _metadata_storage = storage
 
 
-def set_dataset_builder(builder: DatasetBuilder):
+def set_dataset_builder(builder: OptimizedDatasetBuilder):
     """Set dataset builder instance."""
     global _dataset_builder
     _dataset_builder = builder

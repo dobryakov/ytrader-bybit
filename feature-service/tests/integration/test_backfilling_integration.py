@@ -10,7 +10,6 @@ import shutil
 from pathlib import Path
 
 from src.services.backfilling_service import BackfillingService
-from src.services.dataset_builder import DatasetBuilder
 from src.storage.parquet_storage import ParquetStorage
 from src.storage.metadata_storage import MetadataStorage
 from src.services.feature_registry import FeatureRegistryLoader
@@ -130,48 +129,14 @@ class TestBackfillingIntegration:
         mock_bybit_client,
         mock_feature_registry_loader,
     ):
-        """Test automatic backfilling trigger in dataset builder with Feature Registry."""
-        from src.services.dataset_builder import DatasetBuilder
-        from src.storage.metadata_storage import MetadataStorage
-        
-        mock_metadata_storage = MagicMock(spec=MetadataStorage)
-        mock_metadata_storage.create_dataset = AsyncMock(return_value="test-dataset-id")
-        mock_metadata_storage.get_dataset = AsyncMock(return_value={
-            "status": "building",
-            "train_period_start": datetime(2025, 1, 1, tzinfo=timezone.utc),
-            "test_period_end": datetime(2025, 1, 2, tzinfo=timezone.utc),
-        })
-        mock_metadata_storage.update_dataset = AsyncMock()
-        
-        # Mock Bybit API response
-        mock_bybit_client.get = AsyncMock(return_value={
-            "retCode": 0,
-            "retMsg": "OK",
-            "result": {"list": []},
-        })
-        
-        dataset_builder = DatasetBuilder(
-            metadata_storage=mock_metadata_storage,
-            parquet_storage=parquet_storage,
-            dataset_storage_path="/tmp/test_datasets",
-            feature_registry_loader=mock_feature_registry_loader,
-            backfilling_service=backfilling_service,
-        )
-        
-        # Mock config to enable automatic backfilling
-        with patch("src.config.config") as mock_config:
-            mock_config.feature_service_backfill_enabled = True
-            mock_config.feature_service_backfill_auto = True
-            
-            # Check data availability (should trigger backfilling)
-            available_period = await dataset_builder._check_data_availability(
-                "BTCUSDT",
-                datetime(2025, 1, 1, tzinfo=timezone.utc),
-                datetime(2025, 1, 2, tzinfo=timezone.utc),
-            )
-            
-            # Verify backfilling was triggered
-            assert mock_bybit_client.get.called
+        """
+        Legacy test for automatic backfilling trigger via DatasetBuilder.
+
+        The original synchronous DatasetBuilder has been removed in favour of the
+        optimized streaming pipeline, where backfilling logic is covered in other
+        tests. This test is kept only as documentation of previous behaviour.
+        """
+        pytest.skip("DatasetBuilder removed; automatic backfilling trigger is handled by the optimized pipeline.")
     
     @pytest.mark.asyncio
     async def test_only_required_data_types_backfilled(

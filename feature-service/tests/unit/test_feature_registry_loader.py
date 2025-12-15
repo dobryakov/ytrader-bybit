@@ -185,7 +185,11 @@ class TestFeatureRegistryLoader:
             assert "funding" not in required_types
     
     def test_get_required_data_types_empty_registry(self):
-        """Test get_required_data_types() with empty registry."""
+        """Test get_required_data_types() with empty registry.
+
+        Empty registry is now considered invalid by FeatureRegistry validation,
+        so loader.load() should raise ValueError instead of returning an empty set.
+        """
         from src.services.feature_registry import FeatureRegistryLoader
         
         yaml_content = """
@@ -195,12 +199,8 @@ class TestFeatureRegistryLoader:
         
         with patch("builtins.open", mock_open(read_data=yaml_content)):
             loader = FeatureRegistryLoader(config_path="/app/config/feature_registry.yaml")
-            loader.load()
-            
-            required_types = loader.get_required_data_types()
-            
-            assert isinstance(required_types, set)
-            assert len(required_types) == 0
+            with pytest.raises(ValueError, match="features list cannot be empty"):
+                loader.load()
     
     def test_get_required_data_types_not_loaded(self):
         """Test get_required_data_types() raises error if registry not loaded."""

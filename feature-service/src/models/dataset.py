@@ -49,6 +49,7 @@ class TargetComputationConfig(BaseModel):
         "sharpe_ratio",
         "price_change",
         "volatility_normalized_std",
+        "next_candle_direction",
     ] = Field(
         description="Preset computation method"
     )

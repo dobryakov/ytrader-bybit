@@ -12,6 +12,7 @@ import pandas as pd
 import numpy as np
 import joblib
 import json
+import yaml
 from datetime import datetime
 
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
@@ -43,12 +44,50 @@ class ModelTrainer:
     def __init__(self):
         """Initialize model trainer."""
         self._label_mapping_for_inference = None  # Store label mapping for inference
+        self._model_hyperparams_config: Optional[Dict[str, Any]] = None
         self.supported_model_types = {
             "xgboost": {"classifier": XGBClassifier, "regressor": XGBRegressor},
             "random_forest": {"classifier": RandomForestClassifier, "regressor": RandomForestRegressor},
             "logistic_regression": {"classifier": LogisticRegression, "regressor": None},
             "sgd_classifier": {"classifier": SGDClassifier, "regressor": None},
         }
+
+    def _load_model_hyperparams_config(self) -> Dict[str, Any]:
+        """
+        Load model hyperparameters configuration from YAML (once per trainer instance).
+
+        Returns:
+            Parsed configuration dictionary. Returns empty dict on error.
+        """
+        if self._model_hyperparams_config is not None:
+            return self._model_hyperparams_config
+
+        config_path = Path(settings.model_hyperparams_config_path)
+        try:
+            with config_path.open("r", encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+            self._model_hyperparams_config = data
+            logger.info(
+                "Loaded model hyperparameters configuration",
+                path=str(config_path),
+                model_types=list(data.keys()) if isinstance(data, dict) else [],
+            )
+        except FileNotFoundError:
+            logger.warning(
+                "Model hyperparameters config file not found, falling back to built-in defaults",
+                path=str(config_path),
+            )
+            self._model_hyperparams_config = {}
+        except Exception as e:
+            logger.error(
+                "Failed to load model hyperparameters config, falling back to built-in defaults",
+                path=str(config_path),
+                error=str(e),
+                exc_info=True,
+            )
+            self._model_hyperparams_config = {}
+
+        return self._model_hyperparams_config
 
     def train_model(
         self,
@@ -76,6 +115,8 @@ class ModelTrainer:
             "Starting model training",
             model_type=model_type,
             task_type=task_type,
+            dataset_id=getattr(dataset, "dataset_id", None),
+            strategy_id=getattr(dataset, "strategy_id", None),
             dataset_size=dataset.get_record_count(),
             feature_count=len(dataset.get_feature_names()),
         )
@@ -368,9 +409,26 @@ class ModelTrainer:
         if hyperparameters is None:
             hyperparameters = {}
 
-        # Set default hyperparameters based on model type
-        default_hyperparameters = self._get_default_hyperparameters(model_type, task_type)
+        # Derive task_variant from dataset metadata (if present)
+        task_variant = None
+        if hasattr(dataset, "metadata") and isinstance(dataset.metadata, dict):
+            task_variant = dataset.metadata.get("task_variant")
+
+        # Set default hyperparameters based on model type / task type / variant
+        default_hyperparameters = self._get_default_hyperparameters(
+            model_type=model_type,
+            task_type=task_type,
+            task_variant=task_variant,
+        )
         hyperparameters = {**default_hyperparameters, **hyperparameters}
+
+        # For XGBoost multiclass classification ensure objective/num_class are set appropriately
+        if model_type == "xgboost" and task_type == "classification":
+            num_classes = len(unique_labels)
+            if num_classes > 2:
+                # Use probabilistic multiclass objective
+                hyperparameters.setdefault("objective", "multi:softprob")
+                hyperparameters.setdefault("num_class", num_classes)
 
         # Add base_score for XGBoost if all labels are identical
         if model_type == "xgboost" and task_type == "classification" and len(unique_labels) == 1:
@@ -449,28 +507,36 @@ class ModelTrainer:
                     validation_size=len(X_val),
                 )
             
-            model = model_class(**hyperparameters)
+            # For XGBoost: pass eval_metric via constructor, not via fit()
+            # Newer versions of xgboost's sklearn API do not accept eval_metric in fit().
+            if model_type == "xgboost" and eval_metric is not None:
+                # Make a shallow copy to avoid mutating original dict
+                hp = dict(hyperparameters)
+                hp.setdefault("eval_metric", eval_metric)
+                model = model_class(**hp)
+            else:
+                model = model_class(**hyperparameters)
             
             # Use sample_weight for multi-class balancing if calculated
             if sample_weight is not None:
                 if eval_set is not None:
+                    # Note: eval_metric is passed via constructor for xgboost models.
+                    # Some versions of xgboost's sklearn API do not accept early_stopping_rounds in fit().
                     model.fit(
                         X, y,
                         sample_weight=sample_weight,
                         eval_set=eval_set,
-                        eval_metric=eval_metric,
-                        early_stopping_rounds=early_stopping_rounds,
                         verbose=False,
                     )
                 else:
                     model.fit(X, y, sample_weight=sample_weight)
             else:
                 if eval_set is not None:
+                    # Note: eval_metric is passed via constructor for xgboost models.
+                    # Some versions of xgboost's sklearn API do not accept early_stopping_rounds in fit().
                     model.fit(
                         X, y,
                         eval_set=eval_set,
-                        eval_metric=eval_metric,
-                        early_stopping_rounds=early_stopping_rounds,
                         verbose=False,
                     )
                 else:
@@ -572,7 +638,10 @@ class ModelTrainer:
             raise
 
     def _get_default_hyperparameters(
-        self, model_type: str, task_type: Literal["classification", "regression"]
+        self,
+        model_type: str,
+        task_type: Literal["classification", "regression"],
+        task_variant: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Get default hyperparameters for a model type.
@@ -584,34 +653,42 @@ class ModelTrainer:
         Returns:
             Dictionary of default hyperparameters
         """
+        # Try to read from YAML configuration first
+        config = self._load_model_hyperparams_config()
+        defaults_from_config: Dict[str, Any] = {}
+        try:
+            model_cfg = config.get(model_type, {}) if isinstance(config, dict) else {}
+            task_cfg = model_cfg.get(task_type, {}) if isinstance(model_cfg, dict) else {}
+
+            # For classification we may have multiple variants (binary / triple)
+            if task_type == "classification" and isinstance(task_cfg, dict):
+                variant_key = task_variant or "binary_classification"
+                variant_cfg = task_cfg.get(variant_key, {})
+                common_cfg = variant_cfg.get("common", {}) if isinstance(variant_cfg, dict) else {}
+            else:
+                common_cfg = task_cfg.get("common", {}) if isinstance(task_cfg, dict) else {}
+
+            if isinstance(common_cfg, dict):
+                defaults_from_config = common_cfg
+        except Exception as e:
+            logger.error(
+                "Error while reading model hyperparameters from config, falling back to built-in defaults",
+                model_type=model_type,
+                task_type=task_type,
+                task_variant=task_variant,
+                error=str(e),
+                exc_info=True,
+            )
+            defaults_from_config = {}
+
+        if defaults_from_config:
+            return defaults_from_config
+
+        # Fallback: built-in defaults (used if config is missing or invalid)
         defaults = {
             "xgboost": {
-                "classification": {
-                    "n_estimators": 300,
-                    "max_depth": 8,
-                    "learning_rate": 0.05,
-                    "subsample": 0.8,
-                    "colsample_bytree": 0.8,
-                    "min_child_weight": 3,
-                    "gamma": 0.1,
-                    "reg_alpha": 0.1,
-                    "reg_lambda": 1.0,
-                    "random_state": 42,
-                    "eval_metric": "mlogloss",
-                },
-                "regression": {
-                    "objective": "reg:pseudohubererror",  # Робастная функция потерь для финансовых данных
-                    "n_estimators": 500,
-                    "max_depth": 4,  # Консервативная глубина для снижения переобучения
-                    "learning_rate": 0.03,  # Медленное обучение для лучшей обобщающей способности
-                    "min_child_weight": 15,  # Умеренная регуляризация (снижено с предложенных 50)
-                    "subsample": 0.8,  # 80% сэмплов для каждого дерева
-                    "colsample_bytree": 0.8,  # 80% признаков для каждого дерева
-                    "reg_alpha": 0.5,  # L1 регуляризация (снижено с предложенных 1.0)
-                    "reg_lambda": 2.0,  # L2 регуляризация (снижено с предложенных 5.0)
-                    "random_state": 42,
-                    "early_stopping_rounds": 50,  # Early stopping для оптимизации обучения
-                },
+                "classification": {},
+                "regression": {},
             },
             "random_forest": {
                 "classification": {

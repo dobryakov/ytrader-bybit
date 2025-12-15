@@ -609,6 +609,18 @@ class TrainingOrchestrator:
                     )
                     return
 
+            # Determine task variant from dataset metadata / target registry
+            # For now we default to triple_classification for 3-class targets,
+            # and binary_classification for 2-class targets. This can be extended
+            # later using explicit metadata from Feature Service.
+            task_variant: Optional[str] = None
+            unique_label_values = sorted(labels_series.unique().tolist())
+            if task_type == "classification":
+                if len(unique_label_values) == 2:
+                    task_variant = "binary_classification"
+                elif len(unique_label_values) == 3:
+                    task_variant = "triple_classification"
+
             # Create TrainingDataset object
             dataset = TrainingDataset(
                 dataset_id=str(dataset_id),
@@ -622,6 +634,7 @@ class TrainingOrchestrator:
                     "record_count": len(features_df),
                     "feature_count": len(features_df.columns),
                     "feature_names": list(features_df.columns),
+                    "task_variant": task_variant,
                 },
             )
 
@@ -638,6 +651,8 @@ class TrainingOrchestrator:
                 logger.info("Training cancelled during dataset loading", training_id=training_id)
                 return
 
+            # Pass task_variant to ModelTrainer so it can select appropriate
+            # hyperparameter profile (binary vs triple classification).
             # Train model
             model = model_trainer.train_model(
                 dataset=dataset,

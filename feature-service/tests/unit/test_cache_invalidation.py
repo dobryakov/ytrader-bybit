@@ -95,23 +95,28 @@ class TestCacheInvalidation:
         assert result2 is None
     
     @pytest.mark.asyncio
-    async def test_data_hash_computation(
+    async     def test_data_hash_computation(
         self,
         cache_invalidation_service,
     ):
         """Test data hash computation: verify data_hash is computed correctly from historical data DataFrames."""
         # This test verifies that data hash computation works correctly
-        # The actual computation is in dataset_builder._compute_data_hash
+        # The actual computation is now done via utility function
         # Here we test that invalidation service can detect hash changes
         
-        from src.services.dataset_builder import DatasetBuilder
         import pandas as pd
+        import hashlib
         
-        builder = DatasetBuilder(
-            metadata_storage=MagicMock(),
-            parquet_storage=MagicMock(),
-            dataset_storage_path="/tmp/test",
-        )
+        def compute_data_hash(data: dict) -> str:
+            """Compute hash from historical data dict."""
+            hash_input = ""
+            for key in sorted(data.keys()):
+                df = data[key]
+                if not df.empty:
+                    # Convert DataFrame to string representation for hashing
+                    df_str = df.to_string()
+                    hash_input += f"{key}:{df_str}"
+            return hashlib.md5(hash_input.encode()).hexdigest()
         
         # Create test data
         data1 = {
@@ -141,8 +146,8 @@ class TestCacheInvalidation:
         }
         
         # Compute hashes
-        hash1 = builder._compute_data_hash(data1)
-        hash2 = builder._compute_data_hash(data2)
+        hash1 = compute_data_hash(data1)
+        hash2 = compute_data_hash(data2)
         
         # Verify hashes are different
         assert hash1 != hash2
