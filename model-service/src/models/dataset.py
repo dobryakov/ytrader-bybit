@@ -60,7 +60,7 @@ class DatasetBuildRequest(BaseModel):
     test_period_start: Optional[datetime] = Field(default=None, description="Test period start (for time_based)")
     test_period_end: Optional[datetime] = Field(default=None, description="Test period end (for time_based)")
     walk_forward_config: Optional[WalkForwardConfig] = Field(default=None, description="Walk-forward configuration (for walk_forward)")
-    target_config: TargetConfig = Field(description="Target configuration")
+    target_registry_version: str = Field(description="Target Registry version used")
     feature_registry_version: str = Field(description="Feature Registry version used")
     output_format: str = Field(default="parquet", description="Output format: 'parquet', 'csv', 'hdf5'")
 
@@ -86,8 +86,9 @@ class Dataset(BaseModel):
     # Walk-forward split fields
     walk_forward_config: Optional[Dict[str, Any]] = Field(default=None, description="Walk-forward configuration (for walk_forward)")
     
-    target_config: TargetConfig = Field(description="Target configuration")
+    target_registry_version: str = Field(description="Target Registry version used")
     feature_registry_version: str = Field(description="Feature Registry version used")
+    target_config: Optional[TargetConfig] = Field(default=None, description="Target configuration (loaded from Target Registry, for backward compatibility)")
     
     train_records: int = Field(default=0, description="Number of records in train split")
     validation_records: int = Field(default=0, description="Number of records in validation split")

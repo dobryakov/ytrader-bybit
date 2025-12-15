@@ -108,7 +108,7 @@ class FeatureServiceClient:
                 - test_period_start: Optional[datetime]
                 - test_period_end: Optional[datetime]
                 - walk_forward_config: Optional[Dict]
-                - target_config: Dict
+                - target_registry_version: str
                 - feature_registry_version: str
                 - output_format: str (default: 'parquet')
             trace_id: Optional trace ID for request flow tracking

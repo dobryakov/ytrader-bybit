@@ -159,14 +159,13 @@ class TargetRegistryVersionManager:
             file_path=str(file_path),
         )
         
-        # Create DB record
+        # Create DB record (file_path is source of truth, no config in DB)
         version_record = await self._metadata_storage.create_target_registry_version(
             version=version,
-            config=config_data,
+            file_path=str(file_path),
             is_active=False,
             created_by=created_by,
             description=description,
-            file_path=str(file_path),
         )
         
         logger.info(
@@ -247,12 +246,17 @@ class TargetRegistryVersionManager:
         Get a specific version's config.
         
         Args:
-            version: Version identifier
+            version: Version identifier (use "latest" to get active version)
             
         Returns:
             Config dict or None if not found
         """
-        version_record = await self._metadata_storage.get_target_registry_version(version)
+        # Handle "latest" - get active version
+        if version == "latest":
+            version_record = await self._metadata_storage.get_active_target_registry_version()
+        else:
+            version_record = await self._metadata_storage.get_target_registry_version(version)
+        
         if version_record is None:
             return None
         
@@ -264,7 +268,7 @@ class TargetRegistryVersionManager:
                 config_data = yaml.safe_load(f)
             return config_data.get("config", config_data)
         
-        return version_record["config"]
+        return version_record.get("config")
     
     async def list_versions(self) -> List[dict]:
         """

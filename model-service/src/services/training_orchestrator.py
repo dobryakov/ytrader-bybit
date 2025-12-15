@@ -63,7 +63,7 @@ class TrainingOrchestrator:
         self, 
         strategy_id: Optional[str] = None, 
         symbol: Optional[str] = None,
-        target_type: str = "classification"
+        target_registry_version: Optional[str] = None
     ) -> Optional[UUID]:
         """
         Request dataset build from Feature Service.
@@ -71,7 +71,7 @@ class TrainingOrchestrator:
         Args:
             strategy_id: Trading strategy identifier
             symbol: Trading pair symbol (e.g., 'BTCUSDT'). If None, uses first symbol from configured strategies.
-            target_type: Target type - 'classification' or 'regression'. Default: 'classification'
+            target_registry_version: Target Registry version to use. If None, uses default from settings.
 
         Returns:
             Dataset ID (UUID) if request successful, None otherwise
@@ -101,6 +101,10 @@ class TrainingOrchestrator:
             # If timezone-aware, convert to UTC and format
             return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
         
+        # Use target_registry_version from parameter or settings
+        if target_registry_version is None:
+            target_registry_version = settings.target_registry_version
+        
         request = {
             "symbol": symbol,
             "split_strategy": SplitStrategy.TIME_BASED.value,
@@ -110,11 +114,7 @@ class TrainingOrchestrator:
             "validation_period_end": format_dt(periods["validation_period_end"]),
             "test_period_start": format_dt(periods["test_period_start"]),
             "test_period_end": format_dt(periods["test_period_end"]),
-            "target_config": {
-                "type": target_type,
-                "horizon": settings.model_prediction_horizon_seconds,  # Configurable horizon in seconds
-                "threshold": settings.model_classification_threshold if target_type == "classification" else None,  # Threshold only for classification
-            },
+            "target_registry_version": target_registry_version,
             "feature_registry_version": "latest",  # Use latest feature registry version
             "output_format": "parquet",
         }
@@ -479,13 +479,36 @@ class TrainingOrchestrator:
                 )
                 return
 
-            # Extract task_type from target_config
-            task_type = dataset_meta.target_config.type
+            # Extract task_type from target_config or target_registry_version
+            if dataset_meta.target_config:
+                task_type = dataset_meta.target_config.type
+            else:
+                # Load target_config from Target Registry via Feature Service API
+                # For now, assume regression if target_config is not provided
+                # TODO: Add API endpoint to get target_config from Target Registry
+                logger.warning(
+                    "target_config not provided in dataset metadata, attempting to load from Target Registry",
+                    training_id=training_id,
+                    dataset_id=str(dataset_id),
+                    target_registry_version=dataset_meta.target_registry_version,
+                    trace_id=trace_id,
+                )
+                # Try to get target_config from Feature Service API
+                # For now, default to regression if we can't determine it
+                task_type = "regression"  # Default fallback
+                logger.warning(
+                    "Using default task_type 'regression' - target_config should be provided by Feature Service",
+                    training_id=training_id,
+                    dataset_id=str(dataset_id),
+                    trace_id=trace_id,
+                )
+            
             logger.info(
                 "Dataset task type determined",
                 training_id=training_id,
                 dataset_id=str(dataset_id),
                 task_type=task_type,
+                target_registry_version=dataset_meta.target_registry_version,
                 trace_id=trace_id,
             )
 

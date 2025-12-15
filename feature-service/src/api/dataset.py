@@ -201,7 +201,30 @@ async def get_dataset(
     if dataset is None:
         raise HTTPException(status_code=404, detail="Dataset not found")
     
-    # Ensure target_config is a dict, not a JSON string
+    # Load target_config from Target Registry if target_registry_version is present
+    target_registry_version = dataset.get("target_registry_version")
+    if target_registry_version and _target_registry_version_manager:
+        try:
+            target_config_dict = await _target_registry_version_manager.get_version(target_registry_version)
+            if target_config_dict:
+                # get_version returns the config dict from YAML file
+                dataset["target_config"] = target_config_dict
+        except Exception as e:
+            logger.warning(
+                "Failed to load target_config from Target Registry",
+                dataset_id=dataset_id_str,
+                target_registry_version=target_registry_version,
+                error=str(e),
+            )
+            # Fallback: try to parse existing target_config if present
+            if isinstance(dataset.get("target_config"), str):
+                import json
+                try:
+                    dataset["target_config"] = json.loads(dataset["target_config"])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+    
+    # Ensure target_config is a dict, not a JSON string (fallback for old datasets)
     if isinstance(dataset.get("target_config"), str):
         import json
         try:

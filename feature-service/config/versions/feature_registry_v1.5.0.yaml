@@ -1,7 +1,5 @@
 version: 1.5.0
 features:
-# 1️⃣ Свечные фичи (15 минут lookback, 3 свечи × 5m) - 21 фича
-# Цвет свечи (1 бинарная на свечу)
 - name: candle_0_is_green
   input_sources:
   - kline
@@ -29,7 +27,6 @@ features:
   data_sources:
   - source: kline
     timestamp_required: true
-# Размер тела (числовое отношение body/total_range)
 - name: candle_0_body_ratio
   input_sources:
   - kline
@@ -57,7 +54,6 @@ features:
   data_sources:
   - source: kline
     timestamp_required: true
-# Верхняя тень (числовое отношение)
 - name: candle_0_upper_shadow_ratio
   input_sources:
   - kline
@@ -85,7 +81,6 @@ features:
   data_sources:
   - source: kline
     timestamp_required: true
-# Нижняя тень (числовое отношение)
 - name: candle_0_lower_shadow_ratio
   input_sources:
   - kline
@@ -113,7 +108,6 @@ features:
   data_sources:
   - source: kline
     timestamp_required: true
-# Специальные паттерны одной свечи (только часто встречающиеся)
 - name: candle_0_is_doji
   input_sources:
   - kline
@@ -168,9 +162,6 @@ features:
   data_sources:
   - source: kline
     timestamp_required: true
-
-# 2️⃣ Многосвечные паттерны (15 минут lookback) - 18 фич
-# Цветовые
 - name: pattern_all_green
   input_sources:
   - kline
@@ -207,7 +198,6 @@ features:
   data_sources:
   - source: kline
     timestamp_required: true
-# Размер тела
 - name: pattern_body_increasing
   input_sources:
   - kline
@@ -226,7 +216,6 @@ features:
   data_sources:
   - source: kline
     timestamp_required: true
-# Объём
 - name: pattern_volume_increasing
   input_sources:
   - kline
@@ -263,7 +252,6 @@ features:
   data_sources:
   - source: kline
     timestamp_required: true
-# Классические разворотные паттерны (выбор по частоте и значимости)
 - name: pattern_bullish_engulfing
   input_sources:
   - kline
@@ -318,9 +306,6 @@ features:
   data_sources:
   - source: kline
     timestamp_required: true
-
-# 3️⃣ Ценовые фичи (разные окна) - 6 фич
-# Доходность
 - name: returns_3m
   input_sources:
   - kline
@@ -339,7 +324,6 @@ features:
   data_sources:
   - source: kline
     timestamp_required: true
-# VWAP
 - name: vwap_3m
   input_sources:
   - trades
@@ -358,7 +342,6 @@ features:
   data_sources:
   - source: trades
     timestamp_required: true
-# Волатильность
 - name: volatility_10m
   input_sources:
   - kline
@@ -377,9 +360,3 @@ features:
   data_sources:
   - source: kline
     timestamp_required: true
-
-# 4️⃣ Orderflow фичи
-# Примечание: signed_volume фичи исключены из v1.5.0, так как Bybit REST API
-# не предоставляет исторические trades данные (только последние 60 trades).
-# Эти фичи будут всегда 0.0 на исторических данных, что делает их бесполезными.
-# Для работы с orderflow фичами требуется WebSocket поток trades в реальном времени.

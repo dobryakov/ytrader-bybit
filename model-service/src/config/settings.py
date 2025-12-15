@@ -83,6 +83,9 @@ class Settings(BaseSettings):
     # Prediction Horizon Configuration
     model_prediction_horizon_seconds: int = Field(default=180, alias="MODEL_PREDICTION_HORIZON_SECONDS", description="Prediction horizon in seconds. Default: 180 (3 minutes) for better market movement capture.")
     
+    # Target Registry Configuration
+    target_registry_version: str = Field(default="latest", alias="TARGET_REGISTRY_VERSION", description="Target Registry version to use for dataset building. Default: 'latest'")
+    
     # Timestamp Continuity Validation Configuration
     model_training_min_dataset_coverage_ratio: float = Field(
         default=0.8,

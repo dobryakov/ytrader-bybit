@@ -1165,11 +1165,10 @@ class MetadataStorage:
     async def create_target_registry_version(
         self,
         version: str,
-        config: dict,
+        file_path: str,
         is_active: bool = False,
         created_by: Optional[str] = None,
         description: Optional[str] = None,
-        file_path: Optional[str] = None,
         validated_at: Optional[datetime] = None,
         validation_errors: Optional[list] = None,
     ) -> dict:
@@ -1178,11 +1177,10 @@ class MetadataStorage:
         
         Args:
             version: Version identifier (e.g., "1.4.0")
-            config: Target configuration dict (type, horizon, threshold)
+            file_path: Path to YAML file (required, file is source of truth)
             is_active: Whether this version is active (default: False)
             created_by: User who created this version (optional)
             description: Description of this version (optional)
-            file_path: Path to YAML file (optional)
             validated_at: When validation was performed (optional)
             validation_errors: List of validation errors (optional)
             
@@ -1195,18 +1193,17 @@ class MetadataStorage:
             row = await conn.fetchrow(
                 """
                 INSERT INTO target_registry_versions (
-                    version, config, is_active, created_by, description, file_path,
+                    version, file_path, is_active, created_by, description,
                     validated_at, validation_errors, created_at
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+                VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
                 RETURNING *
                 """,
                 version,
-                config,
+                file_path,
                 is_active,
                 created_by,
                 description,
-                file_path,
                 validated_at_normalized,
                 validation_errors,
             )

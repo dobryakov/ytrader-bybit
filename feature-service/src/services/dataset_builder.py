@@ -420,7 +420,19 @@ class DatasetBuilder:
             return dt.astimezone(timezone.utc)
         
         # Use version from request if provided, otherwise use default
-        registry_version = feature_registry_version or self._feature_registry_version
+        # Handle "latest" - resolve to active version
+        if feature_registry_version == "latest":
+            # Get active version from database
+            if self._feature_registry_loader and self._feature_registry_loader._version_manager:
+                active_version = await self._feature_registry_loader._version_manager.load_active_version()
+                if active_version:
+                    registry_version = active_version.get("version", self._feature_registry_version)
+                else:
+                    registry_version = self._feature_registry_version
+            else:
+                registry_version = self._feature_registry_version
+        else:
+            registry_version = feature_registry_version or self._feature_registry_version
         
         # Create dataset record
         dataset_data = {
