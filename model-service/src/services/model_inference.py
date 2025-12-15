@@ -409,31 +409,72 @@ class ModelInference:
             if hasattr(model, "predict_proba"):
                 # Classification model
                 probabilities = model.predict_proba(features)[0]
-                
+
+                # Determine semantic class probabilities using optional label mapping.
+                # If the model was trained with remapped labels (e.g. {-1,+1}->{0,1}),
+                # ModelTrainer can store a mapping {0: -1, 1: 1} on the model instance
+                # under _label_mapping_for_inference. We use that to interpret
+                # probabilities in terms of "up"/"down" classes.
+                label_mapping = getattr(model, "_label_mapping_for_inference", None)
+                task_variant = getattr(model, "_task_variant", None)
+
+                # Default: work directly in model class index space
+                predicted_class_idx = None
+
                 # Use threshold-based prediction if enabled and thresholds are configured
                 if settings.model_prediction_use_threshold_calibration:
-                    prediction = self._predict_with_thresholds(probabilities)
+                    predicted_class_idx = self._predict_with_thresholds(probabilities)
                 else:
-                    # Default: use argmax
-                    prediction = model.predict(features)[0]
+                    # Default: use argmax over model class indices
+                    predicted_class_idx = int(np.argmax(probabilities))
+
+                # Map predicted class index back to semantic label if mapping is available
+                if label_mapping and isinstance(label_mapping, dict):
+                    # label_mapping: {model_class_idx -> semantic_label (-1/0/+1, etc.)}
+                    semantic_prediction = label_mapping.get(predicted_class_idx, predicted_class_idx)
+                else:
+                    semantic_prediction = predicted_class_idx
 
                 # Calculate confidence as max probability
                 confidence = float(np.max(probabilities))
 
-                # For multi-class classification: [class_0_prob, class_1_prob]
-                # class_0 = buy (from label_generator._generate_multiclass_label)
-                # class_1 = sell (from label_generator._generate_multiclass_label)
-                if len(probabilities) >= 2:
-                    # Multi-class: class_0 = buy, class_1 = sell
-                    buy_probability = float(probabilities[0])
-                    sell_probability = float(probabilities[1])
+                # Derive buy/sell probabilities based on semantic labels if possible.
+                buy_probability = 0.0
+                sell_probability = 0.0
+
+                if label_mapping and isinstance(label_mapping, dict):
+                    # Build reverse mapping: semantic_label -> probability
+                    sem_probs: Dict[Any, float] = {}
+                    for class_idx, sem_label in label_mapping.items():
+                        try:
+                            idx = int(class_idx)
+                        except (TypeError, ValueError):
+                            idx = class_idx
+                        if isinstance(idx, int) and 0 <= idx < len(probabilities):
+                            sem_probs[sem_label] = float(probabilities[idx])
+
+                    # For directional binary targets we typically use -1 (down) and +1 (up).
+                    if 1 in sem_probs or -1 in sem_probs:
+                        buy_probability = float(sem_probs.get(1, 0.0))
+                        sell_probability = float(sem_probs.get(-1, 0.0))
+                    else:
+                        # Fallback: try semantic labels 0/1 as up/down
+                        buy_probability = float(sem_probs.get(1, 0.0))
+                        sell_probability = float(sem_probs.get(0, 0.0))
                 else:
-                    # Fallback for single class or unexpected format
-                    buy_probability = float(probabilities[0]) if len(probabilities) > 0 else 0.0
-                    sell_probability = 0.0
+                    # No semantic mapping available: fall back to legacy convention.
+                    # For multi-class classification: [class_0_prob, class_1_prob]
+                    # class_0 = buy, class_1 = sell (original behavior).
+                    if len(probabilities) >= 2:
+                        buy_probability = float(probabilities[0])
+                        sell_probability = float(probabilities[1])
+                    else:
+                        # Fallback for single class or unexpected format
+                        buy_probability = float(probabilities[0]) if len(probabilities) > 0 else 0.0
+                        sell_probability = 0.0
 
                 result = {
-                    "prediction": int(prediction),
+                    "prediction": int(semantic_prediction),
                     "confidence": confidence,
                     "probabilities": probabilities.tolist() if hasattr(probabilities, "tolist") else list(probabilities),
                     "buy_probability": buy_probability,

@@ -1001,6 +1001,28 @@ class TrainingOrchestrator:
             # Determine file path
             file_path = f"v{version}/model.json" if model.__class__.__name__.startswith("XGB") else f"v{version}/model.pkl"
 
+            # Prepare training configuration and label mapping metadata for this model version.
+            # ModelTrainer may have stored a label mapping for inference (e.g. {0: -1, 1: 1}
+            # for binary candle-color targets). We retrieve it here and pass it into
+            # training_config so that inference side can reconstruct semantic classes.
+            training_config: Dict[str, Any] = {
+                "model_type": "xgboost",
+                "task_type": task_type,  # Use task_type from dataset target_config
+                "feature_count": len(dataset.get_feature_names()),
+                "dataset_source": "feature_service",
+                "dataset_id": str(dataset_id),
+            }
+
+            label_mapping_for_inference: Optional[Dict[int, Any]] = getattr(
+                model_trainer, "_label_mapping_for_inference", None
+            )
+            if label_mapping_for_inference is not None:
+                # Ensure keys are strings so that JSON serialization to DB is stable.
+                training_config["label_mapping_for_inference"] = {
+                    str(k): v for k, v in label_mapping_for_inference.items()
+                }
+                training_config["task_variant"] = task_variant
+
             model_version = await model_version_manager.create_version(
                 version=version,
                 model_type="xgboost",
@@ -1008,13 +1030,7 @@ class TrainingOrchestrator:
                 strategy_id=strategy_id,
                 training_duration_seconds=int(training_duration),
                 training_dataset_size=dataset.get_record_count(),
-                training_config={
-                    "model_type": "xgboost",
-                    "task_type": task_type,  # Use task_type from dataset target_config
-                    "feature_count": len(dataset.get_feature_names()),
-                    "dataset_source": "feature_service",
-                    "dataset_id": str(dataset_id),
-                },
+                training_config=training_config,
                 is_active=False,  # Don't activate automatically, require manual activation or quality check
             )
 

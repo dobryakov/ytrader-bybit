@@ -52,8 +52,10 @@ class ModelLoader:
         model_type = model_version["model_type"]
         file_path = model_version["file_path"]
         
-        # Extract task_type from training_config if available
+        # Extract task_type and label mapping from training_config if available
         task_type = None
+        label_mapping_for_inference = None
+        task_variant = None
         training_config = model_version.get("training_config")
         if training_config:
             if isinstance(training_config, str):
@@ -63,6 +65,8 @@ class ModelLoader:
                     training_config = None
             if isinstance(training_config, dict):
                 task_type = training_config.get("task_type")
+                label_mapping_for_inference = training_config.get("label_mapping_for_inference")
+                task_variant = training_config.get("task_variant")
         
         # Check cache
         cache_key = f"{strategy_id or 'default'}:{version}"
@@ -74,6 +78,28 @@ class ModelLoader:
         try:
             model = self._load_model_from_file(file_path, model_type, version, task_type=task_type)
             if model:
+                # Attach label mapping metadata for inference if available
+                if label_mapping_for_inference:
+                    try:
+                        # Keys were stored as strings; convert back to int where possible
+                        parsed_mapping = {}
+                        for k, v in label_mapping_for_inference.items():
+                            try:
+                                parsed_key = int(k)
+                            except (TypeError, ValueError):
+                                parsed_key = k
+                            parsed_mapping[parsed_key] = v
+                        setattr(model, "_label_mapping_for_inference", parsed_mapping)
+                    except Exception as e:
+                        logger.warning(
+                            "Failed to attach label_mapping_for_inference to model",
+                            version=version,
+                            error=str(e),
+                            exc_info=True,
+                        )
+                if task_variant:
+                    setattr(model, "_task_variant", task_variant)
+
                 # Cache the model
                 self._model_cache[cache_key] = model
                 self._model_metadata_cache[cache_key] = {
@@ -192,8 +218,10 @@ class ModelLoader:
         model_type = model_version["model_type"]
         file_path = model_version["file_path"]
         
-        # Extract task_type from training_config if available
+        # Extract task_type and label mapping from training_config if available
         task_type = None
+        label_mapping_for_inference = None
+        task_variant = None
         training_config = model_version.get("training_config")
         if training_config:
             if isinstance(training_config, str):
@@ -203,11 +231,34 @@ class ModelLoader:
                     training_config = None
             if isinstance(training_config, dict):
                 task_type = training_config.get("task_type")
+                label_mapping_for_inference = training_config.get("label_mapping_for_inference")
+                task_variant = training_config.get("task_variant")
 
         # Load model from file system
         try:
             model = self._load_model_from_file(file_path, model_type, version, task_type=task_type)
             if model:
+                # Attach label mapping metadata for inference if available
+                if label_mapping_for_inference:
+                    try:
+                        parsed_mapping = {}
+                        for k, v in label_mapping_for_inference.items():
+                            try:
+                                parsed_key = int(k)
+                            except (TypeError, ValueError):
+                                parsed_key = k
+                            parsed_mapping[parsed_key] = v
+                        setattr(model, "_label_mapping_for_inference", parsed_mapping)
+                    except Exception as e:
+                        logger.warning(
+                            "Failed to attach label_mapping_for_inference to model",
+                            version=version,
+                            error=str(e),
+                            exc_info=True,
+                        )
+                if task_variant:
+                    setattr(model, "_task_variant", task_variant)
+
                 # Cache the model
                 self._model_cache[version] = model
                 self._model_metadata_cache[version] = {
