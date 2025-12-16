@@ -56,6 +56,7 @@ class ModelLoader:
         task_type = None
         label_mapping_for_inference = None
         task_variant = None
+        probability_thresholds = None
         training_config = model_version.get("training_config")
         if training_config:
             if isinstance(training_config, str):
@@ -67,6 +68,7 @@ class ModelLoader:
                 task_type = training_config.get("task_type")
                 label_mapping_for_inference = training_config.get("label_mapping_for_inference")
                 task_variant = training_config.get("task_variant")
+                probability_thresholds = training_config.get("probability_thresholds")
         
         # Check cache
         cache_key = f"{strategy_id or 'default'}:{version}"
@@ -99,6 +101,25 @@ class ModelLoader:
                         )
                 if task_variant:
                     setattr(model, "_task_variant", task_variant)
+
+                # Attach calibrated probability thresholds (semantic label -> threshold)
+                if probability_thresholds:
+                    try:
+                        parsed_thresholds: Dict[Any, float] = {}
+                        for k, v in probability_thresholds.items():
+                            try:
+                                parsed_key = int(k)
+                            except (TypeError, ValueError):
+                                parsed_key = k
+                            parsed_thresholds[parsed_key] = float(v)
+                        setattr(model, "_probability_thresholds", parsed_thresholds)
+                    except Exception as e:
+                        logger.warning(
+                            "Failed to attach probability_thresholds to model",
+                            version=version,
+                            error=str(e),
+                            exc_info=True,
+                        )
 
                 # Cache the model
                 self._model_cache[cache_key] = model
@@ -222,6 +243,7 @@ class ModelLoader:
         task_type = None
         label_mapping_for_inference = None
         task_variant = None
+        probability_thresholds = None
         training_config = model_version.get("training_config")
         if training_config:
             if isinstance(training_config, str):
@@ -233,6 +255,7 @@ class ModelLoader:
                 task_type = training_config.get("task_type")
                 label_mapping_for_inference = training_config.get("label_mapping_for_inference")
                 task_variant = training_config.get("task_variant")
+                probability_thresholds = training_config.get("probability_thresholds")
 
         # Load model from file system
         try:
@@ -258,6 +281,24 @@ class ModelLoader:
                         )
                 if task_variant:
                     setattr(model, "_task_variant", task_variant)
+
+                if probability_thresholds:
+                    try:
+                        parsed_thresholds: Dict[Any, float] = {}
+                        for k, v in probability_thresholds.items():
+                            try:
+                                parsed_key = int(k)
+                            except (TypeError, ValueError):
+                                parsed_key = k
+                            parsed_thresholds[parsed_key] = float(v)
+                        setattr(model, "_probability_thresholds", parsed_thresholds)
+                    except Exception as e:
+                        logger.warning(
+                            "Failed to attach probability_thresholds to model",
+                            version=version,
+                            error=str(e),
+                            exc_info=True,
+                        )
 
                 # Cache the model
                 self._model_cache[version] = model

@@ -862,6 +862,41 @@ class TrainingOrchestrator:
                 task_type=task_type,  # Use task_type from dataset target_config
             )
 
+            # Optional: calibrate optimal probability thresholds on validation split
+            # for binary classification tasks. We store these thresholds alongside
+            # the model version so that inference can apply the same decision rule.
+            probability_thresholds: Optional[Dict[Any, float]] = None
+            if (
+                task_type == "classification"
+                and task_variant == "binary_classification"
+                and y_pred_proba is not None
+            ):
+                try:
+                    # quality_evaluator.calibrate_prediction_thresholds works in the
+                    # semantic label space of eval_labels (e.g. {-1, +1}).
+                    thresholds = quality_evaluator.calibrate_prediction_thresholds(
+                        y_true=eval_labels,
+                        y_pred_proba=y_pred_proba,
+                        target_recall=0.5,
+                    )
+                    if thresholds:
+                        probability_thresholds = {k: float(v) for k, v in thresholds.items()}
+                        logger.info(
+                            "Calibrated probability thresholds on validation split",
+                            training_id=training_id,
+                            dataset_id=str(dataset_id),
+                            task_variant=task_variant,
+                            thresholds=probability_thresholds,
+                        )
+                except Exception as e:
+                    logger.warning(
+                        "Failed to calibrate probability thresholds on validation split",
+                        training_id=training_id,
+                        dataset_id=str(dataset_id),
+                        error=str(e),
+                        task_variant=task_variant,
+                    )
+
             # Note: Trading metrics are not calculated here since we don't have execution_events
             # Model learns from market movements (price predictions), not from own trading results
 
@@ -1100,6 +1135,13 @@ class TrainingOrchestrator:
                     str(k): v for k, v in label_mapping_for_inference.items()
                 }
                 training_config["task_variant"] = task_variant
+
+            # Persist calibrated probability thresholds (if any) so that
+            # inference can apply the same decision rule for this model version.
+            if probability_thresholds is not None:
+                training_config["probability_thresholds"] = {
+                    str(k): float(v) for k, v in probability_thresholds.items()
+                }
 
             model_version = await model_version_manager.create_version(
                 version=version,

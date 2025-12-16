@@ -336,24 +336,24 @@ class QualityEvaluator:
     ) -> Dict[str, float]:
         """
         Calculate trading performance metrics.
-
+        
         **NOTE**: This method is deprecated for training pipeline. Training now uses only ML metrics
         (accuracy, precision, recall, F1, MSE, MAE, R2) from market data predictions.
         This method is kept for backtesting purposes only.
-
+        
         Args:
             execution_events: List of execution events (with performance data)
             predictions: Model predictions
             y_true: True labels (optional, for comparison)
-
+        
         Returns:
             Dictionary of trading performance metrics
         """
         if not execution_events:
             return {}
-
+        
         metrics = {}
-
+        
         # Calculate win rate
         profitable_trades = sum(
             1
@@ -362,7 +362,7 @@ class QualityEvaluator:
         )
         total_trades = len(execution_events)
         metrics["win_rate"] = float(profitable_trades / total_trades) if total_trades > 0 else 0.0
-
+        
         # Calculate total PnL
         total_pnl = sum(
             event.performance.realized_pnl
@@ -370,7 +370,7 @@ class QualityEvaluator:
             if event.performance.realized_pnl is not None
         )
         metrics["total_pnl"] = float(total_pnl)
-
+        
         # Calculate average PnL
         pnl_values = [
             event.performance.realized_pnl
@@ -378,7 +378,7 @@ class QualityEvaluator:
             if event.performance.realized_pnl is not None
         ]
         metrics["avg_pnl"] = float(np.mean(pnl_values)) if pnl_values else 0.0
-
+        
         # Calculate Sharpe ratio
         returns = [
             event.performance.return_percent
@@ -393,25 +393,23 @@ class QualityEvaluator:
                 metrics["sharpe_ratio"] = 0.0
         else:
             metrics["sharpe_ratio"] = 0.0
-
+        
         # Calculate profit factor
         profits = [pnl for pnl in pnl_values if pnl > 0]
         losses = [abs(pnl) for pnl in pnl_values if pnl < 0]
         total_profit = sum(profits) if profits else 0.0
         total_loss = sum(losses) if losses else 0.0
         metrics["profit_factor"] = float(total_profit / total_loss) if total_loss > 0 else (float("inf") if total_profit > 0 else 0.0)
-
+        
         # Calculate max drawdown
         cumulative_pnl = np.cumsum(pnl_values) if pnl_values else np.array([0.0])
         running_max = np.maximum.accumulate(cumulative_pnl)
         drawdown = cumulative_pnl - running_max
         metrics["max_drawdown"] = float(np.min(drawdown)) if len(drawdown) > 0 else 0.0
-
+        
         logger.info("Trading metrics calculated", metrics=metrics)
         return metrics
 
-
-# Global quality evaluator instance
     def calibrate_prediction_thresholds(
         self,
         y_true: pd.Series,
@@ -520,5 +518,6 @@ class QualityEvaluator:
         return thresholds
 
 
+# Global quality evaluator instance
 quality_evaluator = QualityEvaluator()
 

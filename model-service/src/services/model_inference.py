@@ -417,34 +417,11 @@ class ModelInference:
                 # probabilities in terms of "up"/"down" classes.
                 label_mapping = getattr(model, "_label_mapping_for_inference", None)
                 task_variant = getattr(model, "_task_variant", None)
+                probability_thresholds = getattr(model, "_probability_thresholds", None)
 
-                # Default: work directly in model class index space
-                predicted_class_idx = None
-
-                # Use threshold-based prediction if enabled and thresholds are configured
-                if settings.model_prediction_use_threshold_calibration:
-                    predicted_class_idx = self._predict_with_thresholds(probabilities)
-                else:
-                    # Default: use argmax over model class indices
-                    predicted_class_idx = int(np.argmax(probabilities))
-
-                # Map predicted class index back to semantic label if mapping is available
+                # Build reverse mapping: semantic_label -> probability (if mapping available)
+                sem_probs: Dict[Any, float] = {}
                 if label_mapping and isinstance(label_mapping, dict):
-                    # label_mapping: {model_class_idx -> semantic_label (-1/0/+1, etc.)}
-                    semantic_prediction = label_mapping.get(predicted_class_idx, predicted_class_idx)
-                else:
-                    semantic_prediction = predicted_class_idx
-
-                # Calculate confidence as max probability
-                confidence = float(np.max(probabilities))
-
-                # Derive buy/sell probabilities based on semantic labels if possible.
-                buy_probability = 0.0
-                sell_probability = 0.0
-
-                if label_mapping and isinstance(label_mapping, dict):
-                    # Build reverse mapping: semantic_label -> probability
-                    sem_probs: Dict[Any, float] = {}
                     for class_idx, sem_label in label_mapping.items():
                         try:
                             idx = int(class_idx)
@@ -453,6 +430,86 @@ class ModelInference:
                         if isinstance(idx, int) and 0 <= idx < len(probabilities):
                             sem_probs[sem_label] = float(probabilities[idx])
 
+                # Default: work directly in model class index space
+                predicted_class_idx: Optional[int] = None
+                semantic_prediction: Any = None
+
+                # 1) Prefer per-model calibrated thresholds (learned on validation).
+                #    Для бинарного направления {-1, +1} используем отдельные пороги
+                #    для buy (+1) и sell (-1) и явно допускаем зону hold (0), если
+                #    ни одна сторона не набрала достаточную уверенность.
+                if probability_thresholds and isinstance(probability_thresholds, dict) and sem_probs:
+                    # Normalize threshold keys to semantic labels (e.g. "-1", "1" -> -1, 1)
+                    thresholds_sem: Dict[Any, float] = {}
+                    for k, v in probability_thresholds.items():
+                        try:
+                            key = int(k)
+                        except (TypeError, ValueError):
+                            key = k
+                        thresholds_sem[key] = float(v)
+
+                    buy_threshold = thresholds_sem.get(1)
+                    sell_threshold = thresholds_sem.get(-1)
+                    p_buy = sem_probs.get(1, 0.0)
+                    p_sell = sem_probs.get(-1, 0.0)
+
+                    candidates: Dict[Any, float] = {}
+
+                    # Кандидат на buy, если P(buy) >= T_buy
+                    if buy_threshold is not None and 1 in sem_probs and p_buy >= buy_threshold:
+                        candidates[1] = p_buy
+
+                    # Кандидат на sell, если P(sell) >= T_sell
+                    if sell_threshold is not None and -1 in sem_probs and p_sell >= sell_threshold:
+                        candidates[-1] = p_sell
+
+                    if candidates:
+                        # Если обе стороны прошли порог, выбираем с максимальной вероятностью
+                        semantic_prediction = max(candidates.items(), key=lambda kv: kv[1])[0]
+                        logger.debug(
+                            "Prediction with calibrated probability thresholds",
+                            buy_threshold=buy_threshold,
+                            sell_threshold=sell_threshold,
+                            p_buy=p_buy,
+                            p_sell=p_sell,
+                            semantic_prediction=semantic_prediction,
+                            passed_labels=list(candidates.keys()),
+                        )
+                    else:
+                        # Ни один порог не выполнен — интерпретируем как отсутствие сигнала (hold)
+                        semantic_prediction = 0
+                        logger.debug(
+                            "No calibrated thresholds passed; returning hold (0)",
+                            buy_threshold=buy_threshold,
+                            sell_threshold=sell_threshold,
+                            p_buy=p_buy,
+                            p_sell=p_sell,
+                        )
+
+                # 2) If no per-model thresholds, optionally use global thresholds from settings.
+                if semantic_prediction is None:
+                    # Use threshold-based prediction if enabled and thresholds are configured
+                    if settings.model_prediction_use_threshold_calibration:
+                        predicted_class_idx = self._predict_with_thresholds(probabilities)
+                    else:
+                        # Default: use argmax over model class indices
+                        predicted_class_idx = int(np.argmax(probabilities))
+
+                    # Map predicted class index back to semantic label if mapping is available
+                    if label_mapping and isinstance(label_mapping, dict):
+                        # label_mapping: {model_class_idx -> semantic_label (-1/0/+1, etc.)}
+                        semantic_prediction = label_mapping.get(predicted_class_idx, predicted_class_idx)
+                    else:
+                        semantic_prediction = predicted_class_idx
+
+                # Calculate confidence as max probability
+                confidence = float(np.max(probabilities))
+
+                # Derive buy/sell probabilities based on semantic labels if possible.
+                buy_probability = 0.0
+                sell_probability = 0.0
+
+                if sem_probs:
                     # For directional binary targets we typically use -1 (down) and +1 (up).
                     if 1 in sem_probs or -1 in sem_probs:
                         buy_probability = float(sem_probs.get(1, 0.0))
