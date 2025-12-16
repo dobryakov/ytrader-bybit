@@ -43,3 +43,52 @@
     - Публикует в RabbitMQ (`model-service.trading_signals`) через `signal_publisher`.
   - Дальше **order-manager** читает этот сигнал и, согласно своей логике, создаёт/модифицирует ордера на бирже (обычно лимит/маркет buy или sell на `amount`).
 
+
+
+### Ручной инференс через HTTP‑эндпоинт
+
+Для отладки и диагностики можно руками запустить тот же пайплайн инференса, который выполняет `IntelligentOrchestrator`, через отдельный HTTP‑эндпоинт модельного сервиса.
+
+- **Базовый URL модельного сервиса (с хоста):**
+  - `http://localhost:${MODEL_SERVICE_PORT:-4500}`
+- **Эндпоинт:**
+  - `POST /api/v1/inference/manual`
+- **Авторизация:**
+  - Обязателен заголовок `X-API-Key` c значением `MODEL_SERVICE_API_KEY` (см. `env.example` и `docker-compose.yml`).
+- **Параметры запроса (query):**
+  - `asset` — торговая пара, например `BTCUSDT`.
+  - `strategy_id` — идентификатор стратегии, например `test-strategy`.
+- **Заголовки (опционально):**
+  - `X-Trace-ID` — трейс‑ID для удобной склейки логов (если не передан, сгенерируется автоматически).
+
+#### Пример вызова с хоста
+
+```bash
+export MODEL_SERVICE_PORT=${MODEL_SERVICE_PORT:-4500}
+export MODEL_SERVICE_API_KEY_VALUE="$(docker compose exec -T model-service printenv MODEL_SERVICE_API_KEY | tr -d '\r')"
+
+curl -X POST "http://localhost:${MODEL_SERVICE_PORT}/api/v1/inference/manual?asset=BTCUSDT&strategy_id=test-strategy" \
+  -H "X-API-Key: ${MODEL_SERVICE_API_KEY_VALUE}" \
+  -H "X-Trace-ID: manual-debug-$(date +%s)" \
+  -sS | jq .
+```
+
+#### Пример вызова изнутри контейнера `model-service`
+
+```bash
+docker compose exec -T model-service bash -lc '
+  curl -X POST "http://localhost:4500/api/v1/inference/manual?asset=BTCUSDT&strategy_id=test-strategy" \
+    -H "X-API-Key: ${MODEL_SERVICE_API_KEY}" \
+    -H "X-Trace-ID: manual-debug-$(date +%s)" \
+    -sS | jq .
+'
+```
+
+#### Ожидаемое поведение и ответы
+
+- **200 OK + `TradingSignal` в теле** — сигнал успешно сгенерирован и (если прошёл валидацию) опубликован в RabbitMQ.
+- **200 OK + `null` в теле** — пайплайн отработал, но сигнал отфильтрован (низкий `confidence`, HOLD‑решение модели, риск‑фильтры и т.п.). Детали причины см. в логах `model-service`.
+- **401 Unauthorized** — не передан `X-API-Key` или он неверный.
+- **422 Unprocessable Entity** — невалидные или отсутствующие параметры `asset` / `strategy_id`.
+
+При ручном инференсе используется тот же пайплайн, что описан выше (fetch фич из Feature Service, подготовка фич, предсказание модели, фильтры и риск‑менеджмент), отличие только в том, что запуск идёт по HTTP‑запросу, а не по внутреннему расписанию.

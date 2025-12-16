@@ -13,6 +13,8 @@ class RollingWindows(BaseModel):
     symbol: str = Field(description="Trading pair symbol")
     windows: Dict[str, pd.DataFrame] = Field(description="Dictionary of interval to DataFrame")
     last_update: datetime = Field(description="Last update timestamp")
+    window_intervals: Optional[set] = Field(default=None, description="Set of window intervals (e.g., {'1s', '3s', '15s', '1m'})")
+    max_lookback_minutes_1m: Optional[int] = Field(default=None, description="Maximum lookback in minutes for 1m window")
     
     def add_trade(self, trade: Dict) -> None:
         """Add trade to all relevant rolling windows.
@@ -155,17 +157,71 @@ class RollingWindows(BaseModel):
                 self.windows["1m"][col] = pd.to_numeric(self.windows["1m"][col], errors='coerce').astype(float).fillna(0.0)
         
         # Ensure last_update is always a datetime object
+        # Always use the maximum timestamp between current last_update and new kline timestamp
+        # This ensures last_update reflects the most recent data, even if klines arrive out of order
+        new_last_update = None
         if isinstance(timestamp, datetime):
-            self.last_update = timestamp
+            new_last_update = timestamp
         elif isinstance(timestamp, str):
             from dateutil.parser import parse
             try:
-                self.last_update = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                new_last_update = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
             except (ValueError, AttributeError):
-                self.last_update = parse(timestamp)
+                new_last_update = parse(timestamp)
         else:
-            self.last_update = datetime.now(timezone.utc)
+            new_last_update = datetime.now(timezone.utc)
+        
+        # Ensure timezone-aware
+        if new_last_update.tzinfo is None:
+            new_last_update = new_last_update.replace(tzinfo=timezone.utc)
+        
+        # Update last_update to maximum of current and new timestamp
+        current_last_update = self.last_update
+        if isinstance(current_last_update, str):
+            from dateutil.parser import parse
+            try:
+                current_last_update = datetime.fromisoformat(current_last_update.replace("Z", "+00:00"))
+            except (ValueError, AttributeError):
+                current_last_update = parse(current_last_update)
+        elif not isinstance(current_last_update, datetime):
+            current_last_update = datetime.now(timezone.utc)
+        
+        if current_last_update.tzinfo is None:
+            current_last_update = current_last_update.replace(tzinfo=timezone.utc)
+        
+        # Use maximum timestamp to ensure last_update always reflects most recent data
+        old_last_update = self.last_update
+        self.last_update = max(current_last_update, new_last_update)
+        
+        # Log if last_update was updated
+        if old_last_update != self.last_update:
+            import structlog
+            logger = structlog.get_logger(__name__)
+            logger.debug(
+                "last_update_updated",
+                symbol=self.symbol,
+                old_last_update=str(old_last_update),
+                new_last_update=self.last_update.isoformat() if isinstance(self.last_update, datetime) else str(self.last_update),
+                kline_timestamp=new_last_update.isoformat() if isinstance(new_last_update, datetime) else str(new_last_update),
+            )
+        
+        # Log kline addition for debugging
+        klines_count_before_trim = len(self.windows.get("1m", pd.DataFrame()))
+        # IMPORTANT: trim_old_data() uses self.last_update, so we must update it BEFORE trimming
+        # This ensures that new klines are not immediately trimmed
         self.trim_old_data()
+        klines_count_after_trim = len(self.windows.get("1m", pd.DataFrame()))
+        if klines_count_before_trim != klines_count_after_trim:
+            import structlog
+            logger = structlog.get_logger(__name__)
+            logger.warning(
+                "klines_trimmed_after_add",
+                symbol=self.symbol,
+                before=klines_count_before_trim,
+                after=klines_count_after_trim,
+                max_lookback_minutes_1m=self.max_lookback_minutes_1m,
+                last_update=self.last_update.isoformat() if isinstance(self.last_update, datetime) else str(self.last_update),
+            )
     
     def trim_old_data(
         self, 
@@ -183,36 +239,40 @@ class RollingWindows(BaseModel):
                 have sufficient historical data after trimming.
         """
         from datetime import timezone
-        # Ensure now is always a timezone-aware datetime object
-        now = self.last_update
-        if isinstance(now, str):
+        # IMPORTANT: Use current time for trimming, not self.last_update
+        # This ensures that klines with timestamps in the past (from queue backlog) are not
+        # immediately trimmed. We trim based on actual current time, keeping data within
+        # the lookback window from NOW, not from last_update.
+        now = datetime.now(timezone.utc)
+        
+        # Normalize self.last_update format if needed, but don't use it for trimming cutoff
+        if isinstance(self.last_update, str):
             from dateutil.parser import parse
             try:
-                now = datetime.fromisoformat(now.replace("Z", "+00:00"))
+                parsed = datetime.fromisoformat(self.last_update.replace("Z", "+00:00"))
             except (ValueError, AttributeError):
-                now = parse(now)
-            # Ensure timezone-aware
-            if now.tzinfo is None:
-                now = now.replace(tzinfo=timezone.utc)
-            # Update last_update to datetime object to prevent future issues
+                parsed = parse(self.last_update)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            # Only update if parsed is newer than current last_update
+            if isinstance(self.last_update, datetime):
+                self.last_update = max(self.last_update, parsed)
+            else:
+                self.last_update = parsed
+        elif not isinstance(self.last_update, datetime):
             self.last_update = now
-        elif not isinstance(now, datetime):
-            now = datetime.now(timezone.utc)
-            # Update last_update to datetime object
-            self.last_update = now
-        elif now.tzinfo is None:
-            # Make timezone-aware if naive
-            now = now.replace(tzinfo=timezone.utc)
-            self.last_update = now
+        elif self.last_update.tzinfo is None:
+            self.last_update = self.last_update.replace(tzinfo=timezone.utc)
         
         # Window sizes for trimming old data
-        # For "1m" window, use max_lookback_minutes_1m if provided, otherwise default to 30 minutes
+        # For "1m" window, use parameter if provided, otherwise use instance field, otherwise default to 30 minutes
         # This ensures all features have sufficient historical data after trimming
         # Default 30 minutes covers maximum feature lookback (26 min for ema_21) + buffer
         default_1m_window_seconds = 1800  # 30 minutes default
-        if max_lookback_minutes_1m is not None:
+        lookback_to_use = max_lookback_minutes_1m if max_lookback_minutes_1m is not None else self.max_lookback_minutes_1m
+        if lookback_to_use is not None:
             # Add 5 minute buffer to max_lookback for safety
-            window_size_1m_seconds = (max_lookback_minutes_1m + 5) * 60
+            window_size_1m_seconds = (lookback_to_use + 5) * 60
         else:
             window_size_1m_seconds = default_1m_window_seconds
         
@@ -244,7 +304,23 @@ class RollingWindows(BaseModel):
                 # Ensure all timestamps are timezone-aware
                 if df["timestamp"].dtype.name.startswith('datetime'):
                     df["timestamp"] = df["timestamp"].dt.tz_localize(None).dt.tz_localize(timezone.utc) if df["timestamp"].dt.tz is None else df["timestamp"]
-                self.windows[interval] = df[df["timestamp"] >= cutoff_time].copy()
+                before_count = len(df)
+                filtered_df = df[df["timestamp"] >= cutoff_time].copy()
+                after_count = len(filtered_df)
+                self.windows[interval] = filtered_df
+                if before_count != after_count and interval == "1m":
+                    import structlog
+                    logger = structlog.get_logger(__name__)
+                    logger.debug(
+                        "klines_trimmed_in_trim_old_data",
+                        symbol=self.symbol,
+                        interval=interval,
+                        before=before_count,
+                        after=after_count,
+                        cutoff_time=cutoff_time.isoformat(),
+                        window_size_seconds=window_size,
+                        max_lookback_minutes_1m=self.max_lookback_minutes_1m,
+                    )
     
     def get_window_data(self, interval: str) -> pd.DataFrame:
         """Get data for specific window interval."""
@@ -294,6 +370,26 @@ class RollingWindows(BaseModel):
         
         if len(df) == 0 or "timestamp" not in df.columns:
             return pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"])
+        
+        # Normalize timestamp column to timezone-aware datetime if needed (same as get_trades_for_window)
+        df = df.copy()
+        if df["timestamp"].dtype in ['int64', 'float64', 'int32', 'float32']:
+            # Convert Unix timestamp (milliseconds) to datetime
+            df["timestamp"] = pd.to_datetime(df["timestamp"], unit='ms', utc=True)
+        elif df["timestamp"].dtype == 'object':
+            # Try to convert string or mixed types to datetime
+            df["timestamp"] = pd.to_datetime(df["timestamp"], errors='coerce', utc=True)
+        
+        # Ensure start_time and end_time are timezone-aware
+        if start_time.tzinfo is None:
+            start_time = start_time.replace(tzinfo=timezone.utc)
+        if end_time.tzinfo is None:
+            end_time = end_time.replace(tzinfo=timezone.utc)
+        
+        # Ensure all timestamps in DataFrame are timezone-aware
+        if df["timestamp"].dtype.name.startswith('datetime'):
+            if df["timestamp"].dt.tz is None:
+                df["timestamp"] = df["timestamp"].dt.tz_localize(timezone.utc)
         
         mask = (df["timestamp"] >= start_time) & (df["timestamp"] <= end_time)
         result_df = df[mask].copy()

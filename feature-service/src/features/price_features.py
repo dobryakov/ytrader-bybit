@@ -61,24 +61,91 @@ def compute_returns(
     if current_price is None:
         return None
 
-    now = _ensure_datetime(rolling_windows.last_update)
+    # IMPORTANT: Use current time, not rolling_windows.last_update
+    # This ensures that we compute returns over the correct time window,
+    # even if last_update is stale (e.g., from old klines in queue)
+    now = datetime.now(timezone.utc)
     start_time = now - timedelta(seconds=window_seconds)
 
     # Для длинных окон используем klines (источник kline, как в обучении и реестре).
     if window_seconds >= 60:
         # Берём 1m-клайны за нужный интервал
         klines = rolling_windows.get_klines_for_window("1m", start_time, now)
+        total_klines = len(rolling_windows.get_window_data("1m"))
+        
+        import structlog
+        logger = structlog.get_logger(__name__)
+        logger.info(
+            "compute_returns_klines_check",
+            window_seconds=window_seconds,
+            window_minutes=window_seconds / 60,
+            klines_in_window=len(klines),
+            total_klines_available=total_klines,
+            has_close="close" in klines.columns if len(klines) > 0 else False,
+            start_time=start_time.isoformat(),
+            now=now.isoformat(),
+            time_diff_seconds=(now - start_time).total_seconds(),
+        )
+        
         if len(klines) == 0 or "close" not in klines.columns:
+            logger.warning(
+                "compute_returns_no_klines",
+                window_seconds=window_seconds,
+                window_minutes=window_seconds / 60,
+                klines_count=len(klines),
+                has_close="close" in klines.columns if len(klines) > 0 else False,
+                start_time=start_time.isoformat(),
+                now=now.isoformat(),
+                total_klines_in_window=total_klines,
+            )
             return None
 
         klines_sorted = klines.sort_values("timestamp")
         if len(klines_sorted) == 0:
+            logger.warning("compute_returns_empty_after_sort", window_seconds=window_seconds)
             return None
 
         # Первая цена в окне — исходная точка для доходности
-        first_price = pd.to_numeric(klines_sorted.iloc[0]["close"], errors="coerce")
+        first_close_raw = klines_sorted.iloc[0]["close"]
+        first_price = pd.to_numeric(first_close_raw, errors="coerce")
+        
+        # Проверим несколько первых свечей, если первая имеет close=0
         if pd.isna(first_price) or first_price == 0:
-            return None
+            # Попробуем найти первую свечу с ненулевым close
+            non_zero_closes = klines_sorted[klines_sorted["close"].notna()]
+            non_zero_closes = non_zero_closes[pd.to_numeric(non_zero_closes["close"], errors="coerce") > 0]
+            
+            logger.warning(
+                "compute_returns_invalid_first_price",
+                window_seconds=window_seconds,
+                first_price=first_price,
+                first_price_raw=first_close_raw,
+                first_price_type=type(first_close_raw).__name__,
+                first_timestamp=klines_sorted.iloc[0]["timestamp"] if "timestamp" in klines_sorted.columns else None,
+                total_klines=len(klines_sorted),
+                non_zero_closes_count=len(non_zero_closes),
+                sample_closes=list(klines_sorted["close"].head(5).tolist()) if "close" in klines_sorted.columns else [],
+            )
+            
+            # Если есть свечи с ненулевым close, используем первую из них
+            if len(non_zero_closes) > 0:
+                first_price = pd.to_numeric(non_zero_closes.iloc[0]["close"], errors="coerce")
+                logger.info(
+                    "compute_returns_using_non_zero_close",
+                    window_seconds=window_seconds,
+                    found_at_index=non_zero_closes.index[0],
+                    first_price=first_price,
+                )
+            else:
+                return None
+        
+        logger.debug(
+            "compute_returns_success",
+            window_seconds=window_seconds,
+            klines_count=len(klines_sorted),
+            first_price=first_price,
+            current_price=current_price,
+        )
     else:
         # Для очень коротких окон (< 60 секунд) используем trades-окна
         window_data = rolling_windows.get_window_data(f"{window_seconds}s")
@@ -161,11 +228,42 @@ def compute_volatility(
     
     # Get klines for window
     klines = rolling_windows.get_klines_for_window("1m", start_time, now)
+    total_klines = len(rolling_windows.get_window_data("1m"))
+    
+    import structlog
+    logger = structlog.get_logger(__name__)
+    logger.info(
+        "compute_volatility_klines_check",
+        window_seconds=window_seconds,
+        window_minutes=window_seconds / 60,
+        klines_in_window=len(klines),
+        total_klines_available=total_klines,
+        required_count=2,
+        start_time=start_time.isoformat(),
+        now=now.isoformat(),
+        time_diff_seconds=(now - start_time).total_seconds(),
+    )
     
     if len(klines) < 2:
+        logger.warning(
+            "compute_volatility_insufficient_klines",
+            window_seconds=window_seconds,
+            window_minutes=window_seconds / 60,
+            klines_count=len(klines),
+            required_count=2,
+            start_time=start_time.isoformat(),
+            now=now.isoformat(),
+            total_klines_in_window=total_klines,
+        )
         return None
     
     if "close" not in klines.columns:
+        logger.warning(
+            "compute_volatility_no_close_column",
+            window_seconds=window_seconds,
+            klines_count=len(klines),
+            columns=list(klines.columns) if len(klines) > 0 else [],
+        )
         return None
     
     # Compute returns from close prices
@@ -187,16 +285,32 @@ def compute_volatility(
         closes = closes.astype(float)
     
     if len(closes) < 2:
+        logger.warning(
+            "compute_volatility_insufficient_closes_after_conversion",
+            window_seconds=window_seconds,
+            closes_count=len(closes),
+            required_count=2,
+        )
         return None
     
     # Filter out zero values to avoid division by zero
+    closes_before_filter = len(closes)
     closes = closes[closes > 0]
+    closes_after_filter = len(closes)
     
     # Ensure dtype is still float after filtering
     if len(closes) > 0 and closes.dtype != np.float64:
         closes = closes.astype(float)
     
     if len(closes) < 2:
+        logger.warning(
+            "compute_volatility_insufficient_closes_after_zero_filter",
+            window_seconds=window_seconds,
+            closes_before_filter=closes_before_filter,
+            closes_after_filter=closes_after_filter,
+            required_count=2,
+            zero_count=closes_before_filter - closes_after_filter,
+        )
         return None
     
     # Compute returns with explicit float conversion
@@ -204,10 +318,24 @@ def compute_volatility(
     returns = np.diff(closes_float) / closes_float[:-1]
     
     if len(returns) == 0:
+        logger.warning(
+            "compute_volatility_empty_returns",
+            window_seconds=window_seconds,
+            closes_count=len(closes),
+        )
         return None
     
     # Compute standard deviation of returns
     volatility = np.std(returns)
+    
+    logger.debug(
+        "compute_volatility_success",
+        window_seconds=window_seconds,
+        klines_count=len(klines),
+        closes_count=len(closes),
+        returns_count=len(returns),
+        volatility=volatility,
+    )
     
     return float(volatility)
 
@@ -351,9 +479,39 @@ def compute_all_price_features(
         features["returns_1m"] = compute_returns(rolling_windows, 60, current_price)
     # Long-term returns
     if _should_compute("returns_3m", allowed_feature_names):
-        features["returns_3m"] = compute_returns(rolling_windows, 180, current_price)
+        result_3m = compute_returns(rolling_windows, 180, current_price)
+        features["returns_3m"] = result_3m
+        import structlog
+        logger = structlog.get_logger(__name__)
+        if result_3m is None:
+            logger.warning(
+                "returns_3m_computed_as_none",
+                current_price=current_price,
+                total_klines=len(rolling_windows.get_window_data("1m")),
+            )
+        else:
+            logger.debug(
+                "returns_3m_computed_success",
+                value=result_3m,
+                current_price=current_price,
+            )
     if _should_compute("returns_5m", allowed_feature_names):
-        features["returns_5m"] = compute_returns(rolling_windows, 300, current_price)
+        result_5m = compute_returns(rolling_windows, 300, current_price)
+        features["returns_5m"] = result_5m
+        import structlog
+        logger = structlog.get_logger(__name__)
+        if result_5m is None:
+            logger.warning(
+                "returns_5m_computed_as_none",
+                current_price=current_price,
+                total_klines=len(rolling_windows.get_window_data("1m")),
+            )
+        else:
+            logger.debug(
+                "returns_5m_computed_success",
+                value=result_5m,
+                current_price=current_price,
+            )
     
     # VWAP
     if _should_compute("vwap_3s", allowed_feature_names):
@@ -388,9 +546,35 @@ def compute_all_price_features(
         features["volatility_5m"] = compute_volatility(rolling_windows, 300)
     # Long-term volatility
     if _should_compute("volatility_10m", allowed_feature_names):
-        features["volatility_10m"] = compute_volatility(rolling_windows, 600)
+        result_10m = compute_volatility(rolling_windows, 600)
+        features["volatility_10m"] = result_10m
+        import structlog
+        logger = structlog.get_logger(__name__)
+        if result_10m is None:
+            logger.warning(
+                "volatility_10m_computed_as_none",
+                total_klines=len(rolling_windows.get_window_data("1m")),
+            )
+        else:
+            logger.debug(
+                "volatility_10m_computed_success",
+                value=result_10m,
+            )
     if _should_compute("volatility_15m", allowed_feature_names):
-        features["volatility_15m"] = compute_volatility(rolling_windows, 900)
+        result_15m = compute_volatility(rolling_windows, 900)
+        features["volatility_15m"] = result_15m
+        import structlog
+        logger = structlog.get_logger(__name__)
+        if result_15m is None:
+            logger.warning(
+                "volatility_15m_computed_as_none",
+                total_klines=len(rolling_windows.get_window_data("1m")),
+            )
+        else:
+            logger.debug(
+                "volatility_15m_computed_success",
+                value=result_15m,
+            )
     
     # Price to EMA21 ratio
     if _should_compute("price_ema21_ratio", allowed_feature_names):

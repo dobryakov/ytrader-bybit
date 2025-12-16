@@ -122,7 +122,7 @@ class FeatureScheduler:
                 # Publish features
                 await self._feature_publisher.publish(feature_vector)
                 
-                logger.debug(
+                logger.info(
                     "features_computed_and_published",
                     symbol=symbol,
                     interval=interval_name,

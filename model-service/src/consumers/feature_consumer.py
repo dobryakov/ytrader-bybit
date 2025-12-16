@@ -220,7 +220,7 @@ class FeatureConsumer:
             # Cache the feature vector
             await feature_cache.set(feature_vector.symbol, feature_vector)
 
-            logger.debug(
+            logger.info(
                 "Feature vector received and cached",
                 symbol=feature_vector.symbol,
                 feature_count=len(feature_vector.features),

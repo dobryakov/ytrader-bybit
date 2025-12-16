@@ -70,12 +70,13 @@ class FeaturePublisher:
                     routing_key=self._queue_name,
                 )
                 
-                logger.debug(
+                logger.info(
                     "feature_vector_published",
                     symbol=feature_vector.symbol,
                     timestamp=feature_vector.timestamp.isoformat(),
                     features_count=len(feature_vector.features),
                     trace_id=feature_vector.trace_id,
+                    queue=self._queue_name,
                 )
                 return  # Success - exit function
             

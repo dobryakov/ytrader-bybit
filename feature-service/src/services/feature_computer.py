@@ -1,7 +1,7 @@
 """
 Feature Computer service for orchestrating feature computations.
 """
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Dict, Optional, TYPE_CHECKING
 import structlog
 import time
@@ -66,16 +66,25 @@ class FeatureComputer:
         """Update allowed feature names from Feature Registry."""
         if self._feature_registry_loader is None:
             self._allowed_feature_names = None
+            logger.info(
+                "feature_registry_loader_not_available",
+                message="Feature Registry loader is None, all features will be computed",
+            )
             return
         
         try:
             registry_model = self._feature_registry_loader._registry_model
             if registry_model:
                 self._allowed_feature_names = {f.name for f in registry_model.features}
-                logger.debug(
+                logger.info(
                     "feature_registry_features_loaded",
                     count=len(self._allowed_feature_names),
-                    features=list(self._allowed_feature_names),
+                    version=self._feature_registry_version,
+                    has_returns_3m="returns_3m" in self._allowed_feature_names,
+                    has_returns_5m="returns_5m" in self._allowed_feature_names,
+                    has_volatility_10m="volatility_10m" in self._allowed_feature_names,
+                    has_volatility_15m="volatility_15m" in self._allowed_feature_names,
+                    sample_features=sorted(list(self._allowed_feature_names))[:10],
                 )
             else:
                 # Try to load config
@@ -85,16 +94,35 @@ class FeatureComputer:
                         self._allowed_feature_names = {
                             f.get("name") for f in config["features"] if f.get("name")
                         }
+                        logger.info(
+                            "feature_registry_features_loaded_from_config",
+                            count=len(self._allowed_feature_names),
+                            version=config.get("version"),
+                            has_returns_3m="returns_3m" in self._allowed_feature_names,
+                            has_returns_5m="returns_5m" in self._allowed_feature_names,
+                            has_volatility_10m="volatility_10m" in self._allowed_feature_names,
+                            has_volatility_15m="volatility_15m" in self._allowed_feature_names,
+                        )
+                    else:
+                        logger.warning(
+                            "feature_registry_config_empty",
+                            message="Config is None or has no features section",
+                        )
+                        self._allowed_feature_names = None
                 except Exception as e:
                     logger.warning(
                         "failed_to_load_feature_registry_for_filtering",
                         error=str(e),
+                        error_type=type(e).__name__,
+                        exc_info=True,
                     )
                     self._allowed_feature_names = None
         except Exception as e:
             logger.warning(
                 "failed_to_update_allowed_features",
                 error=str(e),
+                error_type=type(e).__name__,
+                exc_info=True,
             )
             self._allowed_feature_names = None
 
@@ -149,10 +177,17 @@ class FeatureComputer:
                     columns=["timestamp", "open", "high", "low", "close", "volume"]
                 )
 
+            max_lookback = (
+                self._window_requirements.max_lookback_minutes_1m
+                if self._window_requirements is not None
+                else None
+            )
             self._rolling_windows[symbol] = RollingWindows(
                 symbol=symbol,
                 windows=windows,
                 last_update=datetime.now(timezone.utc),
+                window_intervals=trade_intervals,
+                max_lookback_minutes_1m=max_lookback,
             )
 
         return self._rolling_windows[symbol]
@@ -181,8 +216,19 @@ class FeatureComputer:
             # Get rolling windows
             rolling_windows = self.get_rolling_windows(symbol)
             
-            # Get current price
+            # Get current price - try orderbook first, then fallback to latest kline
             current_price = orderbook.get_mid_price() if orderbook else None
+            if current_price is None:
+                # Fallback: get price from latest kline
+                now = datetime.now(timezone.utc)
+                klines = rolling_windows.get_klines_for_window("1m", now - timedelta(minutes=1), now)
+                if len(klines) > 0 and "close" in klines.columns:
+                    klines_sorted = klines.sort_values("timestamp")
+                    latest_close = klines_sorted.iloc[-1]["close"]
+                    try:
+                        current_price = float(latest_close)
+                    except (ValueError, TypeError):
+                        current_price = None
             
             # Compute all feature groups
             all_features = {}
@@ -195,6 +241,18 @@ class FeatureComputer:
                 allowed_feature_names=self._allowed_feature_names,
             )
             all_features.update(price_features)
+            
+            # Always add price feature explicitly (model-service expects it)
+            # Use mid_price if available, otherwise use current_price from kline
+            if current_price is not None:
+                all_features["price"] = current_price
+            else:
+                logger.warning(
+                    "current_price_unavailable",
+                    symbol=symbol,
+                    has_orderbook=orderbook is not None,
+                    has_klines=len(rolling_windows.get_klines_for_window("1m", datetime.now(timezone.utc) - timedelta(minutes=1), datetime.now(timezone.utc))) > 0,
+                )
             
             # Orderflow features
             orderflow_features = compute_all_orderflow_features(rolling_windows)
@@ -239,17 +297,27 @@ class FeatureComputer:
             }
             
             # Filter features by Feature Registry (if enabled)
+            # Note: "price" is always included even if not in registry (required by model-service)
             if self._allowed_feature_names is not None:
                 registry_filtered_features = {
                     k: v for k, v in filtered_features.items()
-                    if k in self._allowed_feature_names
+                    if k in self._allowed_feature_names or k == "price"
                 }
                 if len(registry_filtered_features) < len(filtered_features):
-                    logger.debug(
+                    removed_features = set(filtered_features.keys()) - set(registry_filtered_features.keys())
+                    logger.warning(
                         "features_filtered_by_registry",
                         original_count=len(filtered_features),
                         filtered_count=len(registry_filtered_features),
-                        removed_features=set(filtered_features.keys()) - set(registry_filtered_features.keys()),
+                        removed_features=sorted(list(removed_features)),
+                        removed_count=len(removed_features),
+                        target_features_removed={
+                            "returns_3m": "returns_3m" in removed_features,
+                            "returns_5m": "returns_5m" in removed_features,
+                            "volatility_10m": "volatility_10m" in removed_features,
+                            "volatility_15m": "volatility_15m" in removed_features,
+                        },
+                        allowed_features_count=len(self._allowed_feature_names),
                     )
                 filtered_features = registry_filtered_features
             
@@ -450,7 +518,16 @@ class FeatureComputer:
                         rolling_windows.add_trade(trade_data)
         elif event_type == "kline":
             try:
+                klines_before = len(rolling_windows.get_window_data("1m"))
                 rolling_windows.add_kline(event)
+                klines_after = len(rolling_windows.get_window_data("1m"))
+                logger.debug(
+                    "kline_added",
+                    symbol=symbol,
+                    klines_before=klines_before,
+                    klines_after=klines_after,
+                    timestamp=event.get("timestamp") or (event.get("payload", {}) or {}).get("start"),
+                )
             except (KeyError, TypeError) as e:
                 logger.warning(
                     "kline_processing_error",
