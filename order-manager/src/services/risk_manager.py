@@ -348,12 +348,12 @@ class RiskManager:
                         trace_id=trace_id,
                         exc_info=True,
                     )
-                    # Fallback to original logic
-                    base_currency = self._extract_base_currency(signal.asset)
-                    required_balance = order_quantity
-                    base_currency_balance = self._get_coin_balance(account, base_currency)
-                    available_balance = base_currency_balance
-                    currency = base_currency
+                    # Fallback: use USDT balance from database
+                    # For sell orders without position, we need margin, but if we can't get it,
+                    # we'll use the USDT balance as a conservative estimate
+                    available_balance = usdt_balance
+                    required_balance = order_quantity * order_price
+                    currency = "USDT"
                     
                     if required_balance > available_balance:
                         shortfall = required_balance - available_balance

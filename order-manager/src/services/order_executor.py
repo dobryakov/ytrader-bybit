@@ -1318,35 +1318,106 @@ class OrderExecutor:
 
         # Add TP/SL orders if enabled
         if settings.order_manager_tp_sl_enabled:
+            # For Market orders, get current market price to ensure TP/SL are calculated correctly
+            # For Limit orders, use the limit price
+            if order_type == "Market" and price is None:
+                # Get current market price for accurate TP/SL calculation
+                entry_price_decimal = await selector._get_current_market_price(
+                    asset=asset,
+                    fallback_price=signal.market_data_snapshot.price,
+                    trace_id=signal.trace_id,
+                )
+                logger.debug(
+                    "tp_sl_using_current_market_price",
+                    asset=asset,
+                    current_price=float(entry_price_decimal),
+                    snapshot_price=float(signal.market_data_snapshot.price),
+                    trace_id=signal.trace_id,
+                )
+            else:
+                # For Limit orders, use limit price; fallback to snapshot price if not available
+                entry_price_decimal = price if price else signal.market_data_snapshot.price
+            
             tp_price, sl_price = await self._calculate_tp_sl(
                 signal=signal,
-                entry_price=price if price else signal.market_data_snapshot.price,
+                entry_price=entry_price_decimal,
                 trace_id=signal.trace_id,
             )
             
+            # Validate TP/SL prices before adding to params
+            # For buy orders: TP > entry_price, SL < entry_price
+            # For sell orders: TP < entry_price, SL > entry_price
             if tp_price and settings.order_manager_tp_enabled:
-                params["takeProfit"] = str(tp_price)
-                params["tpTriggerBy"] = settings.order_manager_tp_sl_trigger_by
-                logger.info(
-                    "take_profit_added_to_order",
-                    asset=asset,
-                    tp_price=float(tp_price),
-                    entry_price=float(price if price else signal.market_data_snapshot.price),
-                    trigger_by=settings.order_manager_tp_sl_trigger_by,
-                    trace_id=signal.trace_id,
-                )
+                if side_api.lower() == "buy":
+                    if tp_price <= entry_price_decimal:
+                        logger.warning(
+                            "tp_price_invalid_for_buy_order",
+                            asset=asset,
+                            tp_price=float(tp_price),
+                            entry_price=float(entry_price_decimal),
+                            reason="TP must be higher than entry price for buy orders",
+                            trace_id=signal.trace_id,
+                        )
+                        tp_price = None
+                else:  # sell
+                    if tp_price >= entry_price_decimal:
+                        logger.warning(
+                            "tp_price_invalid_for_sell_order",
+                            asset=asset,
+                            tp_price=float(tp_price),
+                            entry_price=float(entry_price_decimal),
+                            reason="TP must be lower than entry price for sell orders",
+                            trace_id=signal.trace_id,
+                        )
+                        tp_price = None
+                
+                if tp_price:
+                    params["takeProfit"] = str(tp_price)
+                    params["tpTriggerBy"] = settings.order_manager_tp_sl_trigger_by
+                    logger.info(
+                        "take_profit_added_to_order",
+                        asset=asset,
+                        tp_price=float(tp_price),
+                        entry_price=float(entry_price_decimal),
+                        trigger_by=settings.order_manager_tp_sl_trigger_by,
+                        trace_id=signal.trace_id,
+                    )
             
             if sl_price and settings.order_manager_sl_enabled:
-                params["stopLoss"] = str(sl_price)
-                params["slTriggerBy"] = settings.order_manager_tp_sl_trigger_by
-                logger.info(
-                    "stop_loss_added_to_order",
-                    asset=asset,
-                    sl_price=float(sl_price),
-                    entry_price=float(price if price else signal.market_data_snapshot.price),
-                    trigger_by=settings.order_manager_tp_sl_trigger_by,
-                    trace_id=signal.trace_id,
-                )
+                if side_api.lower() == "buy":
+                    if sl_price >= entry_price_decimal:
+                        logger.warning(
+                            "sl_price_invalid_for_buy_order",
+                            asset=asset,
+                            sl_price=float(sl_price),
+                            entry_price=float(entry_price_decimal),
+                            reason="SL must be lower than entry price for buy orders",
+                            trace_id=signal.trace_id,
+                        )
+                        sl_price = None
+                else:  # sell
+                    if sl_price <= entry_price_decimal:
+                        logger.warning(
+                            "sl_price_invalid_for_sell_order",
+                            asset=asset,
+                            sl_price=float(sl_price),
+                            entry_price=float(entry_price_decimal),
+                            reason="SL must be higher than entry price for sell orders",
+                            trace_id=signal.trace_id,
+                        )
+                        sl_price = None
+                
+                if sl_price:
+                    params["stopLoss"] = str(sl_price)
+                    params["slTriggerBy"] = settings.order_manager_tp_sl_trigger_by
+                    logger.info(
+                        "stop_loss_added_to_order",
+                        asset=asset,
+                        sl_price=float(sl_price),
+                        entry_price=float(entry_price_decimal),
+                        trigger_by=settings.order_manager_tp_sl_trigger_by,
+                        trace_id=signal.trace_id,
+                    )
 
         return params
 
