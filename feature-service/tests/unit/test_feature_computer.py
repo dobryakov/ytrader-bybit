@@ -36,8 +36,16 @@ class TestFeatureComputer:
         
         assert rw is not None
         assert rw.symbol == "BTCUSDT"
-        assert "1s" in rw.windows
-        assert "3s" in rw.windows
+        # Конкретный набор окон теперь зависит от FeatureRequirementsAnalyzer.
+        # Здесь достаточно проверить, что есть хотя бы одно окно trades
+        # (с колонками price/volume/side) и 1m окно для kline-данных.
+        assert isinstance(rw.windows, dict)
+        trade_intervals = [
+            name
+            for name, df in rw.windows.items()
+            if {"timestamp", "price", "volume", "side"}.issubset(df.columns)
+        ]
+        assert trade_intervals, "expected at least one trade interval"
     
     def test_update_funding_rate(self, feature_computer):
         """Test updating funding rate."""

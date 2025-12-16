@@ -178,6 +178,12 @@ class Settings(BaseSettings):
     warmup_max_amount: float = Field(default=1000.0, alias="WARMUP_MAX_AMOUNT")
     warmup_randomness_level: float = Field(default=0.5, alias="WARMUP_RANDOMNESS_LEVEL")
 
+    # Intelligent Mode Configuration
+    # Frequency of intelligent (model-based) signals, signals per minute.
+    # Works independently of warm-up frequency. If not set explicitly in .env,
+    # falls back to a reasonable default (1 signal per second).
+    intelligent_signal_frequency: float = Field(default=60.0, alias="INTELLIGENT_SIGNAL_FREQUENCY")
+
     # Trading Strategy Configuration
     trading_strategies: Optional[str] = Field(default=None, alias="TRADING_STRATEGIES")
 
@@ -422,6 +428,14 @@ class Settings(BaseSettings):
         """Validate warm-up signal frequency is positive."""
         if v <= 0:
             raise ValueError("Warm-up signal frequency must be positive")
+        return v
+
+    @field_validator("intelligent_signal_frequency")
+    @classmethod
+    def validate_intelligent_frequency(cls, v: float) -> float:
+        """Validate intelligent signal frequency is positive."""
+        if v <= 0:
+            raise ValueError("Intelligent signal frequency must be positive")
         return v
 
     @field_validator("warmup_randomness_level")

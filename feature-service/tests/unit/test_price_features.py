@@ -126,6 +126,36 @@ class TestPriceFeatures:
         assert "vwap_3s" in features or features["vwap_3s"] is None
         assert "volume_3s" in features
 
+    def test_compute_all_price_features_with_allowed_names_filters_and_skips(
+        self, sample_orderbook_state, sample_rolling_windows
+    ):
+        """Test that compute_all_price_features учитывает allowed_feature_names и не считает лишние фичи."""
+        from src.models.orderbook_state import OrderbookState
+        from src.models.rolling_windows import RollingWindows
+
+        orderbook = OrderbookState(**sample_orderbook_state)
+        rw = RollingWindows(**sample_rolling_windows)
+        current_price = orderbook.get_mid_price()
+
+        # Разрешаем только подмножество фич
+        allowed = {
+            "mid_price",
+            "returns_1m",
+            "volume_1m",
+        }
+
+        features = compute_all_price_features(
+            orderbook,
+            rw,
+            current_price,
+            allowed_feature_names=allowed,
+        )
+
+        # Должны быть только разрешённые ключи (или их подмножество, если данных не хватает)
+        assert set(features.keys()).issubset(allowed)
+        # Базовые фичи из allowed есть в результате (если можно посчитать)
+        assert "mid_price" in features
+
     def test_compute_returns_5m(self, sample_rolling_windows_klines):
         """Test returns_5m computation for 5-minute window using universal function."""
         from src.models.rolling_windows import RollingWindows
@@ -135,52 +165,74 @@ class TestPriceFeatures:
         
         base_time = datetime.now(timezone.utc)
         
-        # compute_returns uses get_window_data("300s") which expects trades with "price" column
-        # Create trades data spanning 5+ minutes
-        trades_data = []
-        # Add trade at the start (5 minutes ago) with price 49900.0
-        trades_data.append({
+        # compute_returns (для 300 секунд) теперь использует klines через get_klines_for_window("1m").
+        # Создаём 1m-клайны, покрывающие ~5 минут истории.
+        klines_data = []
+        # Свеча 5 минут назад c close 49900.0
+        klines_data.append({
             "timestamp": base_time - timedelta(minutes=5),
-            "price": 49900.0,
+            "open": 49890.0,
+            "high": 49910.0,
+            "low": 49880.0,
+            "close": 49900.0,
             "volume": 1.0,
-            "side": "Buy",
         })
-        # Add a few more trades in between
+        # Ещё несколько свечей внутри окна
         for i in range(1, 5):
-            trades_data.append({
+            price = 49900.0 + i * 20.0
+            klines_data.append({
                 "timestamp": base_time - timedelta(minutes=5-i),
-                "price": 49900.0 + i * 20.0,
-                "volume": 1.0,
-                "side": "Buy",
+                "open": price - 10.0,
+                "high": price + 10.0,
+                "low": price - 20.0,
+                "close": price,
+                "volume": 1.0 + i,
             })
         
-        # Create DataFrame with trades
-        trades_df = pd.DataFrame(trades_data)
+        klines_df = pd.DataFrame(klines_data)
         
         rw = RollingWindows(
             symbol="BTCUSDT",
-            windows={"300s": trades_df},  # Use "300s" window as expected by compute_returns
+            windows={"1m": klines_df},  # Klines в 1m окне
             last_update=base_time,
         )
         
         current_price = 50005.0
-        # Use universal function with 300 seconds (5 minutes)
+        # Universal-функция с 300 сек (5 минут)
         returns = compute_returns(rw, 300, current_price)
         
-        # Should compute return: (50005.0 - 49900.0) / 49900.0 ≈ 0.0021
+        # Ожидаем: (50005.0 - 49900.0) / 49900.0 ≈ 0.0021 (первая close в окне)
         assert returns is not None
         expected_return = (50005.0 - 49900.0) / 49900.0
-        assert abs(returns - expected_return) < 0.01  # More lenient tolerance
+        assert abs(returns - expected_return) < 0.01  # Более мягкий допуск
     
     def test_compute_returns_5m_insufficient_data(self, sample_rolling_windows_klines):
         """Test returns_5m with insufficient data using universal function."""
         from src.models.rolling_windows import RollingWindows
         from src.features.price_features import compute_returns
+        import pandas as pd
+        from datetime import timedelta
         
-        rw = RollingWindows(**sample_rolling_windows_klines)
-        # Only 1 kline, need at least 2 (current and 5m ago)
+        base_time = datetime.now(timezone.utc)
+        
+        # Нет ни одной свечи в 5-минутном окне → функция должна вернуть None.
+        # Кладём свечу сильно в прошлом, за пределами окна.
+        old_kline = {
+            "timestamp": base_time - timedelta(minutes=30),
+            "open": 49900.0,
+            "high": 49910.0,
+            "low": 49890.0,
+            "close": 49900.0,
+            "volume": 5.0,
+        }
+        klines_df = pd.DataFrame([old_kline])
+        
+        rw = RollingWindows(
+            symbol="BTCUSDT",
+            windows={"1m": klines_df},
+            last_update=base_time,
+        )
         current_price = 50005.0
-        # Use universal function with 300 seconds (5 minutes)
         returns = compute_returns(rw, 300, current_price)
         
         assert returns is None
@@ -190,12 +242,12 @@ class TestPriceFeatures:
         from src.models.rolling_windows import RollingWindows
         from src.features.price_features import compute_returns
         from datetime import timedelta
+        import pandas as pd
         
-        rw = RollingWindows(**sample_rolling_windows_klines)
-        base_time = rw.last_update
+        base_time = datetime.now(timezone.utc)
         
-        # Add kline with zero close price
-        kline_5m_ago = {
+        # Первая close в окне = 0 → функция должна вернуть None, чтобы избежать деления на ноль.
+        kline_zero = {
             "timestamp": base_time - timedelta(minutes=5),
             "open": 0.0,
             "high": 0.0,
@@ -203,10 +255,15 @@ class TestPriceFeatures:
             "close": 0.0,
             "volume": 0.0,
         }
-        rw.add_kline(kline_5m_ago)
+        klines_df = pd.DataFrame([kline_zero])
+        
+        rw = RollingWindows(
+            symbol="BTCUSDT",
+            windows={"1m": klines_df},
+            last_update=base_time,
+        )
         
         current_price = 50005.0
-        # Use universal function with 300 seconds (5 minutes)
         returns = compute_returns(rw, 300, current_price)
         
         assert returns is None
@@ -232,28 +289,37 @@ class TestPriceFeatures:
         
         base_time = datetime.now(timezone.utc)
         
-        # compute_returns uses get_window_data("300s") which expects trades with "price" column
-        # Add trade 5 minutes ago
-        trades_data = [{
-            "timestamp": base_time - timedelta(minutes=5),
-            "price": 49900.0,
-            "volume": 1.0,
-            "side": "Buy",
-        }]
+        # Проверяем, что returns_5m считается корректно даже при нерегулярных интервалах между свечами.
+        klines_data = [
+            {
+                "timestamp": base_time - timedelta(minutes=5, seconds=10),
+                "open": 49890.0,
+                "high": 49910.0,
+                "low": 49880.0,
+                "close": 49900.0,
+                "volume": 1.0,
+            },
+            {
+                "timestamp": base_time - timedelta(minutes=2),
+                "open": 49950.0,
+                "high": 49960.0,
+                "low": 49940.0,
+                "close": 49950.0,
+                "volume": 2.0,
+            },
+        ]
         
-        trades_df = pd.DataFrame(trades_data)
+        klines_df = pd.DataFrame(klines_data)
         
         rw = RollingWindows(
             symbol="BTCUSDT",
-            windows={"300s": trades_df},
+            windows={"1m": klines_df},
             last_update=base_time,
         )
         
         current_price = 50005.0
-        # Use universal function with 300 seconds (5 minutes)
         returns = compute_returns(rw, 300, current_price)
         
-        # Should still compute correctly
         assert returns is not None
 
     def test_compute_volatility_5m(self, sample_rolling_windows_klines):

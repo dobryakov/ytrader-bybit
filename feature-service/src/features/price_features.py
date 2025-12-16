@@ -1,7 +1,7 @@
 """
 Price features computation module.
 """
-from typing import Dict, Optional
+from typing import Dict, Optional, Iterable, Optional as Opt
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta, timezone
@@ -50,28 +50,50 @@ def compute_returns(
     window_seconds: int,
     current_price: Optional[float],
 ) -> Optional[float]:
-    """Compute returns over specified window."""
+    """
+    Compute returns over specified window.
+
+    Для коротких окон (< 60 секунд) используем trade-окна (price из trades),
+    для длинных окон (>= 60 секунд, включая 3m/5m) используем klines ("1m"),
+    чтобы быть консистентными с оффлайн-обучением и Feature Registry
+    (input_sources: ["kline"] для returns_3m/returns_5m).
+    """
     if current_price is None:
         return None
-    
+
     now = _ensure_datetime(rolling_windows.last_update)
     start_time = now - timedelta(seconds=window_seconds)
-    
-    # Get price data from window
-    window_data = rolling_windows.get_window_data(f"{window_seconds}s")
-    if len(window_data) == 0 or "price" not in window_data.columns:
-        return None
-    
-    # Get first price in window
-    window_data_sorted = window_data.sort_values("timestamp")
-    if len(window_data_sorted) == 0:
-        return None
-    
-    # Ensure price is numeric (convert from string if needed)
-    first_price = pd.to_numeric(window_data_sorted.iloc[0]["price"], errors='coerce')
-    if pd.isna(first_price) or first_price == 0:
-        return None
-    
+
+    # Для длинных окон используем klines (источник kline, как в обучении и реестре).
+    if window_seconds >= 60:
+        # Берём 1m-клайны за нужный интервал
+        klines = rolling_windows.get_klines_for_window("1m", start_time, now)
+        if len(klines) == 0 or "close" not in klines.columns:
+            return None
+
+        klines_sorted = klines.sort_values("timestamp")
+        if len(klines_sorted) == 0:
+            return None
+
+        # Первая цена в окне — исходная точка для доходности
+        first_price = pd.to_numeric(klines_sorted.iloc[0]["close"], errors="coerce")
+        if pd.isna(first_price) or first_price == 0:
+            return None
+    else:
+        # Для очень коротких окон (< 60 секунд) используем trades-окна
+        window_data = rolling_windows.get_window_data(f"{window_seconds}s")
+        if len(window_data) == 0 or "price" not in window_data.columns:
+            return None
+
+        window_data_sorted = window_data.sort_values("timestamp")
+        if len(window_data_sorted) == 0:
+            return None
+
+        # Ensure price is numeric (convert from string if needed)
+        first_price = pd.to_numeric(window_data_sorted.iloc[0]["price"], errors="coerce")
+        if pd.isna(first_price) or first_price == 0:
+            return None
+
     # Compute return: (current - first) / first
     return float((current_price - first_price) / first_price)
 
@@ -287,52 +309,94 @@ def compute_volume_ratio_20(
     return float(current_volume / volume_ma_20)
 
 
+def _should_compute(name: str, allowed: Opt[Iterable[str]]) -> bool:
+    """
+    Вспомогательная функция: решает, нужно ли вообще считать фичу.
+
+    Если allowed is None → считаем все (старое поведение).
+    """
+    if allowed is None:
+        return True
+    return name in allowed
+
+
 def compute_all_price_features(
     orderbook: Optional[OrderbookState],
     rolling_windows: RollingWindows,
     current_price: Optional[float],
+    allowed_feature_names: Opt[Iterable[str]] = None,
 ) -> Dict[str, Optional[float]]:
-    """Compute all price features."""
+    """
+    Compute all price features.
+
+    allowed_feature_names — опциональный список имён фич из Feature Registry.
+    Если он передан, мы не только фильтруем по нему, но и не считаем лишние фичи.
+    """
     features = {}
     
     # Basic price features from orderbook
-    features["mid_price"] = compute_mid_price(orderbook)
-    features["spread_abs"] = compute_spread_abs(orderbook)
-    features["spread_rel"] = compute_spread_rel(orderbook)
+    if _should_compute("mid_price", allowed_feature_names):
+        features["mid_price"] = compute_mid_price(orderbook)
+    if _should_compute("spread_abs", allowed_feature_names):
+        features["spread_abs"] = compute_spread_abs(orderbook)
+    if _should_compute("spread_rel", allowed_feature_names):
+        features["spread_rel"] = compute_spread_rel(orderbook)
     
     # Returns
-    features["returns_1s"] = compute_returns(rolling_windows, 1, current_price)
-    features["returns_3s"] = compute_returns(rolling_windows, 3, current_price)
-    features["returns_1m"] = compute_returns(rolling_windows, 60, current_price)
+    if _should_compute("returns_1s", allowed_feature_names):
+        features["returns_1s"] = compute_returns(rolling_windows, 1, current_price)
+    if _should_compute("returns_3s", allowed_feature_names):
+        features["returns_3s"] = compute_returns(rolling_windows, 3, current_price)
+    if _should_compute("returns_1m", allowed_feature_names):
+        features["returns_1m"] = compute_returns(rolling_windows, 60, current_price)
     # Long-term returns
-    features["returns_3m"] = compute_returns(rolling_windows, 180, current_price)
-    features["returns_5m"] = compute_returns(rolling_windows, 300, current_price)
+    if _should_compute("returns_3m", allowed_feature_names):
+        features["returns_3m"] = compute_returns(rolling_windows, 180, current_price)
+    if _should_compute("returns_5m", allowed_feature_names):
+        features["returns_5m"] = compute_returns(rolling_windows, 300, current_price)
     
     # VWAP
-    features["vwap_3s"] = compute_vwap(rolling_windows, 3)
-    features["vwap_15s"] = compute_vwap(rolling_windows, 15)
-    features["vwap_1m"] = compute_vwap(rolling_windows, 60)
+    if _should_compute("vwap_3s", allowed_feature_names):
+        features["vwap_3s"] = compute_vwap(rolling_windows, 3)
+    if _should_compute("vwap_15s", allowed_feature_names):
+        features["vwap_15s"] = compute_vwap(rolling_windows, 15)
+    if _should_compute("vwap_1m", allowed_feature_names):
+        features["vwap_1m"] = compute_vwap(rolling_windows, 60)
     # Long-term VWAP
-    features["vwap_3m"] = compute_vwap(rolling_windows, 180)
-    features["vwap_5m"] = compute_vwap(rolling_windows, 300)
+    if _should_compute("vwap_3m", allowed_feature_names):
+        features["vwap_3m"] = compute_vwap(rolling_windows, 180)
+    if _should_compute("vwap_5m", allowed_feature_names):
+        features["vwap_5m"] = compute_vwap(rolling_windows, 300)
     
     # Volume
-    features["volume_3s"] = compute_volume(rolling_windows, 3)
-    features["volume_15s"] = compute_volume(rolling_windows, 15)
-    features["volume_1m"] = compute_volume(rolling_windows, 60)
+    if _should_compute("volume_3s", allowed_feature_names):
+        features["volume_3s"] = compute_volume(rolling_windows, 3)
+    if _should_compute("volume_15s", allowed_feature_names):
+        features["volume_15s"] = compute_volume(rolling_windows, 15)
+    if _should_compute("volume_1m", allowed_feature_names):
+        features["volume_1m"] = compute_volume(rolling_windows, 60)
     # Long-term volume
-    features["volume_3m"] = compute_volume(rolling_windows, 180)
-    features["volume_5m"] = compute_volume(rolling_windows, 300)
+    if _should_compute("volume_3m", allowed_feature_names):
+        features["volume_3m"] = compute_volume(rolling_windows, 180)
+    if _should_compute("volume_5m", allowed_feature_names):
+        features["volume_5m"] = compute_volume(rolling_windows, 300)
     
     # Volatility
-    features["volatility_1m"] = compute_volatility(rolling_windows, 60)
-    features["volatility_5m"] = compute_volatility(rolling_windows, 300)
+    if _should_compute("volatility_1m", allowed_feature_names):
+        features["volatility_1m"] = compute_volatility(rolling_windows, 60)
+    if _should_compute("volatility_5m", allowed_feature_names):
+        features["volatility_5m"] = compute_volatility(rolling_windows, 300)
     # Long-term volatility
-    features["volatility_10m"] = compute_volatility(rolling_windows, 600)
-    features["volatility_15m"] = compute_volatility(rolling_windows, 900)
+    if _should_compute("volatility_10m", allowed_feature_names):
+        features["volatility_10m"] = compute_volatility(rolling_windows, 600)
+    if _should_compute("volatility_15m", allowed_feature_names):
+        features["volatility_15m"] = compute_volatility(rolling_windows, 900)
     
     # Price to EMA21 ratio
-    features["price_ema21_ratio"] = compute_price_ema21_ratio(rolling_windows, current_price)
+    if _should_compute("price_ema21_ratio", allowed_feature_names):
+        features["price_ema21_ratio"] = compute_price_ema21_ratio(
+            rolling_windows, current_price
+        )
     
     # Note: rsi_14 and ema_21 are computed in compute_all_technical_indicators()
     # to avoid duplication. They will be added separately.
@@ -350,7 +414,10 @@ def compute_all_price_features(
             if pd.isna(current_volume):
                 current_volume = None
     
-    features["volume_ratio_20"] = compute_volume_ratio_20(rolling_windows, current_volume)
+    if _should_compute("volume_ratio_20", allowed_feature_names):
+        features["volume_ratio_20"] = compute_volume_ratio_20(
+            rolling_windows, current_volume
+        )
     
     return features
 

@@ -142,6 +142,14 @@ SIGNAL_GENERATION_CHECK_OPPOSITE_ORDERS_ONLY=false
 WARMUP_MODE_ENABLED=true
 WARMUP_SIGNAL_FREQUENCY=60
 
+# Intelligent Mode Configuration
+# Frequency of model-based (intelligent) signals, in signals per minute.
+# For target horizon 1800s (30 minutes) typical values:
+#   - 0.05  => 1 signal / 20 minutes (консервативно)
+#   - 0.067 => 1 signal / 15 minutes (чуть агрессивнее)
+# If not set, defaults to 60 (1 signal per second) – для продакшена задайте осмысленное значение.
+INTELLIGENT_SIGNAL_FREQUENCY=0.05
+
 # Trading Strategy Configuration
 TRADING_STRATEGIES=
 ```

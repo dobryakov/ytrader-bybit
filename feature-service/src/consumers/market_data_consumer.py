@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional, Set
 import structlog
 import aio_pika
+import aiormq.exceptions
 from aio_pika import IncomingMessage
 
 from src.mq.connection import MQConnectionManager
@@ -261,7 +262,11 @@ class MarketDataConsumer:
             self._consumers.append(task)
     
     async def _consume_queue(self, queue_name: str) -> None:
-        """Consume messages from a specific queue."""
+        """Consume messages from a specific queue.
+        
+        Handles connection/channel errors gracefully with automatic reconnection.
+        Consumer will retry indefinitely while _running is True.
+        """
         retry_delay = 5  # Initial retry delay in seconds
         max_retry_delay = 60  # Maximum retry delay
         
@@ -299,20 +304,73 @@ class MarketDataConsumer:
                 retry_delay = 5  # Reset retry delay on success
                 
                 # Keep consuming while running
+                # If connection/channel is lost, queue.consume will raise an exception
+                # and we'll retry in the outer loop
+                # Use a more active wait loop to detect connection issues faster
                 while self._running:
+                    try:
+                        # Check if queue is still valid by checking channel state
+                        # This helps detect connection issues earlier
+                        if queue.channel.is_closed:
+                            logger.warning(
+                                "queue_channel_closed_detected",
+                                queue=queue_name,
+                            )
+                            break  # Exit inner loop to trigger reconnection
+                    except (AttributeError, RuntimeError):
+                        # Channel object is invalid - trigger reconnection
+                        logger.warning(
+                            "queue_channel_invalid_detected",
+                            queue=queue_name,
+                        )
+                        break  # Exit inner loop to trigger reconnection
+                    
                     await asyncio.sleep(1)
             
             except asyncio.CancelledError:
                 logger.info("queue_consumer_cancelled", queue=queue_name)
                 break
+            except (
+                aiormq.exceptions.ChannelInvalidStateError,
+                aiormq.exceptions.AMQPConnectionError,
+                ConnectionResetError,
+                RuntimeError,
+            ) as e:
+                # Connection/channel errors - these are recoverable
+                # Reset connection state and retry
+                error_type = type(e).__name__
+                logger.warning(
+                    "queue_consumer_connection_error_retrying",
+                    queue=queue_name,
+                    error=str(e),
+                    error_type=error_type,
+                    retry_delay=retry_delay,
+                    message="Connection/channel error, reconnecting...",
+                )
+                # Reset connection in MQ manager to force reconnection
+                try:
+                    # Force connection reset by closing it
+                    if self._mq_manager._connection is not None:
+                        try:
+                            if not self._mq_manager._connection.is_closed:
+                                await self._mq_manager._connection.close()
+                        except Exception:
+                            pass
+                        self._mq_manager._connection = None
+                except Exception:
+                    pass
+                
+                await asyncio.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, max_retry_delay)  # Exponential backoff
             except Exception as e:
-                # Handle ws-gateway unavailability (T078): retry with exponential backoff
+                # Handle other errors (ws-gateway unavailability, etc.) with retry
                 logger.warning(
                     "queue_consumer_error_retrying",
                     queue=queue_name,
                     error=str(e),
+                    error_type=type(e).__name__,
                     retry_delay=retry_delay,
-                    message="ws-gateway queue unavailable, retrying...",
+                    message="Queue unavailable, retrying...",
                 )
                 await asyncio.sleep(retry_delay)
                 retry_delay = min(retry_delay * 2, max_retry_delay)  # Exponential backoff

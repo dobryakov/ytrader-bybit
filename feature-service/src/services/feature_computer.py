@@ -14,6 +14,10 @@ from src.models.orderbook_state import OrderbookState
 from src.models.rolling_windows import RollingWindows
 from src.services.orderbook_manager import OrderbookManager
 from src.services.feature_registry import FeatureRegistryLoader
+from src.services.feature_requirements import (
+    FeatureRequirementsAnalyzer,
+    WindowRequirements,
+)
 from src.features.price_features import compute_all_price_features
 from src.features.orderflow_features import compute_all_orderflow_features
 from src.features.orderbook_features import compute_all_orderbook_features
@@ -50,10 +54,13 @@ class FeatureComputer:
         self._latency_threshold_ms = 70.0
         # Store last computed features per symbol for resilience (T078)
         self._last_features: Dict[str, FeatureVector] = {}
-        
+
         # Cache allowed feature names from Feature Registry
         self._allowed_feature_names: Optional[set] = None
         self._update_allowed_features()
+        # Требования к окнам (trade intervals + max lookback по 1m-клайнам)
+        self._window_requirements: Optional[WindowRequirements] = None
+        self._update_window_requirements()
     
     def _update_allowed_features(self) -> None:
         """Update allowed feature names from Feature Registry."""
@@ -90,24 +97,64 @@ class FeatureComputer:
                 error=str(e),
             )
             self._allowed_feature_names = None
+
+    def _update_window_requirements(self) -> None:
+        """
+        Обновить требования к rolling windows на основе активного Feature Registry.
+
+        Используется только онлайн-движком, оффлайн-движок имеет свою реализацию
+        в OfflineEngine._compute_max_lookback_minutes().
+        """
+        try:
+            analyzer = FeatureRequirementsAnalyzer(self._feature_registry_loader)
+            self._window_requirements = analyzer.compute_requirements()
+        except Exception as e:
+            logger.warning(
+                "failed_to_update_window_requirements",
+                error=str(e),
+                error_type=type(e).__name__,
+            )
+            # Безопасный fallback — полный набор трейдовых окон + 30 минут lookback
+            self._window_requirements = WindowRequirements(
+                trade_intervals={"1s", "3s", "15s", "1m"},
+                max_lookback_minutes_1m=30,
+            )
     
     def get_rolling_windows(self, symbol: str) -> RollingWindows:
         """Get or create rolling windows for symbol."""
         if symbol not in self._rolling_windows:
             from datetime import datetime, timezone
             import pandas as pd
-            
+
+            # Если по какой-то причине требования ещё не посчитаны — посчитаем здесь
+            if self._window_requirements is None:
+                self._update_window_requirements()
+
+            trade_intervals = (
+                self._window_requirements.trade_intervals
+                if self._window_requirements is not None
+                else {"1m"}
+            )
+
+            windows: Dict[str, "pd.DataFrame"] = {}
+            for interval in trade_intervals:
+                # трейдовые окна содержат price/volume/side
+                windows[interval] = pd.DataFrame(
+                    columns=["timestamp", "price", "volume", "side"]
+                )
+
+            # 1m окно для клайнов всегда нужно (add_kline пишет именно туда)
+            if "1m" not in windows:
+                windows["1m"] = pd.DataFrame(
+                    columns=["timestamp", "open", "high", "low", "close", "volume"]
+                )
+
             self._rolling_windows[symbol] = RollingWindows(
                 symbol=symbol,
-                windows={
-                    "1s": pd.DataFrame(columns=["timestamp", "price", "volume", "side"]),
-                    "3s": pd.DataFrame(columns=["timestamp", "price", "volume", "side"]),
-                    "15s": pd.DataFrame(columns=["timestamp", "price", "volume", "side"]),
-                    "1m": pd.DataFrame(columns=["timestamp", "price", "volume", "side"]),
-                },
+                windows=windows,
                 last_update=datetime.now(timezone.utc),
             )
-        
+
         return self._rolling_windows[symbol]
     
     def update_funding_rate(self, symbol: str, funding_rate: float, next_funding_time: int) -> None:
@@ -141,7 +188,12 @@ class FeatureComputer:
             all_features = {}
             
             # Price features
-            price_features = compute_all_price_features(orderbook, rolling_windows, current_price)
+            price_features = compute_all_price_features(
+                orderbook,
+                rolling_windows,
+                current_price,
+                allowed_feature_names=self._allowed_feature_names,
+            )
             all_features.update(price_features)
             
             # Orderflow features
@@ -407,46 +459,48 @@ class FeatureComputer:
                     event_keys=list(event.keys()),
                     payload_keys=list(event.get("payload", {}).keys()) if isinstance(event.get("payload"), dict) else None,
                 )
-        elif event_type == "funding":
-            # ws-gateway publishes funding events with payload containing fundingRate and nextFundingTime
-            # Payload can have camelCase (fundingRate, nextFundingTime) or snake_case (funding_rate, next_funding_time)
+        elif event_type in ("funding", "funding_rate"):
+            # ws-gateway publishes funding events with payload containing fundingRate and nextFundingTime,
+            # но в тестах и некоторых утилитах значения могут приходить на верхнем уровне события.
+            # Поддерживаем оба варианта.
             payload = event.get("payload", {})
-            if isinstance(payload, dict):
-                funding_rate = payload.get("fundingRate") or payload.get("funding_rate")
-                next_funding_time = payload.get("nextFundingTime") or payload.get("next_funding_time")
+            src = payload if isinstance(payload, dict) and payload else event
+
+            funding_rate = src.get("fundingRate") or src.get("funding_rate")
+            next_funding_time = src.get("nextFundingTime") or src.get("next_funding_time")
                 
-                # Convert funding_rate to float if it's a string
-                if funding_rate is not None:
-                    try:
-                        funding_rate = float(funding_rate) if isinstance(funding_rate, str) else funding_rate
-                    except (ValueError, TypeError):
-                        logger.warning(
-                            "invalid_funding_rate",
-                            symbol=symbol,
-                            funding_rate=funding_rate,
-                            funding_rate_type=type(funding_rate).__name__,
-                        )
-                        funding_rate = None
-                
-                # Convert next_funding_time to int if it's a string
-                if next_funding_time is not None:
-                    try:
-                        next_funding_time = int(next_funding_time) if isinstance(next_funding_time, str) else next_funding_time
-                    except (ValueError, TypeError):
-                        logger.warning(
-                            "invalid_next_funding_time",
-                            symbol=symbol,
-                            next_funding_time=next_funding_time,
-                            next_funding_time_type=type(next_funding_time).__name__,
-                        )
-                        next_funding_time = 0
-                
-                if funding_rate is not None:
-                    self.update_funding_rate(symbol, funding_rate, next_funding_time or 0)
-                    logger.debug(
-                        "funding_rate_updated",
+            # Convert funding_rate to float if it's a string
+            if funding_rate is not None:
+                try:
+                    funding_rate = float(funding_rate) if isinstance(funding_rate, str) else funding_rate
+                except (ValueError, TypeError):
+                    logger.warning(
+                        "invalid_funding_rate",
                         symbol=symbol,
                         funding_rate=funding_rate,
-                        next_funding_time=next_funding_time,
+                        funding_rate_type=type(funding_rate).__name__,
                     )
+                    funding_rate = None
+
+            # Convert next_funding_time to int if it's a string
+            if next_funding_time is not None:
+                try:
+                    next_funding_time = int(next_funding_time) if isinstance(next_funding_time, str) else next_funding_time
+                except (ValueError, TypeError):
+                    logger.warning(
+                        "invalid_next_funding_time",
+                        symbol=symbol,
+                        next_funding_time=next_funding_time,
+                        next_funding_time_type=type(next_funding_time).__name__,
+                    )
+                    next_funding_time = 0
+
+            if funding_rate is not None:
+                self.update_funding_rate(symbol, funding_rate, next_funding_time or 0)
+                logger.debug(
+                    "funding_rate_updated",
+                    symbol=symbol,
+                    funding_rate=funding_rate,
+                    next_funding_time=next_funding_time,
+                )
 

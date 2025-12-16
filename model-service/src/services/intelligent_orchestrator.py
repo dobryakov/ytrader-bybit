@@ -55,8 +55,11 @@ class IntelligentOrchestrator:
         """Main signal generation loop."""
         logger.info("Starting intelligent signal generation loop")
 
-        # Calculate sleep interval based on frequency (same as warm-up)
-        interval_seconds = 60.0 / settings.warmup_signal_frequency if settings.warmup_signal_frequency > 0 else 60.0
+        # Calculate sleep interval based on intelligent signal frequency (signals per minute).
+        # This is independent from warm-up frequency. If INTELLIGENT_SIGNAL_FREQUENCY is not
+        # explicitly set in .env, it defaults to 60 (one signal per second).
+        freq = settings.intelligent_signal_frequency
+        interval_seconds = 60.0 / freq if freq > 0 else 60.0
 
         # Get trading strategies and assets from configuration
         strategies = settings.trading_strategy_list

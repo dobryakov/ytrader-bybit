@@ -15,7 +15,13 @@ class RollingWindows(BaseModel):
     last_update: datetime = Field(description="Last update timestamp")
     
     def add_trade(self, trade: Dict) -> None:
-        """Add trade to all relevant rolling windows."""
+        """Add trade to all relevant rolling windows.
+
+        Важно: какие именно интервалы существуют, теперь определяется
+        снаружи (FeatureComputer.get_rolling_windows). Здесь мы больше
+        не создаём жёстко заданный набор окон, а обновляем только уже
+        существующие ключи в self.windows.
+        """
         # Parse timestamp - handle string, int (Unix ms), float, or None
         timestamp = trade.get("timestamp")
         if isinstance(timestamp, (int, float)):
@@ -59,21 +65,27 @@ class RollingWindows(BaseModel):
             if col in trade_df.columns:
                 trade_df[col] = pd.to_numeric(trade_df[col], errors='coerce').fillna(0.0)
         
-        # Add to all windows
-        for interval in ["1s", "3s", "15s", "1m"]:
-            if interval not in self.windows:
-                self.windows[interval] = pd.DataFrame(columns=["timestamp", "price", "volume", "side"])
-            
+        # Add to all existing trade windows
+        for interval, df in self.windows.items():
+            # пропускаем не-трейдовые окна (например, клайны с колонками open/close)
+            expected_cols = {"timestamp", "price", "volume", "side"}
+            if not expected_cols.issubset(set(df.columns)):
+                continue
+
             # Avoid FutureWarning: check if DataFrame is empty before concat
-            if len(self.windows[interval]) == 0:
+            if len(df) == 0:
                 self.windows[interval] = trade_df.copy()
             else:
-                self.windows[interval] = pd.concat([self.windows[interval], trade_df], ignore_index=True)
+                self.windows[interval] = pd.concat([df, trade_df], ignore_index=True)
             # Ensure types are correct after concat (existing data might have string types)
             for col in numeric_cols:
                 if col in self.windows[interval].columns:
                     # Convert entire column to numeric, handling any string values
-                    self.windows[interval][col] = pd.to_numeric(self.windows[interval][col], errors='coerce').astype(float).fillna(0.0)
+                    self.windows[interval][col] = (
+                        pd.to_numeric(self.windows[interval][col], errors="coerce")
+                        .astype(float)
+                        .fillna(0.0)
+                    )
         
         self.last_update = timestamp
         self.trim_old_data()

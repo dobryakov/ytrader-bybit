@@ -97,7 +97,7 @@ class PositionManagerClient:
             asset: Trading pair symbol
 
         Returns:
-            Unrealized P&L percentage or None if position not found/error
+            Unrealized P&L percentage or None if position not found/error/closed
         """
         position = await self.get_position(asset)
         if not position:
@@ -105,6 +105,19 @@ class PositionManagerClient:
 
         unrealized_pnl_pct = position.get("unrealized_pnl_pct")
         if unrealized_pnl_pct is None:
+            # Check if position is closed (size = 0) - this is normal, not an error
+            size = position.get("size")
+            if size is not None:
+                try:
+                    size_float = float(size)
+                    if size_float == 0:
+                        # Position is closed - no need to log warning
+                        logger.debug("Position is closed (size=0), unrealized_pnl_pct unavailable", asset=asset)
+                        return None
+                except (ValueError, TypeError):
+                    pass
+            
+            # Position exists but unrealized_pnl_pct is None for other reasons (e.g., missing average_entry_price)
             logger.warning("Position data missing unrealized_pnl_pct", asset=asset, position=position)
             return None
 

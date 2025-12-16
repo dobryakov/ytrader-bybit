@@ -36,12 +36,11 @@ class FeaturePublisher:
         logger.info("feature_publisher_initialized", queue=self._queue_name)
     
     async def publish(self, feature_vector: FeatureVector) -> None:
-        """Publish feature vector to queue."""
-        # Check if channel/queue is None, reinitialize if needed
-        # Note: We don't check is_closed here as it may be unreliable for RobustChannel
-        if self._queue is None or self._channel is None:
-            await self.initialize()
+        """Publish feature vector to queue.
         
+        Handles connection errors gracefully - logs errors but doesn't raise exceptions
+        to avoid breaking feature computation loop.
+        """
         # Serialize feature vector once
         try:
             data = feature_vector.model_dump(mode='json')
@@ -54,9 +53,13 @@ class FeaturePublisher:
         message_body = json.dumps(data).encode()
         
         # Try to publish - handle channel errors gracefully
-        max_retries = 2
+        max_retries = 3
         for attempt in range(max_retries):
             try:
+                # Check if channel/queue is None or invalid, reinitialize if needed
+                if self._queue is None or self._channel is None:
+                    await self.initialize()
+                
                 # Publish message
                 await self._channel.default_exchange.publish(
                     aio_pika.Message(
@@ -79,14 +82,24 @@ class FeaturePublisher:
             except (aiormq.exceptions.ChannelInvalidStateError, AttributeError, RuntimeError) as e:
                 # Channel is closed or invalid - reinitialize and retry
                 error_type = type(e).__name__
+                error_msg = str(e)
+                
+                # Check if it's a connection closed error
+                is_connection_error = (
+                    "closed" in error_msg.lower() or
+                    "Connection" in error_type or
+                    "Connection was not opened" in error_msg
+                )
+                
                 logger.warning(
                     "channel_closed_during_publish",
                     symbol=feature_vector.symbol,
-                    error=str(e),
+                    error=error_msg,
                     error_type=error_type,
                     queue=self._queue_name,
                     attempt=attempt + 1,
                     max_retries=max_retries,
+                    is_connection_error=is_connection_error,
                 )
                 
                 if attempt < max_retries - 1:
@@ -94,30 +107,33 @@ class FeaturePublisher:
                     self._channel = None
                     self._queue = None
                     
-                    # Add small delay to allow connection to stabilize
-                    await asyncio.sleep(0.1 * (attempt + 1))
+                    # Add delay to allow connection to stabilize (exponential backoff)
+                    await asyncio.sleep(0.5 * (attempt + 1))
                     
                     # Reinitialize channel and queue before retry
                     try:
                         await self.initialize()
                     except Exception as init_error:
-                        logger.error(
+                        logger.warning(
                             "failed_to_reinitialize_channel",
                             symbol=feature_vector.symbol,
                             error=str(init_error),
-                            exc_info=True,
+                            error_type=type(init_error).__name__,
+                            attempt=attempt + 1,
                         )
-                        # If reinitialization fails, log error and give up
-                        break
+                        # Continue to next retry attempt
+                        continue
                 else:
-                    # Last attempt failed - log error
+                    # Last attempt failed - log error but don't raise
                     logger.error(
-                        "feature_publish_error_after_retries",
+                        "feature_publish_failed_after_retries",
                         symbol=feature_vector.symbol,
-                        error=str(e),
+                        error=error_msg,
                         error_type=error_type,
-                        exc_info=True,
+                        queue=self._queue_name,
                     )
+                    # Don't raise - just return to avoid breaking feature computation
+                    return
             
             except Exception as e:
                 # Other error - log and don't retry
@@ -129,5 +145,6 @@ class FeaturePublisher:
                     error_type=error_type,
                     exc_info=True,
                 )
-                return  # Don't retry for other errors
+                # Don't raise - just return to avoid breaking feature computation
+                return
 
