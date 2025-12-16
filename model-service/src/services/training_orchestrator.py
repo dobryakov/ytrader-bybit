@@ -659,6 +659,31 @@ class TrainingOrchestrator:
                     source="target_config_explicit" if explicit_variant else "heuristic_label_count",
                 )
 
+            # Determine whether we should consistently drop zero-class samples
+            # from ALL splits (train/validation/test) for binary candle-color targets.
+            # Policy is driven by model_hyperparams.yaml (drop_zero_class flag) and
+            # only applies to XGBoost binary_classification tasks.
+            drop_zero_from_splits: bool = False
+            if task_type == "classification" and task_variant == "binary_classification":
+                try:
+                    default_hparams = model_trainer._get_default_hyperparameters(  # type: ignore[attr-defined]
+                        model_type="xgboost",
+                        task_type=task_type,
+                        task_variant=task_variant,
+                    )
+                    drop_zero_from_splits = bool(default_hparams.get("drop_zero_class", False))
+                except Exception as e:
+                    logger.warning(
+                        "Failed to resolve drop_zero_class policy from hyperparams config, "
+                        "will not drop zero-class from validation/test splits",
+                        training_id=training_id,
+                        dataset_id=str(dataset_id),
+                        task_type=task_type,
+                        task_variant=task_variant,
+                        error=str(e),
+                        trace_id=trace_id,
+                    )
+
             # Create TrainingDataset object
             dataset = TrainingDataset(
                 dataset_id=str(dataset_id),
@@ -719,6 +744,33 @@ class TrainingOrchestrator:
                         # Keep only numeric columns for features
                         validation_features = validation_features.select_dtypes(include=[np.number])
                         validation_labels = val_df[target_column]
+
+                        # Optionally drop zero-class samples from validation split for
+                        # binary_classification tasks when configured via drop_zero_class.
+                        if (
+                            task_type == "classification"
+                            and drop_zero_from_splits
+                            and validation_labels is not None
+                            and not validation_labels.empty
+                        ):
+                            val_mask = validation_labels != 0
+                            removed_val = int((~val_mask).sum())
+                            kept_val = int(val_mask.sum())
+                            if kept_val > 0 and removed_val > 0:
+                                validation_features = validation_features.loc[val_mask].reset_index(drop=True)
+                                validation_labels = validation_labels.loc[val_mask].reset_index(drop=True)
+                                logger.info(
+                                    "Dropped zero-target samples from validation split",
+                                    training_id=training_id,
+                                    dataset_id=str(dataset_id),
+                                    removed_zero_samples=removed_val,
+                                    kept_samples=kept_val,
+                                    drop_zero_class=drop_zero_from_splits,
+                                    remaining_labels=sorted(
+                                        map(int, validation_labels.unique().tolist())
+                                    ),
+                                    trace_id=trace_id,
+                                )
                         
                         # Log distribution for validation split (class distribution for classification, statistics for regression)
                         if not validation_labels.empty:
@@ -857,6 +909,32 @@ class TrainingOrchestrator:
                             test_features = test_features.select_dtypes(include=[np.number])
                             test_labels = test_df[target_column]
 
+                            # Optionally drop zero-class samples from test split for
+                            # binary_classification tasks when configured via drop_zero_class.
+                            if (
+                                task_type == "classification"
+                                and drop_zero_from_splits
+                                and test_labels is not None
+                                and not test_labels.empty
+                            ):
+                                test_mask = test_labels != 0
+                                removed_test = int((~test_mask).sum())
+                                kept_test = int(test_mask.sum())
+                                if kept_test > 0 and removed_test > 0:
+                                    test_features = test_features.loc[test_mask].reset_index(drop=True)
+                                    test_labels = test_labels.loc[test_mask].reset_index(drop=True)
+                                    logger.info(
+                                        "Dropped zero-target samples from test split",
+                                        training_id=training_id,
+                                        dataset_id=str(dataset_id),
+                                        removed_zero_samples=removed_test,
+                                        kept_samples=kept_test,
+                                        drop_zero_class=drop_zero_from_splits,
+                                        remaining_labels=sorted(
+                                            map(int, test_labels.unique().tolist())
+                                        ),
+                                        trace_id=trace_id,
+                                    )
                             if test_features.empty or test_labels.empty:
                                 logger.warning(
                                     "Test split is empty",
