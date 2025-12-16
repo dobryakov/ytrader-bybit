@@ -75,6 +75,7 @@ class FeaturePublisher:
                     symbol=feature_vector.symbol,
                     timestamp=feature_vector.timestamp.isoformat(),
                     features_count=len(feature_vector.features),
+                    feature_names=sorted(list(feature_vector.features.keys())),
                     trace_id=feature_vector.trace_id,
                     queue=self._queue_name,
                 )

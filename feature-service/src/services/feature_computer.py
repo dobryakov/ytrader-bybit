@@ -2,7 +2,7 @@
 Feature Computer service for orchestrating feature computations.
 """
 from datetime import datetime, timezone, timedelta
-from typing import Dict, Optional, TYPE_CHECKING
+from typing import Any, Dict, Optional, TYPE_CHECKING
 import structlog
 import time
 
@@ -61,6 +61,126 @@ class FeatureComputer:
         # Требования к окнам (trade intervals + max lookback по 1m-клайнам)
         self._window_requirements: Optional[WindowRequirements] = None
         self._update_window_requirements()
+    
+    async def warmup_rolling_windows(
+        self,
+        symbols: list[str],
+        bybit_client: Optional[Any] = None,
+    ) -> None:
+        """
+        Preload recent klines into rolling windows on service startup.
+        
+        This ensures that rolling windows have sufficient historical data
+        for feature computation immediately after startup, without waiting
+        for klines to accumulate from the WebSocket stream.
+        
+        Args:
+            symbols: List of symbols to warmup
+            bybit_client: Optional BybitClient instance for fetching klines
+        """
+        if not bybit_client:
+            logger.warning(
+                "warmup_rolling_windows_skipped",
+                reason="bybit_client_not_provided",
+            )
+            return
+        
+        if not self._window_requirements:
+            self._update_window_requirements()
+        
+        max_lookback_minutes = (
+            self._window_requirements.max_lookback_minutes_1m
+            if self._window_requirements
+            else 30
+        )
+        # Request slightly more than needed to account for API limits and rounding
+        minutes_to_fetch = max_lookback_minutes + 10  # +10 minutes buffer
+        
+        logger.info(
+            "warmup_rolling_windows_start",
+            symbols=symbols,
+            max_lookback_minutes=max_lookback_minutes,
+            minutes_to_fetch=minutes_to_fetch,
+        )
+        
+        for symbol in symbols:
+            try:
+                # Calculate start timestamp (minutes_to_fetch minutes ago)
+                from datetime import datetime, timezone, timedelta
+                now = datetime.now(timezone.utc)
+                start_time = now - timedelta(minutes=minutes_to_fetch)
+                start_timestamp_ms = int(start_time.timestamp() * 1000)
+                end_timestamp_ms = int(now.timestamp() * 1000)
+                
+                # Fetch klines from Bybit REST API
+                response = await bybit_client.get(
+                    endpoint="/v5/market/kline",
+                    params={
+                        "category": "spot",
+                        "symbol": symbol,
+                        "interval": "1",  # 1-minute klines
+                        "start": start_timestamp_ms,
+                        "end": end_timestamp_ms,
+                        "limit": 200,  # Bybit API limit
+                    },
+                    authenticated=False,
+                )
+                
+                if "result" not in response or "list" not in response["result"]:
+                    logger.warning(
+                        "warmup_klines_api_error",
+                        symbol=symbol,
+                        response_keys=list(response.keys()),
+                    )
+                    continue
+                
+                klines_data = response["result"]["list"]
+                if not klines_data:
+                    logger.warning(
+                        "warmup_klines_empty",
+                        symbol=symbol,
+                    )
+                    continue
+                
+                # Get or create rolling windows for symbol
+                rolling_windows = self.get_rolling_windows(symbol)
+                
+                # Add klines to rolling windows
+                klines_added = 0
+                for kline_item in klines_data:
+                    # Bybit API returns: [timestamp, open, high, low, close, volume, ...]
+                    timestamp_ms = int(kline_item[0])
+                    timestamp = datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc)
+                    
+                    kline_dict = {
+                        "timestamp": timestamp,
+                        "payload": {
+                            "open": float(kline_item[1]),
+                            "high": float(kline_item[2]),
+                            "low": float(kline_item[3]),
+                            "close": float(kline_item[4]),
+                            "volume": float(kline_item[5]),
+                        },
+                    }
+                    
+                    rolling_windows.add_kline(kline_dict)
+                    klines_added += 1
+                
+                logger.info(
+                    "warmup_rolling_windows_complete",
+                    symbol=symbol,
+                    klines_added=klines_added,
+                    time_span_minutes=round((now - datetime.fromtimestamp(int(klines_data[0][0]) / 1000, tz=timezone.utc)).total_seconds() / 60.0, 2),
+                )
+                
+            except Exception as e:
+                logger.error(
+                    "warmup_rolling_windows_error",
+                    symbol=symbol,
+                    error=str(e),
+                    error_type=type(e).__name__,
+                    exc_info=True,
+                )
     
     def _update_allowed_features(self) -> None:
         """Update allowed feature names from Feature Registry."""
@@ -182,6 +302,15 @@ class FeatureComputer:
                 if self._window_requirements is not None
                 else None
             )
+            
+            logger.info(
+                "rolling_windows_created",
+                symbol=symbol,
+                trade_intervals=sorted(trade_intervals),
+                max_lookback_minutes_1m=max_lookback,
+                feature_registry_version=self._feature_registry_version,
+            )
+            
             self._rolling_windows[symbol] = RollingWindows(
                 symbol=symbol,
                 windows=windows,
@@ -289,20 +418,87 @@ class FeatureComputer:
                 candle_pattern_features = compute_all_candle_patterns_3m(rolling_windows)
             all_features.update(candle_pattern_features)
             
-            # Filter out None values and NaN/Inf values (not JSON compliant)
+            # Log all features before filtering for debugging
             import math
-            filtered_features = {
+            logger.debug(
+                "all_features_before_filtering",
+                all_features_count=len(all_features),
+                all_feature_names=sorted(list(all_features.keys())),
+                none_features=[k for k, v in all_features.items() if v is None],
+                nan_inf_features=[k for k, v in all_features.items() if isinstance(v, float) and (math.isnan(v) or math.isinf(v))],
+            )
+            
+            # Log target features before filtering
+            target_features_before = {
                 k: v for k, v in all_features.items()
-                if v is not None and not (isinstance(v, float) and (math.isnan(v) or math.isinf(v)))
+                if k in ["returns_3m", "returns_5m", "volatility_10m", "volatility_15m"]
             }
+            if target_features_before:
+                logger.info(
+                    "target_features_before_filtering",
+                    features=target_features_before,
+                    all_features_count=len(all_features),
+                )
+            
+            # Filter out None values and NaN/Inf values (not JSON compliant)
+            filtered_features = {}
+            removed_features = []
+            none_count = 0
+            nan_inf_count = 0
+            for k, v in all_features.items():
+                if v is None:
+                    removed_features.append(f"{k}=None")
+                    none_count += 1
+                elif isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+                    removed_features.append(f"{k}={v} (NaN/Inf)")
+                    nan_inf_count += 1
+                else:
+                    filtered_features[k] = v
+            
+            if removed_features:
+                logger.info(
+                    "features_filtered_none_nan_inf",
+                    filtered_count=len(filtered_features),
+                    removed_count=len(removed_features),
+                    none_count=none_count,
+                    nan_inf_count=nan_inf_count,
+                    removed_features_sample=removed_features[:20],  # Первые 20 для краткости
+                )
+            
+            # Log target features after None/NaN/Inf filtering
+            target_features_after = {
+                k: v for k, v in filtered_features.items()
+                if k in ["returns_3m", "returns_5m", "volatility_10m", "volatility_15m"]
+            }
+            if target_features_before and len(target_features_after) < len(target_features_before):
+                logger.warning(
+                    "target_features_filtered_out",
+                    before=target_features_before,
+                    after=target_features_after,
+                    removed=[k for k in target_features_before.keys() if k not in target_features_after],
+                    all_removed_count=len(removed_features),
+                )
             
             # Filter features by Feature Registry (if enabled)
             # Note: "price" is always included even if not in registry (required by model-service)
             if self._allowed_feature_names is not None:
+                # Log target features before registry filtering
+                target_before_registry = {
+                    k: v for k, v in filtered_features.items()
+                    if k in ["returns_3m", "returns_5m", "volatility_10m", "volatility_15m"]
+                }
+                
                 registry_filtered_features = {
                     k: v for k, v in filtered_features.items()
                     if k in self._allowed_feature_names or k == "price"
                 }
+                
+                # Log target features after registry filtering
+                target_after_registry = {
+                    k: v for k, v in registry_filtered_features.items()
+                    if k in ["returns_3m", "returns_5m", "volatility_10m", "volatility_15m"]
+                }
+                
                 if len(registry_filtered_features) < len(filtered_features):
                     removed_features = set(filtered_features.keys()) - set(registry_filtered_features.keys())
                     logger.warning(
@@ -311,6 +507,8 @@ class FeatureComputer:
                         filtered_count=len(registry_filtered_features),
                         removed_features=sorted(list(removed_features)),
                         removed_count=len(removed_features),
+                        target_features_before_registry=target_before_registry,
+                        target_features_after_registry=target_after_registry,
                         target_features_removed={
                             "returns_3m": "returns_3m" in removed_features,
                             "returns_5m": "returns_5m" in removed_features,
@@ -321,6 +519,18 @@ class FeatureComputer:
                     )
                 filtered_features = registry_filtered_features
             
+            # Log final features before creating FeatureVector
+            target_final = {
+                k: v for k, v in filtered_features.items()
+                if k in ["returns_3m", "returns_5m", "volatility_10m", "volatility_15m"]
+            }
+            logger.info(
+                "features_before_feature_vector_creation",
+                target_features=target_final,
+                total_features_count=len(filtered_features),
+                all_feature_names=sorted(list(filtered_features.keys())),
+            )
+            
             # Create feature vector
             feature_vector = FeatureVector(
                 timestamp=timestamp,
@@ -329,6 +539,19 @@ class FeatureComputer:
                 feature_registry_version=self._feature_registry_version,
                 trace_id=trace_id,
             )
+            
+            # Log features after FeatureVector creation
+            target_after_creation = {
+                k: v for k, v in feature_vector.features.items()
+                if k in ["returns_3m", "returns_5m", "volatility_10m", "volatility_15m"]
+            }
+            if len(target_after_creation) < len(target_final):
+                logger.warning(
+                    "target_features_lost_in_feature_vector",
+                    before=target_final,
+                    after=target_after_creation,
+                    lost=[k for k in target_final.keys() if k not in target_after_creation],
+                )
             
             # Compute latency
             latency_ms = (time.time() - start_time) * 1000

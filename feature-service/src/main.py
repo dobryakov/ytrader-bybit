@@ -344,6 +344,28 @@ async def startup():
         # Connect to RabbitMQ
         await mq_manager.connect()
         
+        # Warmup rolling windows with recent klines (if Bybit client available)
+        if symbols and config.feature_service_backfill_enabled:
+            try:
+                from src.utils.bybit_client import BybitClient
+                bybit_client = BybitClient(
+                    api_key=config.bybit_api_key,
+                    api_secret=config.bybit_api_secret,
+                    base_url=config.bybit_rest_base_url,
+                )
+                await feature_computer.warmup_rolling_windows(
+                    symbols=symbols,
+                    bybit_client=bybit_client,
+                )
+                await bybit_client.close()
+            except Exception as e:
+                logger.warning(
+                    "warmup_rolling_windows_failed",
+                    error=str(e),
+                    error_type=type(e).__name__,
+                    message="Continuing without warmup - klines will accumulate from WebSocket stream",
+                )
+        
         # Start consumer and scheduler
         await market_data_consumer.start()
         await feature_scheduler.start()

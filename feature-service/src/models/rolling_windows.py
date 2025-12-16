@@ -134,6 +134,21 @@ class RollingWindows(BaseModel):
             "volume": to_float(payload.get("volume") or payload.get("volume24h"), 0.0),
         }])
         
+        # Log incoming kline timestamp for debugging
+        import structlog
+        logger = structlog.get_logger(__name__)
+        now_for_log = datetime.now(timezone.utc)
+        time_diff_seconds = (now_for_log - timestamp).total_seconds() if isinstance(timestamp, datetime) else None
+        logger.debug(
+            "kline_received",
+            symbol=self.symbol,
+            kline_timestamp=timestamp.isoformat() if isinstance(timestamp, datetime) else str(timestamp),
+            now=now_for_log.isoformat(),
+            time_diff_seconds=round(time_diff_seconds, 2) if time_diff_seconds is not None else None,
+            time_diff_minutes=round(time_diff_seconds / 60.0, 2) if time_diff_seconds is not None else None,
+            is_old=time_diff_seconds > 60 if time_diff_seconds is not None else False,
+        )
+        
         # Ensure numeric columns are float type
         numeric_cols = ["open", "high", "low", "close", "volume"]
         for col in numeric_cols:
@@ -211,9 +226,10 @@ class RollingWindows(BaseModel):
         # This ensures that new klines are not immediately trimmed
         self.trim_old_data()
         klines_count_after_trim = len(self.windows.get("1m", pd.DataFrame()))
+        
+        import structlog
+        logger = structlog.get_logger(__name__)
         if klines_count_before_trim != klines_count_after_trim:
-            import structlog
-            logger = structlog.get_logger(__name__)
             logger.warning(
                 "klines_trimmed_after_add",
                 symbol=self.symbol,
@@ -222,6 +238,39 @@ class RollingWindows(BaseModel):
                 max_lookback_minutes_1m=self.max_lookback_minutes_1m,
                 last_update=self.last_update.isoformat() if isinstance(self.last_update, datetime) else str(self.last_update),
             )
+        
+        # Log current klines count for monitoring
+        # Calculate time span of klines to verify window width
+        klines_df = self.windows.get("1m", pd.DataFrame())
+        time_span_minutes = 0.0
+        oldest_timestamp = None
+        newest_timestamp = None
+        if len(klines_df) > 0 and "timestamp" in klines_df.columns:
+            # Normalize timestamps
+            if klines_df["timestamp"].dtype in ['int64', 'float64', 'int32', 'float32']:
+                klines_df["timestamp"] = pd.to_datetime(klines_df["timestamp"], unit='ms', utc=True)
+            elif klines_df["timestamp"].dtype == 'object':
+                klines_df["timestamp"] = pd.to_datetime(klines_df["timestamp"], errors='coerce', utc=True)
+            
+            if klines_df["timestamp"].dtype.name.startswith('datetime'):
+                if klines_df["timestamp"].dt.tz is None:
+                    klines_df["timestamp"] = klines_df["timestamp"].dt.tz_localize(timezone.utc)
+                oldest_timestamp = klines_df["timestamp"].min()
+                newest_timestamp = klines_df["timestamp"].max()
+                if oldest_timestamp and newest_timestamp:
+                    time_span_minutes = (newest_timestamp - oldest_timestamp).total_seconds() / 60.0
+        
+        logger.info(
+            "klines_count_after_add",
+            symbol=self.symbol,
+            klines_count=klines_count_after_trim,
+            max_lookback_minutes_1m=self.max_lookback_minutes_1m,
+            expected_minimum=15,  # Minimum for candle patterns
+            time_span_minutes=round(time_span_minutes, 2),
+            oldest_timestamp=oldest_timestamp.isoformat() if oldest_timestamp else None,
+            newest_timestamp=newest_timestamp.isoformat() if newest_timestamp else None,
+            window_width_should_be_minutes=(self.max_lookback_minutes_1m + 5) if self.max_lookback_minutes_1m else 30,
+        )
     
     def trim_old_data(
         self, 
@@ -283,6 +332,19 @@ class RollingWindows(BaseModel):
             "1m": window_size_1m_seconds,
         }
         
+        # Log window sizes for debugging
+        import structlog
+        logger = structlog.get_logger(__name__)
+        logger.info(
+            "trim_old_data_window_sizes",
+            symbol=self.symbol,
+            max_lookback_minutes_1m=self.max_lookback_minutes_1m,
+            lookback_to_use=lookback_to_use,
+            window_size_1m_seconds=window_size_1m_seconds,
+            window_size_1m_minutes=round(window_size_1m_seconds / 60.0, 2),
+            now=now.isoformat(),
+        )
+        
         for interval, df in self.windows.items():
             if len(df) == 0:
                 continue
@@ -292,6 +354,18 @@ class RollingWindows(BaseModel):
                 window_size = window_seconds
             
             cutoff_time = now - timedelta(seconds=window_size)
+            
+            # Log cutoff time for debugging (especially for 1m window)
+            if interval == "1m":
+                logger.info(
+                    "trim_old_data_cutoff",
+                    symbol=self.symbol,
+                    interval=interval,
+                    now=now.isoformat(),
+                    window_size_seconds=window_size,
+                    cutoff_time=cutoff_time.isoformat(),
+                    data_count_before=len(df),
+                )
             
             # Keep only data within window
             if "timestamp" in df.columns:

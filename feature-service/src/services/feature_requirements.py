@@ -53,6 +53,43 @@ class FeatureRequirementsAnalyzer:
         "returns_5m": 6,
         "returns_3m": 4,
         "returns_1m": 2,
+        # Candle pattern features (v1.5.0) - требуют 15 минут для агрегации в 5-минутные свечи
+        # Все candle pattern фичи имеют lookback_window="15m", поэтому нужен минимум 15 минут
+        # + буфер для агрегации 1m -> 5m свечей
+        "candle_0_is_green": 20,  # 15 минут + 5 минут буфер
+        "candle_1_is_green": 20,
+        "candle_2_is_green": 20,
+        "candle_0_body_ratio": 20,
+        "candle_1_body_ratio": 20,
+        "candle_2_body_ratio": 20,
+        "candle_0_upper_shadow_ratio": 20,
+        "candle_1_upper_shadow_ratio": 20,
+        "candle_2_upper_shadow_ratio": 20,
+        "candle_0_lower_shadow_ratio": 20,
+        "candle_1_lower_shadow_ratio": 20,
+        "candle_2_lower_shadow_ratio": 20,
+        "candle_0_is_doji": 20,
+        "candle_0_is_hammer": 20,
+        "candle_1_is_doji": 20,
+        "candle_1_is_hammer": 20,
+        "candle_2_is_doji": 20,
+        "candle_2_is_hammer": 20,
+        "pattern_all_green": 20,
+        "pattern_all_red": 20,
+        "pattern_green_red_green": 20,
+        "pattern_red_green_red": 20,
+        "pattern_body_increasing": 20,
+        "pattern_body_decreasing": 20,
+        "pattern_volume_increasing": 20,
+        "pattern_volume_decreasing": 20,
+        "pattern_green_large_volume": 20,
+        "pattern_red_large_volume": 20,
+        "pattern_bullish_engulfing": 20,
+        "pattern_bearish_engulfing": 20,
+        "pattern_morning_star": 20,
+        "pattern_evening_star": 20,
+        "pattern_inside_bar_bullish": 20,
+        "pattern_inside_bar_bearish": 20,
         # Default buffer
         "_default_buffer": 5,
     }
@@ -203,10 +240,13 @@ class FeatureRequirementsAnalyzer:
             # всегда добавляем 1m, чтобы compute_vwap/volume_1m и др. могли работать
             trade_intervals.add("1m")
 
+        # Log detailed breakdown for debugging
         logger.info(
             "feature_requirements_computed",
             trade_intervals=sorted(trade_intervals),
             max_lookback_minutes_1m=max_lookback_minutes_1m,
+            should_be_at_least_20_for_v1_5_0=max_lookback_minutes_1m >= 20,
+            actual_window_width_minutes=max_lookback_minutes_1m + 5,  # +5 buffer in trim_old_data
         )
 
         return WindowRequirements(

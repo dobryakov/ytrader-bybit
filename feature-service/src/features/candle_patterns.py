@@ -653,8 +653,64 @@ def compute_all_candle_patterns_15m(
     """
     now = _ensure_datetime(rolling_windows.last_update)
     # Get last 15 minutes of kline data (need at least 3 candles of 5 minutes each)
+    # Since we only have 1m candles, we'll use 1m candles and aggregate them
     start_time = now - timedelta(minutes=16)  # Extra buffer to ensure we have 3 complete candles
+    
+    # Try to get 5m candles first, but fall back to 1m if not available
     klines = rolling_windows.get_klines_for_window("5m", start_time, now)
+    
+    # If no 5m candles, try to use 1m candles and aggregate them
+    if len(klines) < 3:
+        import structlog
+        logger = structlog.get_logger(__name__)
+        logger.warning(
+            "compute_all_candle_patterns_15m_no_5m_klines",
+            klines_5m_count=len(klines),
+            falling_back_to_1m=True,
+        )
+        # Fall back to 1m candles - we need at least 15 candles (15 minutes)
+        klines_1m = rolling_windows.get_klines_for_window("1m", start_time, now)
+        
+        # Check that required columns exist BEFORE checking length
+        required_cols = ["open", "high", "low", "close", "volume", "timestamp"]
+        missing_cols = [col for col in required_cols if col not in klines_1m.columns]
+        if missing_cols:
+            logger.warning(
+                "compute_all_candle_patterns_15m_missing_columns",
+                missing_columns=missing_cols,
+                available_columns=list(klines_1m.columns),
+                klines_1m_count=len(klines_1m),
+            )
+            return _get_empty_features_dict()
+        
+        if len(klines_1m) < 15:
+            logger.warning(
+                "compute_all_candle_patterns_15m_insufficient_1m_klines",
+                klines_1m_count=len(klines_1m),
+                required_count=15,
+                available_columns=list(klines_1m.columns),
+            )
+            return _get_empty_features_dict()
+        
+        # Aggregate 1m candles into 5m candles
+        klines_sorted = klines_1m.sort_values("timestamp").reset_index(drop=True)
+        
+        # Group by 5-minute intervals
+        klines_sorted["time_bucket"] = (klines_sorted["timestamp"] - klines_sorted["timestamp"].min()).dt.total_seconds() // 300  # 5 minutes = 300 seconds
+        
+        # Aggregate with explicit column selection - ensure all columns are present
+        # Use a more robust aggregation that preserves all columns
+        grouped = klines_sorted.groupby("time_bucket")
+        klines_5m = pd.DataFrame({
+            "timestamp": grouped["timestamp"].first(),
+            "open": grouped["open"].first(),
+            "high": grouped["high"].max(),
+            "low": grouped["low"].min(),
+            "close": grouped["close"].last(),
+            "volume": grouped["volume"].sum(),
+        }).reset_index(drop=True)
+        
+        klines = klines_5m
     
     if len(klines) < 3:
         # Return all features as None if insufficient data

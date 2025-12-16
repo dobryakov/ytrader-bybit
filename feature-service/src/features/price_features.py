@@ -61,16 +61,32 @@ def compute_returns(
     if current_price is None:
         return None
 
-    # IMPORTANT: Use current time, not rolling_windows.last_update
-    # This ensures that we compute returns over the correct time window,
-    # even if last_update is stale (e.g., from old klines in queue)
+    # IMPORTANT: Use rolling_windows.last_update as base time, but with a buffer for data delays.
+    # This ensures we use available data even if klines are slightly delayed.
+    # If last_update is too stale (> 2 minutes), fall back to current time.
     now = datetime.now(timezone.utc)
-    start_time = now - timedelta(seconds=window_seconds)
+    last_update = _ensure_datetime(rolling_windows.last_update)
+    
+    # Use last_update as end_time if it's recent (within 2 minutes), otherwise use now
+    # This handles cases where klines are delayed but still within acceptable range
+    max_data_delay_seconds = 120  # 2 minutes max delay
+    time_since_last_update = (now - last_update).total_seconds()
+    
+    if time_since_last_update <= max_data_delay_seconds:
+        # Use last_update as end_time - this ensures we use available data
+        end_time = last_update
+    else:
+        # last_update is too stale, use now but with a buffer to account for delays
+        # Buffer allows for typical WebSocket/RabbitMQ delays (10-30 seconds)
+        data_delay_buffer_seconds = 30
+        end_time = now - timedelta(seconds=data_delay_buffer_seconds)
+    
+    start_time = end_time - timedelta(seconds=window_seconds)
 
     # Для длинных окон используем klines (источник kline, как в обучении и реестре).
     if window_seconds >= 60:
         # Берём 1m-клайны за нужный интервал
-        klines = rolling_windows.get_klines_for_window("1m", start_time, now)
+        klines = rolling_windows.get_klines_for_window("1m", start_time, end_time)
         total_klines = len(rolling_windows.get_window_data("1m"))
         
         import structlog
@@ -83,8 +99,11 @@ def compute_returns(
             total_klines_available=total_klines,
             has_close="close" in klines.columns if len(klines) > 0 else False,
             start_time=start_time.isoformat(),
+            end_time=end_time.isoformat(),
             now=now.isoformat(),
-            time_diff_seconds=(now - start_time).total_seconds(),
+            last_update=last_update.isoformat(),
+            time_since_last_update_seconds=time_since_last_update,
+            time_diff_seconds=(end_time - start_time).total_seconds(),
         )
         
         if len(klines) == 0 or "close" not in klines.columns:
@@ -95,7 +114,10 @@ def compute_returns(
                 klines_count=len(klines),
                 has_close="close" in klines.columns if len(klines) > 0 else False,
                 start_time=start_time.isoformat(),
+                end_time=end_time.isoformat(),
                 now=now.isoformat(),
+                last_update=last_update.isoformat(),
+                time_since_last_update_seconds=time_since_last_update,
                 total_klines_in_window=total_klines,
             )
             return None
@@ -223,11 +245,26 @@ def compute_volatility(
     window_seconds: int,
 ) -> Optional[float]:
     """Compute volatility (standard deviation of returns) over specified window."""
-    now = _ensure_datetime(rolling_windows.last_update)
-    start_time = now - timedelta(seconds=window_seconds)
+    # Use rolling_windows.last_update as base time, but with a buffer for data delays.
+    # This ensures we use available data even if klines are slightly delayed.
+    now = datetime.now(timezone.utc)
+    last_update = _ensure_datetime(rolling_windows.last_update)
+    
+    # Use last_update as end_time if it's recent (within 2 minutes), otherwise use now
+    max_data_delay_seconds = 120  # 2 minutes max delay
+    time_since_last_update = (now - last_update).total_seconds()
+    
+    if time_since_last_update <= max_data_delay_seconds:
+        end_time = last_update
+    else:
+        # last_update is too stale, use now but with a buffer to account for delays
+        data_delay_buffer_seconds = 30
+        end_time = now - timedelta(seconds=data_delay_buffer_seconds)
+    
+    start_time = end_time - timedelta(seconds=window_seconds)
     
     # Get klines for window
-    klines = rolling_windows.get_klines_for_window("1m", start_time, now)
+    klines = rolling_windows.get_klines_for_window("1m", start_time, end_time)
     total_klines = len(rolling_windows.get_window_data("1m"))
     
     import structlog
@@ -240,8 +277,11 @@ def compute_volatility(
         total_klines_available=total_klines,
         required_count=2,
         start_time=start_time.isoformat(),
+        end_time=end_time.isoformat(),
         now=now.isoformat(),
-        time_diff_seconds=(now - start_time).total_seconds(),
+        last_update=last_update.isoformat(),
+        time_since_last_update_seconds=time_since_last_update,
+        time_diff_seconds=(end_time - start_time).total_seconds(),
     )
     
     if len(klines) < 2:
@@ -490,10 +530,11 @@ def compute_all_price_features(
                 total_klines=len(rolling_windows.get_window_data("1m")),
             )
         else:
-            logger.debug(
+            logger.info(
                 "returns_3m_computed_success",
                 value=result_3m,
                 current_price=current_price,
+                value_type=type(result_3m).__name__,
             )
     if _should_compute("returns_5m", allowed_feature_names):
         result_5m = compute_returns(rolling_windows, 300, current_price)
@@ -507,10 +548,11 @@ def compute_all_price_features(
                 total_klines=len(rolling_windows.get_window_data("1m")),
             )
         else:
-            logger.debug(
+            logger.info(
                 "returns_5m_computed_success",
                 value=result_5m,
                 current_price=current_price,
+                value_type=type(result_5m).__name__,
             )
     
     # VWAP
@@ -556,9 +598,10 @@ def compute_all_price_features(
                 total_klines=len(rolling_windows.get_window_data("1m")),
             )
         else:
-            logger.debug(
+            logger.info(
                 "volatility_10m_computed_success",
                 value=result_10m,
+                value_type=type(result_10m).__name__,
             )
     if _should_compute("volatility_15m", allowed_feature_names):
         result_15m = compute_volatility(rolling_windows, 900)
@@ -571,9 +614,10 @@ def compute_all_price_features(
                 total_klines=len(rolling_windows.get_window_data("1m")),
             )
         else:
-            logger.debug(
+            logger.info(
                 "volatility_15m_computed_success",
                 value=result_15m,
+                value_type=type(result_15m).__name__,
             )
     
     # Price to EMA21 ratio
