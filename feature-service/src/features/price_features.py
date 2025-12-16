@@ -61,30 +61,43 @@ def compute_returns(
     if current_price is None:
         return None
 
-    # IMPORTANT: Use rolling_windows.last_update as base time, but with a buffer for data delays.
-    # This ensures we use available data even if klines are slightly delayed.
-    # If last_update is too stale (> 2 minutes), fall back to current time.
+    # IMPORTANT: Use the actual last available timestamp from klines data.
+    # This ensures the window is built on real data, not hypothetical current time.
+    # The window will automatically shift back if data is delayed.
     now = datetime.now(timezone.utc)
-    last_update = _ensure_datetime(rolling_windows.last_update)
     
-    # Use last_update as end_time if it's recent (within 2 minutes), otherwise use now
-    # This handles cases where klines are delayed but still within acceptable range
-    max_data_delay_seconds = 120  # 2 minutes max delay
-    time_since_last_update = (now - last_update).total_seconds()
-    
-    if time_since_last_update <= max_data_delay_seconds:
-        # Use last_update as end_time - this ensures we use available data
-        end_time = last_update
-    else:
-        # last_update is too stale, use now but with a buffer to account for delays
-        # Buffer allows for typical WebSocket/RabbitMQ delays (10-30 seconds)
-        data_delay_buffer_seconds = 30
-        end_time = now - timedelta(seconds=data_delay_buffer_seconds)
-    
-    start_time = end_time - timedelta(seconds=window_seconds)
-
     # Для длинных окон используем klines (источник kline, как в обучении и реестре).
     if window_seconds >= 60:
+        # Get the most recent timestamp from available klines
+        last_available_timestamp = rolling_windows.get_last_available_timestamp("1m")
+        
+        if last_available_timestamp is None:
+            # No klines available at all
+            import structlog
+            logger = structlog.get_logger(__name__)
+            logger.warning(
+                "compute_returns_no_klines_available",
+                window_seconds=window_seconds,
+                window_minutes=window_seconds / 60,
+            )
+            return None
+        
+        # Use the last available timestamp as end_time for the window
+        end_time = last_available_timestamp
+        start_time = end_time - timedelta(seconds=window_seconds)
+        
+        # Check data freshness (warn if data is very stale, but still use it)
+        data_age_seconds = (now - last_available_timestamp).total_seconds()
+        if data_age_seconds > 300:  # 5 minutes
+            import structlog
+            logger = structlog.get_logger(__name__)
+            logger.warning(
+                "compute_returns_stale_data",
+                window_seconds=window_seconds,
+                data_age_seconds=data_age_seconds,
+                last_available_timestamp=last_available_timestamp.isoformat(),
+            )
+        
         # Берём 1m-клайны за нужный интервал
         klines = rolling_windows.get_klines_for_window("1m", start_time, end_time)
         total_klines = len(rolling_windows.get_window_data("1m"))
@@ -100,9 +113,9 @@ def compute_returns(
             has_close="close" in klines.columns if len(klines) > 0 else False,
             start_time=start_time.isoformat(),
             end_time=end_time.isoformat(),
+            last_available_timestamp=last_available_timestamp.isoformat(),
             now=now.isoformat(),
-            last_update=last_update.isoformat(),
-            time_since_last_update_seconds=time_since_last_update,
+            data_age_seconds=round(data_age_seconds, 2),
             time_diff_seconds=(end_time - start_time).total_seconds(),
         )
         
@@ -115,9 +128,9 @@ def compute_returns(
                 has_close="close" in klines.columns if len(klines) > 0 else False,
                 start_time=start_time.isoformat(),
                 end_time=end_time.isoformat(),
+                last_available_timestamp=last_available_timestamp.isoformat(),
                 now=now.isoformat(),
-                last_update=last_update.isoformat(),
-                time_since_last_update_seconds=time_since_last_update,
+                data_age_seconds=round(data_age_seconds, 2),
                 total_klines_in_window=total_klines,
             )
             return None
@@ -245,23 +258,39 @@ def compute_volatility(
     window_seconds: int,
 ) -> Optional[float]:
     """Compute volatility (standard deviation of returns) over specified window."""
-    # Use rolling_windows.last_update as base time, but with a buffer for data delays.
-    # This ensures we use available data even if klines are slightly delayed.
+    # IMPORTANT: Use the actual last available timestamp from klines data.
+    # This ensures the window is built on real data, not hypothetical current time.
     now = datetime.now(timezone.utc)
-    last_update = _ensure_datetime(rolling_windows.last_update)
     
-    # Use last_update as end_time if it's recent (within 2 minutes), otherwise use now
-    max_data_delay_seconds = 120  # 2 minutes max delay
-    time_since_last_update = (now - last_update).total_seconds()
+    # Get the most recent timestamp from available klines
+    last_available_timestamp = rolling_windows.get_last_available_timestamp("1m")
     
-    if time_since_last_update <= max_data_delay_seconds:
-        end_time = last_update
-    else:
-        # last_update is too stale, use now but with a buffer to account for delays
-        data_delay_buffer_seconds = 30
-        end_time = now - timedelta(seconds=data_delay_buffer_seconds)
+    if last_available_timestamp is None:
+        # No klines available at all
+        import structlog
+        logger = structlog.get_logger(__name__)
+        logger.warning(
+            "compute_volatility_no_klines_available",
+            window_seconds=window_seconds,
+            window_minutes=window_seconds / 60,
+        )
+        return None
     
+    # Use the last available timestamp as end_time for the window
+    end_time = last_available_timestamp
     start_time = end_time - timedelta(seconds=window_seconds)
+    
+    # Check data freshness (warn if data is very stale, but still use it)
+    data_age_seconds = (now - last_available_timestamp).total_seconds()
+    if data_age_seconds > 300:  # 5 minutes
+        import structlog
+        logger = structlog.get_logger(__name__)
+        logger.warning(
+            "compute_volatility_stale_data",
+            window_seconds=window_seconds,
+            data_age_seconds=data_age_seconds,
+            last_available_timestamp=last_available_timestamp.isoformat(),
+        )
     
     # Get klines for window
     klines = rolling_windows.get_klines_for_window("1m", start_time, end_time)
@@ -278,9 +307,9 @@ def compute_volatility(
         required_count=2,
         start_time=start_time.isoformat(),
         end_time=end_time.isoformat(),
+        last_available_timestamp=last_available_timestamp.isoformat(),
         now=now.isoformat(),
-        last_update=last_update.isoformat(),
-        time_since_last_update_seconds=time_since_last_update,
+        data_age_seconds=round(data_age_seconds, 2),
         time_diff_seconds=(end_time - start_time).total_seconds(),
     )
     

@@ -101,6 +101,7 @@ class IntelligentSignalGenerator:
         # Check for open orders if configured (before inference)
         # If check_opposite_orders_only is true, we'll check again after determining signal_type
         if settings.signal_generation_skip_if_open_order and not settings.signal_generation_check_opposite_orders_only:
+            logger.info("Checking for open orders", asset=asset, strategy_id=strategy_id, trace_id=trace_id)
             open_order_check = await self._check_open_orders_for_state(
                 order_position_state=order_position_state,
                 asset=asset,
@@ -124,43 +125,54 @@ class IntelligentSignalGenerator:
                     trace_id=trace_id,
                 )
                 return None
+            logger.info("No open orders blocking signal generation", asset=asset, strategy_id=strategy_id, trace_id=trace_id)
 
         try:
             # Load model
+            logger.info("Loading model", asset=asset, strategy_id=strategy_id, model_version=model_version, trace_id=trace_id)
             if model_version:
                 model = await model_loader.load_model_by_version(model_version)
             else:
                 model = await model_loader.load_active_model(strategy_id=strategy_id)
 
             if not model:
-                logger.warning("No active model available", asset=asset, strategy_id=strategy_id, model_version=model_version)
+                logger.warning("No active model available", asset=asset, strategy_id=strategy_id, model_version=model_version, trace_id=trace_id)
                 return None
+            logger.info("Model loaded successfully", asset=asset, strategy_id=strategy_id, model_version=model_version, trace_id=trace_id)
 
             # Get feature vector from Feature Service (via cache or REST API)
+            logger.info("Getting feature vector", asset=asset, strategy_id=strategy_id, trace_id=trace_id)
             feature_vector = await self._get_feature_vector(asset, trace_id)
             if not feature_vector:
                 logger.warning("Features unavailable, skipping signal generation", asset=asset, strategy_id=strategy_id, trace_id=trace_id)
                 return None
+            logger.info("Feature vector retrieved", asset=asset, strategy_id=strategy_id, feature_count=len(feature_vector.features) if feature_vector else 0, trace_id=trace_id)
 
             # Prepare features from FeatureVector
+            logger.info("Preparing features for model", asset=asset, strategy_id=strategy_id, trace_id=trace_id)
             features_df = model_inference.prepare_features(
                 feature_vector=feature_vector,
                 order_position_state=order_position_state,
                 asset=asset,
             )
+            logger.info("Features prepared", asset=asset, strategy_id=strategy_id, features_shape=features_df.shape if features_df is not None else None, trace_id=trace_id)
 
             # Run model prediction
+            logger.info("Running model prediction", asset=asset, strategy_id=strategy_id, trace_id=trace_id)
             prediction_result = model_inference.predict(model, features_df)
+            logger.info("Model prediction completed", asset=asset, strategy_id=strategy_id, prediction_result_keys=list(prediction_result.keys()) if prediction_result else None, trace_id=trace_id)
 
             # Check confidence threshold
             confidence = prediction_result.get("confidence", 0.0)
+            logger.info("Checking confidence threshold", asset=asset, strategy_id=strategy_id, confidence=confidence, threshold=self.min_confidence_threshold, trace_id=trace_id)
             if confidence < self.min_confidence_threshold:
-                logger.debug(
+                logger.info(
                     "Signal confidence below threshold",
                     asset=asset,
                     strategy_id=strategy_id,
                     confidence=confidence,
                     threshold=self.min_confidence_threshold,
+                    trace_id=trace_id,
                 )
                 return None
 

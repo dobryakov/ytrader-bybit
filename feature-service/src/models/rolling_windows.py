@@ -400,6 +400,46 @@ class RollingWindows(BaseModel):
         """Get data for specific window interval."""
         return self.windows.get(interval, pd.DataFrame())
     
+    def get_last_available_timestamp(self, interval: str) -> Optional[datetime]:
+        """
+        Get the most recent timestamp from available data in the specified interval.
+        
+        Args:
+            interval: Window interval (e.g., "1m", "1s")
+            
+        Returns:
+            Most recent timestamp from available data, or None if no data available
+        """
+        df = self.get_window_data(interval)
+        
+        if len(df) == 0 or "timestamp" not in df.columns:
+            return None
+        
+        # Normalize timestamp column to timezone-aware datetime if needed
+        df = df.copy()
+        if df["timestamp"].dtype in ['int64', 'float64', 'int32', 'float32']:
+            df["timestamp"] = pd.to_datetime(df["timestamp"], unit='ms', utc=True)
+        elif df["timestamp"].dtype == 'object':
+            df["timestamp"] = pd.to_datetime(df["timestamp"], errors='coerce', utc=True)
+        
+        # Ensure all timestamps are timezone-aware
+        if df["timestamp"].dtype.name.startswith('datetime'):
+            if df["timestamp"].dt.tz is None:
+                df["timestamp"] = df["timestamp"].dt.tz_localize(timezone.utc)
+        
+        # Get maximum timestamp (most recent)
+        max_timestamp = df["timestamp"].max()
+        
+        # Handle case where max_timestamp might be NaT (if all timestamps were invalid)
+        if pd.isna(max_timestamp):
+            return None
+        
+        # Ensure timezone-aware
+        if isinstance(max_timestamp, datetime) and max_timestamp.tzinfo is None:
+            max_timestamp = max_timestamp.replace(tzinfo=timezone.utc)
+        
+        return max_timestamp
+    
     def get_trades_for_window(self, interval: str, start_time: datetime, end_time: datetime) -> pd.DataFrame:
         """Get trades within time window."""
         df = self.get_window_data(interval)

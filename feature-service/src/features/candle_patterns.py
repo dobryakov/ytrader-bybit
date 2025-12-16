@@ -651,13 +651,42 @@ def compute_all_candle_patterns_15m(
     Returns:
         Dictionary of feature name -> feature value (0.0 or 1.0 for binary, float for ratios)
     """
-    now = _ensure_datetime(rolling_windows.last_update)
+    # IMPORTANT: Use the actual last available timestamp from klines data.
+    # This ensures the window is built on real data, not hypothetical current time.
+    # The window will automatically shift back if data is delayed.
+    now = datetime.now(timezone.utc)
+    
+    # Get the most recent timestamp from available klines
+    last_available_timestamp = rolling_windows.get_last_available_timestamp("1m")
+    
+    if last_available_timestamp is None:
+        # No klines available at all
+        import structlog
+        logger = structlog.get_logger(__name__)
+        logger.warning(
+            "compute_all_candle_patterns_15m_no_klines_available",
+        )
+        return _get_empty_features_dict()
+    
+    # Use the last available timestamp as end_time for the window
+    end_time = last_available_timestamp
     # Get last 15 minutes of kline data (need at least 3 candles of 5 minutes each)
     # Since we only have 1m candles, we'll use 1m candles and aggregate them
-    start_time = now - timedelta(minutes=16)  # Extra buffer to ensure we have 3 complete candles
+    start_time = end_time - timedelta(minutes=16)  # Extra buffer to ensure we have 3 complete candles
+    
+    # Check data freshness (warn if data is very stale, but still use it)
+    data_age_seconds = (now - last_available_timestamp).total_seconds()
+    if data_age_seconds > 300:  # 5 minutes
+        import structlog
+        logger = structlog.get_logger(__name__)
+        logger.warning(
+            "compute_all_candle_patterns_15m_stale_data",
+            data_age_seconds=data_age_seconds,
+            last_available_timestamp=last_available_timestamp.isoformat(),
+        )
     
     # Try to get 5m candles first, but fall back to 1m if not available
-    klines = rolling_windows.get_klines_for_window("5m", start_time, now)
+    klines = rolling_windows.get_klines_for_window("5m", start_time, end_time)
     
     # If no 5m candles, try to use 1m candles and aggregate them
     if len(klines) < 3:
@@ -669,7 +698,7 @@ def compute_all_candle_patterns_15m(
             falling_back_to_1m=True,
         )
         # Fall back to 1m candles - we need at least 15 candles (15 minutes)
-        klines_1m = rolling_windows.get_klines_for_window("1m", start_time, now)
+        klines_1m = rolling_windows.get_klines_for_window("1m", start_time, end_time)
         
         # Check that required columns exist BEFORE checking length
         required_cols = ["open", "high", "low", "close", "volume", "timestamp"]
