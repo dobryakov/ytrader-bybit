@@ -130,6 +130,36 @@ class Settings(BaseSettings):
         description="Enable automatic order size reduction when insufficient balance error (110007) occurs. If True, system will try to reduce order size and retry."
     )
 
+    # Take Profit / Stop Loss Configuration
+    order_manager_tp_sl_enabled: bool = Field(
+        default=True, alias="ORDERMANAGER_TP_SL_ENABLED",
+        description="Enable TP/SL order creation on Bybit. If True, take profit and stop loss orders will be created together with main order."
+    )
+    order_manager_tp_enabled: bool = Field(
+        default=True, alias="ORDERMANAGER_TP_ENABLED",
+        description="Enable take profit orders. If True, TP orders will be created when main order is placed."
+    )
+    order_manager_tp_threshold_pct: float = Field(
+        default=3.0, alias="ORDERMANAGER_TP_THRESHOLD_PCT",
+        description="Take profit threshold as percentage. For buy orders: TP = entry_price * (1 + threshold/100). For sell orders: TP = entry_price * (1 - threshold/100). Default: 3.0%"
+    )
+    order_manager_sl_enabled: bool = Field(
+        default=True, alias="ORDERMANAGER_SL_ENABLED",
+        description="Enable stop loss orders. If True, SL orders will be created when main order is placed."
+    )
+    order_manager_sl_threshold_pct: float = Field(
+        default=-2.0, alias="ORDERMANAGER_SL_THRESHOLD_PCT",
+        description="Stop loss threshold as percentage (negative value). For buy orders: SL = entry_price * (1 - abs(threshold)/100). For sell orders: SL = entry_price * (1 + abs(threshold)/100). Default: -2.0%"
+    )
+    order_manager_tp_sl_priority: str = Field(
+        default="metadata", alias="ORDERMANAGER_TP_SL_PRIORITY",
+        description="Priority for TP/SL calculation: 'metadata' (use signal.metadata if available), 'settings' (use .env values), 'both' (try metadata first, fallback to settings). Default: 'metadata'"
+    )
+    order_manager_tp_sl_trigger_by: str = Field(
+        default="LastPrice", alias="ORDERMANAGER_TP_SL_TRIGGER_BY",
+        description="TP/SL trigger method: 'LastPrice', 'IndexPrice', or 'MarkPrice'. Default: 'LastPrice'"
+    )
+
     @field_validator("order_manager_log_level")
     @classmethod
     def validate_log_level(cls, v: str) -> str:
@@ -204,6 +234,41 @@ class Settings(BaseSettings):
         """Validate instruments-info refresh interval is positive."""
         if v <= 0:
             raise ValueError("Instruments-info refresh interval must be positive")
+        return v
+
+    @field_validator("order_manager_tp_threshold_pct")
+    @classmethod
+    def validate_tp_threshold_pct(cls, v: float) -> float:
+        """Validate TP threshold is positive."""
+        if v <= 0:
+            raise ValueError("TP threshold percentage must be positive")
+        return v
+
+    @field_validator("order_manager_sl_threshold_pct")
+    @classmethod
+    def validate_sl_threshold_pct(cls, v: float) -> float:
+        """Validate SL threshold is negative."""
+        if v >= 0:
+            raise ValueError("SL threshold percentage must be negative")
+        return v
+
+    @field_validator("order_manager_tp_sl_priority")
+    @classmethod
+    def validate_tp_sl_priority(cls, v: str) -> str:
+        """Validate TP/SL priority is one of valid options."""
+        valid_priorities = {"metadata", "settings", "both"}
+        v_lower = v.lower()
+        if v_lower not in valid_priorities:
+            raise ValueError(f"TP/SL priority must be one of {valid_priorities}")
+        return v_lower
+
+    @field_validator("order_manager_tp_sl_trigger_by")
+    @classmethod
+    def validate_tp_sl_trigger_by(cls, v: str) -> str:
+        """Validate TP/SL trigger method is one of valid options."""
+        valid_triggers = {"LastPrice", "IndexPrice", "MarkPrice"}
+        if v not in valid_triggers:
+            raise ValueError(f"TP/SL trigger method must be one of {valid_triggers}")
         return v
 
     @property

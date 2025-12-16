@@ -1316,7 +1316,204 @@ class OrderExecutor:
             )
             # Continue without reduce_only if position check fails
 
+        # Add TP/SL orders if enabled
+        if settings.order_manager_tp_sl_enabled:
+            tp_price, sl_price = await self._calculate_tp_sl(
+                signal=signal,
+                entry_price=price if price else signal.market_data_snapshot.price,
+                trace_id=signal.trace_id,
+            )
+            
+            if tp_price and settings.order_manager_tp_enabled:
+                params["takeProfit"] = str(tp_price)
+                params["tpTriggerBy"] = settings.order_manager_tp_sl_trigger_by
+                logger.info(
+                    "take_profit_added_to_order",
+                    asset=asset,
+                    tp_price=float(tp_price),
+                    entry_price=float(price if price else signal.market_data_snapshot.price),
+                    trigger_by=settings.order_manager_tp_sl_trigger_by,
+                    trace_id=signal.trace_id,
+                )
+            
+            if sl_price and settings.order_manager_sl_enabled:
+                params["stopLoss"] = str(sl_price)
+                params["slTriggerBy"] = settings.order_manager_tp_sl_trigger_by
+                logger.info(
+                    "stop_loss_added_to_order",
+                    asset=asset,
+                    sl_price=float(sl_price),
+                    entry_price=float(price if price else signal.market_data_snapshot.price),
+                    trigger_by=settings.order_manager_tp_sl_trigger_by,
+                    trace_id=signal.trace_id,
+                )
+
         return params
+
+    async def _calculate_tp_sl(
+        self,
+        signal: TradingSignal,
+        entry_price: Decimal,
+        trace_id: Optional[str] = None,
+    ) -> tuple[Optional[Decimal], Optional[Decimal]]:
+        """Calculate TP/SL prices using hybrid approach (metadata priority, then settings).
+
+        Args:
+            signal: Trading signal
+            entry_price: Entry price for the order
+            trace_id: Optional trace ID for logging
+
+        Returns:
+            Tuple of (tp_price, sl_price) or (None, None) if disabled
+        """
+        priority = settings.order_manager_tp_sl_priority.lower()
+        
+        # Try metadata first if priority is 'metadata' or 'both'
+        if priority in ("metadata", "both"):
+            if signal.metadata:
+                tp_price_meta = signal.metadata.get("take_profit_price")
+                sl_price_meta = signal.metadata.get("stop_loss_price")
+                
+                # If at least one value is in metadata, use metadata (and calculate missing from settings)
+                if tp_price_meta is not None or sl_price_meta is not None:
+                    tp_price = Decimal(str(tp_price_meta)) if tp_price_meta is not None else None
+                    sl_price = Decimal(str(sl_price_meta)) if sl_price_meta is not None else None
+                    
+                    # If one is missing, calculate it from settings
+                    if tp_price is None or sl_price is None:
+                        tp_from_settings, sl_from_settings = await self._calculate_tp_sl_from_settings(
+                            signal, entry_price, trace_id
+                        )
+                        if tp_price is None:
+                            tp_price = tp_from_settings
+                        if sl_price is None:
+                            sl_price = sl_from_settings
+                    
+                    logger.info(
+                        "tp_sl_calculated_from_metadata",
+                        asset=signal.asset,
+                        tp_price=float(tp_price) if tp_price else None,
+                        sl_price=float(sl_price) if sl_price else None,
+                        entry_price=float(entry_price),
+                        trace_id=trace_id,
+                    )
+                    return tp_price, sl_price
+            # If priority is 'metadata' but metadata is None or doesn't contain TP/SL, fallback to settings
+            if priority == "metadata":
+                logger.debug(
+                    "tp_sl_metadata_not_available_fallback_to_settings",
+                    asset=signal.asset,
+                    metadata_exists=signal.metadata is not None,
+                    trace_id=trace_id,
+                )
+                return await self._calculate_tp_sl_from_settings(signal, entry_price, trace_id)
+        
+        # Use settings if priority is 'settings' or 'both' with no metadata values
+        if priority == "settings" or (priority == "both" and (signal.metadata is None or 
+            (signal.metadata.get("take_profit_price") is None and signal.metadata.get("stop_loss_price") is None))):
+            return await self._calculate_tp_sl_from_settings(signal, entry_price, trace_id)
+        
+        # Fallback: no TP/SL (should not reach here with valid priority values)
+        logger.warning(
+            "tp_sl_calculation_fallback_to_none",
+            asset=signal.asset,
+            priority=priority,
+            trace_id=trace_id,
+        )
+        return None, None
+
+    async def _calculate_tp_sl_from_settings(
+        self,
+        signal: TradingSignal,
+        entry_price: Decimal,
+        trace_id: Optional[str] = None,
+    ) -> tuple[Optional[Decimal], Optional[Decimal]]:
+        """Calculate TP/SL prices from configuration settings.
+
+        Args:
+            signal: Trading signal
+            entry_price: Entry price for the order
+            trace_id: Optional trace ID for logging
+
+        Returns:
+            Tuple of (tp_price, sl_price)
+        """
+        tp_price = None
+        sl_price = None
+        side = signal.signal_type.lower()
+        
+        # Calculate TP if enabled
+        if settings.order_manager_tp_enabled:
+            tp_threshold = Decimal(str(settings.order_manager_tp_threshold_pct))
+            if side == "buy":
+                tp_price = entry_price * (Decimal("1") + tp_threshold / Decimal("100"))
+            else:  # sell
+                tp_price = entry_price * (Decimal("1") - tp_threshold / Decimal("100"))
+            
+            # Round TP price to tick size
+            try:
+                instrument_info = await self.instrument_info_manager.get_instrument(signal.asset)
+                if instrument_info and instrument_info.price_tick_size > 0:
+                    tick_size = instrument_info.price_tick_size
+                else:
+                    tick_size = Decimal("0.01")
+                
+                # Round TP: for buy orders, round up (better price for seller); for sell orders, round down
+                if side == "buy":
+                    tp_price = tp_price.quantize(tick_size, rounding=ROUND_UP)
+                else:
+                    tp_price = tp_price.quantize(tick_size, rounding=ROUND_DOWN)
+            except Exception as e:
+                logger.warning(
+                    "tp_price_rounding_failed",
+                    asset=signal.asset,
+                    tp_price=float(tp_price),
+                    error=str(e),
+                    trace_id=trace_id,
+                )
+        
+        # Calculate SL if enabled
+        if settings.order_manager_sl_enabled:
+            sl_threshold = abs(Decimal(str(settings.order_manager_sl_threshold_pct)))
+            if side == "buy":
+                sl_price = entry_price * (Decimal("1") - sl_threshold / Decimal("100"))
+            else:  # sell
+                sl_price = entry_price * (Decimal("1") + sl_threshold / Decimal("100"))
+            
+            # Round SL price to tick size
+            try:
+                instrument_info = await self.instrument_info_manager.get_instrument(signal.asset)
+                if instrument_info and instrument_info.price_tick_size > 0:
+                    tick_size = instrument_info.price_tick_size
+                else:
+                    tick_size = Decimal("0.01")
+                
+                # Round SL: for buy orders, round down (better price for buyer); for sell orders, round up
+                if side == "buy":
+                    sl_price = sl_price.quantize(tick_size, rounding=ROUND_DOWN)
+                else:
+                    sl_price = sl_price.quantize(tick_size, rounding=ROUND_UP)
+            except Exception as e:
+                logger.warning(
+                    "sl_price_rounding_failed",
+                    asset=signal.asset,
+                    sl_price=float(sl_price),
+                    error=str(e),
+                    trace_id=trace_id,
+                )
+        
+        logger.info(
+            "tp_sl_calculated_from_settings",
+            asset=signal.asset,
+            tp_price=float(tp_price) if tp_price else None,
+            sl_price=float(sl_price) if sl_price else None,
+            entry_price=float(entry_price),
+            tp_threshold_pct=settings.order_manager_tp_threshold_pct if settings.order_manager_tp_enabled else None,
+            sl_threshold_pct=settings.order_manager_sl_threshold_pct if settings.order_manager_sl_enabled else None,
+            trace_id=trace_id,
+        )
+        
+        return tp_price, sl_price
 
     async def _round_price_to_tick_size(self, asset: str, price: Decimal, side: str) -> Decimal:
         """Round price to tick size for the given asset.

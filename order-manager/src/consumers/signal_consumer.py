@@ -88,86 +88,89 @@ class SignalConsumer:
             message: RabbitMQ message containing trading signal
         """
         trace_id = None
-        async with message.process():
-            try:
-                # Extract trace ID from message headers if available
-                if message.headers:
-                    trace_id = message.headers.get("trace_id")
-                    if isinstance(trace_id, bytes):
-                        trace_id = trace_id.decode("utf-8")
+        try:
+            # Extract trace ID from message headers if available
+            if message.headers:
+                trace_id = message.headers.get("trace_id")
+                if isinstance(trace_id, bytes):
+                    trace_id = trace_id.decode("utf-8")
 
-                # Generate new trace ID if not present
-                if not trace_id:
-                    trace_id = generate_trace_id()
+            # Generate new trace ID if not present
+            if not trace_id:
+                trace_id = generate_trace_id()
 
-                # Set trace ID in context
-                set_trace_id(trace_id)
+            # Set trace ID in context
+            set_trace_id(trace_id)
 
-                # Parse message body
-                body = message.body.decode("utf-8")
-                signal_data = json.loads(body)
+            # Parse message body
+            body = message.body.decode("utf-8")
+            signal_data = json.loads(body)
 
+            logger.info(
+                "signal_message_received",
+                queue_name=self.queue_name,
+                message_id=message.message_id,
+                trace_id=trace_id,
+            )
+
+            # Create TradingSignal object
+            signal = TradingSignal.from_dict(signal_data)
+            # Override trace_id from message if available
+            if trace_id:
+                signal.trace_id = trace_id
+
+            # Process signal
+            order = await self.signal_processor.process_signal(signal)
+
+            if order:
                 logger.info(
-                    "signal_message_received",
-                    queue_name=self.queue_name,
-                    message_id=message.message_id,
+                    "signal_processed_successfully",
+                    signal_id=str(signal.signal_id),
+                    order_id=str(order.id),
+                    trace_id=trace_id,
+                )
+            else:
+                logger.warning(
+                    "signal_processed_rejected",
+                    signal_id=str(signal.signal_id),
                     trace_id=trace_id,
                 )
 
-                # Create TradingSignal object
-                signal = TradingSignal.from_dict(signal_data)
-                # Override trace_id from message if available
-                if trace_id:
-                    signal.trace_id = trace_id
+            # Acknowledge message on successful processing
+            await message.ack()
 
-                # Process signal
-                order = await self.signal_processor.process_signal(signal)
+        except json.JSONDecodeError as e:
+            logger.error(
+                "signal_message_parse_error",
+                queue_name=self.queue_name,
+                error=str(e),
+                trace_id=trace_id,
+            )
+            # Message will be rejected and sent to dead letter queue
+            await message.nack(requeue=False)
 
-                if order:
-                    logger.info(
-                        "signal_processed_successfully",
-                        signal_id=str(signal.signal_id),
-                        order_id=str(order.id),
-                        trace_id=trace_id,
-                    )
-                else:
-                    logger.warning(
-                        "signal_processed_rejected",
-                        signal_id=str(signal.signal_id),
-                        trace_id=trace_id,
-                    )
+        except OrderExecutionError as e:
+            logger.error(
+                "signal_processing_error",
+                queue_name=self.queue_name,
+                error=str(e),
+                trace_id=trace_id,
+            )
+            # Message will be rejected and sent to dead letter queue
+            await message.nack(requeue=False)
 
-            except json.JSONDecodeError as e:
-                logger.error(
-                    "signal_message_parse_error",
-                    queue_name=self.queue_name,
-                    error=str(e),
-                    trace_id=trace_id,
-                )
-                # Message will be rejected and sent to dead letter queue
-                await message.nack(requeue=False)
+        except Exception as e:
+            logger.error(
+                "signal_processing_unexpected_error",
+                queue_name=self.queue_name,
+                error=str(e),
+                trace_id=trace_id,
+                exc_info=True,
+            )
+            # Message will be rejected and sent to dead letter queue
+            await message.nack(requeue=False)
 
-            except OrderExecutionError as e:
-                logger.error(
-                    "signal_processing_error",
-                    queue_name=self.queue_name,
-                    error=str(e),
-                    trace_id=trace_id,
-                )
-                # Message will be rejected and sent to dead letter queue
-                await message.nack(requeue=False)
-
-            except Exception as e:
-                logger.error(
-                    "signal_processing_unexpected_error",
-                    queue_name=self.queue_name,
-                    error=str(e),
-                    trace_id=trace_id,
-                )
-                # Message will be rejected and sent to dead letter queue
-                await message.nack(requeue=False)
-
-            finally:
-                # Clear trace ID from context
-                set_trace_id(None)
+        finally:
+            # Clear trace ID from context
+            set_trace_id(None)
 
