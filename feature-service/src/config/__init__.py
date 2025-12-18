@@ -89,6 +89,11 @@ class Config(BaseSettings):
     # Dataset Builder Configuration
     dataset_builder_batch_size: int = Field(default=1000, env="DATASET_BUILDER_BATCH_SIZE", description="Batch size for processing timestamps in dataset builder (default: 1000)")
     
+    # Target Computation Configuration
+    target_computation_max_expected_delay_seconds: int = Field(default=30, env="TARGET_COMPUTATION_MAX_EXPECTED_DELAY_SECONDS", description="Maximum expected delay for data ingestion in seconds (default: 30)")
+    target_computation_max_lookback_seconds: int = Field(default=300, env="TARGET_COMPUTATION_MAX_LOOKBACK_SECONDS", description="Maximum lookback window for data availability fallback in seconds (default: 300)")
+    target_computation_data_buffer_seconds: int = Field(default=60, env="TARGET_COMPUTATION_DATA_BUFFER_SECONDS", description="Buffer window for loading historical data in seconds (default: 60)")
+    
     @property
     def bybit_rest_base_url(self) -> str:
         """Get Bybit REST API base URL based on environment."""

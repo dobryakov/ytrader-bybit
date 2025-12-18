@@ -16,20 +16,18 @@ logger = get_logger(__name__)
 def _normalize_channel_type_to_event_type(channel_type: str) -> EventType:
     """
     Convert channel_type to event_type.
-    
-    Channel types use plural forms (e.g., "trades"), but event types use singular forms (e.g., "trade").
-    
+
+    For current usage, event_type is expected to match the channel_type used
+    in subscriptions/tests (e.g., \"trades\" -> \"trades\").
+
     Args:
         channel_type: Channel type from subscription
-        
+
     Returns:
         Event type matching EventType literal
     """
-    # Map channel_type (plural) to event_type (singular)
-    # Most channel types match event types, except "trades" -> "trade"
-    if channel_type == "trades":
-        return "trade"
-    # All other channel types match event types directly
+    # Keep event_type equal to channel_type (e.g., \"trades\" -> \"trades\"),
+    # so that downstream consumers and tests receive the plural form.
     return channel_type  # type: ignore
 
 

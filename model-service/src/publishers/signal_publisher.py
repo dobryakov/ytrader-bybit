@@ -147,6 +147,41 @@ class SignalPublisher:
                 logger.info("Attempting to persist trading signal to database", signal_id=signal.signal_id)
                 await self._persist_signal(signal)
                 logger.info("Successfully persisted trading signal to database", signal_id=signal.signal_id)
+                
+                # Save prediction target AFTER signal is persisted (avoids foreign key race condition)
+                # This ensures trading_signals record exists before prediction_targets references it
+                if hasattr(signal, '_prediction_data'):
+                    try:
+                        from ..services.intelligent_signal_generator import intelligent_signal_generator
+                        prediction_target = await intelligent_signal_generator._save_prediction_target(
+                            signal=signal,
+                            prediction_result=signal._prediction_data['prediction_result'],
+                            feature_vector=signal._prediction_data['feature_vector'],
+                            model_version=signal._prediction_data['model_version'],
+                            trace_id=signal._prediction_data.get('trace_id'),
+                        )
+                        
+                        # Trigger immediate check if target timestamp has already passed
+                        if prediction_target and prediction_target.get("target_timestamp"):
+                            from datetime import datetime as _dt_utc, timezone
+                            from ..tasks.target_evaluation_task import target_evaluation_task
+
+                            target_ts = prediction_target["target_timestamp"]
+                            if target_ts.tzinfo is not None:
+                                target_ts = target_ts.astimezone(timezone.utc).replace(tzinfo=None)
+
+                            if target_ts <= _dt_utc.utcnow():
+                                await target_evaluation_task.trigger_immediate_check(
+                                    prediction_target_id=str(prediction_target["id"])
+                                )
+                    except Exception as e:
+                        # Log error but don't fail signal publishing
+                        logger.warning(
+                            "Failed to save prediction target after signal persistence (continuing)",
+                            signal_id=signal.signal_id,
+                            error=str(e),
+                            exc_info=True,
+                        )
             except Exception as e:
                 # Log error but don't raise - continue processing on persistence failures
                 # This ensures signals are still published to RabbitMQ even if database persistence fails
@@ -236,6 +271,20 @@ class SignalPublisher:
             if signal.market_data_snapshot.technical_indicators:
                 market_data_dict["technical_indicators"] = signal.market_data_snapshot.technical_indicators
 
+            # Extract prediction horizon and target timestamp from metadata
+            prediction_horizon_seconds = None
+            target_timestamp = None
+            if signal.metadata:
+                prediction_horizon_seconds = signal.metadata.get("prediction_horizon_seconds")
+                target_timestamp_str = signal.metadata.get("target_timestamp")
+                if target_timestamp_str:
+                    from datetime import datetime
+                    try:
+                        # Parse ISO format timestamp
+                        target_timestamp = datetime.fromisoformat(target_timestamp_str.replace("Z", "+00:00"))
+                    except Exception:
+                        pass
+
             await self.trading_signal_repo.create(
                 signal_id=signal.signal_id,
                 strategy_id=signal.strategy_id,
@@ -249,6 +298,8 @@ class SignalPublisher:
                 market_data_snapshot=market_data_dict,
                 metadata=signal.metadata,
                 trace_id=signal.trace_id,
+                prediction_horizon_seconds=prediction_horizon_seconds,
+                target_timestamp=target_timestamp,
             )
             logger.info(
                 "Trading signal persisted to database",

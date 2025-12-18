@@ -6,8 +6,9 @@ applies quality thresholds, and integrates with rate limiting and validation.
 """
 
 from typing import Optional, List, Dict, Any
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+import json
 
 from ..models.signal import TradingSignal, MarketDataSnapshot
 from ..models.position_state import OrderPositionState
@@ -22,10 +23,14 @@ from ..services.feature_service_client import feature_service_client
 from ..services.feature_cache import feature_cache
 from ..consumers.feature_consumer import feature_consumer
 from ..database.repositories.position_state_repo import PositionStateRepository
+from ..database.repositories.model_version_repo import ModelVersionRepository
 from ..config.settings import settings
 from ..config.logging import get_logger, bind_context
 from ..config.exceptions import ModelInferenceError, SignalValidationError
 from ..services.signal_skip_metrics import signal_skip_metrics
+from ..services.target_registry_client import target_registry_client
+from ..database.repositories.prediction_target_repo import PredictionTargetRepository
+from ..services.version_mismatch_handler import version_mismatch_handler
 
 logger = get_logger(__name__)
 
@@ -128,6 +133,14 @@ class IntelligentSignalGenerator:
             logger.info("No open orders blocking signal generation", asset=asset, strategy_id=strategy_id, trace_id=trace_id)
 
         try:
+            # Get active model version from database first (needed for training_config)
+            active_model = None
+            if not model_version:
+                # Get active model version from database
+                model_version_repo = ModelVersionRepository()
+                active_model = await model_version_repo.get_active_by_strategy(strategy_id)
+                model_version = active_model["version"] if active_model else None
+
             # Load model
             logger.info("Loading model", asset=asset, strategy_id=strategy_id, model_version=model_version, trace_id=trace_id)
             if model_version:
@@ -147,6 +160,37 @@ class IntelligentSignalGenerator:
                 logger.warning("Features unavailable, skipping signal generation", asset=asset, strategy_id=strategy_id, trace_id=trace_id)
                 return None
             logger.info("Feature vector retrieved", asset=asset, strategy_id=strategy_id, feature_count=len(feature_vector.features) if feature_vector else 0, trace_id=trace_id)
+
+            # Validate feature registry version compatibility
+            # Get model's training config to check versions
+            model_feature_registry_version = None
+            model_target_registry_version = None
+            training_config = None
+            if active_model and active_model.get("training_config"):
+                training_config = active_model["training_config"]
+                if isinstance(training_config, str):
+                    training_config = json.loads(training_config)
+                model_feature_registry_version = training_config.get("feature_registry_version")
+                model_target_registry_version = training_config.get("target_registry_version")
+
+            if model_feature_registry_version and model_feature_registry_version != feature_vector.feature_registry_version:
+                logger.warning(
+                    "Feature registry version mismatch - model was trained on different version",
+                    asset=asset,
+                    strategy_id=strategy_id,
+                    model_feature_registry_version=model_feature_registry_version,
+                    feature_vector_registry_version=feature_vector.feature_registry_version,
+                    recommendation="Model should be retrained on current feature registry version for optimal performance",
+                    trace_id=trace_id,
+                )
+            elif model_feature_registry_version:
+                logger.debug(
+                    "Feature registry versions match",
+                    asset=asset,
+                    strategy_id=strategy_id,
+                    feature_registry_version=model_feature_registry_version,
+                    trace_id=trace_id,
+                )
 
             # Prepare features from FeatureVector
             logger.info("Preparing features for model", asset=asset, strategy_id=strategy_id, trace_id=trace_id)
@@ -218,6 +262,7 @@ class IntelligentSignalGenerator:
                     sell_probability=sell_probability,
                     determined_signal_type=signal_type,
                     confidence=confidence,
+                    signal_direction_check=f"buy_prob({buy_probability:.4f}) {'>' if buy_probability > sell_probability else '<='} sell_prob({sell_probability:.4f})",
                     trace_id=trace_id,
                 )
 
@@ -349,16 +394,73 @@ class IntelligentSignalGenerator:
                         )
                         return None
 
-            # Get model version string for signal
-            if not model_version:
-                # Get active model version from database
-                from ..database.repositories.model_version_repo import ModelVersionRepository
-                model_version_repo = ModelVersionRepository()
-                active_model = await model_version_repo.get_active_by_strategy(strategy_id)
-                model_version = active_model["version"] if active_model else None
-
+            # active_model and model_version are already defined above
             # Create market data snapshot from feature vector for signal metadata
             market_data_snapshot = self._create_market_data_snapshot_from_features(feature_vector)
+
+            # Get target registry info for metadata
+            # Use target_registry_version from model's training_config if available (model was trained on specific target)
+            # Otherwise fallback to active target registry version
+            target_registry_version = None
+            target_config = None
+            prediction_horizon_seconds = None
+            target_timestamp = None
+
+            if active_model and active_model.get("training_config"):
+                training_config = active_model["training_config"]
+                if isinstance(training_config, str):
+                    training_config = json.loads(training_config)
+                target_registry_version = training_config.get("target_registry_version")
+                logger.debug(
+                    "Using target_registry_version from model training_config",
+                    model_version=model_version,
+                    target_registry_version=target_registry_version,
+                )
+
+            # Fallback to active target registry version if not in model config
+            if not target_registry_version:
+                active_target_registry_version = await target_registry_client.get_target_registry_version()
+                if active_target_registry_version:
+                    logger.warning(
+                        "Using active target_registry_version (not found in model training_config) - version mismatch possible",
+                        asset=asset,
+                        strategy_id=strategy_id,
+                        model_version=model_version,
+                        active_target_registry_version=active_target_registry_version,
+                        recommendation="Model training_config should include target_registry_version for consistency",
+                        trace_id=trace_id,
+                    )
+                    target_registry_version = active_target_registry_version
+                else:
+                    logger.debug(
+                        "No target_registry_version available (not in model config and no active version)",
+                        asset=asset,
+                        strategy_id=strategy_id,
+                        trace_id=trace_id,
+                    )
+
+            if target_registry_version:
+                target_config = await target_registry_client.get_target_config(target_registry_version)
+                if target_config:
+                    prediction_horizon_seconds = target_config.get("horizon", 0)
+                    if prediction_horizon_seconds > 0:
+                        target_timestamp = datetime.utcnow() + timedelta(seconds=prediction_horizon_seconds)
+
+            # Check for version mismatches and trigger automatic retraining if needed
+            # Do this after we have both model versions and current versions
+            if model_feature_registry_version or model_target_registry_version:
+                # Trigger automatic retraining in background (non-blocking)
+                asyncio.create_task(
+                    version_mismatch_handler.handle_version_mismatch(
+                        strategy_id=strategy_id,
+                        asset=asset,
+                        model_feature_registry_version=model_feature_registry_version,
+                        model_target_registry_version=model_target_registry_version,
+                        current_feature_registry_version=feature_vector.feature_registry_version,
+                        current_target_registry_version=target_registry_version,
+                        trace_id=trace_id,
+                    )
+                )
 
             # Create signal
             signal = TradingSignal(
@@ -379,6 +481,9 @@ class IntelligentSignalGenerator:
                     },
                     "model_version": model_version,
                     "feature_registry_version": feature_vector.feature_registry_version,
+                    "target_registry_version": target_registry_version,
+                    "prediction_horizon_seconds": prediction_horizon_seconds,
+                    "target_timestamp": target_timestamp.isoformat() + "Z" if target_timestamp else None,
                     "inference_timestamp": datetime.utcnow().isoformat() + "Z",
                 },
                 trace_id=trace_id,
@@ -405,6 +510,16 @@ class IntelligentSignalGenerator:
                 model_version=model_version,
                 trace_id=trace_id,
             )
+
+            # Store prediction data in signal metadata for later saving after signal is persisted
+            # This avoids race condition where prediction_targets is saved before trading_signals
+            if not hasattr(signal, '_prediction_data'):
+                signal._prediction_data = {
+                    'prediction_result': prediction_result,
+                    'feature_vector': feature_vector,
+                    'model_version': model_version,
+                    'trace_id': trace_id,
+                }
 
             return signal
 
@@ -477,8 +592,13 @@ class IntelligentSignalGenerator:
         Determine signal type from model prediction.
 
         Supports both classification and regression models:
-        - Classification: Uses buy/sell probabilities
+        - Classification: Uses buy/sell probabilities with hysteresis (min_probability_diff)
         - Regression: Converts predicted return to signal using threshold
+
+        INVARIANT: For classification models without calibrated thresholds:
+        - If |buy_probability - sell_probability| < min_probability_diff → HOLD (None)
+        - This ensures hysteresis and prevents signals when model is uncertain
+        - Confidence threshold is an additional filter, not a replacement for hysteresis
 
         Args:
             prediction_result: Prediction result from model inference
@@ -486,7 +606,7 @@ class IntelligentSignalGenerator:
                 - For regression: contains "prediction" (float, predicted return value)
 
         Returns:
-            'buy', 'sell', or None (for HOLD in regression)
+            'buy', 'sell', or None (for HOLD)
         """
         from ..config.settings import settings
         
@@ -503,13 +623,48 @@ class IntelligentSignalGenerator:
             elif predicted_return < -threshold:
                 return "sell"
             else:
-                # HOLD: predicted return is within threshold range
+                # HOLD: predicted return is within threshold range (hysteresis)
                 return None
         
         # Classification model: use buy/sell probabilities
         buy_probability = prediction_result.get("buy_probability", 0.0)
         sell_probability = prediction_result.get("sell_probability", 0.0)
-
+        
+        # INVARIANT: Check if model has calibrated thresholds (provides its own hysteresis)
+        # Models with calibrated thresholds already handle uncertainty in model_inference.py:
+        # - If no threshold passed → semantic_prediction = 0 → buy_probability/sell_probability reflect this
+        # - We check metadata to see if thresholds were used
+        # For models without calibrated thresholds, apply min_probability_diff hysteresis
+        
+        # Check if model used calibrated thresholds (check metadata or prediction structure)
+        # If model has calibrated thresholds and none passed, buy_probability and sell_probability
+        # will be set, but the model already decided on HOLD (semantic_prediction = 0)
+        # We can detect this by checking if prediction_result indicates threshold-based decision
+        has_calibrated_thresholds = prediction_result.get("_used_calibrated_thresholds", False)
+        
+        # Apply min_probability_diff hysteresis for models without calibrated thresholds
+        # INVARIANT: For classification without calibrated thresholds:
+        # - If |buy_probability - sell_probability| < min_probability_diff → HOLD (None)
+        # - This check applies BEFORE confidence threshold
+        # - If difference is too small, signal is HOLD regardless of confidence
+        if not has_calibrated_thresholds:
+            min_probability_diff = settings.model_min_probability_diff
+            probability_diff = abs(buy_probability - sell_probability)
+            
+            if probability_diff < min_probability_diff:
+                # INVARIANT: HOLD when difference is too small (hysteresis)
+                # This applies regardless of confidence threshold
+                logger.debug(
+                    "Signal type HOLD due to insufficient probability difference (hysteresis)",
+                    buy_probability=buy_probability,
+                    sell_probability=sell_probability,
+                    probability_diff=probability_diff,
+                    min_probability_diff=min_probability_diff,
+                    note="This check applies before confidence threshold - signal is HOLD regardless of confidence",
+                )
+                return None
+        
+        # Determine signal direction when difference is sufficient
         if buy_probability > sell_probability:
             return "buy"
         else:
@@ -916,6 +1071,204 @@ class IntelligentSignalGenerator:
             orderbook_depth=orderbook_depth,
             technical_indicators=technical_indicators,
         )
+
+    async def _save_prediction_target(
+        self,
+        signal: TradingSignal,
+        prediction_result: Dict[str, Any],
+        feature_vector: FeatureVector,
+        model_version: Optional[str],
+        trace_id: Optional[str] = None,
+    ) -> None:
+        """
+        Save prediction target to database.
+
+        Args:
+            signal: Generated trading signal
+            prediction_result: Model prediction result
+            feature_vector: Feature vector used for prediction
+            model_version: Model version used
+            trace_id: Optional trace ID
+        """
+        try:
+            # Get target registry version from model's training_config if available
+            # This ensures we use the same target config that was used during training
+            target_registry_version = None
+            
+            # Try to get from model metadata if model_version is available
+            if model_version:
+                from ..database.repositories.model_version_repo import ModelVersionRepository
+                model_version_repo = ModelVersionRepository()
+                model_record = await model_version_repo.get_by_version(model_version)
+                if model_record and model_record.get("training_config"):
+                    training_config = model_record["training_config"]
+                    if isinstance(training_config, str):
+                        training_config = json.loads(training_config)
+                    target_registry_version = training_config.get("target_registry_version")
+                    logger.debug(
+                        "Using target_registry_version from model training_config",
+                        model_version=model_version,
+                        target_registry_version=target_registry_version,
+                    )
+            
+            # Fallback to active target registry version if not in model config
+            if not target_registry_version:
+                target_registry_version = await target_registry_client.get_target_registry_version()
+                logger.debug(
+                    "Using active target_registry_version (not found in model training_config)",
+                    target_registry_version=target_registry_version,
+                )
+            
+            if not target_registry_version:
+                logger.warning(
+                    "No target registry version found, skipping prediction target save",
+                    signal_id=signal.signal_id,
+                    trace_id=trace_id,
+                )
+                return
+
+            # Get target config
+            target_config = await target_registry_client.get_target_config(target_registry_version)
+            if not target_config:
+                logger.warning(
+                    "Target registry config not found, skipping prediction target save",
+                    signal_id=signal.signal_id,
+                    target_registry_version=target_registry_version,
+                    trace_id=trace_id,
+                )
+                return
+
+            # Extract horizon from target_config
+            horizon_seconds = target_config.get("horizon", 0)
+            if horizon_seconds <= 0:
+                logger.warning(
+                    "Invalid horizon in target config, skipping prediction target save",
+                    signal_id=signal.signal_id,
+                    horizon=horizon_seconds,
+                    trace_id=trace_id,
+                )
+                return
+
+            # Calculate timestamps
+            prediction_timestamp = signal.timestamp
+            target_timestamp = prediction_timestamp + timedelta(seconds=horizon_seconds)
+
+            # Format predicted values based on target type
+            predicted_values = self._format_predicted_values(
+                prediction_result=prediction_result,
+                target_config=target_config,
+            )
+
+            # Save to database
+            # Note: This is now called AFTER signal is persisted in signal_publisher.publish()
+            # so we don't need retry logic anymore - signal is guaranteed to exist in DB
+            prediction_target_repo = PredictionTargetRepository()
+            result = await prediction_target_repo.create(
+                signal_id=signal.signal_id,
+                prediction_timestamp=prediction_timestamp,
+                target_timestamp=target_timestamp,
+                model_version=model_version or "unknown",
+                feature_registry_version=feature_vector.feature_registry_version,
+                target_registry_version=target_registry_version,
+                target_config=target_config,
+                predicted_values=predicted_values,
+            )
+            
+            logger.info(
+                "Prediction target saved",
+                signal_id=signal.signal_id,
+                target_timestamp=target_timestamp.isoformat(),
+                horizon_seconds=horizon_seconds,
+                trace_id=trace_id,
+            )
+            return result
+
+        except Exception as e:
+            logger.error(
+                "Failed to save prediction target",
+                signal_id=signal.signal_id,
+                error=str(e),
+                exc_info=True,
+                trace_id=trace_id,
+            )
+            raise
+
+    def _format_predicted_values(
+        self,
+        prediction_result: Dict[str, Any],
+        target_config: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """
+        Format predicted values based on target type and preset.
+
+        Args:
+            prediction_result: Model prediction result
+            target_config: Target configuration
+
+        Returns:
+            Formatted predicted values dict
+        """
+        target_type = target_config.get("type", "classification")
+        computation = target_config.get("computation", {})
+        preset = computation.get("preset", "returns") if computation else "returns"
+        confidence = prediction_result.get("confidence", 0.0)
+
+        if target_type == "regression":
+            # Regression: returns preset
+            prediction = prediction_result.get("prediction", 0.0)
+            return {
+                "value": float(prediction),
+                "confidence": float(confidence),
+            }
+        elif target_type == "classification":
+            if preset == "next_candle_direction":
+                # Classification: next_candle_direction preset
+                buy_probability = prediction_result.get("buy_probability", 0.0)
+                sell_probability = prediction_result.get("sell_probability", 0.0)
+                direction = "green" if buy_probability > sell_probability else "red"
+                return {
+                    "direction": direction,
+                    "confidence": float(confidence),
+                }
+            else:
+                # Classification: default
+                prediction = prediction_result.get("prediction")
+                buy_probability = prediction_result.get("buy_probability", 0.0)
+                sell_probability = prediction_result.get("sell_probability", 0.0)
+                hold_probability = 1.0 - buy_probability - sell_probability
+                
+                # Map prediction to class (-1, 0, 1)
+                if isinstance(prediction, (int, float)):
+                    predicted_class = int(prediction)
+                elif buy_probability > sell_probability:
+                    predicted_class = 1
+                elif sell_probability > buy_probability:
+                    predicted_class = -1
+                else:
+                    predicted_class = 0
+
+                return {
+                    "class": predicted_class,
+                    "probabilities": {
+                        "-1": float(sell_probability),
+                        "0": float(hold_probability),
+                        "1": float(buy_probability),
+                    },
+                    "confidence": float(confidence),
+                }
+        elif target_type == "risk_adjusted":
+            # Risk Adjusted: sharpe_ratio preset
+            prediction = prediction_result.get("prediction", 0.0)
+            return {
+                "sharpe": float(prediction),
+                "confidence": float(confidence),
+            }
+        else:
+            # Fallback: generic format
+            return {
+                "value": float(prediction_result.get("prediction", 0.0)),
+                "confidence": float(confidence),
+            }
 
     async def generate_signals_for_strategies(
         self,

@@ -477,14 +477,26 @@ class TargetComputationEngine:
             price_lookup = price_lookup[price_lookup[price_col].notna()].copy()
             price_lookup = price_lookup.rename(columns={price_col: "future_price"})
         
-        price_lookup = price_lookup.sort_values("timestamp")
+        price_lookup = price_lookup.sort_values("timestamp").reset_index(drop=True)
         
         if price_lookup.empty:
             logger.warning("_compute_base_target: price_lookup is empty")
             return pd.DataFrame()
         
         # Sort data by future_timestamp for merge_asof
-        data_sorted = data.sort_values("future_timestamp").copy()
+        data_sorted = data.sort_values("future_timestamp").copy().reset_index(drop=True)
+        
+        # Log before merge for debugging
+        logger.debug(
+            "_compute_base_target_before_merge",
+            data_rows=len(data_sorted),
+            price_lookup_rows=len(price_lookup),
+            data_future_timestamp_min=data_sorted["future_timestamp"].min() if not data_sorted.empty else None,
+            data_future_timestamp_max=data_sorted["future_timestamp"].max() if not data_sorted.empty else None,
+            price_lookup_timestamp_min=price_lookup["timestamp"].min() if not price_lookup.empty else None,
+            price_lookup_timestamp_max=price_lookup["timestamp"].max() if not price_lookup.empty else None,
+            lookup_method=lookup_method,
+        )
         
         # Determine merge direction
         direction_map = {
@@ -496,19 +508,48 @@ class TargetComputationEngine:
         direction = direction_map.get(lookup_method, "forward")
         
         # Use merge_asof to find future price
-        data_merged = pd.merge_asof(
-            data_sorted,
-            price_lookup,
-            left_on="future_timestamp",
-            right_on="timestamp",
-            direction=direction,
-            suffixes=("", "_future"),
+        # merge_asof requires both DataFrames to be sorted by the merge key
+        try:
+            data_merged = pd.merge_asof(
+                data_sorted,
+                price_lookup,
+                left_on="future_timestamp",
+                right_on="timestamp",
+                direction=direction,
+                suffixes=("", "_future"),
+            )
+        except Exception as e:
+            logger.error(
+                "_compute_base_target_merge_asof_error",
+                error=str(e),
+                error_type=type(e).__name__,
+                data_future_timestamp_dtype=str(data_sorted["future_timestamp"].dtype),
+                price_lookup_timestamp_dtype=str(price_lookup["timestamp"].dtype),
+                exc_info=True,
+            )
+            raise
+        
+        # Log after merge for debugging
+        logger.debug(
+            "_compute_base_target_after_merge",
+            data_merged_rows=len(data_merged),
+            data_merged_columns=list(data_merged.columns) if not data_merged.empty else [],
+            has_future_price="future_price" in data_merged.columns if not data_merged.empty else False,
         )
         
         # Apply tolerance if specified
-        if tolerance_seconds is not None:
+        if tolerance_seconds is not None and not data_merged.empty and "timestamp_future" in data_merged.columns:
             time_diff = (data_merged["timestamp_future"] - data_merged["future_timestamp"]).abs()
+            before_tolerance = len(data_merged)
             data_merged = data_merged[time_diff <= pd.Timedelta(seconds=tolerance_seconds)]
+            after_tolerance = len(data_merged)
+            if before_tolerance != after_tolerance:
+                logger.debug(
+                    "_compute_base_target_tolerance_applied",
+                    before_tolerance=before_tolerance,
+                    after_tolerance=after_tolerance,
+                    tolerance_seconds=tolerance_seconds,
+                )
         
         # Restore original price column
         data_merged = data_merged.merge(
@@ -530,7 +571,12 @@ class TargetComputationEngine:
         
         # Check for valid prices
         if "future_price" not in data_merged.columns:
-            logger.error("_compute_base_target: future_price column not found after merge")
+            logger.error(
+                "_compute_base_target: future_price column not found after merge",
+                merged_columns=list(data_merged.columns),
+                data_rows=len(data),
+                price_lookup_rows=len(price_lookup),
+            )
             return pd.DataFrame()
         
         valid_rows = (
@@ -539,7 +585,19 @@ class TargetComputationEngine:
         )
         
         if valid_rows.sum() == 0:
-            logger.warning("_compute_base_target: no rows with both prices valid")
+            logger.warning(
+                "_compute_base_target: no rows with both prices valid",
+                data_merged_rows=len(data_merged),
+                future_price_notna=data_merged["future_price"].notna().sum(),
+                price_notna=data_merged["price"].notna().sum(),
+                data_timestamp_min=data["timestamp"].min() if not data.empty else None,
+                data_timestamp_max=data["timestamp"].max() if not data.empty else None,
+                future_timestamp_min=data["future_timestamp"].min() if "future_timestamp" in data.columns and not data.empty else None,
+                future_timestamp_max=data["future_timestamp"].max() if "future_timestamp" in data.columns and not data.empty else None,
+                price_lookup_timestamp_min=price_lookup["timestamp"].min() if not price_lookup.empty else None,
+                price_lookup_timestamp_max=price_lookup["timestamp"].max() if not price_lookup.empty else None,
+                horizon=horizon,
+            )
             return pd.DataFrame()
         
         # Compute target based on formula

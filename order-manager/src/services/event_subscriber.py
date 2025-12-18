@@ -465,7 +465,7 @@ class EventSubscriber:
             # Update position if order was filled (fully or partially)
             if new_status in ["filled", "partially_filled"] and status_changed:
                 await self._update_position_from_order_fill(
-                    order, filled_qty, avg_price, trace_id
+                    order, filled_qty, avg_price, trace_id, executed_at
                 )
 
         except Exception as e:
@@ -484,6 +484,7 @@ class EventSubscriber:
         filled_quantity: Decimal,
         execution_price: Decimal,
         trace_id: Optional[str] = None,
+        executed_at: Optional[datetime] = None,
     ) -> None:
         """
         Update position when order is filled.
@@ -493,6 +494,7 @@ class EventSubscriber:
             filled_quantity: Quantity that was filled
             execution_price: Price at which order was executed
             trace_id: Optional trace ID
+            executed_at: Execution timestamp
         """
         try:
             # Calculate size delta based on order side
@@ -509,6 +511,8 @@ class EventSubscriber:
                 execution_price=execution_price,
                 mode="one-way",  # Default to one-way mode
                 trace_id=trace_id,
+                order_id=order.id,
+                executed_at=executed_at,
             )
 
             logger.info(

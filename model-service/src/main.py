@@ -25,13 +25,19 @@ from .api.health import router as health_router
 from .consumers.position_update_consumer import position_update_consumer
 from .consumers.feature_consumer import feature_consumer
 from .consumers.dataset_ready_consumer import DatasetReadyConsumer
+from .consumers.execution_event_consumer import ExecutionEventConsumer
 from .publishers.signal_publisher import signal_publisher
 from .services.warmup_orchestrator import warmup_orchestrator
 from .services.intelligent_orchestrator import intelligent_orchestrator
 from .services.training_orchestrator import training_orchestrator
+from .tasks.target_evaluation_task import target_evaluation_task
+from .tasks.retraining_task import retraining_task
 from .services.mode_transition import mode_transition
 from .services.quality_monitor import quality_monitor
 from .database.repositories.model_version_repo import ModelVersionRepository
+from .services.prediction_trading_linker import prediction_trading_linker
+from .models.execution_event import OrderExecutionEvent
+from decimal import Decimal
 
 # Configure logging
 configure_logging()
@@ -205,6 +211,134 @@ async def lifespan(app: FastAPI):
             logger.error("Failed to start dataset ready consumer", error=str(e), exc_info=True)
             # Continue anyway - training can be triggered manually or via polling
 
+        # Start target evaluation background task
+        try:
+            await target_evaluation_task.start()
+            app.state.target_evaluation_task = target_evaluation_task
+            logger.info("Target evaluation task started")
+        except Exception as e:
+            logger.error("Failed to start target evaluation task", error=str(e), exc_info=True)
+
+        # Start retraining background task
+        try:
+            await retraining_task.start()
+            app.state.retraining_task = retraining_task
+            logger.info("Retraining task started")
+        except Exception as e:
+            logger.error("Failed to start retraining task", error=str(e), exc_info=True)
+
+        # Start execution event consumer (for execution_events persistence & prediction trading linkage)
+        async def handle_execution_event(event: OrderExecutionEvent) -> None:
+            """Handle execution event for prediction trading linker."""
+            try:
+                pool = await db_pool.get_pool()
+                
+                # Get order UUID from orders table by bybit_order_id
+                # event.order_id is bybit_order_id (string), we need orders.id (UUID)
+                order_query = """
+                    SELECT id
+                    FROM orders
+                    WHERE order_id = $1
+                    LIMIT 1
+                """
+                order_row = await pool.fetchrow(order_query, event.order_id)
+                
+                if not order_row:
+                    logger.debug(
+                        "No order found in database",
+                        bybit_order_id=event.order_id,
+                        signal_id=event.signal_id,
+                    )
+                    return
+                
+                order_uuid = order_row["id"]
+                
+                # Query position_orders to get relationship_type
+                position_order_query = """
+                    SELECT relationship_type, size_delta, execution_price
+                    FROM position_orders
+                    WHERE order_id = $1
+                    LIMIT 1
+                """
+                position_order_row = await pool.fetchrow(position_order_query, order_uuid)
+                
+                if not position_order_row:
+                    logger.debug(
+                        "No position_order found for order",
+                        order_id=str(order_uuid),
+                        bybit_order_id=event.order_id,
+                        signal_id=event.signal_id,
+                    )
+                    return
+                
+                relationship_type = position_order_row["relationship_type"]
+                
+                # Get realized_pnl_delta from position change
+                # For now, use 0 as delta (will be updated when position is closed)
+                # The actual realized_pnl is stored in positions table
+                realized_pnl_delta = Decimal("0")
+                
+                # If position is closed, try to get realized_pnl from position
+                if relationship_type == "closed":
+                    position_query = """
+                        SELECT realized_pnl
+                        FROM positions
+                        WHERE asset = $1 AND mode = 'one-way'
+                        LIMIT 1
+                    """
+                    position_row = await pool.fetchrow(position_query, event.asset.upper())
+                    if position_row and position_row["realized_pnl"]:
+                        # This is cumulative realized_pnl, not delta
+                        # For now, use 0 as delta - actual calculation should be done by position-manager
+                        realized_pnl_delta = Decimal("0")
+                
+                # Check if prediction trading result exists, if not create it
+                existing_results = await prediction_trading_linker.prediction_trading_results_repo.get_by_signal_id(event.signal_id)
+                if not existing_results:
+                    # Link prediction to trading when order opens a position
+                    if relationship_type in ("opened", "increased"):
+                        await prediction_trading_linker.link_prediction_to_trading(
+                            signal_id=event.signal_id,
+                            entry_signal_id=event.signal_id,
+                            entry_price=Decimal(str(event.execution_price)),
+                            entry_timestamp=event.executed_at,
+                            position_size_at_entry=Decimal(str(event.execution_quantity)),
+                        )
+                
+                # Update prediction trading result
+                await prediction_trading_linker.update_trading_result_on_order_fill(
+                    signal_id=event.signal_id,
+                    order_id=order_uuid,
+                    execution_price=Decimal(str(event.execution_price)),
+                    execution_quantity=Decimal(str(event.execution_quantity)),
+                    realized_pnl_delta=realized_pnl_delta,
+                    relationship_type=relationship_type,
+                )
+                
+                logger.debug(
+                    "Execution event processed for prediction trading linker",
+                    signal_id=event.signal_id,
+                    order_id=str(order_uuid),
+                    bybit_order_id=event.order_id,
+                    relationship_type=relationship_type,
+                )
+            except Exception as e:
+                logger.error(
+                    "Error handling execution event for prediction trading linker",
+                    signal_id=event.signal_id,
+                    order_id=event.order_id,
+                    error=str(e),
+                    exc_info=True,
+                )
+        
+        try:
+            execution_event_consumer = ExecutionEventConsumer(event_callback=handle_execution_event)
+            app.state.execution_event_consumer = execution_event_consumer
+            await execution_event_consumer.start()
+            logger.info("Execution event consumer started")
+        except Exception as e:
+            logger.error("Failed to start execution event consumer", error=str(e), exc_info=True)
+
         logger.info("Model service started successfully")
     except Exception as e:
         logger.error("Failed to start model service", error=str(e), exc_info=True)
@@ -246,7 +380,43 @@ async def lifespan(app: FastAPI):
 
         shutdown_tasks.append(stop_quality_monitor())
 
-        # Execution event consumer removed - training pipeline now uses Feature Service datasets
+        # Stop target evaluation task
+        async def stop_target_evaluation_task():
+            try:
+                if hasattr(app.state, "target_evaluation_task"):
+                    await asyncio.wait_for(app.state.target_evaluation_task.stop(), timeout=5.0)
+                    logger.info("Target evaluation task stopped")
+            except asyncio.TimeoutError:
+                logger.warning("Target evaluation task stop timed out")
+            except Exception as e:
+                logger.error("Error stopping target evaluation task", error=str(e), exc_info=True)
+
+        shutdown_tasks.append(stop_target_evaluation_task())
+
+        # Stop retraining task
+        async def stop_retraining_task():
+            try:
+                if hasattr(app.state, "retraining_task"):
+                    await asyncio.wait_for(app.state.retraining_task.stop(), timeout=10.0)
+                    logger.info("Retraining task stopped")
+            except asyncio.TimeoutError:
+                logger.warning("Retraining task stop timed out")
+            except Exception as e:
+                logger.error("Error stopping retraining task", error=str(e), exc_info=True)
+        shutdown_tasks.append(stop_retraining_task())
+
+        # Stop execution event consumer
+        async def stop_execution_event_consumer():
+            try:
+                if hasattr(app.state, "execution_event_consumer"):
+                    await asyncio.wait_for(app.state.execution_event_consumer.stop(), timeout=5.0)
+                    logger.info("Execution event consumer stopped")
+            except asyncio.TimeoutError:
+                logger.warning("Execution event consumer stop timed out")
+            except Exception as e:
+                logger.error("Error stopping execution event consumer", error=str(e), exc_info=True)
+
+        shutdown_tasks.append(stop_execution_event_consumer())
 
         # Stop position update consumer
         async def stop_position_update_consumer():

@@ -9,10 +9,25 @@ from fastapi import FastAPI, Depends
 from fastapi.responses import JSONResponse
 from src.api.health import router as health_router
 from src.api.features import router as features_router, set_feature_computer
-from src.api.dataset import router as dataset_router, set_metadata_storage, set_dataset_builder, set_target_registry_version_manager as set_target_registry_version_manager_dataset
-from src.api.target_registry import router as target_registry_router, set_target_registry_version_manager, set_metadata_storage_for_target_registry
+from src.api.dataset import (
+    router as dataset_router,
+    set_metadata_storage,
+    set_dataset_builder,
+    set_target_registry_version_manager as set_target_registry_version_manager_dataset,
+)
+from src.api.target_registry import (
+    router as target_registry_router,
+    set_target_registry_version_manager,
+    set_metadata_storage_for_target_registry,
+)
 from src.api.backfill import router as backfill_router, set_backfilling_service
 from src.api.cache import router as cache_router, set_cache_service
+from src.api.historical import router as historical_router
+from src.api.targets import (
+    router as targets_router,
+    set_target_registry_version_manager as set_target_registry_version_manager_targets,
+    set_parquet_storage,
+)
 from src.api.feature_registry import (
     router as feature_registry_router,
     set_feature_registry_loader,
@@ -76,6 +91,8 @@ app.include_router(dataset_router)
 app.include_router(feature_registry_router)
 app.include_router(target_registry_router)
 app.include_router(cache_router)
+app.include_router(historical_router)
+app.include_router(targets_router)
 
 # Add authentication middleware to all routes except health
 @app.middleware("http")
@@ -242,6 +259,7 @@ async def startup():
         set_target_registry_version_manager(target_registry_version_manager)
         set_metadata_storage_for_target_registry(metadata_storage)
         set_target_registry_version_manager_dataset(target_registry_version_manager)
+        set_target_registry_version_manager_targets(target_registry_version_manager)
         
         # Set components for hot reload
         from src.api.feature_registry import (
@@ -255,6 +273,7 @@ async def startup():
         
         # Initialize Parquet Storage
         parquet_storage = ParquetStorage(base_path=config.feature_service_raw_data_path)
+        set_parquet_storage(parquet_storage)
         
         # Initialize Data Storage Service (T135: Integrate raw data storage)
         data_storage = DataStorageService(

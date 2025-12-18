@@ -5,7 +5,7 @@ Provides CRUD operations for trading_signals table.
 """
 
 from typing import Optional, List, Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID
 import asyncpg
 from decimal import Decimal
@@ -39,6 +39,8 @@ class TradingSignalRepository(BaseRepository[Dict[str, Any]]):
         market_data_snapshot: Optional[Dict[str, Any]] = None,
         metadata: Optional[Dict[str, Any]] = None,
         trace_id: Optional[str] = None,
+        prediction_horizon_seconds: Optional[int] = None,
+        target_timestamp: Optional[datetime] = None,
     ) -> Dict[str, Any]:
         """
         Create a new trading signal.
@@ -67,15 +69,30 @@ class TradingSignalRepository(BaseRepository[Dict[str, Any]]):
             INSERT INTO {self.table_name} (
                 signal_id, strategy_id, asset, side, price, confidence,
                 timestamp, model_version, is_warmup, market_data_snapshot,
-                metadata, trace_id
+                metadata, trace_id, prediction_horizon_seconds, target_timestamp
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
             RETURNING *
         """
         try:
             # Convert dict to JSON string for JSONB columns
             market_data_json = json.dumps(market_data_snapshot) if market_data_snapshot else None
             metadata_json = json.dumps(metadata) if metadata else None
+            
+            # Normalize all datetime objects to timezone-aware UTC, then to naive for PostgreSQL timestamp without time zone
+            # This prevents asyncpg errors when comparing datetime objects
+            if timestamp.tzinfo is None:
+                timestamp = timestamp.replace(tzinfo=timezone.utc)
+            else:
+                timestamp = timestamp.astimezone(timezone.utc)
+            timestamp = timestamp.replace(tzinfo=None)  # Convert to naive for PostgreSQL
+            
+            if target_timestamp is not None:
+                if target_timestamp.tzinfo is None:
+                    target_timestamp = target_timestamp.replace(tzinfo=timezone.utc)
+                else:
+                    target_timestamp = target_timestamp.astimezone(timezone.utc)
+                target_timestamp = target_timestamp.replace(tzinfo=None)  # Convert to naive for PostgreSQL
             
             record = await self._fetchrow(
                 query,
@@ -91,6 +108,8 @@ class TradingSignalRepository(BaseRepository[Dict[str, Any]]):
                 market_data_json,
                 metadata_json,
                 trace_id,
+                prediction_horizon_seconds,
+                target_timestamp,
             )
             if not record:
                 raise ValueError("Failed to create trading signal")

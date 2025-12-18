@@ -530,12 +530,34 @@ class ModelInference:
                         buy_probability = float(probabilities[0]) if len(probabilities) > 0 else 0.0
                         sell_probability = 0.0
 
+                # Log signal direction mapping for debugging
+                logger.debug(
+                    "signal_direction_mapping",
+                    label_mapping=label_mapping,
+                    probabilities=probabilities.tolist() if hasattr(probabilities, "tolist") else list(probabilities),
+                    sem_probs=sem_probs if sem_probs else None,
+                    buy_probability=buy_probability,
+                    sell_probability=sell_probability,
+                    semantic_prediction=int(semantic_prediction),
+                    mapping_method="label_mapping" if label_mapping else "legacy_fallback",
+                )
+
+                # Mark if calibrated thresholds were used (for hysteresis logic in signal generator)
+                # If model has calibrated thresholds, hysteresis is already handled here
+                # (semantic_prediction = 0 if no threshold passed)
+                used_calibrated_thresholds = (
+                    probability_thresholds is not None and 
+                    isinstance(probability_thresholds, dict) and 
+                    bool(sem_probs)
+                )
+                
                 result = {
                     "prediction": int(semantic_prediction),
                     "confidence": confidence,
                     "probabilities": probabilities.tolist() if hasattr(probabilities, "tolist") else list(probabilities),
                     "buy_probability": buy_probability,
                     "sell_probability": sell_probability,
+                    "_used_calibrated_thresholds": used_calibrated_thresholds,
                 }
             else:
                 # Regression model

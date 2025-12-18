@@ -42,6 +42,11 @@ class Settings(BaseSettings):
     ws_gateway_url: str = Field(default="http://ws-gateway:4400", alias="WS_GATEWAY_URL")
     ws_gateway_api_key: str = Field(..., alias="WS_GATEWAY_API_KEY")
 
+    # Bybit API Configuration (for position synchronization)
+    bybit_api_key: Optional[str] = Field(default=None, alias="BYBIT_API_KEY")
+    bybit_api_secret: Optional[str] = Field(default=None, alias="BYBIT_API_SECRET")
+    bybit_environment: str = Field(default="testnet", alias="BYBIT_ENVIRONMENT")
+
     # Position Management Configuration
     position_manager_snapshot_interval: int = Field(default=3600, alias="POSITION_MANAGER_SNAPSHOT_INTERVAL")
     position_manager_snapshot_retention_days: int = Field(default=365, alias="POSITION_MANAGER_SNAPSHOT_RETENTION_DAYS")

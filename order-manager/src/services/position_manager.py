@@ -8,6 +8,8 @@ from ..config.database import DatabaseConnection
 from ..config.logging import get_logger
 from ..models.position import Position, PositionSnapshot
 from ..exceptions import DatabaseError
+from ..database.repositories.position_order_repo import PositionOrderRepository
+from datetime import datetime
 
 logger = get_logger(__name__)
 
@@ -64,6 +66,8 @@ class PositionManager:
         execution_price: Decimal,
         mode: str = "one-way",
         trace_id: Optional[str] = None,
+        order_id: Optional[UUID] = None,
+        executed_at: Optional[datetime] = None,
     ) -> Position:
         """Update position based on order execution.
 
@@ -141,6 +145,40 @@ class PositionManager:
             position_data = dict(row)
             position = Position.from_dict(position_data)
 
+            # Create position-order relationship if order_id provided
+            if order_id:
+                try:
+                    relationship_type = self._determine_relationship_type(
+                        current_position=current_position,
+                        new_size=new_size,
+                        size_delta=size_delta,
+                    )
+                    position_order_repo = PositionOrderRepository()
+                    await position_order_repo.create(
+                        position_id=position.id,
+                        order_id=order_id,
+                        relationship_type=relationship_type,
+                        size_delta=size_delta,
+                        execution_price=execution_price,
+                        executed_at=executed_at or datetime.utcnow(),
+                    )
+                    logger.debug(
+                        "Position-order relationship created",
+                        position_id=str(position.id),
+                        order_id=str(order_id),
+                        relationship_type=relationship_type,
+                        trace_id=trace_id,
+                    )
+                except Exception as e:
+                    # Log error but don't fail position update
+                    logger.warning(
+                        "Failed to create position-order relationship (continuing)",
+                        position_id=str(position.id),
+                        order_id=str(order_id),
+                        error=str(e),
+                        trace_id=trace_id,
+                    )
+
             logger.info(
                 "position_updated",
                 asset=asset,
@@ -164,6 +202,45 @@ class PositionManager:
                 trace_id=trace_id,
             )
             raise DatabaseError(f"Failed to update position: {e}") from e
+
+    def _determine_relationship_type(
+        self,
+        current_position: Optional[Position],
+        new_size: Decimal,
+        size_delta: Decimal,
+    ) -> str:
+        """
+        Determine relationship type between position and order.
+
+        Args:
+            current_position: Current position before update (None if new)
+            new_size: New position size after update
+            size_delta: Change in position size
+
+        Returns:
+            Relationship type: 'opened', 'increased', 'decreased', 'closed', 'reversed'
+        """
+        if current_position is None:
+            # New position
+            return "opened"
+        
+        current_size = current_position.size
+        
+        if new_size == 0:
+            # Position closed
+            return "closed"
+        elif (current_size > 0 and new_size < 0) or (current_size < 0 and new_size > 0):
+            # Position reversed
+            return "reversed"
+        elif abs(new_size) > abs(current_size):
+            # Position increased
+            return "increased"
+        elif abs(new_size) < abs(current_size):
+            # Position decreased
+            return "decreased"
+        else:
+            # Size unchanged (shouldn't happen, but handle gracefully)
+            return "increased"  # Default fallback
 
     async def validate_position(
         self, asset: str, mode: str = "one-way", fix_discrepancies: bool = True

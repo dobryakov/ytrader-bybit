@@ -7,6 +7,7 @@ Provides access to feature vectors and dataset building from Feature Service.
 from typing import Optional, Dict, Any
 from uuid import UUID
 from pathlib import Path
+from datetime import datetime
 import asyncio
 import httpx
 
@@ -87,6 +88,94 @@ class FeatureServiceClient:
             logger.error(
                 "Failed to query Feature Service",
                 symbol=symbol,
+                error=str(e),
+                trace_id=trace_id,
+                exc_info=True,
+            )
+            return None
+
+    async def get_historical_price(
+        self,
+        symbol: str,
+        timestamp: datetime,
+        lookback_seconds: int = 60,
+        trace_id: Optional[str] = None,
+    ) -> Optional[float]:
+        """
+        Get historical price for a symbol at (or near) a given timestamp.
+
+        NOTE: Делегирует запрос в feature-service /api/v1/historical/price.
+        Эндпоинт пока может возвращать 501/404 – в этом случае возвращаем None.
+        """
+        from datetime import timezone
+
+        url = f"{self.base_url}/api/v1/historical/price"
+        headers = {
+            "X-API-Key": self.api_key,
+            "Content-Type": "application/json",
+        }
+
+        # Ensure UTC ISO format
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        else:
+            timestamp = timestamp.astimezone(timezone.utc)
+
+        params = {
+            "symbol": symbol,
+            "timestamp": timestamp.isoformat(),
+            "lookback_seconds": lookback_seconds,
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.get(url, headers=headers, params=params)
+                if response.status_code in (404, 501):
+                    logger.debug(
+                        "Historical price not available",
+                        symbol=symbol,
+                        timestamp=params["timestamp"],
+                        status_code=response.status_code,
+                        trace_id=trace_id,
+                    )
+                    return None
+                response.raise_for_status()
+                data = response.json()
+                # Ожидаем, что ответ содержит поле price (float)
+                price = data.get("price")
+                if price is None:
+                    logger.warning(
+                        "Historical price response without 'price' field",
+                        symbol=symbol,
+                        timestamp=params["timestamp"],
+                        payload=data,
+                        trace_id=trace_id,
+                    )
+                    return None
+                return float(price)
+        except httpx.TimeoutException:
+            logger.warning(
+                "Feature Service historical price API timeout",
+                symbol=symbol,
+                timestamp=params["timestamp"],
+                timeout=self.timeout,
+                trace_id=trace_id,
+            )
+            return None
+        except httpx.HTTPError as e:
+            logger.error(
+                "Feature Service historical price API error",
+                symbol=symbol,
+                timestamp=params["timestamp"],
+                error=str(e),
+                trace_id=trace_id,
+            )
+            return None
+        except Exception as e:
+            logger.error(
+                "Failed to query historical price from Feature Service",
+                symbol=symbol,
+                timestamp=params["timestamp"],
                 error=str(e),
                 trace_id=trace_id,
                 exc_info=True,
@@ -369,6 +458,120 @@ class FeatureServiceClient:
             # Clean up partial download
             if file_path.exists():
                 file_path.unlink()
+            return None
+
+    async def compute_target(
+        self,
+        symbol: str,
+        prediction_timestamp: datetime,
+        target_timestamp: datetime,
+        target_registry_version: str,
+        horizon_seconds: Optional[int] = None,
+        max_lookback_seconds: int = 300,
+        trace_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Вычислить фактическое значение таргета через Feature Service API.
+        
+        Args:
+            symbol: Trading pair symbol
+            prediction_timestamp: Timestamp when prediction was made
+            target_timestamp: Timestamp for target computation
+            target_registry_version: Target Registry version (config will be loaded from registry)
+            horizon_seconds: Optional horizon override (if None, uses horizon from registry config)
+            max_lookback_seconds: Maximum lookback for data availability fallback
+            trace_id: Optional trace ID
+        
+        Returns:
+            Dict с результатами вычисления или None при ошибке
+        """
+        from datetime import timezone
+        
+        url = f"{self.base_url}/api/v1/targets/compute"
+        headers = {
+            "X-API-Key": self.api_key,
+            "Content-Type": "application/json",
+        }
+        
+        # Normalize timestamps to UTC
+        if prediction_timestamp.tzinfo is None:
+            prediction_timestamp = prediction_timestamp.replace(tzinfo=timezone.utc)
+        else:
+            prediction_timestamp = prediction_timestamp.astimezone(timezone.utc)
+        
+        if target_timestamp.tzinfo is None:
+            target_timestamp = target_timestamp.replace(tzinfo=timezone.utc)
+        else:
+            target_timestamp = target_timestamp.astimezone(timezone.utc)
+        
+        payload = {
+            "symbol": symbol,
+            "prediction_timestamp": prediction_timestamp.isoformat(),
+            "target_timestamp": target_timestamp.isoformat(),
+            "target_registry_version": target_registry_version,
+            "max_lookback_seconds": max_lookback_seconds,
+        }
+        
+        if horizon_seconds is not None:
+            payload["horizon_seconds"] = horizon_seconds
+        
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.post(url, headers=headers, json=payload)
+                
+                if response.status_code == 404:
+                    # Data unavailable
+                    logger.debug(
+                        "Target computation data unavailable",
+                        symbol=symbol,
+                        prediction_timestamp=prediction_timestamp.isoformat(),
+                        target_timestamp=target_timestamp.isoformat(),
+                        trace_id=trace_id,
+                    )
+                    return None
+                
+                response.raise_for_status()
+                data = response.json()
+                
+                logger.debug(
+                    "Computed target from Feature Service",
+                    symbol=symbol,
+                    target_type=data.get("target_type"),
+                    preset=data.get("preset"),
+                    trace_id=trace_id,
+                )
+                return data
+                
+        except httpx.TimeoutException:
+            logger.warning(
+                "Feature Service target computation API timeout",
+                symbol=symbol,
+                prediction_timestamp=prediction_timestamp.isoformat(),
+                target_timestamp=target_timestamp.isoformat(),
+                timeout=self.timeout,
+                trace_id=trace_id,
+            )
+            return None
+        except httpx.HTTPError as e:
+            logger.error(
+                "Feature Service target computation API error",
+                symbol=symbol,
+                prediction_timestamp=prediction_timestamp.isoformat(),
+                target_timestamp=target_timestamp.isoformat(),
+                error=str(e),
+                trace_id=trace_id,
+            )
+            return None
+        except Exception as e:
+            logger.error(
+                "Failed to compute target from Feature Service",
+                symbol=symbol,
+                prediction_timestamp=prediction_timestamp.isoformat(),
+                target_timestamp=target_timestamp.isoformat(),
+                error=str(e),
+                trace_id=trace_id,
+                exc_info=True,
+            )
             return None
 
 

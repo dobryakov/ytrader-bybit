@@ -1,14 +1,11 @@
 """
 Retraining trigger service.
 
-Detects scheduled periodic retraining, data accumulation thresholds,
-and quality degradation detection to trigger model retraining.
+Detects quality degradation to trigger model retraining.
+Automatic time-based retraining is handled by retraining_task.
 """
 
-from typing import Optional, Dict, Any
-from datetime import datetime, timedelta
-import asyncio
-import re
+from typing import Optional
 
 from ..database.repositories.model_version_repo import ModelVersionRepository
 from ..database.repositories.quality_metrics_repo import ModelQualityMetricsRepository
@@ -25,111 +22,26 @@ class RetrainingTrigger:
         """Initialize retraining trigger."""
         self.model_version_repo = ModelVersionRepository()
         self.quality_metrics_repo = ModelQualityMetricsRepository()
-        self._last_retraining_time: Dict[str, datetime] = {}  # strategy_id -> last retraining time
 
     async def should_retrain(
         self,
         strategy_id: Optional[str] = None,
     ) -> bool:
         """
-        Check if model should be retrained.
+        Check if model should be retrained based on quality degradation.
 
-        Uses time-based or scheduled retraining triggers. No longer depends on execution_events accumulation.
+        Time-based retraining is handled automatically by retraining_task.
+        This method only checks for quality degradation.
 
         Args:
             strategy_id: Trading strategy identifier
 
         Returns:
-            True if retraining should be triggered
+            True if retraining should be triggered due to quality degradation
         """
-        # Check scheduled periodic retraining (if configured)
-        if await self._check_scheduled_retraining(strategy_id):
-            logger.info("Scheduled retraining triggered", strategy_id=strategy_id)
-            return True
-
-        # Check time-based retraining (interval-based)
-        if await self._check_time_based_retraining(strategy_id):
-            logger.info("Time-based retraining triggered", strategy_id=strategy_id)
-            return True
-
         # Check quality degradation
         if await self._check_quality_degradation(strategy_id):
             logger.info("Quality degradation detected", strategy_id=strategy_id)
-            return True
-
-        return False
-
-    async def _check_scheduled_retraining(self, strategy_id: Optional[str] = None) -> bool:
-        """
-        Check if scheduled periodic retraining should occur.
-
-        Args:
-            strategy_id: Trading strategy identifier
-
-        Returns:
-            True if scheduled retraining should occur
-        """
-        if not settings.model_retraining_schedule:
-            return False
-
-        # Parse schedule (format: "daily", "weekly", "hourly", or cron-like "0 0 * * *")
-        schedule = settings.model_retraining_schedule.lower()
-
-        # Get last retraining time for this strategy
-        last_time = self._last_retraining_time.get(strategy_id or "default")
-
-        if not last_time:
-            # First time, check if we should retrain now
-            return True
-
-        now = datetime.utcnow()
-        time_since_last = now - last_time
-
-        if schedule == "hourly":
-            return time_since_last >= timedelta(hours=1)
-        elif schedule == "daily":
-            return time_since_last >= timedelta(days=1)
-        elif schedule == "weekly":
-            return time_since_last >= timedelta(weeks=1)
-        else:
-            # Try to parse as cron-like schedule (simplified)
-            # For now, just check if it's a valid schedule string
-            logger.warning("Complex cron schedule not fully supported", schedule=schedule)
-            return False
-
-    async def _check_time_based_retraining(self, strategy_id: Optional[str] = None) -> bool:
-        """
-        Check if time-based retraining should occur.
-
-        Triggers training when configured interval (days) has passed since last training.
-
-        Args:
-            strategy_id: Trading strategy identifier
-
-        Returns:
-            True if time-based retraining should occur
-        """
-        interval_days = settings.model_retraining_interval_days
-
-        # Get last retraining time for this strategy
-        last_time = self._last_retraining_time.get(strategy_id or "default")
-
-        if not last_time:
-            # First time, check if we should retrain now
-            logger.debug("No previous retraining time found, triggering initial training", strategy_id=strategy_id)
-            return True
-
-        now = datetime.utcnow()
-        time_since_last = now - last_time
-        interval_timedelta = timedelta(days=interval_days)
-
-        if time_since_last >= interval_timedelta:
-            logger.debug(
-                "Time-based retraining interval reached",
-                strategy_id=strategy_id,
-                time_since_last_days=time_since_last.days,
-                interval_days=interval_days,
-            )
             return True
 
         return False
@@ -214,11 +126,14 @@ class RetrainingTrigger:
         """
         Record that retraining has occurred.
 
+        Note: This method is kept for backward compatibility but no longer stores
+        retraining time in memory. Retraining time is now tracked in the database
+        via model_versions.trained_at field.
+
         Args:
             strategy_id: Trading strategy identifier
         """
-        self._last_retraining_time[strategy_id or "default"] = datetime.utcnow()
-        logger.debug("Recorded retraining time", strategy_id=strategy_id)
+        logger.debug("Retraining recorded (time tracked in database)", strategy_id=strategy_id)
 
 
 # Global retraining trigger instance

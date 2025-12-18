@@ -342,4 +342,51 @@ def serialize_snapshot(snapshot: PositionSnapshot) -> dict:
     }
 
 
+@router.post(
+    "/positions/sync-bybit",
+    dependencies=[Depends(api_key_auth)],
+)
+async def sync_positions_with_bybit(
+    force: bool = Query(False, description="Force sync: update local positions to match Bybit"),
+    position_manager: PositionManager = Depends(get_position_manager),
+):
+    """Synchronize local positions with Bybit API and return comparison report.
+
+    Args:
+        force: If True, force update local positions to match Bybit data
+
+    Returns:
+        JSON response with sync report including:
+        - bybit_positions_count: Number of positions on Bybit
+        - local_positions_count: Number of positions in local DB
+        - comparisons: Detailed comparison for each asset
+        - updated: List of positions that were updated (if force=True)
+        - created: List of positions that were created (if force=True)
+        - errors: List of errors encountered during sync
+    """
+    trace_id = get_or_create_trace_id()
+    logger.info("position_sync_bybit_request", force=force, trace_id=trace_id)
+
+    try:
+        report = await position_manager.sync_positions_with_bybit(force=force, trace_id=trace_id)
+
+        logger.info(
+            "position_sync_bybit_completed",
+            bybit_count=report["bybit_positions_count"],
+            local_count=report["local_positions_count"],
+            updated_count=len(report["updated"]),
+            created_count=len(report["created"]),
+            errors_count=len(report["errors"]),
+            force=force,
+            trace_id=trace_id,
+        )
+
+        return JSONResponse(status_code=200, content=report)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("position_sync_bybit_failed", error=str(e), trace_id=trace_id, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to sync positions with Bybit: {e}") from e
+
 

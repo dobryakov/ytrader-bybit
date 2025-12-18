@@ -23,7 +23,7 @@ api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 api_router = APIRouter(prefix="/api/v1")
 
 # Import and register API routers
-from . import models, metrics, training, monitoring, inference
+from . import models, metrics, training, monitoring, inference, prediction_chain, model_quality
 from .middleware import RequestResponseLoggingMiddleware
 
 api_router.include_router(models.router)
@@ -31,6 +31,8 @@ api_router.include_router(metrics.router)
 api_router.include_router(training.router)
 api_router.include_router(monitoring.router)
 api_router.include_router(inference.router)
+api_router.include_router(prediction_chain.router)
+api_router.include_router(model_quality.router)
 
 
 class APIKeyMiddleware(BaseHTTPMiddleware):

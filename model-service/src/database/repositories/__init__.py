@@ -6,6 +6,8 @@ from .model_version_repo import ModelVersionRepository
 from .position_state_repo import PositionStateRepository
 from .quality_metrics_repo import ModelQualityMetricsRepository
 from .trading_signal_repo import TradingSignalRepository
+from .prediction_target_repo import PredictionTargetRepository
+from .prediction_trading_results_repo import PredictionTradingResultsRepository
 
 __all__ = [
     "AccountBalanceRepository",
@@ -14,5 +16,7 @@ __all__ = [
     "PositionStateRepository",
     "ModelQualityMetricsRepository",
     "TradingSignalRepository",
+    "PredictionTargetRepository",
+    "PredictionTradingResultsRepository",
 ]
 

@@ -1124,6 +1124,8 @@ class TrainingOrchestrator:
                 "feature_count": len(dataset.get_feature_names()),
                 "dataset_source": "feature_service",
                 "dataset_id": str(dataset_id),
+                "target_registry_version": dataset_meta.target_registry_version,  # Save for inference
+                "feature_registry_version": dataset_meta.feature_registry_version,  # Save for inference
             }
 
             label_mapping_for_inference: Optional[Dict[int, Any]] = getattr(

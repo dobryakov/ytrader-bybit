@@ -64,8 +64,6 @@ class Settings(BaseSettings):
         alias="MODEL_QUALITY_THRESHOLD_RMSE",
         description="Maximum RMSE threshold for regression models to be auto-activated (optional). If set, model will be activated only if RMSE <= this value. Default: None (not used)"
     )
-    model_retraining_schedule: Optional[str] = Field(default=None, alias="MODEL_RETRAINING_SCHEDULE")
-    
     # Class Balancing and Hyperparameter Tuning Configuration
     model_training_use_smote: bool = Field(default=False, alias="MODEL_TRAINING_USE_SMOTE")
     model_training_class_weight_method: str = Field(default="inverse_frequency", alias="MODEL_TRAINING_CLASS_WEIGHT_METHOD")
@@ -75,7 +73,16 @@ class Settings(BaseSettings):
     model_training_quality_checks_enabled: bool = Field(default=True, alias="MODEL_TRAINING_QUALITY_CHECKS_ENABLED")
     
     # Time-Based Retraining Configuration (for market-data-only training)
-    model_retraining_interval_days: int = Field(default=7, alias="MODEL_RETRAINING_INTERVAL_DAYS")
+    model_retraining_interval_days: int = Field(
+        default=7, 
+        alias="MODEL_RETRAINING_INTERVAL_DAYS",
+        description="Interval in days between automatic retraining. Default: 7 days."
+    )
+    model_retraining_check_interval_hours: int = Field(
+        default=6,
+        alias="MODEL_RETRAINING_CHECK_INTERVAL_HOURS",
+        description="Interval in hours for checking if retraining is needed. Default: 6 hours."
+    )
     model_retraining_train_period_days: int = Field(default=30, alias="MODEL_RETRAINING_TRAIN_PERIOD_DAYS")
     model_retraining_validation_period_days: int = Field(default=7, alias="MODEL_RETRAINING_VALIDATION_PERIOD_DAYS")
     model_retraining_test_period_days: int = Field(default=1, alias="MODEL_RETRAINING_TEST_PERIOD_DAYS")
@@ -110,6 +117,13 @@ class Settings(BaseSettings):
         description="Critical gap threshold in seconds. Gaps exceeding this duration will trigger warnings. Default: 3600 (1 hour). Gaps larger than this may significantly affect temporal dependencies in model training."
     )
     
+    # Version Mismatch Auto-Retraining Configuration
+    version_mismatch_retraining_interval_hours: int = Field(
+        default=24,
+        alias="VERSION_MISMATCH_RETRAINING_INTERVAL_HOURS",
+        description="Minimum hours between automatic retraining triggers due to version mismatches. Default: 24 (once per day max). Prevents spam retraining when versions change frequently."
+    )
+    
     # Classification Threshold Configuration
     model_classification_threshold: float = Field(default=0.005, alias="MODEL_CLASSIFICATION_THRESHOLD")
     
@@ -118,6 +132,13 @@ class Settings(BaseSettings):
         default=0.001,
         alias="MODEL_REGRESSION_THRESHOLD",
         description="Threshold for regression models to convert predicted return to signal. If predicted_return > threshold: BUY, if < -threshold: SELL, else: HOLD. Default: 0.001 (0.1%)"
+    )
+    
+    # Classification Probability Difference Threshold (hysteresis for BUY/SELL signals)
+    model_min_probability_diff: float = Field(
+        default=0.05,
+        alias="MODEL_MIN_PROBABILITY_DIFF",
+        description="Minimum difference between buy_probability and sell_probability required to generate a signal. If |buy_probability - sell_probability| < min_probability_diff, signal is HOLD (None). This provides hysteresis to prevent signals when model is uncertain. Default: 0.05 (5%). Only applies to classification models without calibrated thresholds."
     )
     model_regression_max_expected_return: float = Field(
         default=0.01,
@@ -232,6 +253,23 @@ class Settings(BaseSettings):
         alias="SIGNAL_PROCESSING_DELAY_ALERT_THRESHOLD_SECONDS",
     )
 
+    # Target Evaluation Configuration
+    target_evaluation_base_interval_seconds: int = Field(
+        default=10,
+        alias="TARGET_EVALUATION_BASE_INTERVAL_SECONDS",
+        description="Base interval for target evaluation task (seconds). Default: 10",
+    )
+    target_evaluation_min_interval_seconds: int = Field(
+        default=5,
+        alias="TARGET_EVALUATION_MIN_INTERVAL_SECONDS",
+        description="Minimum interval when many pending targets (seconds). Default: 5",
+    )
+    target_evaluation_max_interval_seconds: int = Field(
+        default=60,
+        alias="TARGET_EVALUATION_MAX_INTERVAL_SECONDS",
+        description="Maximum interval when no pending targets (seconds). Default: 60",
+    )
+
     # Position Cache Configuration (for optimization)
     position_cache_enabled: bool = Field(default=True, alias="POSITION_CACHE_ENABLED")
     position_cache_ttl_seconds: int = Field(default=30, alias="POSITION_CACHE_TTL_SECONDS")
@@ -248,6 +286,7 @@ class Settings(BaseSettings):
     feature_service_dataset_build_timeout_seconds: int = Field(default=3600, alias="FEATURE_SERVICE_DATASET_BUILD_TIMEOUT_SECONDS")
     feature_service_dataset_metadata_timeout_seconds: float = Field(default=60.0, alias="FEATURE_SERVICE_DATASET_METADATA_TIMEOUT_SECONDS", description="Timeout for getting dataset metadata from Feature Service API")
     feature_service_dataset_download_timeout_seconds: float = Field(default=600.0, alias="FEATURE_SERVICE_DATASET_DOWNLOAD_TIMEOUT_SECONDS", description="Timeout for downloading dataset files from Feature Service API")
+    feature_service_target_computation_max_lookback_seconds: int = Field(default=300, alias="FEATURE_SERVICE_TARGET_COMPUTATION_MAX_LOOKBACK_SECONDS", description="Maximum lookback window for target computation data availability fallback in seconds (default: 300)")
     feature_service_dataset_poll_interval_seconds: int = Field(default=60, alias="FEATURE_SERVICE_DATASET_POLL_INTERVAL_SECONDS")
     feature_service_dataset_storage_path: str = Field(default="/datasets", alias="FEATURE_SERVICE_DATASET_STORAGE_PATH")
     
