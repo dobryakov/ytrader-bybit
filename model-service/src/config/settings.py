@@ -270,11 +270,6 @@ class Settings(BaseSettings):
     stop_loss_enabled: bool = Field(default=True, alias="STOP_LOSS_ENABLED")
     stop_loss_threshold_pct: float = Field(default=-2.0, alias="STOP_LOSS_THRESHOLD_PCT")
 
-    # Trailing Stop Configuration
-    trailing_stop_enabled: bool = Field(default=False, alias="TRAILING_STOP_ENABLED")
-    trailing_stop_activation_pct: float = Field(default=2.0, alias="TRAILING_STOP_ACTIVATION_PCT")
-    trailing_stop_distance_pct: float = Field(default=1.0, alias="TRAILING_STOP_DISTANCE_PCT")
-
     # Time-Based Exit Configuration
     time_based_exit_enabled: bool = Field(default=False, alias="TIME_BASED_EXIT_ENABLED")
     time_based_exit_max_hours: int = Field(default=24, alias="TIME_BASED_EXIT_MAX_HOURS")

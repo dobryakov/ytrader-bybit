@@ -1286,7 +1286,7 @@ class OrderExecutor:
         quantity: Decimal,
         price: Optional[Decimal],
     ) -> dict:
-        """Prepare order parameters for Bybit API.
+        """Prepare order parameters for Bybit API and optionally configure exchange TP/SL/trailing.
 
         Args:
             signal: Trading signal
@@ -1527,14 +1527,38 @@ class OrderExecutor:
                 if sl_price:
                     params["stopLoss"] = str(sl_price)
                     params["slTriggerBy"] = settings.order_manager_tp_sl_trigger_by
-                    logger.info(
-                        "stop_loss_added_to_order",
+
+        # Optionally configure exchange-level trailing stop via Set Trading Stop.
+        # IMPORTANT: This must not affect order parameters used in TP/SL tests,
+        # so it only runs when explicitly enabled in settings (disabled by default).
+        if settings.order_manager_exchange_trailing_stop_enabled:
+            try:
+                # Use same entry price we used for TP/SL calculation if available.
+                # For Market orders, this is current market price; for Limit orders, limit price.
+                if order_type == "Market" and price is None:
+                    entry_price_for_trailing = await selector._get_current_market_price(
                         asset=asset,
-                        sl_price=float(sl_price),
-                        entry_price=float(entry_price_decimal),
-                        trigger_by=settings.order_manager_tp_sl_trigger_by,
+                        fallback_price=signal.market_data_snapshot.price,
                         trace_id=signal.trace_id,
                     )
+                else:
+                    entry_price_for_trailing = price if price else signal.market_data_snapshot.price
+
+                await self._maybe_set_exchange_trailing_stop(
+                    asset=asset,
+                    side_api=side_api,
+                    entry_price=entry_price_for_trailing,
+                    trace_id=signal.trace_id,
+                )
+            except Exception as e:
+                logger.error(
+                    "exchange_trailing_stop_configuration_failed",
+                    asset=asset,
+                    side=side_api,
+                    error=str(e),
+                    trace_id=signal.trace_id,
+                    exc_info=True,
+                )
 
         return params
 
@@ -1766,6 +1790,139 @@ class OrderExecutor:
                 error=str(e),
                 reason="Failed to round price to tick size, using original price",
             )
+
+        return params
+
+    async def _maybe_set_exchange_trailing_stop(
+        self,
+        asset: str,
+        side_api: str,
+        entry_price: Decimal,
+        trace_id: Optional[str] = None,
+    ) -> None:
+        """
+        Optionally set exchange-level trailing stop on Bybit using Set Trading Stop.
+
+        This uses ORDERMANAGER_EXCHANGE_TRAILING_STOP_ENABLED and related settings to
+        compute activePrice and trailingStop from entry_price.
+        """
+        if not settings.order_manager_exchange_trailing_stop_enabled:
+            return
+
+        from ..utils.tracing import get_or_create_trace_id
+
+        trace_id = trace_id or get_or_create_trace_id()
+
+        # Check side applicability
+        apply_side = settings.order_manager_trailing_stop_apply_to_side.upper()
+        is_long = side_api == "Buy"
+        is_short = side_api == "Sell"
+
+        if apply_side == "LONG" and not is_long:
+            logger.debug(
+                "exchange_trailing_stop_skipped_side",
+                asset=asset,
+                side=side_api,
+                apply_side=apply_side,
+                trace_id=trace_id,
+            )
+            return
+        if apply_side == "SHORT" and not is_short:
+            logger.debug(
+                "exchange_trailing_stop_skipped_side",
+                asset=asset,
+                side=side_api,
+                apply_side=apply_side,
+                trace_id=trace_id,
+            )
+            return
+
+        activation_pct = settings.order_manager_trailing_stop_activation_pct
+        distance_pct = settings.order_manager_trailing_stop_distance_pct
+
+        if activation_pct <= 0 or distance_pct <= 0:
+            logger.warning(
+                "exchange_trailing_stop_invalid_config",
+                asset=asset,
+                activation_pct=float(activation_pct),
+                distance_pct=float(distance_pct),
+                trace_id=trace_id,
+            )
+            return
+
+        from decimal import ROUND_HALF_UP
+
+        # For long: price goes up to take profit, trailing stop trails below the high.
+        #   activePrice = entry * (1 + act/100), trailingStop = entry * dist/100
+        #
+        # For short: price goes down to take profit, trailing stop trails above the low.
+        #   activePrice = entry * (1 - act/100), trailingStop = entry * dist/100
+        if is_long:
+            active_price = entry_price * (Decimal("1") + Decimal(str(activation_pct)) / Decimal("100"))
+        else:  # short
+            active_price = entry_price * (Decimal("1") - Decimal(str(activation_pct)) / Decimal("100"))
+
+        trailing_stop_abs = entry_price * (Decimal(str(distance_pct)) / Decimal("100"))
+
+        active_price = active_price.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        trailing_stop_abs = trailing_stop_abs.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+        params = {
+            "category": "linear",
+            "symbol": asset,
+            "tpslMode": "Full",  # Required: Full or Partial. Using Full for trailing stop.
+            "positionIdx": 0,  # Required: 0 for one-way mode, 1 for hedge-mode Buy, 2 for hedge-mode Sell
+            "trailingStop": str(trailing_stop_abs),
+            "activePrice": str(active_price),
+        }
+
+        logger.info(
+            "exchange_trailing_stop_set_request",
+            asset=asset,
+            side=side_api,
+            entry_price=float(entry_price),
+            active_price=float(active_price),
+            trailing_stop=float(trailing_stop_abs),
+            activation_pct=float(activation_pct),
+            distance_pct=float(distance_pct),
+            trace_id=trace_id,
+        )
+
+        try:
+            bybit_client = get_bybit_client()
+            response = await bybit_client.set_trading_stop(params=params)
+            ret_code = response.get("retCode", 0)
+            ret_msg = response.get("retMsg", "")
+
+            if ret_code != 0:
+                logger.warning(
+                    "exchange_trailing_stop_set_failed",
+                    asset=asset,
+                    side=side_api,
+                    ret_code=ret_code,
+                    ret_msg=ret_msg,
+                    params=params,
+                    trace_id=trace_id,
+                )
+                return
+
+            logger.info(
+                "exchange_trailing_stop_set_success",
+                asset=asset,
+                side=side_api,
+                params=params,
+                trace_id=trace_id,
+            )
+        except Exception as e:
+            logger.error(
+                "exchange_trailing_stop_set_exception",
+                asset=asset,
+                side=side_api,
+                error=str(e),
+                trace_id=trace_id,
+                exc_info=True,
+            )
+            # Do not fail order creation because trailing stop failed
             return price
 
     async def _validate_and_adjust_price_for_limit_ratio(

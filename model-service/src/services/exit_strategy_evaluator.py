@@ -13,7 +13,6 @@ from ..config.logging import get_logger
 from .exit_rules.base import ExitRule
 from .exit_rules.take_profit_rule import TakeProfitRule
 from .exit_rules.stop_loss_rule import StopLossRule
-from .exit_rules.trailing_stop_rule import TrailingStopRule
 from .exit_rules.time_based_exit_rule import TimeBasedExitRule
 from ..config.settings import settings
 
@@ -48,15 +47,6 @@ class ExitStrategyEvaluator:
                 StopLossRule(
                     threshold_pct=settings.stop_loss_threshold_pct,
                     enabled=settings.stop_loss_enabled,
-                )
-            )
-
-        if settings.trailing_stop_enabled:
-            self.rules.append(
-                TrailingStopRule(
-                    activation_pct=settings.trailing_stop_activation_pct,
-                    distance_pct=settings.trailing_stop_distance_pct,
-                    enabled=settings.trailing_stop_enabled,
                 )
             )
 

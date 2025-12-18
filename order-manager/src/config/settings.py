@@ -177,6 +177,28 @@ class Settings(BaseSettings):
         description="TP/SL trigger method: 'LastPrice', 'IndexPrice', or 'MarkPrice'. Default: 'LastPrice'"
     )
 
+    # Exchange Trailing Stop Configuration (Bybit Set Trading Stop)
+    order_manager_exchange_trailing_stop_enabled: bool = Field(
+        default=False,
+        alias="ORDERMANAGER_EXCHANGE_TRAILING_STOP_ENABLED",
+        description="Enable exchange-level trailing stop via Bybit Set Trading Stop API. If True, order-manager will set trailingStop/activePrice on positions after entry."
+    )
+    order_manager_trailing_stop_activation_pct: float = Field(
+        default=2.0,
+        alias="ORDERMANAGER_TRAILING_STOP_ACTIVATION_PCT",
+        description="Trailing stop activation threshold as percentage of entry price. For long positions: activePrice ~= entry_price * (1 + pct/100)."
+    )
+    order_manager_trailing_stop_distance_pct: float = Field(
+        default=1.0,
+        alias="ORDERMANAGER_TRAILING_STOP_DISTANCE_PCT",
+        description="Trailing stop distance as percentage of entry price. Absolute trailingStop value is derived as entry_price * pct/100."
+    )
+    order_manager_trailing_stop_apply_to_side: str = Field(
+        default="LONG",
+        alias="ORDERMANAGER_TRAILING_STOP_APPLY_TO_SIDE",
+        description="Which side to apply trailing stop to: 'LONG', 'SHORT', or 'BOTH'. Default: 'LONG'."
+    )
+
     @field_validator("order_manager_log_level")
     @classmethod
     def validate_log_level(cls, v: str) -> str:

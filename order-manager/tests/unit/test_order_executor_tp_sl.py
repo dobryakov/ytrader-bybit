@@ -389,12 +389,24 @@ class TestPrepareBybitOrderParamsWithTpSl:
                 with patch.object(settings, "order_manager_sl_enabled", True):
                     with patch.object(settings, "order_manager_tp_sl_priority", "settings"):
                         with patch.object(settings, "order_manager_tp_sl_trigger_by", "LastPrice"):
-                            params = await order_executor._prepare_bybit_order_params(
-                                signal=sample_signal_buy,
-                                order_type="Market",
-                                quantity=Decimal("0.02"),
-                                price=None,
-                            )
+                            # Ensure exchange trailing stop is disabled so that
+                            # TP/SL calculations use the expected entry_price from test.
+                            with patch.object(
+                                settings,
+                                "order_manager_exchange_trailing_stop_enabled",
+                                False,
+                            ):
+                                # Avoid real market price fetch in unit test: use snapshot price (50000.0)
+                                with patch(
+                                    "src.services.order_type_selector.OrderTypeSelector._get_current_market_price",
+                                    new=AsyncMock(return_value=sample_signal_buy.market_data_snapshot.price),
+                                ):
+                                    params = await order_executor._prepare_bybit_order_params(
+                                        signal=sample_signal_buy,
+                                        order_type="Market",
+                                        quantity=Decimal("0.02"),
+                                        price=None,
+                                    )
                             
                             assert "takeProfit" in params
                             assert "stopLoss" in params

@@ -129,23 +129,26 @@ class BybitClient:
         return signature
 
     def _generate_signature_for_post(
-        self, json_body: str, timestamp: int, recv_window: str
+        self, json_body: str, timestamp: int, recv_window: str, query_string: str = ""
     ) -> str:
         """
         Generate signature for POST requests.
         
-        Rule: timestamp + api_key + recv_window + jsonBodyString
+        Rule: timestamp + api_key + recv_window + queryString + jsonBodyString
+        If query string is empty, uses: timestamp + api_key + recv_window + jsonBodyString
         
         Args:
             json_body: JSON body as string
             timestamp: Request timestamp in milliseconds
             recv_window: Receive window value
+            query_string: Query string parameters (if any)
             
         Returns:
             Hex-encoded signature string
         """
-        # Create signature string: timestamp + api_key + recv_window + jsonBodyString
-        signature_string = f"{timestamp}{self.api_key}{recv_window}{json_body}"
+        # Create signature string: timestamp + api_key + recv_window + queryString + jsonBodyString
+        # If query_string is empty, it's just timestamp + api_key + recv_window + jsonBodyString
+        signature_string = f"{timestamp}{self.api_key}{recv_window}{query_string}{json_body}"
         
         # Generate HMAC-SHA256 signature
         signature = hmac.new(
@@ -214,11 +217,35 @@ class BybitClient:
         
         if authenticated:
             # Generate signature based on request type
-            if method.upper() == "POST" and json_data:
-                # POST: timestamp + api_key + recv_window + jsonBodyString
+            if method.upper() == "POST":
                 import json
-                json_body_string = json.dumps(json_data, separators=(",", ":"), sort_keys=False)
-                signature = self._generate_signature_for_post(json_body_string, timestamp, recv_window)
+                # Build query string if params exist
+                query_string = ""
+                if request_params:
+                    sorted_params = sorted([(k, str(v)) for k, v in request_params.items() if v is not None])
+                    query_string = "&".join([f"{k}={v}" for k, v in sorted_params])
+                
+                # Build JSON body string if json_data exists
+                json_body_string = ""
+                if json_data:
+                    json_body_string = json.dumps(json_data, separators=(",", ":"), sort_keys=False)
+                
+                # For POST requests:
+                # - If both query string and JSON body exist: timestamp + api_key + recv_window + queryString + jsonBodyString
+                # - If only query string exists (no JSON body): timestamp + api_key + recv_window + queryString (same as GET)
+                # - If only JSON body exists (no query): timestamp + api_key + recv_window + jsonBodyString
+                if query_string and json_body_string:
+                    # Both query and JSON body
+                    signature = self._generate_signature_for_post(json_body_string, timestamp, recv_window, query_string)
+                elif query_string and not json_body_string:
+                    # Only query string (like GET)
+                    signature = self._generate_signature_for_get(request_params, timestamp, recv_window)
+                elif json_body_string and not query_string:
+                    # Only JSON body
+                    signature = self._generate_signature_for_post(json_body_string, timestamp, recv_window, "")
+                else:
+                    # No params and no body - use GET signature format
+                    signature = self._generate_signature_for_get({}, timestamp, recv_window)
             else:
                 # GET: timestamp + api_key + recv_window + queryString
                 signature = self._generate_signature_for_get(request_params, timestamp, recv_window)
@@ -249,14 +276,24 @@ class BybitClient:
                 )
 
                 # Make request
-                # For POST: params in query string, json_data in body, auth in headers
+                # For POST with JSON body: no params in query string, json_data in body, auth in headers
+                # For POST with query params only: params in query string, auth in headers
                 # For GET: params in query string, auth in headers
-                response = await client.request(
-                    method=method,
-                    url=endpoint,
-                    params=request_params,  # Query string parameters (no auth params)
-                    **request_kwargs,  # JSON body and headers if present
-                )
+                if method.upper() == "POST" and json_data:
+                    # POST with JSON body: don't pass params to avoid query string
+                    response = await client.request(
+                        method=method,
+                        url=endpoint,
+                        **request_kwargs,  # JSON body and headers if present
+                    )
+                else:
+                    # GET or POST with query params only: pass params for query string
+                    response = await client.request(
+                        method=method,
+                        url=endpoint,
+                        params=request_params,  # Query string parameters (no auth params)
+                        **request_kwargs,  # Headers if present
+                    )
 
                 # Log response
                 logger.debug(
@@ -358,6 +395,24 @@ class BybitClient:
         """Make POST request to Bybit API."""
         response = await self._request_with_retry("POST", endpoint, params=params, json_data=json_data, authenticated=authenticated)
         return response.json()
+
+    async def set_trading_stop(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Call Bybit v5 Set Trading Stop endpoint for position-level TP/SL/Trailing Stop.
+
+        Expected params should include at least:
+        - category: market category (e.g. 'linear')
+        - symbol: trading symbol (e.g. 'BTCUSDT')
+        - positionIdx or side: position identifier depending on market mode
+        - trailingStop: trailing distance (absolute value in price units)
+        - activePrice: activation price for trailing stop
+        
+        Note: Bybit v5 Trading Stop endpoint accepts parameters in JSON body for POST requests.
+        Signature format: timestamp + api_key + recv_window + jsonBodyString
+        """
+        # For Bybit v5, Trading Stop is a POST with JSON body (like order/create)
+        # Signature format: timestamp + api_key + recv_window + jsonBodyString
+        return await self.post("/v5/position/trading-stop", params=None, json_data=params, authenticated=True)
 
     async def close(self) -> None:
         """Close HTTP client."""

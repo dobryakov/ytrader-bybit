@@ -8,7 +8,6 @@ from src.models.exit_decision import ExitDecision
 from src.models.position_state_tracker import PositionState
 from src.services.exit_rules.take_profit_rule import TakeProfitRule
 from src.services.exit_rules.stop_loss_rule import StopLossRule
-from src.services.exit_rules.trailing_stop_rule import TrailingStopRule
 from src.services.exit_rules.time_based_exit_rule import TimeBasedExitRule
 
 
@@ -107,80 +106,6 @@ async def test_stop_loss_rule_not_triggered():
 
     assert decision is None
 
-
-@pytest.mark.asyncio
-async def test_trailing_stop_rule_activation():
-    """Test trailing stop rule activates after profit threshold."""
-    rule = TrailingStopRule(activation_pct=2.0, distance_pct=1.0, enabled=True)
-
-    entry_time = datetime.utcnow()
-    position_state = PositionState(
-        asset="BTCUSDT",
-        entry_price=50000.0,
-        entry_time=entry_time,
-        peak_price=51000.0,
-        highest_unrealized_pnl=2.0,
-    )
-
-    # First, profit reaches activation threshold
-    position_data = {
-        "asset": "BTCUSDT",
-        "size": 1000.0,
-        "unrealized_pnl_pct": 2.5,  # Above activation
-    }
-
-    decision = await rule.evaluate(position_data, position_state)
-
-    # Should not exit yet (price is rising)
-    assert decision is None
-    assert position_state.peak_price >= 51000.0  # Peak updated
-
-
-@pytest.mark.asyncio
-async def test_trailing_stop_rule_triggered():
-    """Test trailing stop rule triggers when price drops."""
-    rule = TrailingStopRule(activation_pct=2.0, distance_pct=1.0, enabled=True)
-
-    entry_time = datetime.utcnow()
-    entry_price = 50000.0
-    # Set peak price manually to 51500 (3% profit from 50000)
-    # This simulates a position that reached 3% profit and is now dropping
-    position_state = PositionState(
-        asset="BTCUSDT",
-        entry_price=entry_price,
-        entry_time=entry_time,
-        peak_price=51500.0,  # Peak at 3% profit (50000 * 1.03)
-        highest_unrealized_pnl=3.0,
-    )
-
-    # First, activate trailing stop with profit above activation threshold
-    # This ensures trailing stop is active
-    position_data_activate = {
-        "asset": "BTCUSDT",
-        "size": 1000.0,
-        "unrealized_pnl_pct": 2.5,  # Above activation (2.0%)
-    }
-    await rule.evaluate(position_data_activate, position_state)
-    
-    # Manually set peak back to 51500 and highest PnL to ensure trailing stop is active
-    position_state.peak_price = 51500.0
-    position_state.highest_unrealized_pnl = 3.0
-    
-    # Now price drops below trailing stop
-    # Trailing stop price = 51500 * (1 - 0.01) = 50985
-    # Current price at 1.0% = 50000 * 1.01 = 50500
-    # 50500 < 50985, so trailing stop should trigger
-    position_data = {
-        "asset": "BTCUSDT",
-        "size": 1000.0,
-        "unrealized_pnl_pct": 1.0,  # Well below trailing stop threshold
-    }
-
-    decision = await rule.evaluate(position_data, position_state)
-
-    assert decision is not None, f"Trailing stop should trigger. Peak: {position_state.peak_price}, Current PnL: 1.5%"
-    assert decision.rule_triggered == "trailing_stop"
-    assert decision.exit_amount == 1000.0
 
 
 @pytest.mark.asyncio
