@@ -51,6 +51,7 @@ class Settings(BaseSettings):
     position_manager_snapshot_interval: int = Field(default=3600, alias="POSITION_MANAGER_SNAPSHOT_INTERVAL")
     position_manager_snapshot_retention_days: int = Field(default=365, alias="POSITION_MANAGER_SNAPSHOT_RETENTION_DAYS")
     position_manager_validation_interval: int = Field(default=1800, alias="POSITION_MANAGER_VALIDATION_INTERVAL")
+    position_manager_bybit_sync_interval: int = Field(default=3600, alias="POSITION_MANAGER_BYBIT_SYNC_INTERVAL")
     position_manager_metrics_cache_ttl: int = Field(default=10, alias="POSITION_MANAGER_METRICS_CACHE_TTL")
 
     # Position Update Strategy
@@ -111,6 +112,14 @@ class Settings(BaseSettings):
         """Validate validation interval is positive."""
         if v <= 0:
             raise ValueError("Validation interval must be positive")
+        return v
+
+    @field_validator("position_manager_bybit_sync_interval")
+    @classmethod
+    def validate_bybit_sync_interval(cls, v: int) -> int:
+        """Validate Bybit sync interval is positive."""
+        if v <= 0:
+            raise ValueError("Bybit sync interval must be positive")
         return v
 
     @field_validator("position_manager_metrics_cache_ttl")

@@ -15,6 +15,7 @@ from ..consumers import OrderPositionConsumer, WebSocketPositionConsumer
 from ..exceptions import QueueError
 from ..services.ws_gateway_client import WSGatewayClient
 from ..tasks import (
+    PositionBybitSyncTask,
     PositionSnapshotCleanupTask,
     PositionSnapshotTask,
     PositionValidationTask,
@@ -36,6 +37,7 @@ _ws_consumer: Optional[WebSocketPositionConsumer] = None
 _order_consumer: Optional[OrderPositionConsumer] = None
 _snapshot_task: Optional[PositionSnapshotTask] = None
 _validation_task: Optional[PositionValidationTask] = None
+_bybit_sync_task: Optional[PositionBybitSyncTask] = None
 
 
 def create_app() -> FastAPI:
@@ -114,6 +116,10 @@ def create_app() -> FastAPI:
             # Start periodic validation task (US5 T087/T087a/T091).
             _validation_task = PositionValidationTask()
             await _validation_task.start()
+
+            # Start periodic Bybit sync task
+            _bybit_sync_task = PositionBybitSyncTask()
+            await _bybit_sync_task.start()
         except QueueError as e:
             logger.error(
                 "rabbitmq_startup_connection_failed_non_fatal",
@@ -128,7 +134,10 @@ def create_app() -> FastAPI:
         logger.info("app_shutdown_begin", service=settings.position_manager_service_name)
 
         # Stop consumers and background tasks first so they no longer use connections.
-        global _ws_consumer, _order_consumer, _snapshot_task, _validation_task
+        global _ws_consumer, _order_consumer, _snapshot_task, _validation_task, _bybit_sync_task
+        if _bybit_sync_task is not None:
+            await _bybit_sync_task.stop()
+            _bybit_sync_task = None
         if _validation_task is not None:
             await _validation_task.stop()
             _validation_task = None
