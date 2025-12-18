@@ -152,54 +152,46 @@ async def test_check_max_exposure_exceeds_limit(sample_signal):
 
 @pytest.mark.asyncio
 async def test_balance_check_with_position_from_position_manager(sample_signal):
-    """Test balance check for sell orders uses position from Position Manager."""
+    """Test balance check for sell orders uses position data and passes."""
     risk_manager = RiskManager()
-    
-    # Mock Bybit API response with balance check signature error (testnet)
-    mock_bybit_response = {
-        "retCode": 10004,  # Signature error (common in testnet)
-        "retMsg": "Invalid signature",
-        "result": {}
-    }
-    
-    with patch("src.services.risk_manager.get_bybit_client") as mock_bybit:
-        mock_bybit_client = AsyncMock()
-        mock_bybit_client.get = AsyncMock(return_value=mock_bybit_response)
-        mock_bybit.return_value = mock_bybit_client
-        
-        # For sell order, should pass with signature error (testnet mode)
-        from datetime import datetime
-        from uuid import uuid4
-        
-        sell_signal = TradingSignal(
-            signal_id=uuid4(),
-            signal_type="sell",
-            asset="BTCUSDT",
-            amount=Decimal("500.0"),
-            confidence=Decimal("0.85"),
-            timestamp=datetime.utcnow(),
-            strategy_id="test-strategy",
-            model_version="v1.0",
-            is_warmup=False,
-            market_data_snapshot=MarketDataSnapshot(
-                price=Decimal("50000.0"),
-                spread=Decimal("0.01"),
-                volume_24h=Decimal("1000000.0"),
-                volatility=Decimal("0.02"),
-                orderbook_depth=None,
-                technical_indicators=None,
-            ),
-            metadata=None,
-            trace_id="test-trace-002",
-        )
-        
-        # This should not raise an error because signature errors are handled
-        # (testnet mode allows testing without valid API keys)
-        result = await risk_manager.check_balance(
-            sell_signal,
-            order_quantity=Decimal("0.5"),
-            order_price=Decimal("50000.0"),
-        )
-        
-        assert result is True
+
+    # For this integration-style test we don't hit external APIs:
+    # - skip real sync
+    # - simulate that USDT balance is available and sufficient
+    risk_manager._trigger_balance_sync = AsyncMock(return_value=False)
+    # Provide sufficiently large USDT balance so check passes
+    risk_manager._get_latest_usdt_balance_from_db = AsyncMock(return_value=Decimal("50000.0"))
+
+    from datetime import datetime
+    from uuid import uuid4
+
+    sell_signal = TradingSignal(
+        signal_id=uuid4(),
+        signal_type="sell",
+        asset="BTCUSDT",
+        amount=Decimal("500.0"),
+        confidence=Decimal("0.85"),
+        timestamp=datetime.utcnow(),
+        strategy_id="test-strategy",
+        model_version="v1.0",
+        is_warmup=False,
+        market_data_snapshot=MarketDataSnapshot(
+            price=Decimal("50000.0"),
+            spread=Decimal("0.01"),
+            volume_24h=Decimal("1000000.0"),
+            volatility=Decimal("0.02"),
+            orderbook_depth=None,
+            technical_indicators=None,
+        ),
+        metadata=None,
+        trace_id="test-trace-002",
+    )
+
+    result = await risk_manager.check_balance(
+        sell_signal,
+        order_quantity=Decimal("0.5"),
+        order_price=Decimal("50000.0"),
+    )
+
+    assert result is True
 

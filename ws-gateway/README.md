@@ -62,9 +62,26 @@ A microservice that establishes and maintains a single authenticated WebSocket c
 
 4. Run migrations:
    ```bash
-   # Apply migrations to database
-   psql -h localhost -U ytrader -d ytrader -f migrations/001_create_subscriptions_table.sql
-   psql -h localhost -U ytrader -d ytrader -f migrations/002_create_account_balances_table.sql
+   # Apply migrations to shared PostgreSQL using ws-gateway container and psql
+   # Example for the first migrations:
+   docker compose exec ws-gateway sh -c \
+     'cd /app/migrations && PGPASSWORD="$POSTGRES_PASSWORD" psql \
+        -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" \
+        -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+        -v ON_ERROR_STOP=1 -f 001_create_subscriptions_table.sql'
+
+   docker compose exec ws-gateway sh -c \
+     'cd /app/migrations && PGPASSWORD="$POSTGRES_PASSWORD" psql \
+        -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" \
+        -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+        -v ON_ERROR_STOP=1 -f 002_create_account_balances_table.sql'
+
+   # Аналогично можно применять любые последующие миграции, например:
+   docker compose exec ws-gateway sh -c \
+     'cd /app/migrations && PGPASSWORD="$POSTGRES_PASSWORD" psql \
+        -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" \
+        -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+        -v ON_ERROR_STOP=1 -f 026_create_bybit_fee_rates_table.sql'
    ```
 
 5. Run the service:

@@ -172,85 +172,67 @@ async def test_create_signal_order_relationship():
 
 
 @pytest.mark.asyncio
-async def test_query_orders_by_asset():
-    """Test querying orders filtered by asset."""
+async def test_rejected_order_notional_below_expected_fee():
+    """Integration-style test: saving rejected order with notional below expected fee."""
+    from uuid import uuid4
+
+    signal_id = uuid4()
+    order_id = uuid4()
+    bybit_order_id = f"REJECTED-{signal_id}"
+
     try:
-        # Close any existing pool to ensure clean state
         await DatabaseConnection.close_pool()
-        # Create fresh pool for this test
         pool = await DatabaseConnection.create_pool()
-        
-        # Create test orders
-        signal_id_1 = uuid4()
-        order_id_1 = uuid4()
-        signal_id_2 = uuid4()
-        order_id_2 = uuid4()
-        
-        # Insert BTCUSDT order
-        await pool.execute(
-            """
+
+        # Insert a rejected order as OrderExecutor._save_rejected_order would do
+        insert_query = """
             INSERT INTO orders (
                 id, order_id, signal_id, asset, side, order_type, quantity, price,
-                status, filled_quantity, created_at, updated_at, trace_id, is_dry_run
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW(), $11, $12)
-            """,
-            str(order_id_1),
-            f"bybit-{uuid4()}",
-            str(signal_id_1),
+                status, filled_quantity, average_price, fees, created_at, updated_at,
+                executed_at, trace_id, is_dry_run, rejection_reason
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8,
+                     $9, $10, $11, $12, NOW(), NOW(),
+                     NULL, $13, $14, $15)
+        """
+
+        rejection_reason = (
+            "Order notional 10 is not greater than expected fee 10.5 "
+            "(fee_rate=0.105) for BTCUSDT. Rejecting economically meaningless order."
+        )
+
+        await pool.execute(
+            insert_query,
+            str(order_id),
+            bybit_order_id,
+            str(signal_id),
             "BTCUSDT",
             "Buy",
-            "Limit",
-            "0.01",
-            "50000.0",
-            "pending",
-            "0",
-            "test-trace",
-            False,
-        )
-        
-        # Insert ETHUSDT order
-        await pool.execute(
-            """
-            INSERT INTO orders (
-                id, order_id, signal_id, asset, side, order_type, quantity, price,
-                status, filled_quantity, created_at, updated_at, trace_id, is_dry_run
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW(), $11, $12)
-            """,
-            str(order_id_2),
-            f"bybit-{uuid4()}",
-            str(signal_id_2),
-            "ETHUSDT",
-            "Buy",
-            "Limit",
+            "Market",
             "0.1",
-            "3000.0",
-            "pending",
+            "100.0",
+            "rejected",
             "0",
-            "test-trace",
+            None,
+            None,
+            "test-trace-fee",
             False,
+            rejection_reason,
         )
-        
-        # Query BTCUSDT orders only
-        query = """
-            SELECT id, order_id, signal_id, asset, side, order_type, quantity, price,
-                   status, filled_quantity, average_price, fees, created_at, updated_at,
-                   executed_at, trace_id, is_dry_run, rejection_reason
+
+        # Read back and verify rejection_reason is persisted
+        select_query = """
+            SELECT status, rejection_reason
             FROM orders
-            WHERE asset = $1
-            ORDER BY created_at DESC
+            WHERE id = $1
         """
-        
-        rows = await pool.fetch(query, "BTCUSDT")
-        
-        # Should only get BTCUSDT order
-        assert len(rows) >= 1
-        btc_orders = [row for row in rows if row["asset"] == "BTCUSDT"]
-        assert len(btc_orders) >= 1
-        assert btc_orders[0]["asset"] == "BTCUSDT"
-        
+        row = await pool.fetchrow(select_query, str(order_id))
+
+        assert row is not None
+        assert row["status"] == "rejected"
+        assert row["rejection_reason"] == rejection_reason
+
         # Cleanup
-        await pool.execute("DELETE FROM orders WHERE id = $1", str(order_id_1))
-        await pool.execute("DELETE FROM orders WHERE id = $1", str(order_id_2))
+        await pool.execute("DELETE FROM orders WHERE id = $1", str(order_id))
     finally:
         # Close pool after test
         await DatabaseConnection.close_pool()

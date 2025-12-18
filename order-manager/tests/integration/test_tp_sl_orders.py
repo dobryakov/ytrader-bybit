@@ -127,7 +127,7 @@ async def test_prepare_bybit_params_with_tp_sl_from_settings(
 ):
     """Test that TP/SL from settings are correctly added to Bybit params."""
     order_executor.instrument_info_manager.get_instrument.return_value = mock_instrument_info
-    
+
     with patch.object(settings, "order_manager_tp_sl_enabled", True):
         with patch.object(settings, "order_manager_tp_enabled", True):
             with patch.object(settings, "order_manager_sl_enabled", True):
@@ -135,19 +135,26 @@ async def test_prepare_bybit_params_with_tp_sl_from_settings(
                     with patch.object(settings, "order_manager_sl_threshold_pct", -2.0):
                         with patch.object(settings, "order_manager_tp_sl_priority", "settings"):
                             with patch.object(settings, "order_manager_tp_sl_trigger_by", "LastPrice"):
-                                params = await order_executor._prepare_bybit_order_params(
-                                    signal=sample_signal_without_metadata,
-                                    order_type="Market",
-                                    quantity=Decimal("0.02"),
-                                    price=None,
-                                )
-                                
+                                # Ensure current market price used for TP/SL equals snapshot price for deterministic tests
+                                with patch(
+                                    "src.services.order_type_selector.OrderTypeSelector._get_current_market_price",
+                                    new=AsyncMock(
+                                        return_value=sample_signal_without_metadata.market_data_snapshot.price
+                                    ),
+                                ):
+                                    params = await order_executor._prepare_bybit_order_params(
+                                        signal=sample_signal_without_metadata,
+                                        order_type="Market",
+                                        quantity=Decimal("0.02"),
+                                        price=None,
+                                    )
+
                                 # Verify TP/SL are in params
                                 assert "takeProfit" in params
                                 assert "stopLoss" in params
                                 assert params["tpTriggerBy"] == "LastPrice"
                                 assert params["slTriggerBy"] == "LastPrice"
-                                
+
                                 # Verify calculated values (entry_price = 50000.0)
                                 # TP = 50000 * (1 + 0.03) = 51500.0
                                 # SL = 50000 * (1 - 0.02) = 49000.0
@@ -286,7 +293,7 @@ async def test_prepare_bybit_params_sell_order_tp_sl(
         metadata=None,
         trace_id=None,
     )
-    
+
     with patch.object(settings, "order_manager_tp_sl_enabled", True):
         with patch.object(settings, "order_manager_tp_enabled", True):
             with patch.object(settings, "order_manager_sl_enabled", True):
@@ -294,17 +301,21 @@ async def test_prepare_bybit_params_sell_order_tp_sl(
                     with patch.object(settings, "order_manager_sl_threshold_pct", -2.0):
                         with patch.object(settings, "order_manager_tp_sl_priority", "settings"):
                             with patch.object(settings, "order_manager_tp_sl_trigger_by", "LastPrice"):
-                                params = await order_executor._prepare_bybit_order_params(
-                                    signal=sell_signal,
-                                    order_type="Market",
-                                    quantity=Decimal("0.1"),
-                                    price=None,
-                                )
-                                
+                                with patch(
+                                    "src.services.order_type_selector.OrderTypeSelector._get_current_market_price",
+                                    new=AsyncMock(return_value=sell_signal.market_data_snapshot.price),
+                                ):
+                                    params = await order_executor._prepare_bybit_order_params(
+                                        signal=sell_signal,
+                                        order_type="Market",
+                                        quantity=Decimal("0.1"),
+                                        price=None,
+                                    )
+
                                 # Verify TP/SL are in params
                                 assert "takeProfit" in params
                                 assert "stopLoss" in params
-                                
+
                                 # For sell orders:
                                 # TP = 3000 * (1 - 0.03) = 2910.0 (lower price = profit)
                                 # SL = 3000 * (1 + 0.02) = 3060.0 (higher price = loss)

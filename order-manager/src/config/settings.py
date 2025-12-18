@@ -99,6 +99,23 @@ class Settings(BaseSettings):
         default=3600, alias="ORDERMANAGER_INSTRUMENT_INFO_REFRESH_INTERVAL"
     )
 
+    # Fee rates cache configuration
+    order_manager_fee_data_ttl_seconds: int = Field(
+        default=3600,
+        alias="ORDERMANAGER_FEE_DATA_TTL_SECONDS",
+        description="TTL in seconds for cached Bybit fee rates in bybit_fee_rates table",
+    )
+    order_manager_max_fallback_fee_rate: float = Field(
+        default=0.001,
+        alias="ORDERMANAGER_MAX_FALLBACK_FEE_RATE",
+        description="Conservative max fee rate (e.g., 0.001 = 0.1%) used when live fee data is unavailable",
+    )
+    order_manager_enable_min_notional_fee_check: bool = Field(
+        default=True,
+        alias="ORDERMANAGER_ENABLE_MIN_NOTIONAL_FEE_CHECK",
+        description="Enable check that rejects orders whose notional value is less than or equal to expected fee",
+    )
+
     # Pending Order Cancellation Configuration
     order_manager_pending_order_timeout_minutes: int = Field(
         default=5, alias="ORDERMANAGER_PENDING_ORDER_TIMEOUT_MINUTES",
@@ -234,6 +251,22 @@ class Settings(BaseSettings):
         """Validate instruments-info refresh interval is positive."""
         if v <= 0:
             raise ValueError("Instruments-info refresh interval must be positive")
+        return v
+
+    @field_validator("order_manager_fee_data_ttl_seconds")
+    @classmethod
+    def validate_fee_data_ttl_seconds(cls, v: int) -> int:
+        """Validate fee data TTL is positive."""
+        if v <= 0:
+            raise ValueError("Fee data TTL must be positive")
+        return v
+
+    @field_validator("order_manager_max_fallback_fee_rate")
+    @classmethod
+    def validate_max_fallback_fee_rate(cls, v: float) -> float:
+        """Validate fallback fee rate is non-negative."""
+        if v < 0.0:
+            raise ValueError("Max fallback fee rate must be non-negative")
         return v
 
     @field_validator("order_manager_tp_threshold_pct")

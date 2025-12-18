@@ -15,6 +15,7 @@ from ..models.order import Order
 from ..publishers.order_event_publisher import OrderEventPublisher
 from ..services.position_manager import PositionManager
 from ..services.instrument_info_manager import InstrumentInfoManager
+from ..services.fee_rate_manager import FeeRateManager
 from ..utils.bybit_client import get_bybit_client
 from ..exceptions import OrderExecutionError, BybitAPIError
 
@@ -29,6 +30,113 @@ class OrderExecutor:
         self.event_publisher = OrderEventPublisher()
         self.position_manager = PositionManager()
         self.instrument_info_manager = InstrumentInfoManager()
+        self.fee_rate_manager = FeeRateManager()
+
+    async def _validate_order_notional_vs_fee(
+        self,
+        signal: TradingSignal,
+        order_type: str,
+        quantity: Decimal,
+        price: Optional[Decimal],
+        trace_id: Optional[str] = None,
+    ) -> None:
+        """Reject orders whose notional value is less than or equal to expected trading fee.
+
+        This is an economic sanity check: if the order value is not significantly larger
+        than expected commissions, executing it makes little sense.
+        """
+        if not settings.order_manager_enable_min_notional_fee_check:
+            return
+
+        from ..utils.tracing import get_or_create_trace_id
+
+        trace_id = trace_id or get_or_create_trace_id()
+
+        if quantity <= 0:
+            return
+
+        # Determine reference price for notional calculation
+        effective_price: Optional[Decimal] = price
+        if effective_price is None and signal.market_data_snapshot and signal.market_data_snapshot.price:
+            effective_price = signal.market_data_snapshot.price
+
+        if effective_price is None or effective_price <= 0:
+            logger.warning(
+                "fee_notional_check_skipped_no_price",
+                signal_id=str(signal.signal_id),
+                asset=signal.asset,
+                order_type=order_type,
+                quantity=float(quantity),
+                trace_id=trace_id,
+            )
+            return
+
+        notional = quantity * effective_price
+        if notional <= 0:
+            return
+
+        # Get fee rate from cache/API; use worst-case (taker) fee
+        market_type = "linear"
+        fee_info = None
+        try:
+            fee_info = await self.fee_rate_manager.get_fee_rate(
+                symbol=signal.asset,
+                market_type=market_type,
+                trace_id=trace_id,
+                allow_api_fallback=True,
+            )
+        except Exception as e:
+            logger.error(
+                "fee_notional_check_fee_lookup_failed",
+                signal_id=str(signal.signal_id),
+                asset=signal.asset,
+                error=str(e),
+                trace_id=trace_id,
+                exc_info=True,
+            )
+
+        if fee_info is not None:
+            fee_rate = fee_info.taker_fee_rate
+        else:
+            # Fallback: use conservative max fee rate from settings
+            fee_rate = Decimal(str(settings.order_manager_max_fallback_fee_rate))
+
+        if fee_rate <= 0:
+            return
+
+        expected_fee = notional * fee_rate
+
+        # If expected fee is greater than or equal to notional (within small epsilon), reject order
+        epsilon = Decimal("0.001")  # 0.1% tolerance on the comparison
+        if notional <= expected_fee * (Decimal("1.0") + epsilon):
+            rejection_reason = (
+                f"Order notional {notional} is not greater than expected fee {expected_fee} "
+                f"(fee_rate={fee_rate}) for {signal.asset}. Rejecting economically meaningless order."
+            )
+            logger.warning(
+                "order_rejected_notional_below_fee",
+                signal_id=str(signal.signal_id),
+                asset=signal.asset,
+                order_type=order_type,
+                quantity=float(quantity),
+                price=float(effective_price),
+                notional=float(notional),
+                expected_fee=float(expected_fee),
+                fee_rate=str(fee_rate),
+                trace_id=trace_id,
+            )
+            rejected_order = await self._save_rejected_order(
+                signal=signal,
+                order_type=order_type,
+                quantity=quantity,
+                price=effective_price,
+                rejection_reason=rejection_reason,
+                trace_id=trace_id,
+            )
+            # Raise to stop further processing; caller will propagate as OrderExecutionError
+            raise OrderExecutionError(rejection_reason) if rejected_order else OrderExecutionError(
+                f"Order rejected due to notional <= expected fee (and failed to save rejection): {rejection_reason}"
+            )
 
     async def create_order(
         self,
@@ -85,6 +193,15 @@ class OrderExecutor:
             return await self._create_dry_run_order(signal, order_type, quantity, price, trace_id)
 
         try:
+            # Optional sanity check: reject orders where notional is less than or equal to expected fee
+            await self._validate_order_notional_vs_fee(
+                signal=signal,
+                order_type=order_type,
+                quantity=quantity,
+                price=price,
+                trace_id=trace_id,
+            )
+
             # Validate order parameters against instruments-info before creating order
             from ..services.order_validator import OrderValidator
             validator = OrderValidator()

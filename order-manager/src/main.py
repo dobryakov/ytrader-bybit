@@ -24,6 +24,7 @@ from .services.event_subscriber import EventSubscriber
 from .services.order_state_sync import OrderStateSync
 from .services.position_manager import PositionManager
 from .services.instrument_info_manager import InstrumentInfoRefreshTask
+from .services.fee_rate_manager import FeeRateRefreshTask
 from .services.order_executor import OrderExecutor
 
 # Configure logging first
@@ -460,6 +461,16 @@ async def lifespan(app: FastAPI):
             trace_id=trace_id,
         )
 
+        # Start background task for fee rates periodic refresh
+        fee_task = FeeRateRefreshTask()
+        await fee_task.start()
+        app.state.fee_rate_task = fee_task
+        logger.info(
+            "fee_rate_refresh_task_started",
+            interval=settings.order_manager_instrument_info_refresh_interval,
+            trace_id=trace_id,
+        )
+
         # Start background task for pending order cancellation
         cancellation_task = PendingOrderCancellationTask()
         await cancellation_task.start()
@@ -502,6 +513,11 @@ async def lifespan(app: FastAPI):
         if hasattr(app.state, "instrument_info_task"):
             await app.state.instrument_info_task.stop()
             logger.info("instrument_info_refresh_task_stopped")
+
+        # Stop fee-rate refresh task
+        if hasattr(app.state, "fee_rate_task"):
+            await app.state.fee_rate_task.stop()
+            logger.info("fee_rate_refresh_task_stopped")
 
         # Stop pending order cancellation task
         if hasattr(app.state, "cancellation_task"):

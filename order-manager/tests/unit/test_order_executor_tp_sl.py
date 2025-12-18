@@ -442,12 +442,16 @@ class TestPrepareBybitOrderParamsWithTpSl:
             with patch.object(settings, "order_manager_tp_enabled", True):
                 with patch.object(settings, "order_manager_sl_enabled", True):
                     with patch.object(settings, "order_manager_tp_sl_priority", "metadata"):
-                        params = await order_executor._prepare_bybit_order_params(
-                            signal=sample_signal_buy,
-                            order_type="Market",
-                            quantity=Decimal("0.02"),
-                            price=None,
-                        )
+                        with patch(
+                            "src.services.order_type_selector.OrderTypeSelector._get_current_market_price",
+                            new=AsyncMock(return_value=sample_signal_buy.market_data_snapshot.price),
+                        ):
+                            params = await order_executor._prepare_bybit_order_params(
+                                signal=sample_signal_buy,
+                                order_type="Market",
+                                quantity=Decimal("0.02"),
+                                price=None,
+                            )
                         
                         assert Decimal(params["takeProfit"]) == Decimal("52000.0")
                         assert Decimal(params["stopLoss"]) == Decimal("48000.0")
