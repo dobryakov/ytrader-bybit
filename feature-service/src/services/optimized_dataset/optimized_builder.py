@@ -8,7 +8,7 @@ Integrates all optimized components for fast dataset building:
 - Incremental orderbook updates
 """
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, date
 from pathlib import Path
 from typing import Dict, Optional, Any, TYPE_CHECKING
 import pandas as pd
@@ -24,7 +24,7 @@ from src.services.target_computation import (
 )
 from src.services.target_registry_version_manager import TargetRegistryVersionManager
 from .streaming_builder import StreamingDatasetBuilder
-from .requirements_analyzer import DataRequirements
+from .requirements_analyzer import DataRequirements, FeatureRequirementsAnalyzer
 
 if TYPE_CHECKING:
     from src.services.cache_service import CacheService
@@ -287,6 +287,35 @@ class OptimizedDatasetBuilder:
                 symbol=symbol,
             )
             
+            # Step 0: Validate data availability before starting build
+            # This fails early with detailed error message if data is missing
+            try:
+                await self._validate_data_availability(
+                    symbol=symbol,
+                    start_date=start_date,
+                    end_date=end_date,
+                    feature_registry=feature_registry,
+                    dataset_id=dataset_id,
+                )
+            except ValueError as e:
+                # Data validation failed - fail the build immediately
+                error_msg = f"Data availability validation failed: {str(e)}"
+                logger.error(
+                    "dataset_data_validation_failed",
+                    dataset_id=dataset_id,
+                    symbol=symbol,
+                    error=error_msg,
+                )
+                await self._metadata_storage.update_dataset(
+                    dataset_id,
+                    {
+                        "status": DatasetStatus.FAILED.value,
+                        "error_message": error_msg,
+                        "completed_at": datetime.now(timezone.utc),
+                    },
+                )
+                return
+            
             # Step 1: Build features using streaming approach
             features_df = await self._streaming_builder.build_dataset_streaming(
                 symbol=symbol,
@@ -299,6 +328,31 @@ class OptimizedDatasetBuilder:
             
             if features_df.empty:
                 error_msg = "No features computed"
+                await self._metadata_storage.update_dataset(
+                    dataset_id,
+                    {
+                        "status": DatasetStatus.FAILED.value,
+                        "error_message": error_msg,
+                        "completed_at": datetime.now(timezone.utc),
+                    },
+                )
+                return
+            
+            # Step 1.5: Validate feature completeness (strict mode - fail immediately)
+            try:
+                await self._validate_feature_completeness(
+                    features_df=features_df,
+                    feature_registry=feature_registry,
+                    dataset_id=dataset_id,
+                )
+            except ValueError as e:
+                # Feature completeness validation failed - fail the build
+                error_msg = f"Feature completeness validation failed: {str(e)}"
+                logger.error(
+                    "dataset_feature_validation_failed",
+                    dataset_id=dataset_id,
+                    error=error_msg,
+                )
                 await self._metadata_storage.update_dataset(
                     dataset_id,
                     {
@@ -602,6 +656,278 @@ class OptimizedDatasetBuilder:
         # This is handled by TargetComputationEngine, so we just check
         # that we have matching timestamps
         return len(merged) > 0
+    
+    async def _validate_data_availability(
+        self,
+        symbol: str,
+        start_date: datetime,
+        end_date: datetime,
+        feature_registry: FeatureRegistry,
+        dataset_id: str,
+    ) -> None:
+        """
+        Validate that all required data is available before starting dataset build.
+        
+        Checks data availability for all days in the period and all data types
+        required by Feature Registry. Fails early with detailed error message
+        indicating which features require which data types, and which days are missing.
+        
+        Args:
+            symbol: Trading pair symbol
+            start_date: Start date for dataset
+            end_date: End date for dataset
+            feature_registry: Feature Registry instance
+            dataset_id: Dataset ID for error reporting
+            
+        Raises:
+            ValueError: If required data is missing, with detailed error message
+        """
+        # Analyze requirements from Feature Registry
+        requirements_analyzer = FeatureRequirementsAnalyzer()
+        requirements = requirements_analyzer.analyze(feature_registry)
+        
+        # Map input sources to storage types
+        storage_type_mapping = {
+            "orderbook": ["orderbook_snapshots", "orderbook_deltas"],
+            "kline": ["klines"],
+            "trades": ["trades"],
+            "ticker": ["ticker"],
+            "funding": ["funding"],
+        }
+        
+        # Build mapping: feature -> required data types
+        feature_to_data_types: Dict[str, List[str]] = {}
+        for feature in feature_registry.features:
+            feature_name = feature.name
+            for input_source in feature.input_sources:
+                if input_source in storage_type_mapping:
+                    if feature_name not in feature_to_data_types:
+                        feature_to_data_types[feature_name] = []
+                    feature_to_data_types[feature_name].extend(
+                        storage_type_mapping[input_source]
+                    )
+        
+        # Generate list of days to check
+        days_to_check = []
+        current_date = start_date.date()
+        end_date_obj = end_date.date()
+        while current_date <= end_date_obj:
+            days_to_check.append(current_date)
+            current_date += timedelta(days=1)
+        
+        # Check data availability for each required storage type
+        missing_data: Dict[str, Dict[date, List[str]]] = {}  # storage_type -> {date -> [feature_names]}
+        
+        # Collect all unique storage types from requirements
+        all_storage_types = set()
+        for storage_type_list in requirements.storage_types.values():
+            all_storage_types.update(storage_type_list)
+        
+        for storage_type_name in sorted(all_storage_types):
+            # Find features that require this storage type
+            features_requiring_type = [
+                feature_name
+                for feature_name, data_types in feature_to_data_types.items()
+                if storage_type_name in data_types
+            ]
+            
+            if not features_requiring_type:
+                continue  # No features require this type
+            
+            # Check availability for each day
+            for day_date in days_to_check:
+                date_str = day_date.isoformat()
+                data_available = False
+                
+                try:
+                    if storage_type_name == "klines":
+                        data = await self._parquet_storage.read_klines(symbol, date_str)
+                        data_available = not data.empty and len(data) > 0
+                    elif storage_type_name == "trades":
+                        data = await self._parquet_storage.read_trades(symbol, date_str)
+                        data_available = not data.empty and len(data) > 0
+                    elif storage_type_name == "ticker":
+                        data = await self._parquet_storage.read_ticker(symbol, date_str)
+                        data_available = not data.empty and len(data) > 0
+                    elif storage_type_name == "funding":
+                        data = await self._parquet_storage.read_funding(symbol, date_str)
+                        data_available = not data.empty and len(data) > 0
+                    elif storage_type_name == "orderbook_snapshots":
+                        data = await self._parquet_storage.read_orderbook_snapshots(symbol, date_str)
+                        data_available = not data.empty and len(data) > 0
+                    elif storage_type_name == "orderbook_deltas":
+                        data = await self._parquet_storage.read_orderbook_deltas(symbol, date_str)
+                        data_available = not data.empty and len(data) > 0
+                except FileNotFoundError:
+                    data_available = False
+                except Exception as e:
+                    logger.warning(
+                        "data_availability_check_error",
+                        dataset_id=dataset_id,
+                        symbol=symbol,
+                        date=date_str,
+                        storage_type=storage_type_name,
+                        error=str(e),
+                    )
+                    data_available = False
+                
+                if not data_available:
+                    if storage_type_name not in missing_data:
+                        missing_data[storage_type_name] = {}
+                    if day_date not in missing_data[storage_type_name]:
+                        missing_data[storage_type_name][day_date] = []
+                    missing_data[storage_type_name][day_date].extend(features_requiring_type)
+        
+        # If missing data found, raise detailed error
+        if missing_data:
+            error_parts = [
+                f"Missing required data for dataset build (symbol: {symbol}, period: {start_date.date()} to {end_date.date()}):"
+            ]
+            
+            for storage_type_name, days_dict in sorted(missing_data.items()):
+                missing_days = sorted(days_dict.keys())
+                # Get unique features that require this type
+                all_features = set()
+                for day_features in days_dict.values():
+                    all_features.update(day_features)
+                
+                error_parts.append(
+                    f"\n  Storage type '{storage_type_name}':"
+                )
+                error_parts.append(
+                    f"    Required by features: {', '.join(sorted(all_features))}"
+                )
+                error_parts.append(
+                    f"    Missing for days: {', '.join(d.isoformat() for d in missing_days)}"
+                )
+                error_parts.append(
+                    f"    Total missing days: {len(missing_days)}/{len(days_to_check)}"
+                )
+            
+            error_parts.append(
+                f"\n  Action required: Run backfilling for missing data types and days."
+            )
+            
+            error_msg = "\n".join(error_parts)
+            
+            logger.error(
+                "dataset_data_availability_check_failed",
+                dataset_id=dataset_id,
+                symbol=symbol,
+                start_date=start_date.date().isoformat(),
+                end_date=end_date.date().isoformat(),
+                missing_data_types=list(missing_data.keys()),
+                total_missing_days=sum(len(days) for days in missing_data.values()),
+            )
+            
+            raise ValueError(error_msg)
+        
+        # All data available - log success
+        logger.info(
+            "dataset_data_availability_check_passed",
+            dataset_id=dataset_id,
+            symbol=symbol,
+            start_date=start_date.date().isoformat(),
+            end_date=end_date.date().isoformat(),
+            required_data_types=sorted(requirements.required_data_types),
+            days_checked=len(days_to_check),
+        )
+    
+    async def _validate_feature_completeness(
+        self,
+        features_df: pd.DataFrame,
+        feature_registry: FeatureRegistry,
+        dataset_id: str,
+    ) -> None:
+        """
+        Validate that all features from Feature Registry are present and have data.
+        
+        Strict validation:
+        - All features from Feature Registry must be present in dataset
+        - All features must have at least some non-null values (not all None/NaN)
+        
+        Args:
+            features_df: DataFrame with computed features
+            feature_registry: Feature Registry instance
+            dataset_id: Dataset ID for error reporting
+            
+        Raises:
+            ValueError: If features are missing or have no data
+        """
+        # Get expected feature names from Feature Registry
+        expected_features = {f.name for f in feature_registry.features}
+        
+        # Get actual feature columns (exclude service columns)
+        service_columns = {"timestamp", "symbol"}
+        actual_features = set(features_df.columns) - service_columns
+        
+        # Check 1: All expected features must be present
+        missing_features = sorted(expected_features - actual_features)
+        if missing_features:
+            error_msg = (
+                f"Missing {len(missing_features)} features from Feature Registry. "
+                f"Expected {len(expected_features)}, got {len(actual_features)}. "
+                f"Missing: {', '.join(missing_features[:20])}"
+                + (f" (and {len(missing_features) - 20} more)" if len(missing_features) > 20 else "")
+            )
+            logger.error(
+                "dataset_missing_features",
+                dataset_id=dataset_id,
+                expected_count=len(expected_features),
+                actual_count=len(actual_features),
+                missing_count=len(missing_features),
+                missing_features=missing_features,
+            )
+            raise ValueError(error_msg)
+        
+        # Check 2: All features must have at least some non-null values
+        # (not completely None/NaN - indicates missing data)
+        features_with_no_data = []
+        for feature_name in expected_features:
+            if feature_name not in features_df.columns:
+                continue  # Already caught above, but double-check
+            
+            feature_series = features_df[feature_name]
+            
+            # Check if all values are None/NaN
+            if feature_series.isna().all():
+                features_with_no_data.append(feature_name)
+                continue
+            
+            # For object dtype (e.g., vwap with all None), check differently
+            if feature_series.dtype == 'object':
+                non_null_count = feature_series.notna().sum()
+                if non_null_count == 0:
+                    features_with_no_data.append(feature_name)
+                else:
+                    # Check if all non-null values are None
+                    non_null_series = feature_series.dropna()
+                    if len(non_null_series) > 0 and non_null_series.apply(lambda x: x is None).all():
+                        features_with_no_data.append(feature_name)
+        
+        if features_with_no_data:
+            error_msg = (
+                f"{len(features_with_no_data)} features have no data (all None/NaN). "
+                f"This indicates missing source data. "
+                f"Features with no data: {', '.join(features_with_no_data[:20])}"
+                + (f" (and {len(features_with_no_data) - 20} more)" if len(features_with_no_data) > 20 else "")
+            )
+            logger.error(
+                "dataset_features_no_data",
+                dataset_id=dataset_id,
+                features_with_no_data=features_with_no_data,
+                count=len(features_with_no_data),
+            )
+            raise ValueError(error_msg)
+        
+        # Success - log validation passed
+        logger.info(
+            "dataset_feature_completeness_validated",
+            dataset_id=dataset_id,
+            feature_count=len(actual_features),
+            all_features_present=True,
+            all_features_have_data=True,
+        )
     
     async def _split_time_based(
         self,

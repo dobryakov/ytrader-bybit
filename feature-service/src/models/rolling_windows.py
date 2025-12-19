@@ -116,6 +116,13 @@ class RollingWindows(BaseModel):
             else:
                 timestamp = datetime.now(timezone.utc)
         
+        # Normalize timestamp to timezone-aware UTC (critical for datetime operations)
+        if isinstance(timestamp, datetime):
+            if timestamp.tzinfo is None:
+                timestamp = timestamp.replace(tzinfo=timezone.utc)
+            else:
+                timestamp = timestamp.astimezone(timezone.utc)
+        
         # Convert string values to float
         def to_float(value, default=0.0):
             if value is None:
@@ -138,6 +145,7 @@ class RollingWindows(BaseModel):
         import structlog
         logger = structlog.get_logger(__name__)
         now_for_log = datetime.now(timezone.utc)
+        # timestamp is already normalized to timezone-aware UTC above
         time_diff_seconds = (now_for_log - timestamp).total_seconds() if isinstance(timestamp, datetime) else None
         logger.debug(
             "kline_received",
@@ -258,6 +266,15 @@ class RollingWindows(BaseModel):
                 oldest_timestamp = klines_df["timestamp"].min()
                 newest_timestamp = klines_df["timestamp"].max()
                 if oldest_timestamp and newest_timestamp:
+                    # Normalize timestamps to timezone-aware UTC before subtraction
+                    if isinstance(oldest_timestamp, pd.Timestamp):
+                        oldest_timestamp = oldest_timestamp.to_pydatetime()
+                    if isinstance(newest_timestamp, pd.Timestamp):
+                        newest_timestamp = newest_timestamp.to_pydatetime()
+                    if isinstance(oldest_timestamp, datetime) and oldest_timestamp.tzinfo is None:
+                        oldest_timestamp = oldest_timestamp.replace(tzinfo=timezone.utc)
+                    if isinstance(newest_timestamp, datetime) and newest_timestamp.tzinfo is None:
+                        newest_timestamp = newest_timestamp.replace(tzinfo=timezone.utc)
                     time_span_minutes = (newest_timestamp - oldest_timestamp).total_seconds() / 60.0
         
         logger.info(

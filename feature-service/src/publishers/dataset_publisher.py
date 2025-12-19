@@ -3,6 +3,7 @@ Dataset completion publisher for RabbitMQ.
 """
 from typing import Optional
 import json
+import asyncio
 import structlog
 import aio_pika
 import aiormq.exceptions
@@ -108,13 +109,31 @@ class DatasetPublisher:
                 if attempt < max_retries - 1:
                     # Reinitialize channel before retry
                     try:
+                        # Check if mq_manager is valid
+                        if self._mq_manager is None:
+                            raise RuntimeError("MQ manager is None")
                         await self.initialize()
-                    except Exception as init_error:
-                        logger.error(
-                            "failed_to_reinitialize_channel",
+                    except (asyncio.CancelledError, KeyboardInterrupt) as init_error:
+                        # Don't retry on cancellation - re-raise immediately
+                        logger.warning(
+                            "channel_reinitialization_cancelled",
                             dataset_id=dataset_id,
                             symbol=symbol,
                             error=str(init_error),
+                            error_type=type(init_error).__name__,
+                        )
+                        raise
+                    except Exception as init_error:
+                        error_msg = str(init_error)
+                        error_type = type(init_error).__name__
+                        logger.warning(
+                            "failed_to_reinitialize_channel",
+                            dataset_id=dataset_id,
+                            symbol=symbol,
+                            error=error_msg,
+                            error_type=error_type,
+                            attempt=attempt + 1,
+                            mq_manager_is_none=self._mq_manager is None,
                             exc_info=True,
                         )
                         # If reinitialization fails, log error and give up

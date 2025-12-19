@@ -6,7 +6,7 @@ import os
 import shutil
 import tempfile
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Dict
 from datetime import datetime, date
 import pandas as pd
 import pyarrow as pa
@@ -28,6 +28,30 @@ class ParquetStorage:
         """
         self._base_path = Path(base_path)
         self._base_path.mkdir(parents=True, exist_ok=True)
+        
+        # File locks to prevent race conditions between backfilling and queue writes
+        # Key: (symbol, date_str, data_type) -> asyncio.Lock
+        self._file_locks: Dict[str, asyncio.Lock] = {}
+        self._locks_lock = asyncio.Lock()  # Lock for managing locks dictionary
+    
+    async def _get_file_lock(self, symbol: str, date_str: str, data_type: str) -> asyncio.Lock:
+        """
+        Get or create a lock for a specific file.
+        
+        Args:
+            symbol: Trading pair symbol
+            date_str: Date string (YYYY-MM-DD)
+            data_type: Data type (klines, trades, etc.)
+            
+        Returns:
+            asyncio.Lock for the file
+        """
+        lock_key = f"{symbol}:{date_str}:{data_type}"
+        
+        async with self._locks_lock:
+            if lock_key not in self._file_locks:
+                self._file_locks[lock_key] = asyncio.Lock()
+            return self._file_locks[lock_key]
     
     def _get_orderbook_snapshots_path(self, symbol: str, date_str: str) -> Path:
         """Get path for orderbook snapshots file."""
@@ -70,8 +94,11 @@ class ParquetStorage:
         file_path = self._get_orderbook_snapshots_path(symbol, date_str)
         file_path.parent.mkdir(parents=True, exist_ok=True)
         
-        # Run in thread pool to avoid blocking
-        await asyncio.to_thread(self._write_parquet, file_path, data)
+        # Acquire file lock to prevent race conditions
+        lock = await self._get_file_lock(symbol, date_str, "orderbook_snapshots")
+        async with lock:
+            # Run in thread pool to avoid blocking
+            await asyncio.to_thread(self._write_parquet, file_path, data)
         logger.debug(f"Written orderbook snapshots to {file_path}")
     
     async def write_orderbook_deltas(
@@ -91,7 +118,10 @@ class ParquetStorage:
         file_path = self._get_orderbook_deltas_path(symbol, date_str)
         file_path.parent.mkdir(parents=True, exist_ok=True)
         
-        await asyncio.to_thread(self._write_parquet, file_path, data)
+        # Acquire file lock to prevent race conditions
+        lock = await self._get_file_lock(symbol, date_str, "orderbook_deltas")
+        async with lock:
+            await asyncio.to_thread(self._write_parquet, file_path, data)
         logger.debug(f"Written orderbook deltas to {file_path}")
     
     async def write_trades(
@@ -111,7 +141,10 @@ class ParquetStorage:
         file_path = self._get_trades_path(symbol, date_str)
         file_path.parent.mkdir(parents=True, exist_ok=True)
         
-        await asyncio.to_thread(self._write_parquet, file_path, data)
+        # Acquire file lock to prevent race conditions
+        lock = await self._get_file_lock(symbol, date_str, "trades")
+        async with lock:
+            await asyncio.to_thread(self._write_parquet, file_path, data)
         logger.debug(f"Written trades to {file_path}")
     
     async def write_klines(
@@ -131,7 +164,10 @@ class ParquetStorage:
         file_path = self._get_klines_path(symbol, date_str)
         file_path.parent.mkdir(parents=True, exist_ok=True)
         
-        await asyncio.to_thread(self._write_parquet, file_path, data)
+        # Acquire file lock to prevent race conditions
+        lock = await self._get_file_lock(symbol, date_str, "klines")
+        async with lock:
+            await asyncio.to_thread(self._write_parquet, file_path, data)
         logger.debug(f"Written klines to {file_path}")
     
     async def write_ticker(
@@ -151,7 +187,10 @@ class ParquetStorage:
         file_path = self._get_ticker_path(symbol, date_str)
         file_path.parent.mkdir(parents=True, exist_ok=True)
         
-        await asyncio.to_thread(self._write_parquet, file_path, data)
+        # Acquire file lock to prevent race conditions
+        lock = await self._get_file_lock(symbol, date_str, "ticker")
+        async with lock:
+            await asyncio.to_thread(self._write_parquet, file_path, data)
         logger.debug(f"Written ticker to {file_path}")
     
     async def write_funding(
@@ -171,7 +210,10 @@ class ParquetStorage:
         file_path = self._get_funding_path(symbol, date_str)
         file_path.parent.mkdir(parents=True, exist_ok=True)
         
-        await asyncio.to_thread(self._write_parquet, file_path, data)
+        # Acquire file lock to prevent race conditions
+        lock = await self._get_file_lock(symbol, date_str, "funding")
+        async with lock:
+            await asyncio.to_thread(self._write_parquet, file_path, data)
         logger.debug(f"Written funding rate to {file_path}")
     
     def _write_parquet(self, file_path: Path, data: pd.DataFrame) -> None:

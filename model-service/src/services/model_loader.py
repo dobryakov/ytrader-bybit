@@ -30,27 +30,30 @@ class ModelLoader:
     async def load_active_model(
         self,
         strategy_id: Optional[str] = None,
+        symbol: Optional[str] = None,
         force_reload: bool = False,
     ) -> Optional[Any]:
         """
-        Load the active model for a strategy.
+        Load the active model for a strategy and symbol.
 
         Args:
             strategy_id: Trading strategy identifier (None for default strategy)
+            symbol: Trading pair symbol (e.g., 'BTCUSDT', 'ETHUSDT') - optional for universal models
             force_reload: Force reload even if model is cached
 
         Returns:
             Loaded model object or None if no active model exists
         """
-        # Get active model version from database
-        model_version = await self.model_version_repo.get_active_by_strategy(strategy_id)
+        # Get active model version from database (by strategy_id and symbol)
+        model_version = await self.model_version_repo.get_active_by_strategy_and_symbol(strategy_id, symbol)
         if not model_version:
-            logger.debug("No active model found", strategy_id=strategy_id)
+            logger.debug("No active model found", strategy_id=strategy_id, symbol=symbol)
             return None
 
         version = model_version["version"]
         model_type = model_version["model_type"]
         file_path = model_version["file_path"]
+        model_symbol = model_version.get("symbol")  # Get symbol from model version
         
         # Extract task_type and label mapping from training_config if available
         task_type = None
@@ -70,10 +73,10 @@ class ModelLoader:
                 task_variant = training_config.get("task_variant")
                 probability_thresholds = training_config.get("probability_thresholds")
         
-        # Check cache
-        cache_key = f"{strategy_id or 'default'}:{version}"
+        # Check cache (include symbol in cache key)
+        cache_key = f"{strategy_id or 'default'}:{model_symbol or 'all'}:{version}"
         if not force_reload and cache_key in self._model_cache:
-            logger.debug("Using cached model", version=version, strategy_id=strategy_id)
+            logger.debug("Using cached model", version=version, strategy_id=strategy_id, symbol=model_symbol)
             return self._model_cache[cache_key]
 
         # Load model from file system
@@ -127,12 +130,13 @@ class ModelLoader:
                     "version": version,
                     "model_type": model_type,
                     "strategy_id": strategy_id,
+                    "symbol": model_symbol,
                     "file_path": file_path,
                 }
-                logger.info("Model loaded and cached", version=version, strategy_id=strategy_id, model_type=model_type)
+                logger.info("Model loaded and cached", version=version, strategy_id=strategy_id, symbol=model_symbol, model_type=model_type)
             return model
         except Exception as e:
-            logger.error("Failed to load active model", version=version, strategy_id=strategy_id, error=str(e), exc_info=True)
+            logger.error("Failed to load active model", version=version, strategy_id=strategy_id, symbol=symbol, error=str(e), exc_info=True)
             raise ModelLoadError(f"Failed to load model {version}: {e}") from e
 
     def _load_model_from_file(

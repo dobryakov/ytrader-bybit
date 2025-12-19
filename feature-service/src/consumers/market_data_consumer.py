@@ -350,13 +350,23 @@ class MarketDataConsumer:
                 # Reset connection in MQ manager to force reconnection
                 try:
                     # Force connection reset by closing it
-                    if self._mq_manager._connection is not None:
-                        try:
-                            if not self._mq_manager._connection.is_closed:
-                                await self._mq_manager._connection.close()
-                        except Exception:
-                            pass
-                        self._mq_manager._connection = None
+                    if self._mq_manager is not None and hasattr(self._mq_manager, '_connection'):
+                        connection = self._mq_manager._connection
+                        if connection is not None:
+                            try:
+                                if not connection.is_closed:
+                                    await connection.close()
+                            except Exception:
+                                pass
+                            self._mq_manager._connection = None
+                except (AttributeError, RuntimeError) as reset_error:
+                    # Connection object is invalid - ignore and continue
+                    logger.debug(
+                        "connection_reset_error",
+                        queue=queue_name,
+                        error=str(reset_error),
+                        error_type=type(reset_error).__name__,
+                    )
                 except Exception:
                     pass
                 

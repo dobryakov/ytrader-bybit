@@ -129,6 +129,10 @@ class MQConnectionManager:
                 if self._connection is None or self._connection.is_closed:
                     await self.connect()
                 
+                # Check connection is still valid after connect()
+                if self._connection is None:
+                    raise RuntimeError("Connection is None after connect()")
+                
                 # Try to get channel with timeout
                 try:
                     return await asyncio.wait_for(
@@ -159,10 +163,26 @@ class MQConnectionManager:
                         continue
                     else:
                         raise RuntimeError(f"Failed to get channel after {max_retries} attempts: {e}") from e
+                except AttributeError as e:
+                    # Connection object is invalid (None or missing attributes)
+                    logger.warning(
+                        "Connection object invalid when getting channel, reconnecting",
+                        error=str(e),
+                        error_type=type(e).__name__,
+                        attempt=attempt + 1,
+                        max_retries=max_retries,
+                    )
+                    # Reset connection and retry
+                    self._connection = None
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(0.5 * (attempt + 1))
+                        continue
+                    else:
+                        raise RuntimeError(f"Failed to get channel after {max_retries} attempts: {e}") from e
                 
             except RuntimeError as e:
                 # Connection was not opened or is invalid
-                if "Connection was not opened" in str(e) or "not opened" in str(e).lower():
+                if "Connection was not opened" in str(e) or "not opened" in str(e).lower() or "Connection is None" in str(e):
                     logger.warning(
                         "Connection invalid when getting channel, reconnecting",
                         error=str(e),
@@ -195,15 +215,20 @@ class MQConnectionManager:
                     attempt=attempt + 1,
                     max_retries=max_retries,
                 )
+                # Re-raise CancelledError immediately - don't retry on cancellation
+                raise
+            except AttributeError as e:
+                # Connection object is invalid (None or missing attributes)
+                logger.warning(
+                    "Connection object invalid when getting channel, reconnecting",
+                    error=str(e),
+                    error_type=type(e).__name__,
+                    attempt=attempt + 1,
+                    max_retries=max_retries,
+                )
+                # Reset connection and retry
+                self._connection = None
                 if attempt < max_retries - 1:
-                    # Reset connection
-                    if self._connection is not None:
-                        try:
-                            if not self._connection.is_closed:
-                                await self._connection.close()
-                        except Exception:
-                            pass
-                        self._connection = None
                     await asyncio.sleep(0.5 * (attempt + 1))
                     continue
                 else:

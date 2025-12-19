@@ -1145,11 +1145,15 @@ class TrainingOrchestrator:
                     str(k): float(v) for k, v in probability_thresholds.items()
                 }
 
+            # Get symbol from dataset metadata for model binding
+            dataset_symbol = symbol or (dataset_meta.symbol if hasattr(dataset_meta, 'symbol') else None)
+            
             model_version = await model_version_manager.create_version(
                 version=version,
                 model_type="xgboost",
                 file_path=file_path,
                 strategy_id=strategy_id,
+                symbol=dataset_symbol,  # Bind model to specific symbol
                 training_duration_seconds=int(training_duration),
                 training_dataset_size=dataset.get_record_count(),
                 training_config=training_config,
@@ -1235,7 +1239,7 @@ class TrainingOrchestrator:
                 )
 
             if should_activate:
-                await model_version_manager.activate_version(model_version["id"], strategy_id)
+                await model_version_manager.activate_version(model_version["id"], strategy_id, dataset_symbol)
                 logger.info(
                     "Model activated automatically",
                     version=version,
@@ -1244,6 +1248,7 @@ class TrainingOrchestrator:
                     quality_value=quality_value,
                     threshold=threshold_value,
                     metrics_source=metrics_source,
+                    symbol=dataset_symbol,
                     trace_id=trace_id,
                 )
             else:

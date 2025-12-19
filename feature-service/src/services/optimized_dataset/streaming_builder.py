@@ -162,7 +162,74 @@ class StreamingDatasetBuilder:
             needs_orderbook=requirements.needs_orderbook,
         )
         
-        # Step 5: Process days sequentially
+        # Step 5: Load previous day data for lookback (if needed)
+        # This ensures first day has sufficient data for features requiring lookback
+        if days_to_process:
+            first_day = days_to_process[0]
+            previous_day = first_day - timedelta(days=1)
+            
+            # Load previous day data to provide lookback for first day
+            logger.info(
+                "loading_previous_day_for_lookback",
+                dataset_id=dataset_id,
+                first_day=first_day.isoformat(),
+                previous_day=previous_day.isoformat(),
+                max_lookback_minutes=requirements.max_lookback_minutes,
+            )
+            
+            try:
+                if cache:
+                    prev_day_data = await cache.get_day_data(previous_day)
+                else:
+                    prev_day_data = await self._read_day_from_parquet(
+                        symbol, previous_day, requirements
+                    )
+                
+                if prev_day_data:
+                    # Add previous day data to rolling window
+                    prev_klines = prev_day_data.get("klines", pd.DataFrame())
+                    prev_trades = prev_day_data.get("trades", pd.DataFrame())
+                    
+                    if not prev_klines.empty or not prev_trades.empty:
+                        prev_day_end = datetime.combine(
+                            previous_day, datetime.max.time(), tzinfo=timezone.utc
+                        )
+                        rolling_window.add_data(
+                            timestamp=prev_day_end,
+                            trades=prev_trades,
+                            klines=prev_klines,
+                            skip_trim=True,
+                        )
+                        logger.info(
+                            "previous_day_data_loaded",
+                            dataset_id=dataset_id,
+                            previous_day=previous_day.isoformat(),
+                            klines_count=len(prev_klines),
+                            trades_count=len(prev_trades),
+                        )
+                    else:
+                        logger.warning(
+                            "previous_day_data_empty",
+                            dataset_id=dataset_id,
+                            previous_day=previous_day.isoformat(),
+                        )
+                else:
+                    logger.warning(
+                        "previous_day_data_unavailable",
+                        dataset_id=dataset_id,
+                        previous_day=previous_day.isoformat(),
+                        message="Previous day data not available, first day may have insufficient lookback",
+                    )
+            except Exception as e:
+                logger.warning(
+                    "previous_day_load_failed",
+                    dataset_id=dataset_id,
+                    previous_day=previous_day.isoformat(),
+                    error=str(e),
+                    message="Continuing without previous day data, first day may have insufficient lookback",
+                )
+        
+        # Step 6: Process days sequentially
         all_features = []
         
         for day_idx, day_date in enumerate(days_to_process):
@@ -326,11 +393,14 @@ class StreamingDatasetBuilder:
             day_data["deltas"] = day_data["orderbook_deltas"]
         
         # Update rolling window with day data
+        # For historical data, we add all data at once and skip trimming
+        # Trimming will happen per-timestamp in get_window() if needed
         day_end = datetime.combine(day_date, datetime.max.time(), tzinfo=timezone.utc)
         rolling_window.add_data(
             timestamp=day_end,
             trades=trades_df,
             klines=klines_df,
+            skip_trim=True,  # Don't trim when loading historical data
         )
         
         # Process timestamps in batches
@@ -375,6 +445,14 @@ class StreamingDatasetBuilder:
             # Update prefetcher processing speed
             if prefetcher and len(batch_timestamps) > 0:
                 last_timestamp = batch_timestamps.iloc[-1]
+                # Normalize timestamp: convert pd.Timestamp to datetime and ensure timezone-aware
+                if isinstance(last_timestamp, pd.Timestamp):
+                    last_timestamp = last_timestamp.to_pydatetime()
+                # Ensure timezone-aware UTC
+                if last_timestamp.tzinfo is None:
+                    last_timestamp = last_timestamp.replace(tzinfo=timezone.utc)
+                else:
+                    last_timestamp = last_timestamp.astimezone(timezone.utc)
                 prefetcher.update_processing_speed(last_timestamp, len(batch_timestamps))
         
         # Combine batch results

@@ -136,17 +136,18 @@ class IntelligentSignalGenerator:
             # Get active model version from database first (needed for training_config)
             active_model = None
             if not model_version:
-                # Get active model version from database
+                # Get active model version from database (by strategy_id and symbol/asset)
                 model_version_repo = ModelVersionRepository()
-                active_model = await model_version_repo.get_active_by_strategy(strategy_id)
+                active_model = await model_version_repo.get_active_by_strategy_and_symbol(strategy_id, asset)
                 model_version = active_model["version"] if active_model else None
 
-            # Load model
+            # Load model (with symbol binding - asset is the symbol)
             logger.info("Loading model", asset=asset, strategy_id=strategy_id, model_version=model_version, trace_id=trace_id)
             if model_version:
                 model = await model_loader.load_model_by_version(model_version)
             else:
-                model = await model_loader.load_active_model(strategy_id=strategy_id)
+                # Load active model for strategy_id and symbol (asset)
+                model = await model_loader.load_active_model(strategy_id=strategy_id, symbol=asset)
 
             if not model:
                 logger.warning("No active model available", asset=asset, strategy_id=strategy_id, model_version=model_version, trace_id=trace_id)

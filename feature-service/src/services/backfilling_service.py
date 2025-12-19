@@ -726,27 +726,44 @@ class BackfillingService:
         
         return all_funding
     
-    async def _delete_all_data_for_date(self, symbol: str, date_str: str) -> None:
+    async def _delete_data_for_date(
+        self, 
+        symbol: str, 
+        date_str: str, 
+        data_types: List[str]
+    ) -> None:
         """
-        Delete all existing data files for a specific symbol and date.
+        Delete existing data files for specific data types for a symbol and date.
         This ensures clean backfilling without partial or corrupted data.
         
         Args:
             symbol: Trading pair symbol
             date_str: Date string (YYYY-MM-DD)
+            data_types: List of data types to delete (e.g., ["klines", "trades"])
         """
-        data_type_paths = [
-            ("klines", self._parquet_storage._get_klines_path),
-            ("trades", self._parquet_storage._get_trades_path),
-            ("funding", self._parquet_storage._get_funding_path),
-            ("ticker", self._parquet_storage._get_ticker_path),
-            ("orderbook_snapshots", self._parquet_storage._get_orderbook_snapshots_path),
-            ("orderbook_deltas", self._parquet_storage._get_orderbook_deltas_path),
-        ]
+        data_type_paths = {
+            "klines": self._parquet_storage._get_klines_path,
+            "trades": self._parquet_storage._get_trades_path,
+            "funding": self._parquet_storage._get_funding_path,
+            "ticker": self._parquet_storage._get_ticker_path,
+            "orderbook_snapshots": self._parquet_storage._get_orderbook_snapshots_path,
+            "orderbook_deltas": self._parquet_storage._get_orderbook_deltas_path,
+        }
         
         deleted_count = 0
-        for data_type, get_path_method in data_type_paths:
+        for data_type in data_types:
+            if data_type not in data_type_paths:
+                logger.warning(
+                    "backfilling_delete_unknown_type",
+                    symbol=symbol,
+                    date=date_str,
+                    data_type=data_type,
+                    message=f"Unknown data type for deletion: {data_type}",
+                )
+                continue
+            
             try:
+                get_path_method = data_type_paths[data_type]
                 file_path = get_path_method(symbol, date_str)
                 if file_path.exists():
                     file_path.unlink()
@@ -773,6 +790,7 @@ class BackfillingService:
                 symbol=symbol,
                 date=date_str,
                 files_deleted=deleted_count,
+                data_types=data_types,
             )
     
     async def _save_klines(
@@ -1324,6 +1342,10 @@ class BackfillingService:
         """
         Check which dates need backfilling.
         
+        ALWAYS returns all dates as requiring backfilling to force overwrite
+        existing data, even if files exist. This ensures data completeness
+        and correctness by re-fetching data that might be incomplete or corrupted.
+        
         Args:
             symbol: Trading pair symbol
             start_date: Start date
@@ -1331,68 +1353,26 @@ class BackfillingService:
             data_types: List of data types to check
             
         Returns:
-            Dict mapping date to list of missing data types
+            Dict mapping date to list of data types to backfill (always all types for all dates)
         """
+        # Force backfill all dates regardless of existing files
+        # This ensures data completeness and correctness
         missing_data: Dict[date, List[str]] = {}
         
         current_date = start_date
         while current_date <= end_date:
-            date_str = current_date.isoformat()
-            missing_types = []
-            
-            for data_type in data_types:
-                try:
-                    # Try to read existing data based on type with timeout
-                    # Use asyncio.wait_for to prevent hanging on file operations
-                    if data_type == "klines":
-                        await asyncio.wait_for(
-                            self._parquet_storage.read_klines(symbol, date_str),
-                            timeout=2.0
-                        )
-                    elif data_type == "trades":
-                        await asyncio.wait_for(
-                            self._parquet_storage.read_trades(symbol, date_str),
-                            timeout=2.0
-                        )
-                    elif data_type == "orderbook_snapshots":
-                        await asyncio.wait_for(
-                            self._parquet_storage.read_orderbook_snapshots(symbol, date_str),
-                            timeout=2.0
-                        )
-                    elif data_type == "orderbook_deltas":
-                        await asyncio.wait_for(
-                            self._parquet_storage.read_orderbook_deltas(symbol, date_str),
-                            timeout=2.0
-                        )
-                    elif data_type == "ticker":
-                        await asyncio.wait_for(
-                            self._parquet_storage.read_ticker(symbol, date_str),
-                            timeout=2.0
-                        )
-                    elif data_type == "funding":
-                        await asyncio.wait_for(
-                            self._parquet_storage.read_funding(symbol, date_str),
-                            timeout=2.0
-                        )
-                    else:
-                        # Unknown type, mark as missing
-                        missing_types.append(data_type)
-                except (FileNotFoundError, asyncio.TimeoutError):
-                    missing_types.append(data_type)
-                except Exception as e:
-                    logger.warning(
-                        "backfilling_data_check_error",
-                        symbol=symbol,
-                        date=date_str,
-                        data_type=data_type,
-                        error=str(e),
-                    )
-                    missing_types.append(data_type)
-            
-            if missing_types:
-                missing_data[current_date] = missing_types
-            
+            # Always mark all data types as missing to force backfill
+            missing_data[current_date] = data_types.copy()
             current_date += timedelta(days=1)
+        
+        logger.info(
+            "backfilling_force_overwrite",
+            symbol=symbol,
+            start_date=start_date.isoformat(),
+            end_date=end_date.isoformat(),
+            dates_count=len(missing_data),
+            message="Forcing backfill for all dates to ensure data completeness",
+        )
         
         return missing_data
     
@@ -1531,182 +1511,211 @@ class BackfillingService:
                     missing_types=missing_types,
                 )
                 
-                # Delete all existing data for this date before backfilling
+                # Delete existing data for this date before backfilling
                 # This ensures clean data without partial or corrupted files
-                await self._delete_all_data_for_date(job.symbol, date_str)
-                
+                # Only delete and lock data types that are being backfilled
+                # This prevents deleting data for types that are not being backfilled
+                locks = {}
                 for data_type in missing_types:
-                    processed_types.add(data_type)
-                    try:
-                        date_str = date_obj.isoformat()
-                        backfilled_data = None
-                        save_method = None
-                        get_path_method = None
-                        
-                        # Backfill data based on type
-                        if data_type == "klines":
-                            backfilled_data = await self.backfill_klines(
-                                job.symbol,
-                                date_obj,
-                                date_obj,
-                                interval=config.feature_service_backfill_default_interval,
-                            )
-                            save_method = self._save_klines
-                            get_path_method = self._parquet_storage._get_klines_path
-                        elif data_type == "trades":
-                            backfilled_data = await self.backfill_trades(
-                                job.symbol,
-                                date_obj,
-                                date_obj,
-                            )
-                            save_method = self._save_trades
-                            get_path_method = self._parquet_storage._get_trades_path
-                        elif data_type == "orderbook_snapshots":
-                            backfilled_data = await self.backfill_orderbook_snapshots(
-                                job.symbol,
-                                date_obj,
-                                date_obj,
-                            )
-                            save_method = self._save_orderbook_snapshots
-                            get_path_method = self._parquet_storage._get_orderbook_snapshots_path
-                        elif data_type == "orderbook_deltas":
-                            backfilled_data = await self.backfill_orderbook_deltas(
-                                job.symbol,
-                                date_obj,
-                                date_obj,
-                            )
-                            save_method = self._save_orderbook_deltas
-                            get_path_method = self._parquet_storage._get_orderbook_deltas_path
-                        elif data_type == "ticker":
-                            backfilled_data = await self.backfill_ticker(
-                                job.symbol,
-                                date_obj,
-                                date_obj,
-                            )
-                            save_method = self._save_ticker
-                            get_path_method = self._parquet_storage._get_ticker_path
-                        elif data_type == "funding":
-                            backfilled_data = await self.backfill_funding(
-                                job.symbol,
-                                date_obj,
-                                date_obj,
-                            )
-                            save_method = self._save_funding
-                            get_path_method = self._parquet_storage._get_funding_path
-                        else:
-                            logger.warning(
-                                "backfilling_unsupported_data_type_in_task",
-                                symbol=job.symbol,
-                                date=date_str,
-                                data_type=data_type,
-                                message=f"Backfilling for {data_type} is not implemented",
-                            )
-                            job.failed_dates.append(date_obj)
-                            continue
-                        
-                        # Save and validate data
-                        if backfilled_data:
-                            # Count unique records before saving (after deduplication in save methods)
-                            df_temp = pd.DataFrame(backfilled_data)
-                            df_temp["timestamp"] = pd.to_datetime(df_temp["timestamp"])
-                            unique_count = df_temp["timestamp"].nunique()
-                            
-                            # Save to Parquet
-                            await save_method(job.symbol, date_str, backfilled_data)
-                            
-                            # Validate saved data
-                            validation_passed = await self._validate_saved_data(
-                                job.symbol,
-                                date_str,
-                                unique_count,
-                                data_type,
-                            )
-                            
-                            if not validation_passed:
-                                # Delete corrupted file and mark date as failed
-                                try:
-                                    data_path = get_path_method(job.symbol, date_str)
-                                    if data_path.exists():
-                                        data_path.unlink()
-                                    logger.warning(
-                                        "backfilling_validation_failed_deleted",
-                                        symbol=job.symbol,
-                                        date=date_str,
-                                        data_type=data_type,
-                                    )
-                                except Exception as e:
-                                    logger.error(
-                                        "backfilling_validation_failed_delete_error",
-                                        symbol=job.symbol,
-                                        date=date_str,
-                                        data_type=data_type,
-                                        error=str(e),
-                                    )
-                                
-                                # Remove from completed if it was there, add to failed
-                                if date_obj in job.completed_dates:
-                                    job.completed_dates.remove(date_obj)
-                                if date_obj not in job.failed_dates:
-                                    job.failed_dates.append(date_obj)
-                            else:
-                                logger.debug(
-                                    "backfilling_data_type_completed",
-                                    symbol=job.symbol,
-                                    date=date_str,
-                                    data_type=data_type,
-                                    record_count=unique_count,
-                                )
-                                # Only mark date as completed if it's not already failed for another type
-                                if date_obj not in job.failed_dates:
-                                    if date_obj not in job.completed_dates:
-                                        job.completed_dates.append(date_obj)
-                        else:
-                            # No data backfilled - this is expected for some types
-                            # For funding: spot symbols don't have funding rates (only perpetuals)
-                            # For trades: historical trades may not be available via REST API for old dates
-                            # For orderbook_snapshots, orderbook_deltas, ticker: no historical data available via REST API
-                            if data_type == "funding":
-                                # Funding rates are only for perpetual contracts, not spot
-                                # Empty result is expected for spot symbols like BTCUSDT
-                                logger.debug(
-                                    "backfilling_funding_empty_expected",
-                                    symbol=job.symbol,
-                                    date=date_str,
-                                    note="Funding rates are only available for perpetual contracts, not spot symbols",
-                                )
-                            elif data_type == "trades":
-                                # Historical trades may not be available via REST API
-                                # This is not necessarily a failure - data might be available via WebSocket only
-                                logger.debug(
-                                    "backfilling_trades_empty",
-                                    symbol=job.symbol,
-                                    date=date_str,
-                                    note="Historical trades may not be available via REST API for this date",
-                                )
-                            else:
-                                # For orderbook_snapshots, orderbook_deltas, ticker - no historical data available is expected
-                                logger.debug(
-                                    "backfilling_no_historical_data_available",
-                                    symbol=job.symbol,
-                                    date=date_str,
-                                    data_type=data_type,
-                                    note="Historical data not available via REST API for this type",
-                                )
+                    lock = await self._parquet_storage._get_file_lock(
+                        job.symbol, date_str, data_type
+                    )
+                    locks[data_type] = lock
+                
+                # Acquire all locks before deleting (prevents queue writes during deletion)
+                # This ensures no queue writes can happen between deletion and backfilling
+                for lock in locks.values():
+                    await lock.acquire()
+                
+                try:
+                    # Delete files while holding locks (prevents queue writes)
+                    # Only delete files for data types that are being backfilled
+                    await self._delete_data_for_date(job.symbol, date_str, missing_types)
                     
-                    except Exception as e:
-                        logger.error(
-                            "backfilling_date_failed",
-                            symbol=job.symbol,
-                            date=date_obj.isoformat(),
-                            data_type=data_type,
-                            error=str(e),
-                            exc_info=True,
-                        )
-                        # Remove from completed if it was there, add to failed
-                        if date_obj in job.completed_dates:
-                            job.completed_dates.remove(date_obj)
-                        if date_obj not in job.failed_dates:
-                            job.failed_dates.append(date_obj)
+                    # Release locks before writing (write methods will acquire their own locks)
+                    # This allows write methods to use standard locking mechanism
+                    for lock in locks.values():
+                        lock.release()
+                    
+                    for data_type in missing_types:
+                        processed_types.add(data_type)
+                        try:
+                            date_str = date_obj.isoformat()
+                            backfilled_data = None
+                            save_method = None
+                            get_path_method = None
+                            
+                            # Backfill data based on type
+                            if data_type == "klines":
+                                backfilled_data = await self.backfill_klines(
+                                    job.symbol,
+                                    date_obj,
+                                    date_obj,
+                                    interval=config.feature_service_backfill_default_interval,
+                                )
+                                save_method = self._save_klines
+                                get_path_method = self._parquet_storage._get_klines_path
+                            elif data_type == "trades":
+                                backfilled_data = await self.backfill_trades(
+                                    job.symbol,
+                                    date_obj,
+                                    date_obj,
+                                )
+                                save_method = self._save_trades
+                                get_path_method = self._parquet_storage._get_trades_path
+                            elif data_type == "orderbook_snapshots":
+                                backfilled_data = await self.backfill_orderbook_snapshots(
+                                    job.symbol,
+                                    date_obj,
+                                    date_obj,
+                                )
+                                save_method = self._save_orderbook_snapshots
+                                get_path_method = self._parquet_storage._get_orderbook_snapshots_path
+                            elif data_type == "orderbook_deltas":
+                                backfilled_data = await self.backfill_orderbook_deltas(
+                                    job.symbol,
+                                    date_obj,
+                                    date_obj,
+                                )
+                                save_method = self._save_orderbook_deltas
+                                get_path_method = self._parquet_storage._get_orderbook_deltas_path
+                            elif data_type == "ticker":
+                                backfilled_data = await self.backfill_ticker(
+                                    job.symbol,
+                                    date_obj,
+                                    date_obj,
+                                )
+                                save_method = self._save_ticker
+                                get_path_method = self._parquet_storage._get_ticker_path
+                            elif data_type == "funding":
+                                backfilled_data = await self.backfill_funding(
+                                    job.symbol,
+                                    date_obj,
+                                    date_obj,
+                                )
+                                save_method = self._save_funding
+                                get_path_method = self._parquet_storage._get_funding_path
+                            else:
+                                logger.warning(
+                                    "backfilling_unsupported_data_type_in_task",
+                                    symbol=job.symbol,
+                                    date=date_str,
+                                    data_type=data_type,
+                                    message=f"Backfilling for {data_type} is not implemented",
+                                )
+                                job.failed_dates.append(date_obj)
+                                continue  # Skip to next data_type
+                            
+                            # Save and validate data
+                            if backfilled_data:
+                                # Count unique records before saving (after deduplication in save methods)
+                                df_temp = pd.DataFrame(backfilled_data)
+                                df_temp["timestamp"] = pd.to_datetime(df_temp["timestamp"])
+                                unique_count = df_temp["timestamp"].nunique()
+                                
+                                # Save to Parquet
+                                await save_method(job.symbol, date_str, backfilled_data)
+                                
+                                # Validate saved data
+                                validation_passed = await self._validate_saved_data(
+                                    job.symbol,
+                                    date_str,
+                                    unique_count,
+                                    data_type,
+                                )
+                                
+                                if not validation_passed:
+                                    # Delete corrupted file and mark date as failed
+                                    try:
+                                        data_path = get_path_method(job.symbol, date_str)
+                                        if data_path.exists():
+                                            data_path.unlink()
+                                        logger.warning(
+                                            "backfilling_validation_failed_deleted",
+                                            symbol=job.symbol,
+                                            date=date_str,
+                                            data_type=data_type,
+                                        )
+                                    except Exception as e:
+                                        logger.error(
+                                            "backfilling_validation_failed_delete_error",
+                                            symbol=job.symbol,
+                                            date=date_str,
+                                            data_type=data_type,
+                                            error=str(e),
+                                        )
+                                    
+                                    # Remove from completed if it was there, add to failed
+                                    if date_obj in job.completed_dates:
+                                        job.completed_dates.remove(date_obj)
+                                    if date_obj not in job.failed_dates:
+                                        job.failed_dates.append(date_obj)
+                                else:
+                                    logger.debug(
+                                        "backfilling_data_type_completed",
+                                        symbol=job.symbol,
+                                        date=date_str,
+                                        data_type=data_type,
+                                        record_count=unique_count,
+                                    )
+                                    # Only mark date as completed if it's not already failed for another type
+                                    if date_obj not in job.failed_dates:
+                                        if date_obj not in job.completed_dates:
+                                            job.completed_dates.append(date_obj)
+                            else:
+                                # No data backfilled - this is expected for some types
+                                # For funding: spot symbols don't have funding rates (only perpetuals)
+                                # For trades: historical trades may not be available via REST API for old dates
+                                # For orderbook_snapshots, orderbook_deltas, ticker: no historical data available via REST API
+                                if data_type == "funding":
+                                    # Funding rates are only for perpetual contracts, not spot
+                                    # Empty result is expected for spot symbols like BTCUSDT
+                                    logger.debug(
+                                        "backfilling_funding_empty_expected",
+                                        symbol=job.symbol,
+                                        date=date_str,
+                                        note="Funding rates are only available for perpetual contracts, not spot symbols",
+                                    )
+                                elif data_type == "trades":
+                                    # Historical trades may not be available via REST API
+                                    # This is not necessarily a failure - data might be available via WebSocket only
+                                    logger.debug(
+                                        "backfilling_trades_empty",
+                                        symbol=job.symbol,
+                                        date=date_str,
+                                        note="Historical trades may not be available via REST API for this date",
+                                    )
+                                else:
+                                    # For orderbook_snapshots, orderbook_deltas, ticker - no historical data available is expected
+                                    logger.debug(
+                                        "backfilling_no_historical_data_available",
+                                        symbol=job.symbol,
+                                        date=date_str,
+                                        data_type=data_type,
+                                        note="Historical data not available via REST API for this type",
+                                    )
+                        
+                        except Exception as e:
+                            logger.error(
+                                "backfilling_date_failed",
+                                symbol=job.symbol,
+                                date=date_obj.isoformat(),
+                                data_type=data_type,
+                                error=str(e),
+                                exc_info=True,
+                            )
+                            # Remove from completed if it was there, add to failed
+                            if date_obj in job.completed_dates:
+                                job.completed_dates.remove(date_obj)
+                            if date_obj not in job.failed_dates:
+                                job.failed_dates.append(date_obj)
+                    
+                finally:
+                    # Release all locks after processing all data types for this date
+                    # This allows queue writes to proceed after backfilling is complete
+                    for lock in locks.values():
+                        if lock.locked():
+                            lock.release()
                 
                 # After processing all types for this date, check if date should be marked as completed
                 # If all types were processed and date is not in failed_dates, mark as completed

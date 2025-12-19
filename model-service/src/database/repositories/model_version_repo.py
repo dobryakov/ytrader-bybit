@@ -30,6 +30,7 @@ class ModelVersionRepository(BaseRepository[Dict[str, Any]]):
         file_path: str,
         model_type: str,
         strategy_id: Optional[str] = None,
+        symbol: Optional[str] = None,
         training_duration_seconds: Optional[int] = None,
         training_dataset_size: Optional[int] = None,
         training_config: Optional[Dict[str, Any]] = None,
@@ -44,6 +45,7 @@ class ModelVersionRepository(BaseRepository[Dict[str, Any]]):
             file_path: File system path to model file
             model_type: Model type (e.g., 'xgboost', 'random_forest')
             strategy_id: Trading strategy identifier (optional)
+            symbol: Trading pair symbol (e.g., 'BTCUSDT', 'ETHUSDT') - optional for universal models
             training_duration_seconds: Training duration in seconds
             training_dataset_size: Number of records in training dataset
             training_config: Training configuration parameters
@@ -58,11 +60,11 @@ class ModelVersionRepository(BaseRepository[Dict[str, Any]]):
         """
         query = f"""
             INSERT INTO {self.table_name} (
-                version, file_path, model_type, strategy_id,
+                version, file_path, model_type, strategy_id, symbol,
                 training_duration_seconds, training_dataset_size, training_config,
                 is_active, is_warmup_mode
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
             RETURNING *
         """
         try:
@@ -75,6 +77,7 @@ class ModelVersionRepository(BaseRepository[Dict[str, Any]]):
                 file_path,
                 model_type,
                 strategy_id,
+                symbol,
                 training_duration_seconds,
                 training_dataset_size,
                 training_config_json,
@@ -84,7 +87,7 @@ class ModelVersionRepository(BaseRepository[Dict[str, Any]]):
             if not record:
                 raise ValueError("Failed to create model version")
             result = self._record_to_dict(record)
-            logger.info("Model version created", version=version, strategy_id=strategy_id, model_type=model_type)
+            logger.info("Model version created", version=version, strategy_id=strategy_id, symbol=symbol, model_type=model_type)
             return result
         except asyncpg.UniqueViolationError as e:
             logger.error("Model version already exists", version=version, error=str(e))
@@ -123,7 +126,7 @@ class ModelVersionRepository(BaseRepository[Dict[str, Any]]):
 
     async def get_active_by_strategy(self, strategy_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
-        Get active model version for a strategy.
+        Get active model version for a strategy (without symbol filter, for backward compatibility).
 
         Args:
             strategy_id: Trading strategy identifier (None for general models)
@@ -131,8 +134,33 @@ class ModelVersionRepository(BaseRepository[Dict[str, Any]]):
         Returns:
             Active model version record or None if not found
         """
-        query = f"SELECT * FROM {self.table_name} WHERE strategy_id = $1 AND is_active = true"
+        query = f"SELECT * FROM {self.table_name} WHERE strategy_id = $1 AND is_active = true AND symbol IS NULL"
         record = await self._fetchrow(query, strategy_id)
+        return self._record_to_dict(record) if record else None
+
+    async def get_active_by_strategy_and_symbol(
+        self, 
+        strategy_id: Optional[str] = None,
+        symbol: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Get active model version for a strategy and symbol.
+
+        Args:
+            strategy_id: Trading strategy identifier (None for general models)
+            symbol: Trading pair symbol (e.g., 'BTCUSDT', 'ETHUSDT')
+                   If None, looks for universal model (symbol IS NULL)
+
+        Returns:
+            Active model version record or None if not found
+        """
+        if symbol:
+            query = f"SELECT * FROM {self.table_name} WHERE strategy_id = $1 AND symbol = $2 AND is_active = true"
+            record = await self._fetchrow(query, strategy_id, symbol)
+        else:
+            # Fallback: look for universal model (symbol IS NULL) for backward compatibility
+            query = f"SELECT * FROM {self.table_name} WHERE strategy_id = $1 AND symbol IS NULL AND is_active = true"
+            record = await self._fetchrow(query, strategy_id)
         return self._record_to_dict(record) if record else None
 
     async def list_by_strategy(
@@ -234,7 +262,7 @@ class ModelVersionRepository(BaseRepository[Dict[str, Any]]):
 
     async def deactivate_all_for_strategy(self, strategy_id: Optional[str] = None) -> int:
         """
-        Deactivate all model versions for a strategy.
+        Deactivate all model versions for a strategy (without symbol filter, for backward compatibility).
 
         Args:
             strategy_id: Trading strategy identifier (None for general models)
@@ -245,35 +273,89 @@ class ModelVersionRepository(BaseRepository[Dict[str, Any]]):
         query = f"""
             UPDATE {self.table_name}
             SET is_active = false, updated_at = $1
-            WHERE strategy_id = $2 AND is_active = true
+            WHERE strategy_id = $2 AND is_active = true AND symbol IS NULL
         """
         result = await self._execute(query, datetime.utcnow(), strategy_id)
         count = int(result.split()[-1]) if result else 0
         logger.info("Deactivated model versions", strategy_id=strategy_id, count=count)
         return count
 
-    async def activate(self, model_version_id: UUID, strategy_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    async def deactivate_all_for_strategy_and_symbol(
+        self, 
+        strategy_id: Optional[str] = None,
+        symbol: Optional[str] = None,
+    ) -> int:
         """
-        Activate a model version (deactivates previous active model for the strategy).
+        Deactivate all model versions for a strategy and symbol.
+
+        Args:
+            strategy_id: Trading strategy identifier (None for general models)
+            symbol: Trading pair symbol (e.g., 'BTCUSDT', 'ETHUSDT')
+                   If None, deactivates universal models (symbol IS NULL)
+
+        Returns:
+            Number of deactivated models
+        """
+        if symbol:
+            query = f"""
+                UPDATE {self.table_name}
+                SET is_active = false, updated_at = $1
+                WHERE strategy_id = $2 AND symbol = $3 AND is_active = true
+            """
+            result = await self._execute(query, datetime.utcnow(), strategy_id, symbol)
+        else:
+            query = f"""
+                UPDATE {self.table_name}
+                SET is_active = false, updated_at = $1
+                WHERE strategy_id = $2 AND symbol IS NULL AND is_active = true
+            """
+            result = await self._execute(query, datetime.utcnow(), strategy_id)
+        count = int(result.split()[-1]) if result else 0
+        logger.info("Deactivated model versions", strategy_id=strategy_id, symbol=symbol, count=count)
+        return count
+
+    async def activate(self, model_version_id: UUID, strategy_id: Optional[str] = None, symbol: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """
+        Activate a model version (deactivates previous active model for the strategy and symbol).
 
         Args:
             model_version_id: Model version UUID to activate
             strategy_id: Trading strategy identifier (None for general models)
+            symbol: Trading pair symbol (e.g., 'BTCUSDT', 'ETHUSDT') - if None, uses symbol from model record
 
         Returns:
             Activated model version record or None if not found
         """
         async with self._transaction() as conn:
-            # Deactivate all models for this strategy
-            await conn.execute(
-                f"""
-                UPDATE {self.table_name}
-                SET is_active = false, updated_at = $1
-                WHERE strategy_id = $2 AND is_active = true
-                """,
-                datetime.utcnow(),
-                strategy_id,
-            )
+            # Get model version to determine symbol if not provided
+            if symbol is None:
+                model_version = await self.get_by_id(model_version_id)
+                if model_version:
+                    symbol = model_version.get("symbol")
+            
+            # Deactivate all models for this strategy and symbol combination
+            if symbol:
+                await conn.execute(
+                    f"""
+                    UPDATE {self.table_name}
+                    SET is_active = false, updated_at = $1
+                    WHERE strategy_id = $2 AND symbol = $3 AND is_active = true
+                    """,
+                    datetime.utcnow(),
+                    strategy_id,
+                    symbol,
+                )
+            else:
+                # Universal model (symbol IS NULL)
+                await conn.execute(
+                    f"""
+                    UPDATE {self.table_name}
+                    SET is_active = false, updated_at = $1
+                    WHERE strategy_id = $2 AND symbol IS NULL AND is_active = true
+                    """,
+                    datetime.utcnow(),
+                    strategy_id,
+                )
 
             # Activate the specified model
             query = f"""
@@ -284,7 +366,7 @@ class ModelVersionRepository(BaseRepository[Dict[str, Any]]):
             """
             record = await conn.fetchrow(query, datetime.utcnow(), model_version_id)
             if record:
-                logger.info("Model version activated", model_version_id=str(model_version_id), strategy_id=strategy_id)
+                logger.info("Model version activated", model_version_id=str(model_version_id), strategy_id=strategy_id, symbol=symbol)
                 return self._record_to_dict(record)
             return None
 

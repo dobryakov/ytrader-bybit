@@ -21,6 +21,21 @@ class AdaptivePrefetcher:
     to avoid waiting for data loading during dataset building.
     """
     
+    @staticmethod
+    def _normalize_datetime(dt: datetime) -> datetime:
+        """
+        Normalize datetime to timezone-aware UTC.
+        
+        Args:
+            dt: Datetime to normalize
+            
+        Returns:
+            Timezone-aware datetime in UTC
+        """
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    
     def __init__(
         self,
         cache: OptimizedDailyDataCache,
@@ -68,6 +83,9 @@ class AdaptivePrefetcher:
             current_timestamp: Current processing timestamp
             processed_records: Number of records processed since last update
         """
+        # Normalize current_timestamp to timezone-aware UTC
+        current_timestamp = self._normalize_datetime(current_timestamp)
+        
         now = datetime.now(timezone.utc)
         
         if self.last_measurement_time is None:
@@ -84,6 +102,8 @@ class AdaptivePrefetcher:
         
         # Calculate timestamp progress (in hours)
         if self.last_processed_timestamp:
+            # Ensure last_processed_timestamp is also normalized
+            self.last_processed_timestamp = self._normalize_datetime(self.last_processed_timestamp)
             timestamp_progress_hours = (
                 (current_timestamp - self.last_processed_timestamp).total_seconds() / 3600
             )
@@ -127,6 +147,10 @@ class AdaptivePrefetcher:
             current_timestamp: Current processing timestamp
             period_end: End of processing period
         """
+        # Normalize timestamps (will be normalized again in _calculate_hours_ahead, but safe)
+        current_timestamp = self._normalize_datetime(current_timestamp)
+        period_end = self._normalize_datetime(period_end)
+        
         # Calculate how much data we need to prefetch
         hours_ahead = self._calculate_hours_ahead(current_timestamp, period_end)
         
@@ -190,6 +214,10 @@ class AdaptivePrefetcher:
         Returns:
             Hours ahead to prefetch
         """
+        # Normalize both timestamps to timezone-aware UTC
+        current_timestamp = self._normalize_datetime(current_timestamp)
+        period_end = self._normalize_datetime(period_end)
+        
         # Calculate remaining hours
         remaining_hours = (period_end - current_timestamp).total_seconds() / 3600
         
@@ -235,6 +263,9 @@ class AdaptivePrefetcher:
         Returns:
             List of date objects to prefetch
         """
+        # Normalize timestamp to timezone-aware UTC
+        current_timestamp = self._normalize_datetime(current_timestamp)
+        
         dates = []
         current_date = current_timestamp.date()
         

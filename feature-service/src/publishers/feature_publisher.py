@@ -114,14 +114,29 @@ class FeaturePublisher:
                     
                     # Reinitialize channel and queue before retry
                     try:
+                        # Check if mq_manager is valid
+                        if self._mq_manager is None:
+                            raise RuntimeError("MQ manager is None")
                         await self.initialize()
-                    except Exception as init_error:
+                    except (asyncio.CancelledError, KeyboardInterrupt) as init_error:
+                        # Don't retry on cancellation - re-raise immediately
                         logger.warning(
-                            "failed_to_reinitialize_channel",
+                            "channel_reinitialization_cancelled",
                             symbol=feature_vector.symbol,
                             error=str(init_error),
                             error_type=type(init_error).__name__,
+                        )
+                        raise
+                    except Exception as init_error:
+                        error_msg = str(init_error)
+                        error_type = type(init_error).__name__
+                        logger.warning(
+                            "failed_to_reinitialize_channel",
+                            symbol=feature_vector.symbol,
+                            error=error_msg,
+                            error_type=error_type,
                             attempt=attempt + 1,
+                            mq_manager_is_none=self._mq_manager is None,
                         )
                         # Continue to next retry attempt
                         continue

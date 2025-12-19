@@ -90,7 +90,22 @@ class FeatureRequirementsAnalyzer:
         ],
         # Candle pattern features
         "candle_patterns": [
-            # Pattern names vary by version
+            # Candle features (v1.5.0)
+            "candle_0_is_green", "candle_1_is_green", "candle_2_is_green",
+            "candle_0_body_ratio", "candle_1_body_ratio", "candle_2_body_ratio",
+            "candle_0_upper_shadow_ratio", "candle_1_upper_shadow_ratio", "candle_2_upper_shadow_ratio",
+            "candle_0_lower_shadow_ratio", "candle_1_lower_shadow_ratio", "candle_2_lower_shadow_ratio",
+            "candle_0_is_doji", "candle_0_is_hammer",
+            "candle_1_is_doji", "candle_1_is_hammer",
+            "candle_2_is_doji", "candle_2_is_hammer",
+            # Pattern features (v1.5.0)
+            "pattern_all_green", "pattern_all_red", "pattern_green_red_green", "pattern_red_green_red",
+            "pattern_body_increasing", "pattern_body_decreasing",
+            "pattern_volume_increasing", "pattern_volume_decreasing",
+            "pattern_green_large_volume", "pattern_red_large_volume",
+            "pattern_bullish_engulfing", "pattern_bearish_engulfing",
+            "pattern_morning_star", "pattern_evening_star",
+            "pattern_inside_bar_bullish", "pattern_inside_bar_bearish",
         ],
     }
     

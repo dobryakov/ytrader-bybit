@@ -34,6 +34,7 @@ class ModelVersionManager:
         model_type: str,
         file_path: str,
         strategy_id: Optional[str] = None,
+        symbol: Optional[str] = None,
         training_duration_seconds: Optional[int] = None,
         training_dataset_size: Optional[int] = None,
         training_config: Optional[Dict[str, Any]] = None,
@@ -47,6 +48,7 @@ class ModelVersionManager:
             model_type: Model type ('xgboost', 'random_forest', etc.)
             file_path: Path to model file (relative to storage_path or absolute)
             strategy_id: Trading strategy identifier
+            symbol: Trading pair symbol (e.g., 'BTCUSDT', 'ETHUSDT') - optional for universal models
             training_duration_seconds: Training duration in seconds
             training_dataset_size: Number of records in training dataset
             training_config: Training configuration parameters
@@ -61,7 +63,7 @@ class ModelVersionManager:
 
         # Deactivate previous active model if activating this one
         if is_active:
-            await self.model_version_repo.deactivate_all_for_strategy(strategy_id)
+            await self.model_version_repo.deactivate_all_for_strategy_and_symbol(strategy_id, symbol)
 
         # Create model version record
         model_version = await self.model_version_repo.create(
@@ -69,6 +71,7 @@ class ModelVersionManager:
             file_path=file_path,
             model_type=model_type,
             strategy_id=strategy_id,
+            symbol=symbol,
             training_duration_seconds=training_duration_seconds,
             training_dataset_size=training_dataset_size,
             training_config=training_config,
@@ -80,35 +83,40 @@ class ModelVersionManager:
             version=version,
             model_version_id=model_version["id"],
             strategy_id=strategy_id,
+            symbol=symbol,
             is_active=is_active,
         )
 
         return model_version
 
-    async def activate_version(self, model_version_id: UUID, strategy_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    async def activate_version(self, model_version_id: UUID, strategy_id: Optional[str] = None, symbol: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
         Activate a model version (deactivates previous active model).
 
         Args:
             model_version_id: Model version UUID to activate
             strategy_id: Trading strategy identifier (optional, inferred from model version)
+            symbol: Trading pair symbol (optional, inferred from model version)
 
         Returns:
             Activated model version record or None if not found
         """
-        # Get model version to infer strategy_id if not provided
-        if strategy_id is None:
+        # Get model version to infer strategy_id and symbol if not provided
+        if strategy_id is None or symbol is None:
             model_version = await self.model_version_repo.get_by_id(model_version_id)
             if not model_version:
                 logger.error("Model version not found", model_version_id=str(model_version_id))
                 return None
-            strategy_id = model_version.get("strategy_id")
+            if strategy_id is None:
+                strategy_id = model_version.get("strategy_id")
+            if symbol is None:
+                symbol = model_version.get("symbol")
 
         # Activate the model version
-        activated_version = await self.model_version_repo.activate(model_version_id, strategy_id)
+        activated_version = await self.model_version_repo.activate(model_version_id, strategy_id, symbol)
 
         if activated_version:
-            logger.info("Model version activated", model_version_id=str(model_version_id), strategy_id=strategy_id)
+            logger.info("Model version activated", model_version_id=str(model_version_id), strategy_id=strategy_id, symbol=symbol)
         else:
             logger.error("Failed to activate model version", model_version_id=str(model_version_id))
 
@@ -198,17 +206,18 @@ class ModelVersionManager:
 
         logger.info("Quality metrics saved", model_version_id=str(model_version_id), metric_count=len(metrics))
 
-    async def get_active_version(self, strategy_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    async def get_active_version(self, strategy_id: Optional[str] = None, symbol: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
-        Get active model version for a strategy.
+        Get active model version for a strategy and symbol.
 
         Args:
             strategy_id: Trading strategy identifier
+            symbol: Trading pair symbol (e.g., 'BTCUSDT', 'ETHUSDT') - optional for universal models
 
         Returns:
             Active model version record or None if not found
         """
-        return await self.model_version_repo.get_active_by_strategy(strategy_id)
+        return await self.model_version_repo.get_active_by_strategy_and_symbol(strategy_id, symbol)
 
     async def rollback_to_version(self, model_version_id: UUID) -> Optional[Dict[str, Any]]:
         """
@@ -220,19 +229,20 @@ class ModelVersionManager:
         Returns:
             Activated model version record or None if not found
         """
-        # Get model version to get strategy_id
+        # Get model version to get strategy_id and symbol
         model_version = await self.model_version_repo.get_by_id(model_version_id)
         if not model_version:
             logger.error("Model version not found for rollback", model_version_id=str(model_version_id))
             return None
 
         strategy_id = model_version.get("strategy_id")
+        symbol = model_version.get("symbol")
 
         # Activate the specified version (this will deactivate current active version)
-        activated_version = await self.activate_version(model_version_id, strategy_id)
+        activated_version = await self.activate_version(model_version_id, strategy_id, symbol)
 
         if activated_version:
-            logger.info("Rolled back to model version", model_version_id=str(model_version_id), strategy_id=strategy_id)
+            logger.info("Rolled back to model version", model_version_id=str(model_version_id), strategy_id=strategy_id, symbol=symbol)
         else:
             logger.error("Failed to rollback to model version", model_version_id=str(model_version_id))
 

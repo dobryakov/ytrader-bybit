@@ -56,6 +56,7 @@ class OptimizedRollingWindow:
         timestamp: datetime,
         trades: Optional[pd.DataFrame] = None,
         klines: Optional[pd.DataFrame] = None,
+        skip_trim: bool = False,
     ) -> None:
         """
         Add new data to rolling window and automatically trim old data.
@@ -64,6 +65,7 @@ class OptimizedRollingWindow:
             timestamp: Current timestamp
             trades: New trades DataFrame (optional)
             klines: New klines DataFrame (optional)
+            skip_trim: If True, skip trimming old data (useful for historical data loading)
         """
         # Ensure timestamp is timezone-aware
         if timestamp.tzinfo is None:
@@ -126,8 +128,9 @@ class OptimizedRollingWindow:
         # Update timestamps
         self._last_timestamp = timestamp
         
-        # Trim old data
-        self.trim_old_data(timestamp)
+        # Trim old data (skip for historical data loading)
+        if not skip_trim:
+            self.trim_old_data(timestamp)
     
     def trim_old_data(self, current_timestamp: datetime) -> None:
         """

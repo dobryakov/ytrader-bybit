@@ -23,11 +23,12 @@ Represents a trained ML model instance with version identifier, training metadat
 | `file_path` | VARCHAR(500) | NOT NULL | File system path to model file (e.g., '/models/v1/model.json') |
 | `model_type` | VARCHAR(50) | NOT NULL | Model type (e.g., 'xgboost', 'random_forest', 'logistic_regression') |
 | `strategy_id` | VARCHAR(100) | NULL | Trading strategy identifier (NULL for general models, supports multiple strategies) |
+| `symbol` | VARCHAR(20) | NULL | Trading pair symbol (e.g., 'BTCUSDT', 'ETHUSDT') - NULL for universal models that work across all symbols |
 | `trained_at` | TIMESTAMP | NOT NULL, DEFAULT NOW() | When model training completed |
 | `training_duration_seconds` | INTEGER | NULL | Training duration in seconds |
 | `training_dataset_size` | INTEGER | NULL | Number of records in training dataset |
 | `training_config` | JSONB | NULL | Training configuration parameters (hyperparameters, feature set, etc.) |
-| `is_active` | BOOLEAN | NOT NULL, DEFAULT false | Whether this version is currently active (only one active per strategy_id) |
+| `is_active` | BOOLEAN | NOT NULL, DEFAULT false | Whether this version is currently active (only one active per (strategy_id, symbol) combination) |
 | `is_warmup_mode` | BOOLEAN | NOT NULL, DEFAULT false | Whether system is in warm-up mode (no trained model) |
 | `created_at` | TIMESTAMP | NOT NULL, DEFAULT NOW() | Record creation timestamp |
 | `updated_at` | TIMESTAMP | NOT NULL, DEFAULT NOW() | Last update timestamp |
@@ -35,21 +36,24 @@ Represents a trained ML model instance with version identifier, training metadat
 **Indexes**:
 - `idx_model_versions_version` on `version` (for version lookup)
 - `idx_model_versions_strategy_id` on `strategy_id` (for strategy-specific queries)
-- `idx_model_versions_active` on `(strategy_id, is_active)` (for active model lookup per strategy)
+- `idx_model_versions_strategy_symbol` on `(strategy_id, symbol)` WHERE `symbol IS NOT NULL` (for symbol-specific model lookup)
+- `idx_model_versions_active` on `(strategy_id, symbol, is_active)` WHERE `is_active = true` (for active model lookup per strategy and symbol)
 - `idx_model_versions_trained_at` on `trained_at DESC` (for version history queries)
 
 **Validation Rules**:
 - `model_type` must be one of: 'xgboost', 'random_forest', 'logistic_regression', 'sgd_classifier'
 - `file_path` must be a valid file system path within `/models/` directory
 - `version` must match pattern: `^v\d+(\.\d+)?$` (e.g., 'v1', 'v2.1')
-- Only one model version can have `is_active=true` per `strategy_id` (NULL strategy_id counts as one strategy)
+- Only one model version can have `is_active=true` per `(strategy_id, symbol)` combination
+  - For models with `symbol`: one active model per `(strategy_id, symbol)` pair
+  - For universal models (`symbol IS NULL`): one active model per `strategy_id`
 - `training_config` must be valid JSON
 
 **State Transitions**:
-- New model trained → `is_active=false`, `trained_at` set
-- Model activated → Previous active model `is_active=false`, new model `is_active=true`
-- Model rollback → Previous version `is_active=true`, current version `is_active=false`
-- Warm-up mode → `is_warmup_mode=true`, all models `is_active=false` for strategy
+- New model trained → `is_active=false`, `trained_at` set, `symbol` set from training dataset
+- Model activated → Previous active model for same `(strategy_id, symbol)` `is_active=false`, new model `is_active=true`
+- Model rollback → Previous version `is_active=true`, current version `is_active=false` (for same `(strategy_id, symbol)`)
+- Warm-up mode → `is_warmup_mode=true`, all models `is_active=false` for strategy (can be symbol-specific or universal)
 
 **Relationships**:
 - One model version has many quality metrics (see Model Quality Metrics)
@@ -294,6 +298,7 @@ CREATE TABLE IF NOT EXISTS model_versions (
     file_path VARCHAR(500) NOT NULL,
     model_type VARCHAR(50) NOT NULL,
     strategy_id VARCHAR(100),
+    symbol VARCHAR(20),
     trained_at TIMESTAMP NOT NULL DEFAULT NOW(),
     training_duration_seconds INTEGER,
     training_dataset_size INTEGER,
@@ -310,11 +315,15 @@ CREATE TABLE IF NOT EXISTS model_versions (
 
 CREATE INDEX idx_model_versions_version ON model_versions(version);
 CREATE INDEX idx_model_versions_strategy_id ON model_versions(strategy_id);
-CREATE INDEX idx_model_versions_active ON model_versions(strategy_id, is_active) WHERE is_active = true;
+CREATE INDEX idx_model_versions_strategy_symbol ON model_versions(strategy_id, symbol) WHERE symbol IS NOT NULL;
+CREATE INDEX idx_model_versions_active ON model_versions(strategy_id, symbol, is_active) WHERE is_active = true;
 CREATE INDEX idx_model_versions_trained_at ON model_versions(trained_at DESC);
 
--- Unique constraint: only one active model per strategy
-CREATE UNIQUE INDEX idx_model_versions_unique_active ON model_versions(strategy_id, is_active) WHERE is_active = true;
+-- Unique constraint: only one active model per (strategy_id, symbol) combination
+-- For models with symbol: one active model per strategy_id + symbol
+-- For universal models (symbol IS NULL): one active model per strategy_id
+CREATE UNIQUE INDEX idx_model_versions_unique_active ON model_versions(strategy_id, symbol, is_active) WHERE is_active = true AND symbol IS NOT NULL;
+CREATE UNIQUE INDEX idx_model_versions_unique_active_no_symbol ON model_versions(strategy_id, is_active) WHERE is_active = true AND symbol IS NULL;
 
 -- ws-gateway/migrations/004_create_model_quality_metrics_table.sql
 CREATE TABLE IF NOT EXISTS model_quality_metrics (
