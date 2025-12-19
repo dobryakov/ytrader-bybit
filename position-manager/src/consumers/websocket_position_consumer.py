@@ -162,7 +162,41 @@ class WebSocketPositionConsumer:
     async def start(self) -> None:
         """Start consuming from ws-gateway.position."""
         channel = await RabbitMQConnection.get_channel()
-        queue = await channel.declare_queue("ws-gateway.position", durable=True)
+        # Queue is created by ws-gateway with x-message-ttl and other arguments
+        # Use passive=True to avoid PRECONDITION_FAILED when queue already exists
+        # If queue doesn't exist, create it with same args as ws-gateway
+        try:
+            queue = await channel.declare_queue("ws-gateway.position", durable=True, passive=True)
+            logger.debug("ws_position_queue_found_passive", queue=queue.name)
+        except Exception as passive_error:
+            # If passive fails, queue might not exist yet - try creating it with same args as ws-gateway
+            logger.info(
+                "ws_position_queue_not_found_creating",
+                error=str(passive_error),
+                error_type=type(passive_error).__name__,
+            )
+            # Use same arguments as ws-gateway uses (from ws-gateway/src/services/queue/setup.py)
+            try:
+                queue = await channel.declare_queue(
+                    "ws-gateway.position",
+                    durable=True,
+                    arguments={
+                        "x-message-ttl": 86400000,  # 24 hours in milliseconds
+                        "x-max-length": 100000,
+                        "x-overflow": "drop-head",
+                    },
+                )
+                logger.info("ws_position_queue_created", queue=queue.name)
+            except Exception as create_error:
+                # If creation also fails (e.g., queue was just created by ws-gateway),
+                # try passive again
+                logger.warning(
+                    "ws_position_queue_create_failed_trying_passive_again",
+                    error=str(create_error),
+                    error_type=type(create_error).__name__,
+                )
+                queue = await channel.declare_queue("ws-gateway.position", durable=True, passive=True)
+                logger.info("ws_position_queue_found_after_retry", queue=queue.name)
 
         logger.info("ws_position_consumer_started", queue=queue.name)
 
@@ -184,10 +218,50 @@ class WebSocketPositionConsumer:
             logger.error("ws_position_consumer_crashed", error=str(e), exc_info=True)
 
     def spawn(self) -> None:
-        """Spawn the consumer in a background task."""
+        """Spawn the consumer in a background task with automatic restart on failure."""
         if self._task is None or self._task.done():
             self._stopped.clear()
-            self._task = asyncio.create_task(self.run_forever())
+            self._task = asyncio.create_task(self._run_with_restart())
+
+    async def _run_with_restart(self) -> None:
+        """Run consumer with automatic restart on failure."""
+        max_restart_delay = 30.0  # Maximum delay between restarts
+        restart_delay = 1.0  # Initial delay
+        
+        while not self._stopped.is_set():
+            try:
+                await self.run_forever()
+                # If run_forever completes normally (not cancelled), exit loop
+                logger.info("ws_position_consumer_completed_normally")
+                break
+            except asyncio.CancelledError:
+                logger.info("ws_position_consumer_cancelled")
+                break
+            except Exception as e:
+                logger.error(
+                    "ws_position_consumer_crashed_will_restart",
+                    error=str(e),
+                    error_type=type(e).__name__,
+                    restart_delay=restart_delay,
+                    exc_info=True,
+                )
+                
+                # Wait before restarting
+                try:
+                    await asyncio.sleep(restart_delay)
+                except asyncio.CancelledError:
+                    break
+                
+                # Exponential backoff, capped at max_restart_delay
+                restart_delay = min(restart_delay * 2.0, max_restart_delay)
+                
+                # Clear stopped flag to allow restart
+                self._stopped.clear()
+                
+                logger.info(
+                    "ws_position_consumer_restarting",
+                    restart_delay=restart_delay,
+                )
 
     async def stop(self) -> None:
         """Signal the consumer loop to stop."""

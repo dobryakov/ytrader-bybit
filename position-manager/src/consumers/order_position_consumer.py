@@ -192,10 +192,50 @@ class OrderPositionConsumer:
             logger.error("order_position_consumer_crashed", error=str(e), exc_info=True)
 
     def spawn(self) -> None:
-        """Spawn the consumer in a background task."""
+        """Spawn the consumer in a background task with automatic restart on failure."""
         if self._task is None or self._task.done():
             self._stopped.clear()
-            self._task = asyncio.create_task(self.run_forever())
+            self._task = asyncio.create_task(self._run_with_restart())
+
+    async def _run_with_restart(self) -> None:
+        """Run consumer with automatic restart on failure."""
+        max_restart_delay = 30.0  # Maximum delay between restarts
+        restart_delay = 1.0  # Initial delay
+        
+        while not self._stopped.is_set():
+            try:
+                await self.run_forever()
+                # If run_forever completes normally (not cancelled), exit loop
+                logger.info("order_position_consumer_completed_normally")
+                break
+            except asyncio.CancelledError:
+                logger.info("order_position_consumer_cancelled")
+                break
+            except Exception as e:
+                logger.error(
+                    "order_position_consumer_crashed_will_restart",
+                    error=str(e),
+                    error_type=type(e).__name__,
+                    restart_delay=restart_delay,
+                    exc_info=True,
+                )
+                
+                # Wait before restarting
+                try:
+                    await asyncio.sleep(restart_delay)
+                except asyncio.CancelledError:
+                    break
+                
+                # Exponential backoff, capped at max_restart_delay
+                restart_delay = min(restart_delay * 2.0, max_restart_delay)
+                
+                # Clear stopped flag to allow restart
+                self._stopped.clear()
+                
+                logger.info(
+                    "order_position_consumer_restarting",
+                    restart_delay=restart_delay,
+                )
 
     async def stop(self) -> None:
         """Signal the consumer loop to stop."""

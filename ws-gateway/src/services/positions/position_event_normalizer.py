@@ -127,7 +127,12 @@ class PositionEventNormalizer:
 
         # Side and mode
         side = raw.get("side") or raw.get("positionSide") or raw.get("sSide")
-        mode_raw = raw.get("positionIdx") or raw.get("positionMode") or raw.get("mode")
+        # Use get() with explicit None check to handle positionIdx=0 correctly (0 is falsy)
+        mode_raw = raw.get("positionIdx")
+        if mode_raw is None:
+            mode_raw = raw.get("positionMode")
+        if mode_raw is None:
+            mode_raw = raw.get("mode")
 
         # Basic mode validation: allow known numeric indices or non-empty strings
         valid_mode = False

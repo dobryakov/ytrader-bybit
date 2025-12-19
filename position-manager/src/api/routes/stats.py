@@ -1,0 +1,395 @@
+"""Position statistics API endpoints for Position Manager."""
+
+from __future__ import annotations
+
+from datetime import datetime
+from decimal import Decimal
+from typing import Any, Dict, List, Optional
+import json
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import JSONResponse
+
+from ...config.database import DatabaseConnection
+from ...config.logging import get_logger
+from ...utils.tracing import get_or_create_trace_id
+from ..middleware.auth import api_key_auth
+
+
+logger = get_logger(__name__)
+router = APIRouter(prefix="/api/v1", tags=["stats"])
+
+
+@router.get(
+    "/stats",
+    dependencies=[Depends(api_key_auth)],
+    summary="Get detailed position statistics including PnL, holding duration, predictions, and close reasons",
+)
+async def get_position_stats(
+    asset: Optional[str] = Query(None, description="Filter by trading pair (e.g., BTCUSDT)"),
+    mode: Optional[str] = Query(None, description="Filter by trading mode (one-way, hedge)"),
+    status: Optional[str] = Query(None, description="Filter by status (open, closed, all)"),
+    from_date: Optional[datetime] = Query(None, description="Start date filter (for closed positions)"),
+    to_date: Optional[datetime] = Query(None, description="End date filter (for closed positions)"),
+    group_by: Optional[str] = Query(None, description="Group results by (asset, status, none)"),
+    include_details: bool = Query(False, description="Include detailed information per position (predictions, close reasons)"),
+) -> JSONResponse:
+    """Get comprehensive position statistics including PnL metrics, holding duration, model predictions, and close reasons.
+    
+    Returns aggregated statistics about positions including:
+    - Summary counts (total, open, closed)
+    - PnL statistics (total, average, win rate)
+    - Duration statistics (average, min, max, median holding time)
+    - Grouped statistics by asset or status (if requested)
+    - Detailed position information with predictions and close reasons (if include_details=true)
+    """
+    trace_id = get_or_create_trace_id()
+    
+    logger.info(
+        "position_stats_request",
+        asset=asset,
+        mode=mode,
+        status=status,
+        from_date=from_date.isoformat() if from_date else None,
+        to_date=to_date.isoformat() if to_date else None,
+        group_by=group_by,
+        include_details=include_details,
+        trace_id=trace_id,
+    )
+    
+    # Validate mode
+    if mode is not None:
+        mode_lower = mode.lower()
+        if mode_lower not in {"one-way", "hedge"}:
+            raise HTTPException(status_code=400, detail="Invalid mode. Must be 'one-way' or 'hedge'")
+    else:
+        mode_lower = None
+    
+    # Validate status
+    if status is not None:
+        status_lower = status.lower()
+        if status_lower not in {"open", "closed", "all"}:
+            raise HTTPException(status_code=400, detail="Invalid status. Must be 'open', 'closed', or 'all'")
+    else:
+        status_lower = "all"
+    
+    # Validate group_by
+    if group_by is not None:
+        group_by_lower = group_by.lower()
+        if group_by_lower not in {"asset", "status", "none"}:
+            raise HTTPException(status_code=400, detail="Invalid group_by. Must be 'asset', 'status', or 'none'")
+    else:
+        group_by_lower = None
+    
+    try:
+        pool = await DatabaseConnection.get_pool()
+        
+        # Build base query with position stats
+        base_query = """
+            WITH position_stats AS (
+                SELECT 
+                    p.id,
+                    p.asset,
+                    p.mode,
+                    p.size,
+                    p.realized_pnl,
+                    p.unrealized_pnl,
+                    p.created_at,
+                    p.closed_at,
+                    p.last_updated,
+                    CASE 
+                        WHEN p.size = 0 AND p.closed_at IS NOT NULL THEN 'closed'
+                        WHEN p.size != 0 THEN 'open'
+                        ELSE 'unknown'
+                    END as status,
+                    CASE 
+                        WHEN p.closed_at IS NOT NULL AND p.created_at IS NOT NULL 
+                        THEN EXTRACT(EPOCH FROM (p.closed_at - p.created_at)) / 60
+                        WHEN p.size != 0 AND p.created_at IS NOT NULL
+                        THEN EXTRACT(EPOCH FROM (NOW() - p.created_at)) / 60
+                        ELSE NULL
+                    END as duration_minutes
+                FROM positions p
+                WHERE 1=1
+        """
+        
+        params: List[Any] = []
+        param_idx = 1
+        
+        # Add filters
+        if mode_lower:
+            base_query += f" AND p.mode = ${param_idx}"
+            params.append(mode_lower)
+            param_idx += 1
+        
+        if asset:
+            base_query += f" AND p.asset = ${param_idx}"
+            params.append(asset.upper())
+            param_idx += 1
+        
+        if status_lower != "all":
+            if status_lower == "closed":
+                base_query += f" AND p.size = 0 AND p.closed_at IS NOT NULL"
+            elif status_lower == "open":
+                base_query += f" AND p.size != 0"
+        
+        if from_date:
+            base_query += f" AND (p.closed_at IS NULL OR p.closed_at >= ${param_idx})"
+            params.append(from_date)
+            param_idx += 1
+        
+        if to_date:
+            base_query += f" AND (p.closed_at IS NULL OR p.closed_at <= ${param_idx})"
+            params.append(to_date)
+            param_idx += 1
+        
+        # Summary statistics
+        summary_query = base_query + """
+            )
+            SELECT 
+                COUNT(*) as total_positions,
+                COUNT(*) FILTER (WHERE status = 'open') as open_positions,
+                COUNT(*) FILTER (WHERE status = 'closed') as closed_positions,
+                COALESCE(SUM(realized_pnl), 0) as total_realized_pnl,
+                COALESCE(SUM(unrealized_pnl), 0) as total_unrealized_pnl,
+                COALESCE(SUM(realized_pnl) + SUM(unrealized_pnl), 0) as total_pnl,
+                COUNT(*) FILTER (WHERE status = 'closed' AND realized_pnl > 0) as winning_positions,
+                COUNT(*) FILTER (WHERE status = 'closed' AND realized_pnl < 0) as losing_positions,
+                COUNT(*) FILTER (WHERE status = 'closed' AND realized_pnl = 0) as breakeven_positions
+            FROM position_stats
+        """
+        
+        summary_row = await pool.fetchrow(summary_query, *params)
+        
+        # Duration statistics for closed positions
+        duration_query = base_query + """
+            )
+            SELECT 
+                COUNT(*) FILTER (WHERE status = 'closed' AND duration_minutes IS NOT NULL) as closed_positions_count,
+                AVG(duration_minutes) FILTER (WHERE status = 'closed' AND duration_minutes IS NOT NULL) as avg_duration_minutes,
+                MIN(duration_minutes) FILTER (WHERE status = 'closed' AND duration_minutes IS NOT NULL) as min_duration_minutes,
+                MAX(duration_minutes) FILTER (WHERE status = 'closed' AND duration_minutes IS NOT NULL) as max_duration_minutes,
+                PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY duration_minutes) FILTER (WHERE status = 'closed' AND duration_minutes IS NOT NULL) as median_duration_minutes,
+                SUM(duration_minutes) FILTER (WHERE status = 'closed' AND duration_minutes IS NOT NULL) as total_duration_minutes
+            FROM position_stats
+        """
+        
+        duration_row = await pool.fetchrow(duration_query, *params)
+        
+        # PnL statistics
+        pnl_query = base_query + """
+            )
+            SELECT 
+                COALESCE(SUM(realized_pnl), 0) as total_realized_pnl,
+                COALESCE(SUM(unrealized_pnl), 0) as total_unrealized_pnl,
+                AVG(realized_pnl) FILTER (WHERE status = 'closed') as avg_realized_pnl_per_closed_position,
+                AVG(unrealized_pnl) FILTER (WHERE status = 'open') as avg_unrealized_pnl_per_open_position,
+                COUNT(*) FILTER (WHERE status = 'closed' AND realized_pnl > 0) as winning_positions,
+                COUNT(*) FILTER (WHERE status = 'closed' AND realized_pnl < 0) as losing_positions,
+                COUNT(*) FILTER (WHERE status = 'closed' AND realized_pnl != 0) as total_closed_with_pnl
+            FROM position_stats
+        """
+        
+        pnl_row = await pool.fetchrow(pnl_query, *params)
+        
+        # Calculate win rate
+        total_closed_with_pnl = pnl_row["total_closed_with_pnl"] or 0
+        winning_positions = pnl_row["winning_positions"] or 0
+        win_rate = float(winning_positions / total_closed_with_pnl) if total_closed_with_pnl > 0 else None
+        
+        # Build response
+        response: Dict[str, Any] = {
+            "summary": {
+                "total_positions": summary_row["total_positions"] or 0,
+                "open_positions": summary_row["open_positions"] or 0,
+                "closed_positions": summary_row["closed_positions"] or 0,
+                "total_realized_pnl": float(summary_row["total_realized_pnl"] or 0),
+                "total_unrealized_pnl": float(summary_row["total_unrealized_pnl"] or 0),
+                "total_pnl": float(summary_row["total_pnl"] or 0),
+            },
+            "duration_stats": {
+                "closed_positions_count": duration_row["closed_positions_count"] or 0,
+                "avg_duration_minutes": round(float(duration_row["avg_duration_minutes"] or 0), 2) if duration_row["avg_duration_minutes"] is not None else None,
+                "min_duration_minutes": round(float(duration_row["min_duration_minutes"] or 0), 2) if duration_row["min_duration_minutes"] is not None else None,
+                "max_duration_minutes": round(float(duration_row["max_duration_minutes"] or 0), 2) if duration_row["max_duration_minutes"] is not None else None,
+                "median_duration_minutes": round(float(duration_row["median_duration_minutes"] or 0), 2) if duration_row["median_duration_minutes"] is not None else None,
+                "total_duration_minutes": round(float(duration_row["total_duration_minutes"] or 0), 2) if duration_row["total_duration_minutes"] is not None else None,
+            },
+            "pnl_stats": {
+                "total_realized_pnl": float(pnl_row["total_realized_pnl"] or 0),
+                "total_unrealized_pnl": float(pnl_row["total_unrealized_pnl"] or 0),
+                "avg_realized_pnl_per_closed_position": round(float(pnl_row["avg_realized_pnl_per_closed_position"] or 0), 2) if pnl_row["avg_realized_pnl_per_closed_position"] is not None else None,
+                "avg_unrealized_pnl_per_open_position": round(float(pnl_row["avg_unrealized_pnl_per_open_position"] or 0), 2) if pnl_row["avg_unrealized_pnl_per_open_position"] is not None else None,
+                "winning_positions": pnl_row["winning_positions"] or 0,
+                "losing_positions": pnl_row["losing_positions"] or 0,
+                "breakeven_positions": summary_row["breakeven_positions"] or 0,
+                "win_rate": round(win_rate, 4) if win_rate is not None else None,
+            },
+        }
+        
+        # Add detailed position information if requested
+        if include_details:
+            details_query = base_query + """
+            )
+            SELECT 
+                ps.id as position_id,
+                ps.asset,
+                ps.size,
+                ps.created_at,
+                ps.closed_at,
+                ps.realized_pnl,
+                ps.unrealized_pnl,
+                ps.status,
+                ps.duration_minutes,
+                -- Предсказания через prediction_trading_results
+                ptr.entry_signal_id,
+                ptr.exit_signal_id,
+                entry_ts.metadata->>'prediction_result' as entry_prediction_json,
+                entry_pt.predicted_values as entry_predicted_values,
+                entry_pt.actual_values as entry_actual_values,
+                -- Причина закрытия через exit signal
+                exit_ts.metadata->>'exit_reason' as exit_reason,
+                exit_ts.metadata->>'rule_triggered' as exit_rule_triggered,
+                -- Альтернативный путь через orders (если exit_signal_id NULL)
+                o_closed.signal_id as closing_order_signal_id,
+                ts_closed.metadata->>'exit_reason' as closing_exit_reason,
+                ts_closed.metadata->>'rule_triggered' as closing_rule_triggered
+            FROM position_stats ps
+            LEFT JOIN prediction_trading_results ptr ON ptr.position_id = ps.id
+            LEFT JOIN trading_signals entry_ts ON entry_ts.signal_id = ptr.entry_signal_id
+            LEFT JOIN trading_signals exit_ts ON exit_ts.signal_id = ptr.exit_signal_id
+            LEFT JOIN prediction_targets entry_pt ON entry_pt.signal_id = entry_ts.signal_id
+            LEFT JOIN position_orders po_closed ON po_closed.position_id = ps.id AND po_closed.relationship_type = 'closed'
+            LEFT JOIN orders o_closed ON o_closed.id = po_closed.order_id
+            LEFT JOIN trading_signals ts_closed ON ts_closed.signal_id = o_closed.signal_id
+            ORDER BY ps.closed_at DESC NULLS LAST, ps.created_at DESC
+            """
+            
+            details_rows = await pool.fetch(details_query, *params)
+            
+            position_details = []
+            for row in details_rows:
+                # Определяем причину закрытия (приоритет: exit_signal, затем closing_order_signal)
+                close_reason = None
+                close_rule = None
+                if row["exit_reason"]:
+                    close_reason = row["exit_reason"]
+                    close_rule = row["exit_rule_triggered"]
+                elif row["closing_exit_reason"]:
+                    close_reason = row["closing_exit_reason"]
+                    close_rule = row["closing_rule_triggered"]
+                elif row["status"] == "closed":
+                    # Если позиция закрыта, но нет exit_reason, возможно это встречный ордер
+                    close_reason = "closed_by_opposite_order"
+                
+                # Парсим prediction_result из JSON
+                entry_prediction = None
+                if row["entry_prediction_json"]:
+                    try:
+                        entry_prediction = json.loads(row["entry_prediction_json"]) if isinstance(row["entry_prediction_json"], str) else row["entry_prediction_json"]
+                    except Exception:
+                        entry_prediction = row["entry_prediction_json"]
+                
+                position_details.append({
+                    "position_id": str(row["position_id"]),
+                    "asset": row["asset"],
+                    "size": float(row["size"] or 0),
+                    "status": row["status"],
+                    "created_at": row["created_at"].isoformat() + "Z" if row["created_at"] else None,
+                    "closed_at": row["closed_at"].isoformat() + "Z" if row["closed_at"] else None,
+                    "realized_pnl": float(row["realized_pnl"] or 0),
+                    "unrealized_pnl": float(row["unrealized_pnl"] or 0),
+                    "duration_minutes": round(float(row["duration_minutes"] or 0), 2) if row["duration_minutes"] is not None else None,
+                    "prediction": {
+                        "entry_signal_id": str(row["entry_signal_id"]) if row["entry_signal_id"] else None,
+                        "entry_prediction": entry_prediction,
+                        "predicted_values": row["entry_predicted_values"],
+                        "actual_values": row["entry_actual_values"],
+                    } if row["entry_signal_id"] or row["entry_predicted_values"] else None,
+                    "close_reason": {
+                        "reason": close_reason,
+                        "rule_triggered": close_rule,
+                        "exit_signal_id": str(row["exit_signal_id"]) if row["exit_signal_id"] else None,
+                        "closing_order_signal_id": str(row["closing_order_signal_id"]) if row["closing_order_signal_id"] else None,
+                    } if close_reason or row["status"] == "closed" else None,
+                })
+            
+            response["position_details"] = position_details
+        
+        # Add grouped statistics if requested
+        if group_by_lower == "asset":
+            by_asset_query = base_query + """
+                )
+                SELECT 
+                    asset,
+                    COUNT(*) as total_positions,
+                    COUNT(*) FILTER (WHERE status = 'open') as open_positions,
+                    COUNT(*) FILTER (WHERE status = 'closed') as closed_positions,
+                    COALESCE(SUM(realized_pnl), 0) as total_realized_pnl,
+                    COALESCE(SUM(unrealized_pnl), 0) as total_unrealized_pnl,
+                    AVG(duration_minutes) FILTER (WHERE status = 'closed' AND duration_minutes IS NOT NULL) as avg_duration_minutes
+                FROM position_stats
+                GROUP BY asset
+                ORDER BY asset
+            """
+            
+            by_asset_rows = await pool.fetch(by_asset_query, *params)
+            response["by_asset"] = [
+                {
+                    "asset": row["asset"],
+                    "total_positions": row["total_positions"],
+                    "open_positions": row["open_positions"],
+                    "closed_positions": row["closed_positions"],
+                    "total_realized_pnl": float(row["total_realized_pnl"] or 0),
+                    "total_unrealized_pnl": float(row["total_unrealized_pnl"] or 0),
+                    "avg_duration_minutes": round(float(row["avg_duration_minutes"] or 0), 2) if row["avg_duration_minutes"] is not None else None,
+                }
+                for row in by_asset_rows
+            ]
+        
+        elif group_by_lower == "status":
+            by_status_query = base_query + """
+                )
+                SELECT 
+                    status,
+                    COUNT(*) as count,
+                    COALESCE(SUM(realized_pnl), 0) as total_realized_pnl,
+                    COALESCE(SUM(unrealized_pnl), 0) as total_unrealized_pnl,
+                    AVG(duration_minutes) FILTER (WHERE duration_minutes IS NOT NULL) as avg_time_held_minutes
+                FROM position_stats
+                WHERE status IN ('open', 'closed')
+                GROUP BY status
+                ORDER BY status
+            """
+            
+            by_status_rows = await pool.fetch(by_status_query, *params)
+            response["by_status"] = {
+                row["status"]: {
+                    "count": row["count"],
+                    "total_realized_pnl": float(row["total_realized_pnl"] or 0),
+                    "total_unrealized_pnl": float(row["total_unrealized_pnl"] or 0),
+                    "avg_time_held_minutes": round(float(row["avg_time_held_minutes"] or 0), 2) if row["avg_time_held_minutes"] is not None else None,
+                }
+                for row in by_status_rows
+            }
+        
+        logger.info(
+            "position_stats_completed",
+            total_positions=response["summary"]["total_positions"],
+            trace_id=trace_id,
+        )
+        
+        return JSONResponse(status_code=200, content=response)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            "position_stats_failed",
+            error=str(e),
+            error_type=type(e).__name__,
+            trace_id=trace_id,
+            exc_info=True,
+        )
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve position statistics: {e}") from e
+

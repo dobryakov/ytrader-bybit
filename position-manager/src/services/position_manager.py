@@ -36,6 +36,77 @@ class PositionManager:
 
     # === Core queries ======================================================
 
+    async def _calculate_average_entry_price_from_orders(
+        self, asset: str, target_size: Decimal
+    ) -> Optional[Decimal]:
+        """
+        Calculate average entry price from order history.
+        
+        Args:
+            asset: Trading pair symbol
+            target_size: Target position size (positive for long, negative for short)
+            
+        Returns:
+            Calculated average entry price or None if cannot be calculated
+        """
+        try:
+            pool = await DatabaseConnection.get_pool()
+            # Calculate weighted average price from filled orders
+            # For long positions: use Buy orders
+            # For short positions: use Sell orders
+            query = """
+                SELECT 
+                    side,
+                    SUM(filled_quantity) as total_qty,
+                    SUM(filled_quantity * average_price) as total_value
+                FROM orders
+                WHERE asset = $1 
+                  AND status IN ('filled', 'partially_filled')
+                GROUP BY side
+            """
+            rows = await pool.fetch(query, asset.upper())
+            
+            if not rows:
+                return None
+            
+            total_qty = Decimal("0")
+            total_value = Decimal("0")
+            
+            for row in rows:
+                side = row["side"]
+                qty = row["total_qty"] or Decimal("0")
+                value = row["total_value"] or Decimal("0")
+                
+                if target_size > 0:
+                    # Long position: use Buy orders
+                    if side.upper() == "BUY":
+                        total_qty += qty
+                        total_value += value
+                else:
+                    # Short position: use Sell orders
+                    if side.upper() == "SELL":
+                        total_qty += qty
+                        total_value += value
+            
+            if total_qty > 0:
+                avg_price = total_value / total_qty
+                logger.debug(
+                    "average_entry_price_calculated_from_orders",
+                    asset=asset,
+                    target_size=str(target_size),
+                    calculated_avg_price=str(avg_price),
+                )
+                return avg_price
+            
+            return None
+        except Exception as e:
+            logger.warning(
+                "failed_to_calculate_avg_price_from_orders",
+                asset=asset,
+                error=str(e),
+            )
+            return None
+
     async def get_position(self, asset: str, mode: str = "one-way") -> Optional[Position]:
         """Get current position for an asset/mode pair."""
         try:
@@ -53,7 +124,73 @@ class PositionManager:
                 logger.debug("position_not_found", asset=asset, mode=mode)
                 return None
 
-            position = Position.from_db_dict(dict(row))
+            position_dict = dict(row)
+            position_size = Decimal(str(position_dict["size"]))
+            closed_at = position_dict.get("closed_at")
+            
+            # Fix position desynchronization: if position is marked as closed (closed_at is set)
+            # but size is not zero, force close it (set size to 0 and clear closed_at)
+            # This can happen when position is closed via Bybit sync but size wasn't properly updated
+            if closed_at is not None and position_size != 0:
+                logger.warning(
+                    "position_desynchronization_detected",
+                    asset=asset,
+                    mode=mode,
+                    size=str(position_size),
+                    closed_at=closed_at.isoformat() if hasattr(closed_at, 'isoformat') else str(closed_at),
+                    action="forcing_close",
+                )
+                # Force close: set size to 0 and clear closed_at
+                await pool.execute(
+                    """
+                    UPDATE positions
+                    SET size = 0,
+                        average_entry_price = NULL,
+                        closed_at = NOW(),
+                        version = version + 1,
+                        last_updated = NOW()
+                    WHERE asset = $1 AND mode = $2
+                    """,
+                    asset.upper(),
+                    mode.lower(),
+                )
+                position_dict["size"] = "0"
+                position_dict["average_entry_price"] = None
+                position_dict["closed_at"] = datetime.utcnow()
+                position_size = Decimal("0")
+                logger.info(
+                    "position_force_closed_due_to_desynchronization",
+                    asset=asset,
+                    mode=mode,
+                )
+            
+            # Fix missing average_entry_price for non-zero positions
+            if position_dict["average_entry_price"] is None and position_size != 0:
+                calculated_avg_price = await self._calculate_average_entry_price_from_orders(
+                    asset, position_size
+                )
+                if calculated_avg_price:
+                    # Update position in database
+                    await pool.execute(
+                        """
+                        UPDATE positions
+                        SET average_entry_price = $1, version = version + 1, last_updated = NOW()
+                        WHERE asset = $2 AND mode = $3
+                        """,
+                        str(calculated_avg_price),
+                        asset.upper(),
+                        mode.lower(),
+                    )
+                    position_dict["average_entry_price"] = str(calculated_avg_price)
+                    logger.info(
+                        "average_entry_price_fixed_from_orders",
+                        asset=asset,
+                        mode=mode,
+                        size=str(position_size),
+                        calculated_avg_price=str(calculated_avg_price),
+                    )
+
+            position = Position.from_db_dict(position_dict)
             logger.debug(
                 "position_retrieved",
                 asset=asset,
@@ -182,9 +319,35 @@ class PositionManager:
                 else:
                     # Existing position - apply execution-based update rules
                     current_size = current_position.size
-                    current_avg_price = (
-                        current_position.average_entry_price or execution_price
-                    )
+                    current_avg_price = current_position.average_entry_price
+                    
+                    # Fix missing average_entry_price for existing non-zero positions
+                    if current_avg_price is None and current_size != 0:
+                        calculated_avg_price = await self._calculate_average_entry_price_from_orders(
+                            asset, current_size
+                        )
+                        if calculated_avg_price:
+                            current_avg_price = calculated_avg_price
+                            logger.info(
+                                "average_entry_price_fixed_during_order_fill",
+                                asset=asset,
+                                mode=mode,
+                                size=str(current_size),
+                                calculated_avg_price=str(current_avg_price),
+                            )
+                        else:
+                            # Fallback to execution_price if calculation fails
+                            current_avg_price = execution_price
+                            logger.warning(
+                                "average_entry_price_using_execution_price_fallback",
+                                asset=asset,
+                                mode=mode,
+                                size=str(current_size),
+                                execution_price=str(execution_price),
+                            )
+                    elif current_avg_price is None:
+                        # Position size is 0, use execution_price as fallback
+                        current_avg_price = execution_price
 
                     new_size = current_size + size_delta
 
@@ -366,6 +529,34 @@ class PositionManager:
                     # When created from WS, we rely on WebSocket unrealisedPnl & avgPrice
                     new_size = size_from_ws or Decimal("0")
                     new_avg_price = avg_price
+                    
+                    # If avg_price is missing but position size is non-zero, calculate from order history
+                    if new_avg_price is None and new_size != 0:
+                        calculated_avg_price = await self._calculate_average_entry_price_from_orders(
+                            asset, new_size
+                        )
+                        if calculated_avg_price:
+                            new_avg_price = calculated_avg_price
+                            logger.info(
+                                "average_entry_price_calculated_for_new_position",
+                                asset=asset,
+                                mode=mode,
+                                size=str(new_size),
+                                calculated_avg_price=str(new_avg_price),
+                                trace_id=trace_id,
+                            )
+                        elif mark_price:
+                            # Fallback: use mark_price if order history unavailable
+                            new_avg_price = mark_price
+                            logger.warning(
+                                "average_entry_price_using_mark_price_fallback",
+                                asset=asset,
+                                mode=mode,
+                                size=str(new_size),
+                                mark_price=str(mark_price),
+                                trace_id=trace_id,
+                            )
+                    
                     unreal = unrealized_pnl or Decimal("0")
                     realized = realized_pnl or Decimal("0")
 
@@ -1476,19 +1667,29 @@ class PositionManager:
                 # Force sync if requested
                 if force:
                     try:
-                        # Case 1: Position exists on Bybit but not locally, or sizes differ
-                        if bybit_pos and (not local_pos or size_diff > Decimal("0.0001") or (avg_price_diff and avg_price_diff_pct and avg_price_diff_pct > 1.0)):
+                        # Check if we need to update PnL even if size/price match
+                        pnl_diff_unrealized = abs(bybit_unrealised_pnl - local_unrealised_pnl) if local_pos else Decimal("0")
+                        pnl_diff_realized = abs(bybit_realised_pnl - local_realised_pnl) if local_pos else Decimal("0")
+                        has_pnl_discrepancy = pnl_diff_unrealized > Decimal("0.01") or pnl_diff_realized > Decimal("0.01")
+                        
+                        # Case 1: Position exists on Bybit but not locally, or sizes differ, or PnL differs
+                        if bybit_pos and (not local_pos or size_diff > Decimal("0.0001") or (avg_price_diff and avg_price_diff_pct and avg_price_diff_pct > 1.0) or has_pnl_discrepancy):
                             # Update or create position
                             if local_pos:
-                                # Update existing
-                                updated_pos = await self._update_position_from_computed(
-                                    asset=asset,
-                                    computed_size=bybit_size,
-                                    computed_avg_price=bybit_avg_price,
-                                    mode="one-way",
-                                    trace_id=trace_id,
-                                )
-                                # Update PnL separately
+                                # Update existing - only update size/price if they differ
+                                if size_diff > Decimal("0.0001") or (avg_price_diff and avg_price_diff_pct and avg_price_diff_pct > 1.0):
+                                    updated_pos = await self._update_position_from_computed(
+                                        asset=asset,
+                                        computed_size=bybit_size,
+                                        computed_avg_price=bybit_avg_price,
+                                        mode="one-way",
+                                        trace_id=trace_id,
+                                    )
+                                else:
+                                    # Size and price match, just get position for ID
+                                    updated_pos = local_pos
+                                
+                                # Update PnL separately (always update if there's discrepancy)
                                 pool = await DatabaseConnection.get_pool()
                                 await pool.execute(
                                     """
@@ -1504,7 +1705,8 @@ class PositionManager:
                                     asset.upper(),
                                     "one-way",
                                 )
-                                updated.append({"asset": asset, "action": "updated", "position_id": str(updated_pos.id)})
+                                reason = "size/price" if (size_diff > Decimal("0.0001") or (avg_price_diff and avg_price_diff_pct and avg_price_diff_pct > 1.0)) else "pnl"
+                                updated.append({"asset": asset, "action": "updated", "position_id": str(updated_pos.id), "reason": reason})
                             else:
                                 # Create new
                                 created_pos = await self._update_position_from_computed(
@@ -1544,6 +1746,18 @@ class PositionManager:
                         elif local_pos and not bybit_pos:
                             # Close position by setting size to 0
                             pool = await DatabaseConnection.get_pool()
+                            
+                            # Get position_id before closing
+                            position_row = await pool.fetchrow(
+                                "SELECT id, realized_pnl, current_price FROM positions WHERE asset = $1 AND mode = $2",
+                                asset.upper(),
+                                "one-way",
+                            )
+                            position_id = position_row["id"] if position_row else None
+                            final_realized_pnl = Decimal(str(position_row["realized_pnl"] or 0)) if position_row else Decimal("0")
+                            exit_price = Decimal(str(position_row["current_price"] or 0)) if position_row and position_row["current_price"] else None
+                            
+                            # Update position
                             await pool.execute(
                                 """
                                 UPDATE positions
@@ -1558,11 +1772,122 @@ class PositionManager:
                                 asset.upper(),
                                 "one-way",
                             )
+                            
+                            # Update prediction_trading_results for this position (same actions as normal close)
+                            if position_id:
+                                try:
+                                    # Find open prediction_trading_results for this position
+                                    open_results = await pool.fetch(
+                                        """
+                                        SELECT id, signal_id, realized_pnl, unrealized_pnl
+                                        FROM prediction_trading_results
+                                        WHERE position_id = $1 AND is_closed = false
+                                        """,
+                                        position_id,
+                                    )
+                                    
+                                    # Calculate total current realized_pnl across all open results
+                                    total_current_realized = sum(
+                                        Decimal(str(r["realized_pnl"] or 0)) for r in open_results
+                                    )
+                                    
+                                    # Distribute final realized_pnl proportionally if multiple results
+                                    # If only one result, use final_realized_pnl directly
+                                    for result in open_results:
+                                        result_id = result["id"]
+                                        current_realized = Decimal(str(result["realized_pnl"] or 0))
+                                        current_unrealized = Decimal(str(result["unrealized_pnl"] or 0))
+                                        
+                                        # Distribute final realized_pnl proportionally
+                                        if len(open_results) > 1 and total_current_realized > 0:
+                                            # Proportional distribution based on current realized_pnl
+                                            proportion = current_realized / total_current_realized
+                                            final_realized = final_realized_pnl * proportion
+                                        else:
+                                            # Single result or no current realized_pnl: use final directly
+                                            final_realized = final_realized_pnl
+                                        
+                                        final_total = final_realized + Decimal("0")  # unrealized becomes 0 on close
+                                        
+                                        await pool.execute(
+                                            """
+                                            UPDATE prediction_trading_results
+                                            SET realized_pnl = $1,
+                                                unrealized_pnl = 0,
+                                                total_pnl = $2,
+                                                exit_price = $3,
+                                                exit_timestamp = NOW(),
+                                                is_closed = true,
+                                                updated_at = NOW()
+                                            WHERE id = $4
+                                            """,
+                                            str(final_realized),
+                                            str(final_total),
+                                            str(exit_price) if exit_price else None,
+                                            result_id,
+                                        )
+                                        
+                                        logger.info(
+                                            "prediction_trading_result_closed_on_bybit_sync",
+                                            result_id=str(result_id),
+                                            signal_id=str(result["signal_id"]),
+                                            position_id=str(position_id),
+                                            asset=asset,
+                                            final_realized_pnl=str(final_realized),
+                                            trace_id=trace_id,
+                                        )
+                                except Exception as e:
+                                    logger.warning(
+                                        "failed_to_update_prediction_trading_results_on_sync_close",
+                                        position_id=str(position_id),
+                                        asset=asset,
+                                        error=str(e),
+                                        trace_id=trace_id,
+                                        exc_info=True,
+                                    )
+                            
+                            # Publish position update event (same as normal close)
+                            try:
+                                # Get updated position for event
+                                updated_position_row = await pool.fetchrow(
+                                    """
+                                    SELECT id, asset, mode, size, average_entry_price, current_price,
+                                           unrealized_pnl, realized_pnl, created_at, closed_at
+                                    FROM positions
+                                    WHERE asset = $1 AND mode = $2
+                                    """,
+                                    asset.upper(),
+                                    "one-way",
+                                )
+                                if updated_position_row:
+                                    from ..models.position import Position
+                                    updated_position = Position.from_db_dict(dict(updated_position_row))
+                                    await PositionEventPublisher.publish_position_updated(
+                                        position=updated_position,
+                                        update_source="bybit_sync_close",
+                                        trace_id=trace_id,
+                                    )
+                                    logger.info(
+                                        "position_update_event_published_on_sync_close",
+                                        asset=asset,
+                                        position_id=str(updated_position.id),
+                                        trace_id=trace_id,
+                                    )
+                            except Exception as e:
+                                logger.warning(
+                                    "failed_to_publish_position_event_on_sync_close",
+                                    asset=asset,
+                                    error=str(e),
+                                    trace_id=trace_id,
+                                    exc_info=True,
+                                )
+                            
                             updated.append({"asset": asset, "action": "closed", "reason": "position_not_on_bybit"})
                             logger.info(
                                 "position_closed_not_on_bybit",
                                 asset=asset,
                                 local_size=str(local_size),
+                                position_id=str(position_id) if position_id else None,
                                 force=force,
                                 trace_id=trace_id,
                             )

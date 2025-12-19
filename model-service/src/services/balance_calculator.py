@@ -395,24 +395,69 @@ class BalanceCalculator:
                 current_price=current_price,
             )
             
-            # Get position size from position-manager
-            position_size = await position_manager_client.get_position_size(trading_pair)
+            # Get full position data to check sign and closed_at status
+            position_data = await position_manager_client.get_position(trading_pair)
             
-            logger.debug(
-                "Position size retrieved",
-                trading_pair=trading_pair,
-                position_size=position_size,
-            )
-            
-            if position_size is None or position_size <= 0:
-                # No open position - cannot sell
+            if position_data is None:
+                # No position found - cannot sell
                 logger.warning(
-                    "No open position for sell order",
+                    "No position found for sell order",
                     trading_pair=trading_pair,
                     base_currency=base_currency,
                     requested_amount=requested_amount,
                 )
                 return None
+            
+            # Check if position is closed (closed_at is set)
+            closed_at = position_data.get("closed_at")
+            if closed_at is not None:
+                # Position is marked as closed - cannot sell
+                logger.warning(
+                    "Position is closed, cannot sell",
+                    trading_pair=trading_pair,
+                    base_currency=base_currency,
+                    requested_amount=requested_amount,
+                    closed_at=closed_at,
+                )
+                return None
+            
+            # Get position size with sign (positive = long, negative = short)
+            size_str = position_data.get("size")
+            if size_str is None:
+                logger.warning(
+                    "Position data missing size",
+                    trading_pair=trading_pair,
+                    position_data=position_data,
+                )
+                return None
+            
+            position_size_signed = float(size_str)
+            position_size_abs = abs(position_size_signed)
+            
+            logger.debug(
+                "Position size retrieved",
+                trading_pair=trading_pair,
+                position_size_signed=position_size_signed,
+                position_size_abs=position_size_abs,
+            )
+            
+            # For short positions (negative size), SELL increases the short position
+            # For long positions (positive size), SELL closes/reduces the long position
+            # We only allow SELL for long positions (to close them)
+            if position_size_signed <= 0:
+                # Short position or zero - SELL would increase short position, not close it
+                # This is not what we want for a SELL signal
+                logger.warning(
+                    "Cannot sell: position is short or zero, SELL would increase short position",
+                    trading_pair=trading_pair,
+                    base_currency=base_currency,
+                    position_size_signed=position_size_signed,
+                    requested_amount=requested_amount,
+                )
+                return None
+            
+            # Use absolute position size for calculations
+            position_size = position_size_abs
 
             # Convert requested_amount (in quote currency) to base currency
             # If current_price is not provided, we'll use a conservative approach
@@ -424,14 +469,30 @@ class BalanceCalculator:
                     requested_amount=requested_amount,
                 )
                 # Without price, we can't convert accurately, but we know we have position_size
-                # Return position_size in base currency (conservative - use all available position)
-                logger.warning(
-                    "Current price not available, using full position size",
-                    trading_pair=trading_pair,
-                    position_size=position_size,
-                    requested_amount=requested_amount,
-                )
-                return round(position_size * self.safety_margin, 6)
+                # Convert position_size (base currency) to USDT using a conservative estimate
+                # Use requested_amount as a proxy for price if available, otherwise return None
+                if requested_amount > 0:
+                    # Estimate price from requested_amount / some reasonable quantity
+                    # This is a fallback - ideally we should always have current_price
+                    estimated_price = requested_amount / max(position_size, 0.001)
+                    adapted_amount_usdt = (position_size * self.safety_margin) * estimated_price
+                    logger.warning(
+                        "Current price not available, estimating from requested amount",
+                        trading_pair=trading_pair,
+                        position_size=position_size,
+                        requested_amount=requested_amount,
+                        estimated_price=estimated_price,
+                        adapted_amount_usdt=adapted_amount_usdt,
+                    )
+                    return round(adapted_amount_usdt, 2)
+                else:
+                    logger.error(
+                        "Cannot convert position size to USDT without price and requested_amount",
+                        trading_pair=trading_pair,
+                        position_size=position_size,
+                        requested_amount=requested_amount,
+                    )
+                    return None
 
             # Convert requested_amount (USDT) to base currency quantity
             requested_quantity_base = requested_amount / current_price
@@ -440,7 +501,7 @@ class BalanceCalculator:
             usable_position_size = position_size * self.safety_margin
 
             if usable_position_size >= requested_quantity_base:
-                # We have enough position, return requested amount in base currency
+                # We have enough position, return requested amount in USDT
                 logger.debug(
                     "Sufficient position size for sell order",
                     trading_pair=trading_pair,
@@ -451,11 +512,13 @@ class BalanceCalculator:
                     requested_quantity_base=requested_quantity_base,
                     current_price=current_price,
                 )
-                # Return in base currency (ETH), not USDT
-                return round(requested_quantity_base, 6)
+                # Return requested amount in USDT (already in correct currency)
+                return round(requested_amount, 2)
             elif usable_position_size > 0:
                 # Adapt amount to available position size
                 adapted_quantity_base = usable_position_size
+                # Convert back to USDT
+                adapted_amount_usdt = adapted_quantity_base * current_price
                 logger.info(
                     "Adapting sell amount to available position size",
                     trading_pair=trading_pair,
@@ -465,10 +528,11 @@ class BalanceCalculator:
                     requested_amount=requested_amount,
                     requested_quantity_base=requested_quantity_base,
                     adapted_quantity_base=adapted_quantity_base,
+                    adapted_amount_usdt=adapted_amount_usdt,
                     current_price=current_price,
                 )
-                # Return in base currency (ETH), not USDT
-                return round(adapted_quantity_base, 6)
+                # Return adapted amount in USDT
+                return round(adapted_amount_usdt, 2)
             else:
                 # Insufficient position
                 logger.warning(

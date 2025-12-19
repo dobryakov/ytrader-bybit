@@ -14,9 +14,8 @@ from decimal import Decimal
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from src.utils.bybit_client import get_bybit_client
-from src.config.logging import setup_logging, get_logger
+from src.config.logging import get_logger
 
-setup_logging()
 logger = get_logger(__name__)
 
 
@@ -49,10 +48,13 @@ async def get_position(symbol: str):
             logger.warning("Position size is zero", symbol=symbol)
             return None
         
+        # Use side from Bybit response directly (Buy for long, Sell for short)
+        bybit_side = position.get("side", "Buy")
+        
         return {
             "symbol": symbol,
             "size": size,
-            "side": "Buy" if size > 0 else "Sell",
+            "side": bybit_side,  # Use side from Bybit API
             "avg_price": position.get("avgPrice", "0"),
             "mark_price": position.get("markPrice", "0"),
         }

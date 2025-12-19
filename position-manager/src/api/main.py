@@ -27,6 +27,7 @@ from .routes import health as health_routes
 from .routes import portfolio as portfolio_routes
 from .routes import positions as positions_routes
 from .routes import metrics as metrics_routes
+from .routes import stats as stats_routes
 
 
 configure_logging()
@@ -57,6 +58,7 @@ def create_app() -> FastAPI:
     app.include_router(metrics_routes.router)
     app.include_router(positions_routes.router)
     app.include_router(portfolio_routes.router)
+    app.include_router(stats_routes.router)
 
     @app.on_event("startup")
     async def on_startup() -> None:

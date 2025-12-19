@@ -37,16 +37,16 @@ async def replay_last_signal():
     
     signal_data = {
         "signal_id": signal_id,
-        "signal_type": "sell",  # From last signal
+        "signal_type": "buy",  # Changed to buy to create position
         "asset": "BTCUSDT",
-        "amount": "100.0",  # Default amount (not stored in DB)
-        "confidence": "0.6763",
+        "amount": "50.0",  # Reduced amount to fit available balance
+        "confidence": "0.85",
         "timestamp": current_time.isoformat() + "Z",
         "strategy_id": "test-strategy",
         "model_version": "v1765879286",
         "is_warmup": False,
         "market_data_snapshot": {
-            "price": "94653.70",
+            "price": "1800000.0",  # Will be updated by order-manager from real market data
             "spread": "0.0",
             "volatility": "0.0",
             "volume_24h": "0.0",
@@ -54,12 +54,12 @@ async def replay_last_signal():
             "technical_indicators": None,
         },
         "metadata": {
-            "reasoning": "Model prediction: -1",
+            "reasoning": "Manual test signal to create position",
             "model_version": "v1765879286",
             "prediction_result": {
-                "prediction": -1,
-                "buy_probability": 0.32367271184921265,
-                "sell_probability": 0.6763272881507874
+                "prediction": 1,
+                "buy_probability": 0.85,
+                "sell_probability": 0.15
             },
             "inference_timestamp": current_time.isoformat() + "Z",
             "feature_registry_version": "1.5.0"
