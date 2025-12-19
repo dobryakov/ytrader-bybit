@@ -1,0 +1,5 @@
+---
+alwaysApply: true
+---
+
+* When running HTTP API request, make sure you have and use correct API KEY.

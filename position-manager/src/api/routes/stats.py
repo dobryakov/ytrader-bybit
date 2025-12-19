@@ -169,7 +169,10 @@ async def get_position_stats(
                 AVG(duration_minutes) FILTER (WHERE status = 'closed' AND duration_minutes IS NOT NULL) as avg_duration_minutes,
                 MIN(duration_minutes) FILTER (WHERE status = 'closed' AND duration_minutes IS NOT NULL) as min_duration_minutes,
                 MAX(duration_minutes) FILTER (WHERE status = 'closed' AND duration_minutes IS NOT NULL) as max_duration_minutes,
+                PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY duration_minutes) FILTER (WHERE status = 'closed' AND duration_minutes IS NOT NULL) as p25_duration_minutes,
                 PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY duration_minutes) FILTER (WHERE status = 'closed' AND duration_minutes IS NOT NULL) as median_duration_minutes,
+                PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY duration_minutes) FILTER (WHERE status = 'closed' AND duration_minutes IS NOT NULL) as p75_duration_minutes,
+                PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY duration_minutes) FILTER (WHERE status = 'closed' AND duration_minutes IS NOT NULL) as p90_duration_minutes,
                 SUM(duration_minutes) FILTER (WHERE status = 'closed' AND duration_minutes IS NOT NULL) as total_duration_minutes
             FROM position_stats
         """
@@ -197,6 +200,47 @@ async def get_position_stats(
         winning_positions = pnl_row["winning_positions"] or 0
         win_rate = float(winning_positions / total_closed_with_pnl) if total_closed_with_pnl > 0 else None
         
+        # Extract duration values for analysis (convert Decimal to float)
+        def to_float(value: Any) -> Optional[float]:
+            if value is None:
+                return None
+            return float(value)
+        
+        p25_min = to_float(duration_row["p25_duration_minutes"])
+        p75_min = to_float(duration_row["p75_duration_minutes"])
+        median_min = to_float(duration_row["median_duration_minutes"])
+        p90_min = to_float(duration_row["p90_duration_minutes"])
+        min_min = to_float(duration_row["min_duration_minutes"])
+        max_min = to_float(duration_row["max_duration_minutes"])
+        avg_min = to_float(duration_row["avg_duration_minutes"])
+        
+        # Helper function to convert minutes to hours and days
+        def format_duration(minutes: Optional[float]) -> Optional[Dict[str, float]]:
+            if minutes is None:
+                return None
+            return {
+                "minutes": round(minutes, 2),
+                "hours": round(minutes / 60, 2),
+                "days": round(minutes / 1440, 2),
+            }
+        
+        # Calculate IQR (Interquartile Range) for outlier detection
+        iqr_data = None
+        if p25_min is not None and p75_min is not None:
+            iqr = p75_min - p25_min
+            lower_bound = p25_min - 1.5 * iqr
+            upper_bound = p75_min + 1.5 * iqr
+            has_outliers = max_min is not None and (max_min < lower_bound or max_min > upper_bound)
+            
+            iqr_data = {
+                "iqr_minutes": round(iqr, 2),
+                "outlier_detection": {
+                    "lower_bound_minutes": round(lower_bound, 2),
+                    "upper_bound_minutes": round(upper_bound, 2),
+                    "has_outliers": has_outliers,
+                },
+            }
+        
         # Build response
         response: Dict[str, Any] = {
             "summary": {
@@ -209,11 +253,36 @@ async def get_position_stats(
             },
             "duration_stats": {
                 "closed_positions_count": duration_row["closed_positions_count"] or 0,
-                "avg_duration_minutes": round(float(duration_row["avg_duration_minutes"] or 0), 2) if duration_row["avg_duration_minutes"] is not None else None,
-                "min_duration_minutes": round(float(duration_row["min_duration_minutes"] or 0), 2) if duration_row["min_duration_minutes"] is not None else None,
-                "max_duration_minutes": round(float(duration_row["max_duration_minutes"] or 0), 2) if duration_row["max_duration_minutes"] is not None else None,
-                "median_duration_minutes": round(float(duration_row["median_duration_minutes"] or 0), 2) if duration_row["median_duration_minutes"] is not None else None,
+                # Raw values in minutes
+                "avg_duration_minutes": round(float(avg_min or 0), 2) if avg_min is not None else None,
+                "min_duration_minutes": round(float(min_min or 0), 2) if min_min is not None else None,
+                "max_duration_minutes": round(float(max_min or 0), 2) if max_min is not None else None,
+                "p25_duration_minutes": round(float(p25_min or 0), 2) if p25_min is not None else None,
+                "median_duration_minutes": round(float(median_min or 0), 2) if median_min is not None else None,
+                "p75_duration_minutes": round(float(p75_min or 0), 2) if p75_min is not None else None,
+                "p90_duration_minutes": round(float(p90_min or 0), 2) if p90_min is not None else None,
                 "total_duration_minutes": round(float(duration_row["total_duration_minutes"] or 0), 2) if duration_row["total_duration_minutes"] is not None else None,
+                # Formatted values (minutes, hours, days)
+                "avg_duration": format_duration(avg_min),
+                "min_duration": format_duration(min_min),
+                "max_duration": format_duration(max_min),
+                "p25_duration": format_duration(p25_min),
+                "median_duration": format_duration(median_min),
+                "p75_duration": format_duration(p75_min),
+                "p90_duration": format_duration(p90_min),
+                # IQR analysis for outlier detection
+                "iqr_analysis": iqr_data,
+                # Recommendations
+                "recommendations": {
+                    "use_p75_or_p90": "Для исключения аномалий рекомендуется использовать P75 или P90 вместо среднего арифметического",
+                    "use_median": "Медиана (P50) более устойчива к выбросам, чем среднее арифметическое",
+                    "percentile_meaning": {
+                        "p25": "25% позиций закрываются быстрее этого времени",
+                        "p50": "50% позиций закрываются быстрее этого времени (медиана)",
+                        "p75": "75% позиций закрываются быстрее этого времени",
+                        "p90": "90% позиций закрываются быстрее этого времени (исключает большинство аномалий)",
+                    },
+                },
             },
             "pnl_stats": {
                 "total_realized_pnl": float(pnl_row["total_realized_pnl"] or 0),
