@@ -35,14 +35,16 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
+      graylog:
+        condition: service_started
     networks:
       - ytrader-network
     restart: unless-stopped
     logging:
-      driver: "json-file"
+      driver: "gelf"
       options:
-        max-size: "1m"
-        max-file: "3"
+        gelf-address: "udp://172.24.0.13:4711"
+        tag: "{{.Name}}"
 
   postgres:
     image: postgres:15-alpine
@@ -204,6 +206,11 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
+    logging:
+      driver: "gelf"
+      options:
+        gelf-address: "udp://172.24.0.13:4711"
+        tag: "{{.Name}}"
 
   feature-service:
     build:
@@ -292,6 +299,8 @@ services:
         condition: service_healthy
       ws-gateway:
         condition: service_started
+      graylog:
+        condition: service_started
     networks:
       - ytrader-network
     restart: unless-stopped
@@ -302,10 +311,10 @@ services:
       retries: 3
       start_period: 40s
     logging:
-      driver: "json-file"
+      driver: "gelf"
       options:
-        max-size: "1m"
-        max-file: "3"
+        gelf-address: "udp://172.24.0.13:4711"
+        tag: "{{.Name}}"
 
   order-manager:
     build:
@@ -389,9 +398,16 @@ services:
         condition: service_started
       position-manager:
         condition: service_started
+      graylog:
+        condition: service_started
     networks:
       - ytrader-network
     restart: unless-stopped
+    logging:
+      driver: "gelf"
+      options:
+        gelf-address: "udp://172.24.0.13:4711"
+        tag: "{{.Name}}"
 
   position-manager:
     build:
@@ -443,6 +459,8 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
+      graylog:
+        condition: service_started
     networks:
       - ytrader-network
     restart: unless-stopped
@@ -453,10 +471,78 @@ services:
       retries: 3
       start_period: 40s
     logging:
-      driver: "json-file"
+      driver: "gelf"
       options:
-        max-size: "1m"
-        max-file: "3"
+        gelf-address: "udp://172.24.0.13:4711"
+        tag: "{{.Name}}"
+
+  mongo:
+    image: mongo:7
+    container_name: mongo
+    command: mongod --port 4702 --bind_ip_all
+    environment:
+      - MONGO_INITDB_DATABASE=graylog
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - ytrader-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mongosh", "--port", "4702", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.17.0
+    container_name: elasticsearch
+    environment:
+      - discovery.type=single-node
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+      - xpack.security.enabled=false
+      - http.port=4703
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    networks:
+      - ytrader-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:4703/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+  graylog:
+    image: graylog/graylog:5.2
+    container_name: graylog
+    ports:
+      - "${GRAYLOG_WEB_PORT:-4701}:4701"
+    environment:
+      - GRAYLOG_PASSWORD_SECRET=${GRAYLOG_PASSWORD_SECRET}
+      - GRAYLOG_ROOT_PASSWORD_SHA2=${GRAYLOG_ROOT_PASSWORD_SHA2}
+      - GRAYLOG_ROOT_PASSWORD=${GRAYLOG_ROOT_PASSWORD}
+      - GRAYLOG_HTTP_EXTERNAL_URI=http://graylog:4701/
+      - GRAYLOG_HTTP_BIND_ADDRESS=0.0.0.0:4701
+      - GRAYLOG_HTTP_PUBLISH_URI=http://graylog:4701/
+      - GRAYLOG_ELASTICSEARCH_HOSTS=http://elasticsearch:4703
+      - GRAYLOG_MONGODB_URI=mongodb://mongo:4702/graylog
+    volumes:
+      - graylog_data:/usr/share/graylog/data
+    depends_on:
+      mongo:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+    networks:
+      - ytrader-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4701/api/system/lbstatus"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
 
   grafana:
     build:
@@ -561,4 +647,7 @@ volumes:
   redis_data:
   feature_raw_data:
   feature_datasets:
+  mongo_data:
+  elasticsearch_data:
+  graylog_data:
 
