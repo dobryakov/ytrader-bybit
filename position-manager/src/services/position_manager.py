@@ -460,13 +460,31 @@ class PositionManager:
                         # Works for both long (size > 0) and short (size < 0) positions
                         new_unrealized_pnl = (current_price_for_pnl - new_avg_price) * new_size
                     
-                    # Closed position handling
+                    # Closed position handling: set average_entry_price to NULL when size = 0
+                    if new_size == 0:
+                        new_avg_price = None
+                    # Also ensure new_avg_price is not <= 0
+                    elif new_avg_price is not None and new_avg_price <= 0:
+                        logger.warning(
+                            "avg_price_invalid_negative_or_zero_order_fill",
+                            asset=asset,
+                            mode=mode,
+                            invalid_avg=str(new_avg_price),
+                            new_size=str(new_size),
+                        )
+                        new_avg_price = None
+
                     closed_at_expr = "NOW()" if new_size == 0 else "NULL"
 
                     update_query = f"""
                         UPDATE positions
                         SET size = CAST($1 AS numeric),
-                            average_entry_price = CAST($2 AS numeric),
+                            average_entry_price = CASE 
+                                WHEN CAST($1 AS numeric) = 0 THEN NULL
+                                WHEN $2 IS NULL THEN NULL
+                                WHEN CAST($2 AS numeric) <= 0 THEN NULL
+                                ELSE CAST($2 AS numeric)
+                            END,
                             unrealized_pnl = CAST($3 AS numeric),
                             realized_pnl = realized_pnl + CAST($4 AS numeric),
                             version = version + 1,
@@ -610,8 +628,11 @@ class PositionManager:
                     new_size = size_from_ws or Decimal("0")
                     new_avg_price = avg_price
                     
+                    # If position size is zero, average_entry_price must be NULL
+                    if new_size == 0:
+                        new_avg_price = None
                     # If avg_price is missing but position size is non-zero, calculate from order history
-                    if new_avg_price is None and new_size != 0:
+                    elif new_avg_price is None and new_size != 0:
                         calculated_avg_price = await self._calculate_average_entry_price_from_orders(
                             asset, new_size
                         )
@@ -636,6 +657,18 @@ class PositionManager:
                                 mark_price=str(mark_price),
                                 trace_id=trace_id,
                             )
+                    
+                    # Validate that new_avg_price is positive if not None
+                    if new_avg_price is not None and new_avg_price <= 0:
+                        logger.warning(
+                            "avg_price_invalid_negative_or_zero_insert",
+                            asset=asset,
+                            mode=mode,
+                            invalid_avg=str(new_avg_price),
+                            new_size=str(new_size),
+                            trace_id=trace_id,
+                        )
+                        new_avg_price = None
                     
                     unreal = unrealized_pnl or Decimal("0")
                     realized = realized_pnl or Decimal("0")
@@ -733,6 +766,17 @@ class PositionManager:
                                     )
                                     new_avg_price = recalculated
                     
+                    # Validate that new_avg_price is positive if not None
+                    if new_avg_price is not None and new_avg_price <= 0:
+                        logger.warning(
+                            "avg_price_invalid_negative_or_zero",
+                            asset=asset,
+                            mode=mode,
+                            invalid_avg=str(new_avg_price),
+                            trace_id=trace_id,
+                        )
+                        new_avg_price = None
+                    
                     if (
                         position.average_entry_price is not None
                         and avg_price is not None
@@ -808,6 +852,10 @@ class PositionManager:
                                 timestamp_resolution_enabled=settings.position_manager_enable_timestamp_resolution,
                                 trace_id=trace_id,
                             )
+                    
+                    # If position is closed (size = 0), set average_entry_price to NULL
+                    if resolved_size == 0:
+                        new_avg_price = None
 
                     # Price and PnL updates
                     current_price = mark_price or position.current_price
@@ -834,13 +882,22 @@ class PositionManager:
                     
                     new_realized = realized_pnl or position.realized_pnl
 
+                    # Final validation: ensure new_avg_price is None if size is 0 or if it's <= 0
+                    if resolved_size == 0 or (new_avg_price is not None and new_avg_price <= 0):
+                        new_avg_price = None
+
                     update_query = """
                         UPDATE positions
                         SET size = CAST($1 AS numeric),
                             current_price = CAST($2 AS numeric),
                             unrealized_pnl = CAST($3 AS numeric),
                             realized_pnl = CAST($4 AS numeric),
-                            average_entry_price = COALESCE(CAST($5 AS numeric), average_entry_price),
+                            average_entry_price = CASE 
+                                WHEN CAST($1 AS numeric) = 0 THEN NULL
+                                WHEN $5::text IS NULL OR $5::text = '' THEN average_entry_price
+                                WHEN CAST($5 AS numeric) <= 0 THEN NULL
+                                ELSE CAST($5 AS numeric)
+                            END,
                             version = version + 1,
                             last_updated = NOW(),
                             closed_at = CASE WHEN CAST($1 AS numeric) = 0 THEN NOW() ELSE closed_at END
@@ -852,13 +909,17 @@ class PositionManager:
                                   long_size, short_size, version,
                                   last_updated, closed_at, created_at
                     """
+                    # Always pass string for $5 to help asyncpg determine parameter type
+                    # Pass empty string instead of None to avoid type inference issues
+                    # This workaround is similar to the datetime issue fix ($4::timestamptz)
+                    avg_price_param = str(new_avg_price) if new_avg_price is not None else ''
                     row = await pool.fetchrow(
                         update_query,
                         str(resolved_size),
                         str(current_price) if current_price is not None else None,
                         str(new_unrealized),
                         str(new_realized),
-                        str(new_avg_price) if new_avg_price is not None else None,
+                        avg_price_param,
                         asset.upper(),
                         mode.lower(),
                         position.version,

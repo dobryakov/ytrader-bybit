@@ -43,8 +43,9 @@ services:
     logging:
       driver: "gelf"
       options:
-        gelf-address: "udp://172.24.0.13:4711"
+        gelf-address: "udp://127.0.0.1:4711"
         tag: "{{.Name}}"
+        labels: "service"
 
   postgres:
     image: postgres:15-alpine
@@ -209,8 +210,9 @@ services:
     logging:
       driver: "gelf"
       options:
-        gelf-address: "udp://172.24.0.13:4711"
+        gelf-address: "udp://127.0.0.1:4711"
         tag: "{{.Name}}"
+        labels: "service"
 
   feature-service:
     build:
@@ -313,8 +315,9 @@ services:
     logging:
       driver: "gelf"
       options:
-        gelf-address: "udp://172.24.0.13:4711"
+        gelf-address: "udp://127.0.0.1:4711"
         tag: "{{.Name}}"
+        labels: "service"
 
   order-manager:
     build:
@@ -406,8 +409,9 @@ services:
     logging:
       driver: "gelf"
       options:
-        gelf-address: "udp://172.24.0.13:4711"
+        gelf-address: "udp://127.0.0.1:4711"
         tag: "{{.Name}}"
+        labels: "service"
 
   position-manager:
     build:
@@ -473,8 +477,9 @@ services:
     logging:
       driver: "gelf"
       options:
-        gelf-address: "udp://172.24.0.13:4711"
+        gelf-address: "udp://127.0.0.1:4711"
         tag: "{{.Name}}"
+        labels: "service"
 
   mongo:
     image: mongo:7
@@ -518,6 +523,7 @@ services:
     container_name: graylog
     ports:
       - "${GRAYLOG_WEB_PORT:-4701}:4701"
+      - "${GRAYLOG_GELF_PORT:-4711}:4711/udp"
     environment:
       - GRAYLOG_PASSWORD_SECRET=${GRAYLOG_PASSWORD_SECRET}
       - GRAYLOG_ROOT_PASSWORD_SHA2=${GRAYLOG_ROOT_PASSWORD_SHA2}
@@ -543,6 +549,7 @@ services:
       timeout: 10s
       retries: 3
       start_period: 60s
+
 
   grafana:
     build:
