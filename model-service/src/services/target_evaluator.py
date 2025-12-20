@@ -286,9 +286,23 @@ class TargetEvaluator:
         )
         
         if result is None:
+            # Log additional context before raising error
+            logger.warning(
+                "Target computation returned None for returns",
+                asset=asset,
+                signal_id=signal_id,
+                prediction_target_id=str(target.get("id")),
+                prediction_timestamp=prediction_ts.isoformat(),
+                target_timestamp=target_ts.isoformat(),
+                target_registry_version=target_registry_version,
+                horizon_seconds=horizon_seconds,
+            )
             raise ValueError(
                 f"Target computation failed or data unavailable "
-                f"(asset={asset}, signal_id={signal_id})"
+                f"(asset={asset}, signal_id={signal_id}, "
+                f"prediction_timestamp={prediction_ts.isoformat()}, "
+                f"target_timestamp={target_ts.isoformat()}, "
+                f"horizon_seconds={horizon_seconds})"
             )
         
         # Форматируем ответ в зависимости от типа таргета
@@ -356,9 +370,23 @@ class TargetEvaluator:
         )
         
         if result is None:
+            # Log additional context before raising error
+            logger.warning(
+                "Target computation returned None for candle direction",
+                asset=asset,
+                signal_id=signal_id,
+                prediction_target_id=str(target.get("id")),
+                prediction_timestamp=prediction_ts.isoformat(),
+                target_timestamp=target_ts.isoformat(),
+                target_registry_version=target_registry_version,
+                horizon_seconds=horizon_seconds,
+            )
             raise ValueError(
                 f"Target computation failed or data unavailable "
-                f"(asset={asset}, signal_id={signal_id})"
+                f"(asset={asset}, signal_id={signal_id}, "
+                f"prediction_timestamp={prediction_ts.isoformat()}, "
+                f"target_timestamp={target_ts.isoformat()}, "
+                f"horizon_seconds={horizon_seconds})"
             )
         
         # Форматируем ответ для classification (next_candle_direction)
@@ -416,9 +444,23 @@ class TargetEvaluator:
         )
         
         if result is None:
+            # Log additional context before raising error
+            logger.warning(
+                "Target computation returned None for sharpe ratio",
+                asset=asset,
+                signal_id=signal_id,
+                prediction_target_id=str(target.get("id")),
+                prediction_timestamp=prediction_ts.isoformat(),
+                target_timestamp=target_ts.isoformat(),
+                target_registry_version=target_registry_version,
+                horizon_seconds=horizon_seconds,
+            )
             raise ValueError(
                 f"Target computation failed or data unavailable "
-                f"(asset={asset}, signal_id={signal_id})"
+                f"(asset={asset}, signal_id={signal_id}, "
+                f"prediction_timestamp={prediction_ts.isoformat()}, "
+                f"target_timestamp={target_ts.isoformat()}, "
+                f"horizon_seconds={horizon_seconds})"
             )
         
         # Форматируем ответ для risk_adjusted (sharpe_ratio)

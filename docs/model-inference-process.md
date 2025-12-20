@@ -25,7 +25,7 @@
       - `confidence` = нормализованный модуль доходности относительно `MODEL_REGRESSION_MAX_EXPECTED_RETURN`.
 
 - **3. Фильтры и риск‑менеджмент вокруг предсказания:**
-  - Если `confidence < min_confidence_threshold` (берётся из `MODEL_QUALITY_THRESHOLD_ACCURACY`) — **сигнал отбрасывается**.
+  - Если `confidence < min_confidence_threshold` (берётся из `MODEL_ACTIVATION_THRESHOLD`) — **сигнал отбрасывается**.
   - `_determine_signal_type()`:
     - Для классификации: сравнивает `buy_probability` vs `sell_probability` → `buy` или `sell`.
     - Для регрессии: преобразует `predicted_return` в `buy` / `sell` / `None (HOLD)`.

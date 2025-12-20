@@ -24,7 +24,8 @@ class ModeTransition:
         """Initialize mode transition service."""
         self.model_version_repo = ModelVersionRepository()
         self.quality_metrics_repo = ModelQualityMetricsRepository()
-        self.quality_threshold = settings.model_quality_threshold_accuracy
+        self.activation_threshold = settings.model_activation_threshold
+        self.optimization_metric = settings.model_training_threshold_optimization_metric
 
     async def check_and_transition(
         self,
@@ -55,18 +56,24 @@ class ModeTransition:
         # Find the best model version for this strategy that meets quality threshold
         best_model = await self._find_best_model(strategy_id)
         if not best_model:
-            logger.debug("No model meeting quality threshold found", strategy_id=strategy_id, threshold=self.quality_threshold)
+            logger.debug(
+                "No model meeting quality threshold found",
+                strategy_id=strategy_id,
+                threshold=self.activation_threshold,
+                metric=self.optimization_metric,
+            )
             return False
 
         # Check if model quality meets threshold
         model_quality = await self._get_model_quality(best_model["id"])
-        if not model_quality or model_quality < self.quality_threshold:
+        if not model_quality or model_quality < self.activation_threshold:
             logger.debug(
                 "Model quality below threshold",
                 strategy_id=strategy_id,
                 model_version=best_model["version"],
                 quality=model_quality,
-                threshold=self.quality_threshold,
+                threshold=self.activation_threshold,
+                metric=self.optimization_metric,
             )
             return False
 
@@ -80,7 +87,8 @@ class ModeTransition:
                     strategy_id=strategy_id,
                     model_version=best_model["version"],
                     quality=model_quality,
-                    threshold=self.quality_threshold,
+                    threshold=self.activation_threshold,
+                    metric=self.optimization_metric,
                     trace_id=trace_id,
                 )
                 return True
@@ -129,7 +137,7 @@ class ModeTransition:
 
             # Get model quality
             quality = await self._get_model_quality(model_version["id"])
-            if quality and quality >= self.quality_threshold and quality > best_quality:
+            if quality and quality >= self.activation_threshold and quality > best_quality:
                 best_quality = quality
                 best_model = model_version
 
@@ -152,11 +160,24 @@ class ModeTransition:
             from uuid import UUID
             model_version_uuid = UUID(model_version_id) if isinstance(model_version_id, str) else model_version_id
 
+            # Use the same metric as threshold optimization
+            optimization_metric = self.optimization_metric
+            
+            # Map optimization metric names to metric_name in database
+            metric_name_map = {
+                "f1": "f1_score",
+                "pr_auc": "pr_auc",
+                "balanced_accuracy": "balanced_accuracy",
+                "recall": "recall",
+                "accuracy": "accuracy",
+            }
+            
+            metric_name = metric_name_map.get(optimization_metric, "accuracy")
+            
             # Try to get test set metrics first (preferred for final quality assessment)
-            # Try accuracy on test set
             metric = await self.quality_metrics_repo.get_latest_by_model_version(
                 model_version_id=model_version_uuid,
-                metric_name="accuracy",
+                metric_name=metric_name,
                 dataset_split="test",
             )
             if metric:
@@ -165,25 +186,10 @@ class ModeTransition:
                 if quality > 1.0:
                     quality = quality / 100.0  # Assume percentage
                 logger.debug(
-                    "Using test set accuracy for quality assessment",
+                    "Using test set metric for quality assessment",
                     model_version_id=model_version_id,
-                    quality=quality,
-                )
-                return quality
-
-            # Try f1_score on test set
-            metric = await self.quality_metrics_repo.get_latest_by_model_version(
-                model_version_id=model_version_uuid,
-                metric_name="f1_score",
-                dataset_split="test",
-            )
-            if metric:
-                quality = float(metric["metric_value"])
-                if quality > 1.0:
-                    quality = quality / 100.0
-                logger.debug(
-                    "Using test set f1_score for quality assessment",
-                    model_version_id=model_version_id,
+                    metric_name=metric_name,
+                    optimization_metric=optimization_metric,
                     quality=quality,
                 )
                 return quality
@@ -192,12 +198,12 @@ class ModeTransition:
             logger.debug(
                 "Test set metrics not available, falling back to validation metrics",
                 model_version_id=model_version_id,
+                metric_name=metric_name,
             )
 
-            # Try accuracy on validation set
             metric = await self.quality_metrics_repo.get_latest_by_model_version(
                 model_version_id=model_version_uuid,
-                metric_name="accuracy",
+                metric_name=metric_name,
                 dataset_split="validation",
             )
             if metric:
@@ -205,25 +211,10 @@ class ModeTransition:
                 if quality > 1.0:
                     quality = quality / 100.0
                 logger.debug(
-                    "Using validation set accuracy for quality assessment",
+                    "Using validation set metric for quality assessment",
                     model_version_id=model_version_id,
-                    quality=quality,
-                )
-                return quality
-
-            # Try f1_score on validation set
-            metric = await self.quality_metrics_repo.get_latest_by_model_version(
-                model_version_id=model_version_uuid,
-                metric_name="f1_score",
-                dataset_split="validation",
-            )
-            if metric:
-                quality = float(metric["metric_value"])
-                if quality > 1.0:
-                    quality = quality / 100.0
-                logger.debug(
-                    "Using validation set f1_score for quality assessment",
-                    model_version_id=model_version_id,
+                    metric_name=metric_name,
+                    optimization_metric=optimization_metric,
                     quality=quality,
                 )
                 return quality

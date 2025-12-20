@@ -234,8 +234,8 @@ class BalanceCalculator:
                     received_at = received_at.replace(tzinfo=timezone.utc)
                 balance_age_seconds = (now - received_at).total_seconds()
                 if balance_age_seconds > settings.balance_data_max_age_seconds:
-                    logger.warning(
-                        "Balance data is stale before sync attempt",
+                    logger.info(
+                        "Balance data is stale, triggering sync",
                         required_currency=coin,
                         balance_received_at=received_at.isoformat(),
                         balance_age_seconds=balance_age_seconds,
@@ -245,6 +245,13 @@ class BalanceCalculator:
                     # Try to sync and re-check
                     synced = await self._trigger_balance_sync(freshness_context)
                     if not synced:
+                        logger.warning(
+                            "Balance data is stale and sync failed",
+                            required_currency=coin,
+                            balance_age_seconds=balance_age_seconds,
+                            max_age_seconds=settings.balance_data_max_age_seconds,
+                            context=freshness_context,
+                        )
                         return None
                     balance_data = await self.balance_repo.get_latest_balance(coin)
                     if not balance_data:

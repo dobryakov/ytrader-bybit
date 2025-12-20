@@ -162,10 +162,12 @@ class ModelVersionManager:
         # Determine metric types based on metric names
         metric_type_mapping = {
             "accuracy": "classification",
+            "balanced_accuracy": "classification",
             "precision": "classification",
             "recall": "classification",
             "f1_score": "classification",
             "roc_auc": "classification",
+            "pr_auc": "classification",
             "mse": "regression",
             "mae": "regression",
             "rmse": "regression",

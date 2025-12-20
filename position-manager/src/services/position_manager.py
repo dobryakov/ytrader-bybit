@@ -367,35 +367,114 @@ class PositionManager:
                         realized_pnl_delta -= fees
 
                     if new_size != 0:
-                        if (current_size > 0 and size_delta > 0) or (
+                        # Check if position direction is flipping (long to short or short to long)
+                        # This can happen in two scenarios:
+                        # 1. Sign changes: current_size > 0 and new_size < 0 (or vice versa)
+                        # 2. Position closes and reopens in opposite direction: size_delta is opposite to current_size
+                        #    and abs(size_delta) >= abs(current_size) but new_size != 0
+                        sign_changed = (current_size > 0 and new_size < 0) or (current_size < 0 and new_size > 0)
+                        position_closing_and_reopening = (
+                            (current_size > 0 and size_delta < 0 and abs(size_delta) >= abs(current_size) and new_size < 0) or
+                            (current_size < 0 and size_delta > 0 and abs(size_delta) >= abs(current_size) and new_size > 0)
+                        )
+                        is_flipping = sign_changed or position_closing_and_reopening
+                        
+                        if is_flipping:
+                            # Position is flipping: use execution_price for the new direction
+                            new_avg_price = execution_price
+                            logger.info(
+                                "position_flipping_detected",
+                                asset=asset,
+                                mode=mode,
+                                current_size=str(current_size),
+                                size_delta=str(size_delta),
+                                new_size=str(new_size),
+                                sign_changed=sign_changed,
+                                position_closing_and_reopening=position_closing_and_reopening,
+                                new_avg_price=str(new_avg_price),
+                            )
+                        elif (current_size > 0 and size_delta > 0) or (
                             current_size < 0 and size_delta < 0
                         ):
+                            # Increasing position in same direction: weighted average
                             total_value = (current_size * current_avg_price) + (
                                 size_delta * execution_price
                             )
-                            new_avg_price = total_value / abs(new_size)
-                        else:
-                            if abs(size_delta) >= abs(current_size):
+                            abs_new_size = abs(new_size)
+                            # Safety check: avoid division by very small numbers that could produce anomalies
+                            if abs_new_size < Decimal("0.001"):
+                                logger.warning(
+                                    "average_entry_price_calculation_skipped_tiny_size",
+                                    asset=asset,
+                                    mode=mode,
+                                    current_size=str(current_size),
+                                    size_delta=str(size_delta),
+                                    new_size=str(new_size),
+                                    current_avg_price=str(current_avg_price),
+                                    execution_price=str(execution_price),
+                                )
+                                # Use execution_price as fallback for very small positions
                                 new_avg_price = execution_price
                             else:
+                                new_avg_price = total_value / abs_new_size
+                        else:
+                            # Decreasing position but not flipping: keep current average or set to execution_price if fully closed
+                            if abs(size_delta) >= abs(current_size):
+                                # Fully closing the position, but new_size != 0 means we're flipping
+                                # This shouldn't happen if is_flipping check above works, but keep as safety
+                                new_avg_price = execution_price
+                            else:
+                                # Partially closing: keep current average
                                 new_avg_price = current_avg_price
                     else:
                         new_avg_price = None
 
+                    # Validate calculated average_entry_price (defensive check)
+                    # Average entry price should be reasonable (between 0.1x and 10x of execution_price)
+                    if new_avg_price is not None and new_avg_price > 0:
+                        max_reasonable_price = execution_price * Decimal("10")
+                        min_reasonable_price = execution_price / Decimal("10")
+                        if new_avg_price > max_reasonable_price or new_avg_price < min_reasonable_price:
+                            logger.error(
+                                "average_entry_price_calculation_anomaly_detected",
+                                asset=asset,
+                                mode=mode,
+                                calculated_avg_price=str(new_avg_price),
+                                execution_price=str(execution_price),
+                                current_size=str(current_size),
+                                size_delta=str(size_delta),
+                                new_size=str(new_size),
+                                current_avg_price=str(current_avg_price),
+                            )
+                            # Fallback to execution_price if calculated value is unreasonable
+                            new_avg_price = execution_price
+
+                    # Update current_price and unrealized_pnl if we have the necessary data
+                    # Use existing current_price from position (don't fetch from API on every order fill for performance)
+                    current_price_for_pnl = current_position.current_price
+                    new_unrealized_pnl = current_position.unrealized_pnl
+                    
+                    # Calculate unrealized_pnl if we have current_price and average_entry_price
+                    if current_price_for_pnl is not None and new_avg_price is not None and new_size != 0:
+                        # Formula: (current_price - average_entry_price) * size
+                        # Works for both long (size > 0) and short (size < 0) positions
+                        new_unrealized_pnl = (current_price_for_pnl - new_avg_price) * new_size
+                    
                     # Closed position handling
                     closed_at_expr = "NOW()" if new_size == 0 else "NULL"
 
                     update_query = f"""
                         UPDATE positions
-                        SET size = $1,
-                            average_entry_price = $2,
-                            realized_pnl = realized_pnl + $3,
+                        SET size = CAST($1 AS numeric),
+                            average_entry_price = CAST($2 AS numeric),
+                            unrealized_pnl = CAST($3 AS numeric),
+                            realized_pnl = realized_pnl + CAST($4 AS numeric),
                             version = version + 1,
                             last_updated = NOW(),
                             closed_at = {closed_at_expr}
-                        WHERE asset = $4
-                          AND mode = $5
-                          AND version = $6
+                        WHERE asset = $5
+                          AND mode = $6
+                          AND version = $7
                         RETURNING id, asset, mode, size, average_entry_price, current_price,
                                   unrealized_pnl, realized_pnl,
                                   long_size, short_size, version,
@@ -405,6 +484,7 @@ class PositionManager:
                         update_query,
                         str(new_size),
                         str(new_avg_price) if new_avg_price is not None else None,
+                        str(new_unrealized_pnl),
                         str(realized_pnl_delta),
                         asset.upper(),
                         mode.lower(),
@@ -740,19 +820,30 @@ class PositionManager:
                         if refreshed is not None:
                             current_price = refreshed
 
-                    new_unrealized = unrealized_pnl or position.unrealized_pnl
+                    # Use unrealized_pnl from WebSocket if provided, otherwise calculate from current_price
+                    new_unrealized = unrealized_pnl
+                    if new_unrealized is None:
+                        # Calculate unrealized_pnl from current_price and average_entry_price
+                        if current_price is not None and new_avg_price is not None and resolved_size != 0:
+                            # Formula: (current_price - average_entry_price) * size
+                            # Works for both long (size > 0) and short (size < 0) positions
+                            new_unrealized = (current_price - new_avg_price) * resolved_size
+                        else:
+                            # Fallback to existing unrealized_pnl if cannot calculate
+                            new_unrealized = position.unrealized_pnl
+                    
                     new_realized = realized_pnl or position.realized_pnl
 
                     update_query = """
                         UPDATE positions
-                        SET size = $1,
-                            current_price = $2,
-                            unrealized_pnl = $3,
-                            realized_pnl = $4,
-                            average_entry_price = COALESCE($5, average_entry_price),
+                        SET size = CAST($1 AS numeric),
+                            current_price = CAST($2 AS numeric),
+                            unrealized_pnl = CAST($3 AS numeric),
+                            realized_pnl = CAST($4 AS numeric),
+                            average_entry_price = COALESCE(CAST($5 AS numeric), average_entry_price),
                             version = version + 1,
                             last_updated = NOW(),
-                            closed_at = CASE WHEN $1 = 0 THEN NOW() ELSE closed_at END
+                            closed_at = CASE WHEN CAST($1 AS numeric) = 0 THEN NOW() ELSE closed_at END
                         WHERE asset = $6
                           AND mode = $7
                           AND version = $8
@@ -1388,17 +1479,35 @@ class PositionManager:
         - Size discrepancy must exceed POSITION_MANAGER_SIZE_VALIDATION_THRESHOLD
         - WebSocket event timestamp must be fresher than Order Manager execution
           timestamp (optionally plus POSITION_MANAGER_TIMESTAMP_TOLERANCE_SECONDS)
+        
+        Special case: If size discrepancy is very large (> 1.0) and opposite signs,
+        always update from WebSocket (likely position flip issue).
         """
         if not settings.position_manager_enable_timestamp_resolution:
             return False
         if ws_size is None:
             return False
-        if ws_timestamp is None or order_timestamp is None:
-            return False
 
         threshold = Decimal(str(settings.position_manager_size_validation_threshold))
         size_diff = abs(ws_size - db_size)
         if size_diff <= threshold:
+            return False
+
+        # Critical discrepancy: if size difference is large (> 1.0) and opposite signs,
+        # always update from WebSocket (indicates position flip bug)
+        critical_threshold = Decimal("1.0")
+        opposite_signs = (db_size > 0 and ws_size < 0) or (db_size < 0 and ws_size > 0)
+        if size_diff > critical_threshold and opposite_signs:
+            logger.warning(
+                "critical_size_discrepancy_detected_force_update",
+                db_size=str(db_size),
+                ws_size=str(ws_size),
+                size_diff=str(size_diff),
+            )
+            return True
+
+        # Normal timestamp-based resolution
+        if ws_timestamp is None or order_timestamp is None:
             return False
 
         tolerance_seconds = settings.position_manager_timestamp_tolerance_seconds

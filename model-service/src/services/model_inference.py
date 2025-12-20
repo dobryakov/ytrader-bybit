@@ -11,6 +11,9 @@ import numpy as np
 
 from ..models.position_state import OrderPositionState
 from ..models.feature_vector import FeatureVector
+from ..models.signal import MarketDataSnapshot
+from ..services.feature_cache import feature_cache
+from ..services.feature_service_client import feature_service_client
 from ..config.logging import get_logger
 from ..config.exceptions import ModelInferenceError
 from ..config.settings import settings
@@ -656,6 +659,103 @@ class ModelInference:
             thresholds=thresholds,
         )
         return predicted_class
+    
+    async def get_market_data_snapshot(self, asset: str, trace_id: Optional[str] = None) -> Optional[MarketDataSnapshot]:
+        """
+        Get market data snapshot for an asset from Feature Service.
+
+        Retrieves feature vector from cache or REST API and creates MarketDataSnapshot
+        for signal metadata.
+
+        Args:
+            asset: Trading pair symbol (e.g., 'BTCUSDT')
+            trace_id: Optional trace ID for request flow tracking
+
+        Returns:
+            MarketDataSnapshot or None if feature vector unavailable
+        """
+        # Get feature vector from cache or REST API
+        feature_vector = await self._get_feature_vector(asset, trace_id)
+        if not feature_vector:
+            logger.debug("Feature vector unavailable for market data snapshot", asset=asset, trace_id=trace_id)
+            return None
+        
+        # Create MarketDataSnapshot from feature vector
+        return self._create_market_data_snapshot_from_features(feature_vector)
+    
+    async def _get_feature_vector(self, asset: str, trace_id: Optional[str] = None) -> Optional[FeatureVector]:
+        """
+        Get feature vector from Feature Service (via cache or REST API with fallback).
+
+        Args:
+            asset: Trading pair symbol
+            trace_id: Optional trace ID for request flow tracking
+
+        Returns:
+            FeatureVector or None if unavailable
+        """
+        # Always try cache first (cache can be populated from queue or previous REST API calls)
+        cached_feature = await feature_cache.get(asset, max_age_seconds=settings.feature_service_feature_cache_ttl_seconds)
+        if cached_feature:
+            logger.debug("Using cached feature vector for market data snapshot", asset=asset, trace_id=trace_id)
+            return cached_feature
+
+        # Cache miss - fallback to REST API
+        logger.debug("Cache miss, fetching from REST API for market data snapshot", asset=asset, trace_id=trace_id)
+        feature_vector = await feature_service_client.get_latest_features(asset, trace_id=trace_id)
+        
+        if feature_vector:
+            # Always cache the result for future use
+            await feature_cache.set(asset, feature_vector)
+            logger.debug("Retrieved feature vector from REST API and cached", asset=asset, trace_id=trace_id)
+        
+        return feature_vector
+    
+    def _create_market_data_snapshot_from_features(self, feature_vector: FeatureVector) -> MarketDataSnapshot:
+        """
+        Create MarketDataSnapshot from FeatureVector for signal metadata.
+
+        Args:
+            feature_vector: FeatureVector from Feature Service
+
+        Returns:
+            MarketDataSnapshot created from feature vector
+        """
+        features = feature_vector.features
+        
+        # Extract price (mid_price is the standard name in Feature Service)
+        price = features.get("mid_price", features.get("price", 0.0))
+        
+        # Extract spread
+        spread = features.get("spread_abs", features.get("spread", 0.0))
+        
+        # Extract volume
+        volume_24h = features.get("volume_1m", features.get("volume_24h", 0.0))
+        
+        # Extract volatility
+        volatility = features.get("volatility_1m", features.get("volatility", 0.0))
+        
+        # Extract orderbook depth if available
+        orderbook_depth = None
+        if "depth_bid_top5" in features or "depth_ask_top5" in features:
+            orderbook_depth = {
+                "bid_depth": features.get("depth_bid_top5", 0.0),
+                "ask_depth": features.get("depth_ask_top5", 0.0),
+            }
+        
+        # Extract technical indicators if available
+        technical_indicators = None
+        # Note: Feature Service may not include all technical indicators in feature vector
+        # This is a simplified extraction - can be enhanced based on actual feature names
+        
+        return MarketDataSnapshot(
+            price=float(price),
+            spread=float(spread),
+            volume_24h=float(volume_24h),
+            volatility=float(volatility),
+            orderbook_depth=orderbook_depth,
+            technical_indicators=technical_indicators,
+        )
 
 
 # Global model inference instance

@@ -9,6 +9,7 @@ from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import json
+import asyncio
 
 from ..models.signal import TradingSignal, MarketDataSnapshot
 from ..models.position_state import OrderPositionState
@@ -1001,6 +1002,9 @@ class IntelligentSignalGenerator:
         """
         Get feature vector from Feature Service (via cache or REST API with fallback).
 
+        Always checks local cache first, regardless of FEATURE_SERVICE_USE_QUEUE setting.
+        Cache can be populated either from queue (if enabled) or from previous REST API calls.
+
         Args:
             asset: Trading pair symbol
             trace_id: Optional trace ID for request flow tracking
@@ -1008,22 +1012,21 @@ class IntelligentSignalGenerator:
         Returns:
             FeatureVector or None if unavailable
         """
-        # Try cache first if queue is enabled
-        if settings.feature_service_use_queue:
-            cached_feature = await feature_cache.get(asset, max_age_seconds=settings.feature_service_feature_cache_ttl_seconds)
-            if cached_feature:
-                logger.debug("Using cached feature vector", asset=asset, trace_id=trace_id)
-                return cached_feature
+        # Always try cache first (cache can be populated from queue or previous REST API calls)
+        cached_feature = await feature_cache.get(asset, max_age_seconds=settings.feature_service_feature_cache_ttl_seconds)
+        if cached_feature:
+            logger.debug("Using cached feature vector", asset=asset, trace_id=trace_id)
+            return cached_feature
 
-        # Fallback to REST API
-        logger.debug("Cache miss or queue disabled, fetching from REST API", asset=asset, trace_id=trace_id)
+        # Cache miss - fallback to REST API
+        logger.debug("Cache miss, fetching from REST API", asset=asset, trace_id=trace_id)
         feature_vector = await feature_service_client.get_latest_features(asset, trace_id=trace_id)
         
         if feature_vector:
-            # Cache the result for future use
-            if settings.feature_service_use_queue:
-                await feature_cache.set(asset, feature_vector)
-            logger.debug("Retrieved feature vector from REST API", asset=asset, trace_id=trace_id)
+            # Always cache the result for future use (regardless of queue setting)
+            # This allows cache to work even if queue is disabled
+            await feature_cache.set(asset, feature_vector)
+            logger.debug("Retrieved feature vector from REST API and cached", asset=asset, trace_id=trace_id)
         
         return feature_vector
 
@@ -1301,7 +1304,7 @@ class IntelligentSignalGenerator:
 def get_intelligent_generator():
     """Get intelligent signal generator instance with current settings."""
     return IntelligentSignalGenerator(
-        min_confidence_threshold=settings.model_quality_threshold_accuracy,  # Use quality threshold as confidence threshold
+        min_confidence_threshold=settings.model_activation_threshold,  # Use activation threshold as confidence threshold
         min_amount=settings.warmup_min_amount,
         max_amount=settings.warmup_max_amount,
     )

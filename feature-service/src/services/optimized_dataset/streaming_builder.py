@@ -271,6 +271,22 @@ class StreamingDatasetBuilder:
             return pd.DataFrame()
         
         features_df = pd.concat(all_features, ignore_index=True)
+        
+        # Normalize all timestamps to timezone-aware UTC before sorting
+        # This prevents "Cannot compare tz-naive and tz-aware timestamps" errors
+        if "timestamp" in features_df.columns:
+            if pd.api.types.is_datetime64_any_dtype(features_df["timestamp"]):
+                # Convert to timezone-aware UTC if needed
+                if features_df["timestamp"].dt.tz is None:
+                    # Timezone-naive: assume UTC and make aware
+                    features_df["timestamp"] = features_df["timestamp"].dt.tz_localize(timezone.utc)
+                else:
+                    # Timezone-aware: convert to UTC
+                    features_df["timestamp"] = features_df["timestamp"].dt.tz_convert(timezone.utc)
+            else:
+                # Not datetime dtype: convert to datetime first
+                features_df["timestamp"] = pd.to_datetime(features_df["timestamp"], utc=True)
+        
         features_df = features_df.sort_values("timestamp").reset_index(drop=True)
 
         # Step 7: Keep only features that are explicitly declared in the Feature Registry.
@@ -505,9 +521,27 @@ class StreamingDatasetBuilder:
         if not timestamps:
             return pd.Series(dtype="datetime64[ns, UTC]")
         
+        # Normalize all timestamps to timezone-aware UTC before creating Series
+        # This prevents "Cannot compare tz-naive and tz-aware timestamps" errors
+        normalized_timestamps = []
+        for ts in timestamps:
+            if isinstance(ts, pd.Timestamp):
+                ts = ts.to_pydatetime()
+            elif not isinstance(ts, datetime):
+                # Convert to datetime if needed
+                ts = pd.to_datetime(ts, utc=True).to_pydatetime()
+            
+            # Ensure timezone-aware UTC
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            else:
+                ts = ts.astimezone(timezone.utc)
+            
+            normalized_timestamps.append(ts)
+        
         # Convert to sorted Series
-        timestamps_list = sorted(timestamps)
-        return pd.Series(timestamps_list, name="timestamp")
+        timestamps_list = sorted(normalized_timestamps)
+        return pd.Series(timestamps_list, name="timestamp", dtype="datetime64[ns, UTC]")
     
     async def _read_day_from_parquet(
         self,

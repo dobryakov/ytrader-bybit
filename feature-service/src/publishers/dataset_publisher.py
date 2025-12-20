@@ -40,6 +40,7 @@ class DatasetPublisher:
         validation_records: int,
         test_records: int,
         trace_id: Optional[str] = None,
+        strategy_id: Optional[str] = None,
     ) -> None:
         """
         Publish dataset completion notification.
@@ -52,6 +53,7 @@ class DatasetPublisher:
             validation_records: Number of validation records
             test_records: Number of test records
             trace_id: Optional trace ID
+            strategy_id: Optional strategy ID (for model training)
         """
         # Check if channel is None, reinitialize if needed
         if self._channel is None:
@@ -66,6 +68,9 @@ class DatasetPublisher:
             "test_records": test_records,
             "trace_id": trace_id,
         }
+        # Add strategy_id if provided
+        if strategy_id is not None:
+            message_data["strategy_id"] = strategy_id
         
         message_body = json.dumps(message_data).encode()
         

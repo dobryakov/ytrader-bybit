@@ -24,6 +24,8 @@ _metadata_storage: Optional[MetadataStorage] = None
 _feature_computer: Optional[Any] = None  # FeatureComputer instance
 _dataset_builder: Optional[Any] = None  # OptimizedDatasetBuilder instance
 _orderbook_manager: Optional[Any] = None  # OrderbookManager instance
+_feature_scheduler: Optional[Any] = None  # FeatureScheduler instance
+_target_registry_version_manager: Optional[Any] = None  # TargetRegistryVersionManager instance
 
 
 def set_feature_registry_loader(loader: FeatureRegistryLoader) -> None:
@@ -60,6 +62,18 @@ def set_orderbook_manager_for_registry(manager: Any) -> None:
     """Set global orderbook manager instance for hot reload."""
     global _orderbook_manager
     _orderbook_manager = manager
+
+
+def set_feature_scheduler_for_registry(scheduler: Any) -> None:
+    """Set global feature scheduler instance for hot reload."""
+    global _feature_scheduler
+    _feature_scheduler = scheduler
+
+
+def set_target_registry_version_manager_for_registry(manager: Any) -> None:
+    """Set global target registry version manager instance for hot reload."""
+    global _target_registry_version_manager
+    _target_registry_version_manager = manager
 
 
 # Request/Response models
@@ -341,6 +355,8 @@ async def activate_feature_registry_version(
                 feature_registry_loader=_feature_registry_loader,
                 dataset_builder=_dataset_builder,
                 orderbook_manager=_orderbook_manager,
+                feature_scheduler=_feature_scheduler,
+                target_registry_version_manager=_target_registry_version_manager,
             )
             
             # Update global feature_computer reference

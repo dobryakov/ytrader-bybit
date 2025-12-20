@@ -49,10 +49,10 @@ class Settings(BaseSettings):
     # Model Training Configuration
     model_training_min_dataset_size: int = Field(default=1000, alias="MODEL_TRAINING_MIN_DATASET_SIZE")
     model_training_max_duration_seconds: int = Field(default=1800, alias="MODEL_TRAINING_MAX_DURATION_SECONDS")
-    model_quality_threshold_accuracy: float = Field(
+    model_activation_threshold: float = Field(
         default=0.75, 
-        alias="MODEL_QUALITY_THRESHOLD_ACCURACY",
-        description="Minimum accuracy threshold for classification models to be auto-activated. Default: 0.75 (75%)"
+        alias="MODEL_ACTIVATION_THRESHOLD",
+        description="Minimum threshold for model activation (used with metric from MODEL_TRAINING_THRESHOLD_OPTIMIZATION_METRIC). Default: 0.75 (75%)"
     )
     model_quality_threshold_r2: float = Field(
         default=0.0,
@@ -71,6 +71,11 @@ class Settings(BaseSettings):
     model_training_tuning_method: str = Field(default="grid_search", alias="MODEL_TRAINING_TUNING_METHOD")
     model_training_tuning_max_iterations: int = Field(default=50, alias="MODEL_TRAINING_TUNING_MAX_ITERATIONS")
     model_training_quality_checks_enabled: bool = Field(default=True, alias="MODEL_TRAINING_QUALITY_CHECKS_ENABLED")
+    model_training_threshold_optimization_metric: str = Field(
+        default="f1",
+        alias="MODEL_TRAINING_THRESHOLD_OPTIMIZATION_METRIC",
+        description="Metric to optimize for threshold calibration: 'f1', 'pr_auc', 'balanced_accuracy', 'recall'. Default: 'f1'"
+    )
     
     # Time-Based Retraining Configuration (for market-data-only training)
     model_retraining_interval_days: int = Field(
@@ -281,6 +286,11 @@ class Settings(BaseSettings):
     feature_service_api_key: str = Field(..., alias="FEATURE_SERVICE_API_KEY")
     feature_service_use_queue: bool = Field(default=True, alias="FEATURE_SERVICE_USE_QUEUE")
     feature_service_feature_cache_ttl_seconds: int = Field(default=30, alias="FEATURE_SERVICE_FEATURE_CACHE_TTL_SECONDS")
+    feature_service_feature_timeout_seconds: float = Field(
+        default=60.0,
+        alias="FEATURE_SERVICE_FEATURE_TIMEOUT_SECONDS",
+        description="Timeout in seconds for feature requests to Feature Service API. Default: 60.0 seconds. Increase if feature-service is slow to respond."
+    )
     
     # Feature Service Dataset Building Configuration
     feature_service_dataset_build_timeout_seconds: int = Field(default=3600, alias="FEATURE_SERVICE_DATASET_BUILD_TIMEOUT_SECONDS")
@@ -324,10 +334,10 @@ class Settings(BaseSettings):
             raise ValueError(f"Log level must be one of {valid_levels}")
         return v_upper
 
-    @field_validator("model_quality_threshold_accuracy")
+    @field_validator("model_activation_threshold")
     @classmethod
-    def validate_accuracy_threshold(cls, v: float) -> float:
-        """Validate accuracy threshold is between 0 and 1."""
+    def validate_activation_threshold(cls, v: float) -> float:
+        """Validate activation threshold is between 0 and 1."""
         if not 0.0 <= v <= 1.0:
             raise ValueError("Accuracy threshold must be between 0.0 and 1.0")
         return v
@@ -404,6 +414,16 @@ class Settings(BaseSettings):
         v_lower = v.lower()
         if v_lower not in valid_methods:
             raise ValueError(f"MODEL_TRAINING_CLASS_WEIGHT_METHOD must be one of {valid_methods}, got {v}")
+        return v_lower
+
+    @field_validator("model_training_threshold_optimization_metric")
+    @classmethod
+    def validate_threshold_optimization_metric(cls, v: str) -> str:
+        """Validate threshold optimization metric is one of the supported options."""
+        valid_metrics = {"f1", "pr_auc", "balanced_accuracy", "recall"}
+        v_lower = v.lower()
+        if v_lower not in valid_metrics:
+            raise ValueError(f"MODEL_TRAINING_THRESHOLD_OPTIMIZATION_METRIC must be one of {valid_metrics}, got {v}")
         return v_lower
 
     @field_validator("model_training_tuning_method")

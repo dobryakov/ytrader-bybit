@@ -107,7 +107,7 @@ class RetrainingTrigger:
             return False
 
         accuracy = float(latest_metrics["metric_value"])
-        threshold = settings.model_quality_threshold_accuracy
+        threshold = settings.model_activation_threshold
 
         if accuracy < threshold:
             logger.warning(

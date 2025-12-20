@@ -279,13 +279,14 @@ class DataStorageService:
                 # Normalize kline event format (ws-gateway sends data in payload)
                 payload = event.get("payload", {})
                 
-                # Log payload structure for debugging
-                logger.debug(
+                # Log payload structure for debugging (info level to track in production)
+                logger.info(
                     "kline_event_processing",
                     symbol=symbol,
                     payload_type=type(payload).__name__,
                     payload_keys=list(payload.keys()) if isinstance(payload, dict) else None,
-                    payload_preview=str(payload)[:200] if payload else None,
+                    has_open="open" in payload if isinstance(payload, dict) else False,
+                    has_start="start" in payload if isinstance(payload, dict) else False,
                 )
                 
                 # ws-gateway sends kline data directly in payload
@@ -307,6 +308,7 @@ class DataStorageService:
                 
                 # Extract and normalize kline fields
                 # Bybit format: "start" = timestamp (ms), "open"/"high"/"low"/"close" = prices, "volume" = volume, "interval" = "1"
+                # Note: payload from ws-gateway contains kline data directly (not wrapped in "data")
                 normalized_kline_event = {
                     **event,
                     "event_type": "kline",
@@ -322,7 +324,7 @@ class DataStorageService:
                 
                 # Convert prices and volume to float if they are strings
                 for field in ["open", "high", "low", "close", "volume"]:
-                    if normalized_kline_event.get(field):
+                    if normalized_kline_event.get(field) is not None:
                         try:
                             normalized_kline_event[field] = float(normalized_kline_event[field])
                         except (ValueError, TypeError):
@@ -334,20 +336,38 @@ class DataStorageService:
                             )
                             normalized_kline_event[field] = 0.0
                     else:
+                        # If field is None, set to 0.0 but log warning
+                        logger.warning(
+                            "kline_field_missing",
+                            field=field,
+                            symbol=symbol,
+                            payload_keys=list(payload.keys()) if isinstance(payload, dict) else None,
+                        )
                         normalized_kline_event[field] = 0.0
                 
-                # Log normalized event for debugging
-                logger.debug(
-                    "kline_event_normalized",
-                    symbol=normalized_kline_event.get("symbol"),
-                    open=normalized_kline_event.get("open"),
-                    high=normalized_kline_event.get("high"),
-                    low=normalized_kline_event.get("low"),
-                    close=normalized_kline_event.get("close"),
-                    volume=normalized_kline_event.get("volume"),
-                )
-                
-                await self.store_kline(normalized_kline_event)
+                # Validate that we have at least some data before storing
+                if normalized_kline_event.get("timestamp") and normalized_kline_event.get("symbol"):
+                    # Log normalized event for debugging (info level to track)
+                    logger.info(
+                        "kline_event_normalized",
+                        symbol=normalized_kline_event.get("symbol"),
+                        timestamp=normalized_kline_event.get("timestamp"),
+                        open=normalized_kline_event.get("open"),
+                        high=normalized_kline_event.get("high"),
+                        low=normalized_kline_event.get("low"),
+                        close=normalized_kline_event.get("close"),
+                        volume=normalized_kline_event.get("volume"),
+                    )
+                    
+                    await self.store_kline(normalized_kline_event)
+                else:
+                    logger.warning(
+                        "kline_event_invalid_skipped",
+                        symbol=symbol,
+                        has_timestamp=bool(normalized_kline_event.get("timestamp")),
+                        has_symbol=bool(normalized_kline_event.get("symbol")),
+                        payload_preview=str(payload)[:300] if payload else None,
+                    )
             elif event_type == "ticker":
                 await self.store_ticker(event)
             elif event_type == "funding_rate":
@@ -566,11 +586,12 @@ class DataStorageService:
         
         try:
             await self._parquet_storage.write_klines(symbol, date_str, df)
-            logger.debug(
+            logger.info(
                 "kline_stored",
                 symbol=symbol,
                 date=date_str,
                 interval=event.get("interval"),
+                timestamp=normalized_kline.get("timestamp") if "normalized_kline" in locals() else None,
             )
         except Exception as e:
             logger.error(

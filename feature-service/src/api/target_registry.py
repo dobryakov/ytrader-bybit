@@ -1,7 +1,7 @@
 """
 Target Registry API endpoints.
 """
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, TYPE_CHECKING
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field
 import structlog
@@ -11,6 +11,9 @@ from src.storage.metadata_storage import MetadataStorage
 from src.models.dataset import TargetConfig
 from src.api.middleware.auth import verify_api_key
 
+if TYPE_CHECKING:
+    from src.services.feature_scheduler import FeatureScheduler
+
 logger = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/target-registry", tags=["target-registry"])
@@ -18,6 +21,7 @@ router = APIRouter(prefix="/target-registry", tags=["target-registry"])
 # Global instances (will be set during app startup)
 _target_registry_version_manager: Optional[TargetRegistryVersionManager] = None
 _metadata_storage: Optional[MetadataStorage] = None
+_feature_scheduler: Optional[Any] = None  # FeatureScheduler instance
 
 
 def set_target_registry_version_manager(manager: TargetRegistryVersionManager) -> None:
@@ -30,6 +34,12 @@ def set_metadata_storage_for_target_registry(storage: MetadataStorage) -> None:
     """Set global metadata storage instance."""
     global _metadata_storage
     _metadata_storage = storage
+
+
+def set_feature_scheduler_for_target_registry(scheduler: Any) -> None:
+    """Set global feature scheduler instance for updating intervals."""
+    global _feature_scheduler
+    _feature_scheduler = scheduler
 
 
 # Request/Response models
@@ -192,6 +202,24 @@ async def activate_target_registry_version(
             activated_by=request.activated_by,
             activation_reason=request.activation_reason,
         )
+        
+        # Update FeatureScheduler intervals if scheduler is available
+        if _feature_scheduler:
+            try:
+                await _feature_scheduler.update_intervals()
+                logger.info(
+                    "FeatureScheduler intervals updated after Target Registry activation",
+                    version=version,
+                    new_intervals=_feature_scheduler._intervals,
+                )
+            except Exception as scheduler_error:
+                logger.warning(
+                    "failed_to_update_scheduler_after_target_registry_activation",
+                    version=version,
+                    error=str(scheduler_error),
+                    message="Target Registry activated but scheduler intervals not updated",
+                )
+        
         return activated_record
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

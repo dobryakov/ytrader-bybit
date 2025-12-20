@@ -151,15 +151,39 @@ class MQConnectionManager:
                     # Reset connection and retry
                     if self._connection is not None:
                         try:
-                            if not self._connection.is_closed:
-                                await self._connection.close()
-                        except Exception:
-                            pass
-                        self._connection = None
+                            # Check if we have a running event loop before using asyncio
+                            try:
+                                loop = asyncio.get_running_loop()
+                                if not self._connection.is_closed:
+                                    await self._connection.close()
+                            except RuntimeError:
+                                # No event loop in current thread - connection.close() may use ThreadPoolExecutor
+                                # Just reset the connection reference, don't try to close it
+                                logger.debug(
+                                    "No event loop available for connection.close(), skipping",
+                                    attempt=attempt + 1,
+                                )
+                        except Exception as close_error:
+                            # Ignore errors when closing invalid connection
+                            logger.debug(
+                                "Error closing connection after timeout",
+                                error=str(close_error),
+                                error_type=type(close_error).__name__,
+                            )
+                        finally:
+                            self._connection = None
                     
                     if attempt < max_retries - 1:
-                        # Wait before retry
-                        await asyncio.sleep(0.5 * (attempt + 1))
+                        # Wait before retry - ensure we have event loop
+                        try:
+                            loop = asyncio.get_running_loop()
+                            await asyncio.sleep(0.5 * (attempt + 1))
+                        except RuntimeError:
+                            # No event loop - this shouldn't happen in async context, but handle it gracefully
+                            logger.warning(
+                                "No event loop available for sleep, skipping delay",
+                                attempt=attempt + 1,
+                            )
                         continue
                     else:
                         raise RuntimeError(f"Failed to get channel after {max_retries} attempts: {e}") from e
@@ -175,7 +199,16 @@ class MQConnectionManager:
                     # Reset connection and retry
                     self._connection = None
                     if attempt < max_retries - 1:
-                        await asyncio.sleep(0.5 * (attempt + 1))
+                        # Wait before retry - ensure we have event loop
+                        try:
+                            loop = asyncio.get_running_loop()
+                            await asyncio.sleep(0.5 * (attempt + 1))
+                        except RuntimeError:
+                            # No event loop - this shouldn't happen in async context, but handle it gracefully
+                            logger.warning(
+                                "No event loop available for sleep, skipping delay",
+                                attempt=attempt + 1,
+                            )
                         continue
                     else:
                         raise RuntimeError(f"Failed to get channel after {max_retries} attempts: {e}") from e
@@ -192,14 +225,34 @@ class MQConnectionManager:
                     # Reset connection and reconnect
                     if self._connection is not None:
                         try:
-                            if not self._connection.is_closed:
-                                await self._connection.close()
+                            # Check if we have a running event loop before using asyncio
+                            try:
+                                loop = asyncio.get_running_loop()
+                                if not self._connection.is_closed:
+                                    await self._connection.close()
+                            except RuntimeError:
+                                # No event loop in current thread - connection.close() may use ThreadPoolExecutor
+                                # Just reset the connection reference, don't try to close it
+                                logger.debug(
+                                    "No event loop available for connection.close(), skipping",
+                                    attempt=attempt + 1,
+                                )
                         except Exception:
                             pass
-                        self._connection = None
+                        finally:
+                            self._connection = None
                     
                     if attempt < max_retries - 1:
-                        await asyncio.sleep(0.5 * (attempt + 1))
+                        # Wait before retry - ensure we have event loop
+                        try:
+                            loop = asyncio.get_running_loop()
+                            await asyncio.sleep(0.5 * (attempt + 1))
+                        except RuntimeError:
+                            # No event loop - this shouldn't happen in async context, but handle it gracefully
+                            logger.warning(
+                                "No event loop available for sleep, skipping delay",
+                                attempt=attempt + 1,
+                            )
                         continue
                     else:
                         raise RuntimeError(f"Failed to get channel after {max_retries} attempts: {e}") from e
@@ -229,7 +282,16 @@ class MQConnectionManager:
                 # Reset connection and retry
                 self._connection = None
                 if attempt < max_retries - 1:
-                    await asyncio.sleep(0.5 * (attempt + 1))
+                    # Wait before retry - ensure we have event loop
+                    try:
+                        loop = asyncio.get_running_loop()
+                        await asyncio.sleep(0.5 * (attempt + 1))
+                    except RuntimeError:
+                        # No event loop - this shouldn't happen in async context, but handle it gracefully
+                        logger.warning(
+                            "No event loop available for sleep, skipping delay",
+                            attempt=attempt + 1,
+                        )
                     continue
                 else:
                     raise RuntimeError(f"Failed to get channel after {max_retries} attempts: {e}") from e

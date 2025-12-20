@@ -114,7 +114,7 @@
 - [X] T044 [US2] Implement training orchestration service in model-service/src/services/training_orchestrator.py (coordinate dataset building, model training, quality evaluation, version management, handle training cancellation and restart on new triggers)
 - [X] T045 [US2] Integrate training pipeline into main application in model-service/src/main.py (start execution event consumer, trigger retraining based on configured schedules and thresholds)
 - [X] T046 [US2] Add structured logging for training operations in model-service/src/services/training_orchestrator.py (training start/completion, dataset size, quality metrics, version creation, cancellation events)
-- [X] T047 [US2] Add configuration for training parameters in model-service/src/config/settings.py (MODEL_TRAINING_MIN_DATASET_SIZE, MODEL_TRAINING_MAX_DURATION_SECONDS, MODEL_RETRAINING_SCHEDULE, MODEL_QUALITY_THRESHOLD_ACCURACY)
+- [X] T047 [US2] Add configuration for training parameters in model-service/src/config/settings.py (MODEL_TRAINING_MIN_DATASET_SIZE, MODEL_TRAINING_MAX_DURATION_SECONDS, MODEL_RETRAINING_SCHEDULE, MODEL_ACTIVATION_THRESHOLD)
 
 **Checkpoint**: At this point, User Stories 1 AND 2 should both work independently. The system can train models from execution feedback and manage model versions.
 
@@ -744,3 +744,36 @@ Note: Take profit threshold uses MODEL_SERVICE_TAKE_PROFIT_PCT (unified with int
 ### Implementation for Dataset Period Calculation Fix
 
 - [X] T190 [US2] [Bugfix] Update dataset period calculation to use 2 days ago as reference time in model-service/src/services/training_orchestrator.py (change `reference_time = datetime.now(timezone.utc) - timedelta(days=1)` to `reference_time = datetime.now(timezone.utc) - timedelta(days=2)` in `_calculate_dataset_periods` method, update docstring to reflect that reference_time is now 2 days ago to ensure guaranteed 24-hour coverage, ensure all period calculations (train/validation/test) are correctly shifted backward by 1 day, add structured logging to show calculated reference_date and explain why 2 days ago is used for guaranteed data completeness, verify that test_period_end, validation_period_end, and train_period_end are all correctly calculated from the new reference_date)
+
+---
+
+## Phase 13: Feature Cache Version Compatibility (Priority: P2) [Enhancement]
+
+**Goal**: Ensure feature cache respects feature registry version compatibility to prevent models from using incompatible feature vectors that could lead to incorrect predictions.
+
+**Context**: Currently, feature cache stores and returns feature vectors without checking if their feature_registry_version matches the model's expected version. This can lead to situations where models trained on one feature registry version receive features from a different version, causing missing features to be filled with default values (0.0) during inference, which degrades prediction quality silently.
+
+**Problem**: When feature registry version in cache differs from model's training version:
+- Model receives incompatible feature vector
+- Missing features are filled with 0.0 (silent degradation)
+- Extra features are ignored
+- Only warning is logged, but inference continues with potentially incorrect predictions
+
+**Solution**: Check feature registry version compatibility before using cached features. If versions don't match, ignore cache and fetch fresh features via REST API (which will return current feature registry version).
+
+**Independent Test**: Can be fully tested by verifying that cached features with mismatched feature_registry_version are ignored, REST API is called instead, and compatible cached features are used directly.
+
+### Implementation for Feature Cache Version Compatibility
+
+- [ ] T191 [US3] [Enhancement] Add feature registry version check in _get_feature_vector method in model-service/src/services/intelligent_signal_generator.py (modify _get_feature_vector to accept optional required_feature_registry_version parameter, move active_model and training_config retrieval before _get_feature_vector call to get model_feature_registry_version from training_config, extract model_feature_registry_version from training_config.get("feature_registry_version") before calling _get_feature_vector, pass model_feature_registry_version as required_feature_registry_version parameter to _get_feature_vector, in _get_feature_vector: check cached_feature.feature_registry_version against required_feature_registry_version if both are provided, if versions don't match: log warning with cached_version and required_version, set cached_feature to None to force REST API fallback, if versions match or required_feature_registry_version is None: use cached feature as before, add structured logging for version mismatch cases including asset, cached_version, required_version, trace_id, ensure backward compatibility: if model doesn't have training_config or feature_registry_version, behavior remains unchanged (cache is used without version check))
+- [ ] T192 [US3] [Enhancement] Update warmup_signal_generator.py to pass feature registry version check in model-service/src/services/warmup_signal_generator.py (warmup mode doesn't use models, so version check is not applicable, but ensure feature_cache.get() usage is consistent with intelligent_signal_generator pattern, keep current implementation as warmup doesn't require version validation, document that warmup mode doesn't perform version checks as it doesn't use trained models)
+- [ ] T193 [P] [US3] [Enhancement] Add structured logging for feature cache version compatibility in model-service/src/services/intelligent_signal_generator.py (log when cached features are used with matching version: "Using cached feature vector with compatible version", log when cached features are ignored due to version mismatch: "Cached feature registry version mismatch, ignoring cache and fetching from REST API", include asset, cached_version, required_version, trace_id in all version-related logs, log when REST API returns features with new version that will replace cached version: "Retrieved feature vector with feature_registry_version, replacing cached version", ensure logs are at appropriate levels: DEBUG for cache hits, WARNING for version mismatches, INFO for REST API fetches)
+
+**Checkpoint**: At this point, feature cache should properly validate feature registry version compatibility before using cached features. Models will only use cached features if their feature_registry_version matches the model's training version, preventing silent degradation from incompatible feature vectors.
+
+**Summary of Changes for Feature Cache Version Compatibility**:
+- Feature cache now checks feature_registry_version before using cached features
+- Cached features with mismatched versions are ignored, forcing REST API fallback
+- Models receive compatible feature vectors, preventing incorrect predictions from missing features
+- Version mismatch is logged with warnings for operational awareness
+- Backward compatible: models without training_config still work without version checks

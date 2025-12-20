@@ -84,14 +84,17 @@ async def lifespan(app: FastAPI):
             await reconnection_manager._resubscribe_for_connection(websocket_connection)
             
             # Also resubscribe to public subscriptions if any exist
-            # Public connection will be created lazily when needed
+            # Public connection will be created lazily when needed, and reconnection
+            # manager will be set up automatically by ConnectionManager
             connection_manager = get_connection_manager()
             try:
                 public_connection = await connection_manager.get_public_connection()
                 if public_connection and public_connection.is_connected:
-                    public_reconnect_manager = ReconnectionManager(public_connection)
-                    await public_reconnect_manager._resubscribe_for_connection(public_connection)
-                    logger.info("public_connection_resubscribed_on_startup")
+                    # Get the reconnection manager that was automatically set up
+                    public_reconnect_manager = connection_manager.get_public_reconnection_manager()
+                    if public_reconnect_manager:
+                        await public_reconnect_manager._resubscribe_for_connection(public_connection)
+                        logger.info("public_connection_resubscribed_on_startup")
             except Exception as e:
                 logger.warning(
                     "public_connection_resubscribe_failed",

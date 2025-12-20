@@ -216,7 +216,7 @@ class PositionBasedSignalGenerator:
             return None
 
         # Get market data snapshot at signal generation time
-        market_data_snapshot = model_inference.get_market_data_snapshot(asset)
+        market_data_snapshot = await model_inference.get_market_data_snapshot(asset, trace_id=trace_id)
         if not market_data_snapshot:
             logger.warning("Market data unavailable for exit signal", asset=asset, trace_id=trace_id)
             return None

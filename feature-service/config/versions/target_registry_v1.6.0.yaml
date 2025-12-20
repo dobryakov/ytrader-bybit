@@ -4,7 +4,7 @@ config:
   # Base numeric target is forward return; mapping to {-1,+1} is handled
   # via sign(target) without explicit flat dead-zone.
   type: "classification"
-  horizon: 1800
+  horizon: 300
   threshold: null
   computation:
     preset: "next_candle_direction"

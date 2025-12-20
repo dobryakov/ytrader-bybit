@@ -29,6 +29,7 @@ async def publish_dataset_ready(
     validation_records: int = 0,
     test_records: int = 0,
     trace_id: Optional[str] = None,
+    strategy_id: Optional[str] = None,
 ) -> None:
     """Publish a dataset.ready message to RabbitMQ."""
     mq_manager = MQConnectionManager()
@@ -43,6 +44,9 @@ async def publish_dataset_ready(
         "test_records": test_records,
         "trace_id": trace_id,
     }
+    # Add strategy_id if provided
+    if strategy_id is not None:
+        message["strategy_id"] = strategy_id
 
     body = json.dumps(message).encode()
 
@@ -70,11 +74,12 @@ async def publish_dataset_ready(
 
 def main() -> None:
     if len(sys.argv) < 2:
-        print("Usage: python -m scripts.publish_dataset_ready <DATASET_ID> [SYMBOL]")
+        print("Usage: python -m scripts.publish_dataset_ready <DATASET_ID> [SYMBOL] [STRATEGY_ID]")
         sys.exit(1)
 
     dataset_id = sys.argv[1]
     symbol = sys.argv[2] if len(sys.argv) >= 3 else "BTCUSDT"
+    strategy_id = sys.argv[3] if len(sys.argv) >= 4 else None
 
     # We don't know exact record counts here; set them to 0 so consumer focuses on dataset_id.
     asyncio.run(
@@ -86,6 +91,7 @@ def main() -> None:
             validation_records=0,
             test_records=0,
             trace_id=f"manual-cli-{dataset_id}",
+            strategy_id=strategy_id,
         )
     )
 

@@ -166,11 +166,16 @@ class PositionEventNormalizer:
         unrealised_pnl = _to_decimal(unrealised_raw)
         realised_pnl = _to_decimal(realised_raw)
 
+        # Extract markPrice for current_price calculation
+        mark_price_raw = raw.get("markPrice") or raw.get("mark_price")
+        mark_price = _to_decimal(mark_price_raw)
+        
         normalized: Dict[str, Any] = {
             "symbol": symbol,
             "size": str(size_dec),
             "side": side,
-            "avg_price": raw.get("avgPrice") or raw.get("avgEntryPrice"),
+            "avg_price": raw.get("avgPrice") or raw.get("avgEntryPrice") or raw.get("entryPrice"),
+            "markPrice": str(mark_price) if mark_price is not None else None,
             "unrealised_pnl": str(unrealised_pnl) if unrealised_pnl is not None else None,
             "realised_pnl": str(realised_pnl) if realised_pnl is not None else None,
             "mode": mode_raw,

@@ -161,7 +161,7 @@ class TrainingOrchestrator:
 
         return dataset_id
 
-    async def handle_dataset_ready(self, dataset_id: UUID, symbol: Optional[str] = None, trace_id: Optional[str] = None) -> None:
+    async def handle_dataset_ready(self, dataset_id: UUID, symbol: Optional[str] = None, trace_id: Optional[str] = None, strategy_id: Optional[str] = None) -> None:
         """
         Handle dataset ready notification from Feature Service.
 
@@ -172,26 +172,37 @@ class TrainingOrchestrator:
             dataset_id: Dataset UUID identifier
             symbol: Trading pair symbol (optional, for logging)
             trace_id: Optional trace ID for request flow tracking
+            strategy_id: Optional strategy_id from message (takes precedence over pending builds)
         """
-        # Check if this dataset was requested by us
-        pending_build = self._pending_dataset_builds.get(dataset_id)
-        if pending_build:
-            # Dataset was requested by us - use stored strategy_id
-            strategy_id = pending_build["strategy_id"]
-            symbol = symbol or pending_build.get("symbol")
-            # Remove from pending builds
-            del self._pending_dataset_builds[dataset_id]
+        # Priority order for strategy_id:
+        # 1. strategy_id from message (if provided)
+        # 2. strategy_id from pending builds (if dataset was requested by us)
+        # 3. default strategy_id (normalized None)
+        
+        if strategy_id is not None:
+            # Use strategy_id from message
+            strategy_id = self._normalize_strategy_id(strategy_id)
+            symbol = symbol  # Use provided symbol or None
         else:
-            # Dataset was not requested by us, but we can still train on it
-            # Use default strategy_id (first configured strategy or None)
-            strategy_id = self._normalize_strategy_id(None)
-            logger.info(
-                "Dataset ready notification received for unrequested dataset, will train with default strategy",
-                dataset_id=str(dataset_id),
-                strategy_id=strategy_id,
-                symbol=symbol,
-                trace_id=trace_id,
-            )
+            # Check if this dataset was requested by us
+            pending_build = self._pending_dataset_builds.get(dataset_id)
+            if pending_build:
+                # Dataset was requested by us - use stored strategy_id
+                strategy_id = pending_build["strategy_id"]
+                symbol = symbol or pending_build.get("symbol")
+                # Remove from pending builds
+                del self._pending_dataset_builds[dataset_id]
+            else:
+                # Dataset was not requested by us, but we can still train on it
+                # Use default strategy_id (first configured strategy or None)
+                strategy_id = self._normalize_strategy_id(None)
+                logger.info(
+                    "Dataset ready notification received for unrequested dataset, will train with default strategy",
+                    dataset_id=str(dataset_id),
+                    strategy_id=strategy_id,
+                    symbol=symbol,
+                    trace_id=trace_id,
+                )
 
         logger.info(
             "Dataset ready notification received, starting training",
@@ -745,6 +756,21 @@ class TrainingOrchestrator:
                         validation_features = validation_features.select_dtypes(include=[np.number])
                         validation_labels = val_df[target_column]
 
+                        # Log original distribution for validation split BEFORE drop_zero_class
+                        if task_type == "classification" and not validation_labels.empty:
+                            val_class_dist_original = validation_labels.value_counts().to_dict()
+                            val_class_dist_pct_original = {k: (v / len(validation_labels) * 100) for k, v in val_class_dist_original.items()}
+                            logger.info(
+                                "Validation dataset loaded (original, before drop_zero_class)",
+                                training_id=training_id,
+                                dataset_id=str(dataset_id),
+                                record_count=len(validation_features),
+                                class_distribution=val_class_dist_original,
+                                class_distribution_percentage={k: round(v, 2) for k, v in val_class_dist_pct_original.items()},
+                                unique_labels=sorted(validation_labels.unique().tolist()),
+                                trace_id=trace_id,
+                            )
+
                         # Optionally drop zero-class samples from validation split for
                         # binary_classification tasks when configured via drop_zero_class.
                         if (
@@ -772,7 +798,7 @@ class TrainingOrchestrator:
                                     trace_id=trace_id,
                                 )
                         
-                        # Log distribution for validation split (class distribution for classification, statistics for regression)
+                        # Log distribution for validation split AFTER drop_zero_class (class distribution for classification, statistics for regression)
                         if not validation_labels.empty:
                             if task_type == "classification":
                                 val_class_dist = validation_labels.value_counts().to_dict()
@@ -814,9 +840,31 @@ class TrainingOrchestrator:
                     )
 
             # Evaluate model quality on validation set
-            # Use validation set if available, otherwise use training set
-            eval_features = validation_features if validation_features is not None else dataset.features
-            eval_labels = validation_labels if validation_labels is not None else dataset.labels
+            # Use validation set if available and not empty, otherwise use training set
+            if validation_features is not None and validation_labels is not None and not validation_labels.empty:
+                eval_features = validation_features
+                eval_labels = validation_labels
+                eval_split = "validation"
+            else:
+                # Fallback to train set
+                eval_features = dataset.features
+                eval_labels = dataset.labels
+                eval_split = "train"
+                if validation_features is None or validation_labels is None:
+                    logger.warning(
+                        "Validation split not available, using train set for evaluation",
+                        training_id=training_id,
+                        dataset_id=str(dataset_id),
+                        trace_id=trace_id,
+                    )
+                elif validation_labels.empty:
+                    logger.warning(
+                        "Validation split is empty, using train set for evaluation",
+                        training_id=training_id,
+                        dataset_id=str(dataset_id),
+                        validation_was_empty=True,
+                        trace_id=trace_id,
+                    )
 
             y_pred = model.predict(eval_features)
             # For multi-class classification, pass all class probabilities (2D array)
@@ -830,7 +878,7 @@ class TrainingOrchestrator:
                     avg_probs = np.mean(y_pred_proba, axis=0)
                     logger.info(
                         "model_predictions_before_evaluation",
-                        split="validation",
+                        split=eval_split,
                         training_id=training_id,
                         avg_class_probabilities={f"class_{i}": float(avg_probs[i]) for i in range(len(avg_probs))},
                         prediction_threshold="argmax (default)",
@@ -838,7 +886,7 @@ class TrainingOrchestrator:
                 elif isinstance(y_pred_proba, np.ndarray) and y_pred_proba.ndim == 1:
                     logger.info(
                         "model_predictions_before_evaluation",
-                        split="validation",
+                        split=eval_split,
                         training_id=training_id,
                         avg_class_probability=float(np.mean(y_pred_proba)),
                         prediction_threshold="argmax (default)",
@@ -847,7 +895,7 @@ class TrainingOrchestrator:
                 # Log regression prediction statistics
                 logger.info(
                     "model_predictions_before_evaluation",
-                    split="validation",
+                    split=eval_split,
                     training_id=training_id,
                     avg_predicted_return=float(np.mean(y_pred)),
                     min_predicted_return=float(np.min(y_pred)),
@@ -874,10 +922,13 @@ class TrainingOrchestrator:
                 try:
                     # quality_evaluator.calibrate_prediction_thresholds works in the
                     # semantic label space of eval_labels (e.g. {-1, +1}).
+                    # Use optimization metric from settings (default: "f1")
+                    optimization_metric = settings.model_training_threshold_optimization_metric
                     thresholds = quality_evaluator.calibrate_prediction_thresholds(
                         y_true=eval_labels,
                         y_pred_proba=y_pred_proba,
                         target_recall=0.5,
+                        optimization_metric=optimization_metric,
                     )
                     if thresholds:
                         probability_thresholds = {k: float(v) for k, v in thresholds.items()}
@@ -886,6 +937,7 @@ class TrainingOrchestrator:
                             training_id=training_id,
                             dataset_id=str(dataset_id),
                             task_variant=task_variant,
+                            optimization_metric=optimization_metric,
                             thresholds=probability_thresholds,
                         )
                 except Exception as e:
@@ -943,6 +995,21 @@ class TrainingOrchestrator:
                             # Keep only numeric columns for features
                             test_features = test_features.select_dtypes(include=[np.number])
                             test_labels = test_df[target_column]
+
+                            # Log original distribution for test split BEFORE drop_zero_class
+                            if task_type == "classification" and not test_labels.empty:
+                                test_class_dist_original = test_labels.value_counts().to_dict()
+                                test_class_dist_pct_original = {k: (v / len(test_labels) * 100) for k, v in test_class_dist_original.items()}
+                                logger.info(
+                                    "Test dataset loaded (original, before drop_zero_class)",
+                                    training_id=training_id,
+                                    dataset_id=str(dataset_id),
+                                    record_count=len(test_features),
+                                    class_distribution=test_class_dist_original,
+                                    class_distribution_percentage={k: round(v, 2) for k, v in test_class_dist_pct_original.items()},
+                                    unique_labels=sorted(test_labels.unique().tolist()),
+                                    trace_id=trace_id,
+                                )
 
                             # Optionally drop zero-class samples from test split for
                             # binary_classification tasks when configured via drop_zero_class.
@@ -1017,13 +1084,27 @@ class TrainingOrchestrator:
                                     )
 
                                 # Evaluate model on test set
-                                test_y_pred = model.predict(test_features)
-                                # For multi-class classification, pass all class probabilities (2D array)
-                                test_y_pred_proba = (
-                                    model.predict_proba(test_features) if hasattr(model, "predict_proba") else None
-                                )
+                                if task_type == "classification":
+                                    # For classification: get probabilities and apply thresholds
+                                    test_y_pred_proba = (
+                                        model.predict_proba(test_features) if hasattr(model, "predict_proba") else None
+                                    )
+                                    
+                                    # Apply calibrated thresholds if available, otherwise use argmax
+                                    test_y_pred = self._predict_with_thresholds_or_argmax(
+                                        model=model,
+                                        probabilities=test_y_pred_proba,
+                                        probability_thresholds=probability_thresholds,
+                                        task_type=task_type,
+                                        task_variant=task_variant,
+                                    )
+                                else:
+                                    # For regression: use standard predict
+                                    test_y_pred = model.predict(test_features)
+                                    test_y_pred_proba = None
 
                                 # Log prediction statistics before evaluation (only for classification)
+                                threshold_method = "calibrated_thresholds" if probability_thresholds else "argmax (default)"
                                 if task_type == "classification" and test_y_pred_proba is not None:
                                     if isinstance(test_y_pred_proba, np.ndarray) and test_y_pred_proba.ndim == 2:
                                         # Log average probabilities per class
@@ -1033,7 +1114,8 @@ class TrainingOrchestrator:
                                             split="test",
                                             training_id=training_id,
                                             avg_class_probabilities={f"class_{i}": float(avg_probs[i]) for i in range(len(avg_probs))},
-                                            prediction_threshold="argmax (default)",
+                                            prediction_threshold=threshold_method,
+                                            thresholds=probability_thresholds if probability_thresholds else None,
                                         )
                                     elif isinstance(test_y_pred_proba, np.ndarray) and test_y_pred_proba.ndim == 1:
                                         logger.info(
@@ -1041,7 +1123,8 @@ class TrainingOrchestrator:
                                             split="test",
                                             training_id=training_id,
                                             avg_class_probability=float(np.mean(test_y_pred_proba)),
-                                            prediction_threshold="argmax (default)",
+                                            prediction_threshold=threshold_method,
+                                            thresholds=probability_thresholds if probability_thresholds else None,
                                         )
                                 elif task_type == "regression":
                                     # Log regression prediction statistics
@@ -1193,11 +1276,35 @@ class TrainingOrchestrator:
             threshold_value = None
 
             if task_type == "classification":
-                # For classification: use accuracy
-                quality_value = final_metrics.get("accuracy", 0.0)
-                threshold_value = settings.model_quality_threshold_accuracy
-                quality_metric = "accuracy"
+                # For classification: use the same metric as threshold optimization
+                optimization_metric = settings.model_training_threshold_optimization_metric
+                
+                # Map optimization metric names to final_metrics keys
+                metric_key_map = {
+                    "f1": "f1_score",
+                    "pr_auc": "pr_auc",
+                    "balanced_accuracy": "balanced_accuracy",
+                    "recall": "recall",
+                    "accuracy": "accuracy",  # fallback for backward compatibility
+                }
+                
+                metric_key = metric_key_map.get(optimization_metric, "accuracy")
+                quality_metric = optimization_metric
+                quality_value = final_metrics.get(metric_key, 0.0)
+                threshold_value = settings.model_activation_threshold
                 should_activate = quality_value >= threshold_value
+                
+                logger.debug(
+                    "Classification activation check",
+                    version=version,
+                    optimization_metric=optimization_metric,
+                    metric_key=metric_key,
+                    quality_value=quality_value,
+                    threshold=threshold_value,
+                    should_activate=should_activate,
+                    metrics_source=metrics_source,
+                    trace_id=trace_id,
+                )
             elif task_type == "regression":
                 # For regression: use R² score (primary) and optionally RMSE (secondary)
                 r2_score = final_metrics.get("r2_score", -float('inf'))
@@ -1270,6 +1377,52 @@ class TrainingOrchestrator:
             self._metrics["last_training_duration_seconds"] = training_duration
             self._metrics["successful_trainings_count"] = self._metrics.get("successful_trainings_count", 0) + 1
             self._metrics["total_trainings_count"] = self._metrics.get("total_trainings_count", 0) + 1
+
+            # Log summary of class distributions across all splits for classification tasks
+            if task_type == "classification":
+                class_distribution_summary = {}
+                
+                # Train split distribution
+                train_class_dist = dataset.labels.value_counts().to_dict()
+                train_class_dist_pct = {k: (v / len(dataset.labels) * 100) for k, v in train_class_dist.items()}
+                class_distribution_summary["train"] = {
+                    "count": train_class_dist,
+                    "percentage": {k: round(v, 2) for k, v in train_class_dist_pct.items()},
+                    "total": len(dataset.labels),
+                }
+                
+                # Validation split distribution
+                if eval_labels is not None and not eval_labels.empty and eval_split == "validation":
+                    val_class_dist = eval_labels.value_counts().to_dict()
+                    val_class_dist_pct = {k: (v / len(eval_labels) * 100) for k, v in val_class_dist.items()}
+                    class_distribution_summary["validation"] = {
+                        "count": val_class_dist,
+                        "percentage": {k: round(v, 2) for k, v in val_class_dist_pct.items()},
+                        "total": len(eval_labels),
+                    }
+                else:
+                    class_distribution_summary["validation"] = None
+                
+                # Test split distribution
+                if test_labels is not None and not test_labels.empty:
+                    test_class_dist = test_labels.value_counts().to_dict()
+                    test_class_dist_pct = {k: (v / len(test_labels) * 100) for k, v in test_class_dist.items()}
+                    class_distribution_summary["test"] = {
+                        "count": test_class_dist,
+                        "percentage": {k: round(v, 2) for k, v in test_class_dist_pct.items()},
+                        "total": len(test_labels),
+                    }
+                else:
+                    class_distribution_summary["test"] = None
+                
+                logger.info(
+                    "Class distribution summary across all splits",
+                    training_id=training_id,
+                    dataset_id=str(dataset_id),
+                    version=version,
+                    class_distribution_summary=class_distribution_summary,
+                    trace_id=trace_id,
+                )
 
             logger.info(
                 "Model training completed",
@@ -1360,6 +1513,120 @@ class TrainingOrchestrator:
             except Exception as e:
                 logger.error("Error while waiting for training to complete during shutdown", error=str(e), exc_info=True)
 
+    def _predict_with_thresholds_or_argmax(
+        self,
+        model: Any,
+        probabilities: Optional[np.ndarray],
+        probability_thresholds: Optional[Dict[Any, float]],
+        task_type: str,
+        task_variant: Optional[str] = None,
+    ) -> np.ndarray:
+        """
+        Apply calibrated thresholds to predictions if available, otherwise use argmax.
+        
+        This method replicates the logic from ModelInference.predict() for using
+        calibrated thresholds during test set evaluation.
+        
+        Args:
+            model: Trained model (used to get label_mapping)
+            probabilities: Predicted probabilities (2D array: n_samples, n_classes)
+            probability_thresholds: Calibrated thresholds dictionary (class_label -> threshold)
+            task_type: Task type ('classification' or 'regression')
+            task_variant: Task variant ('binary_classification', etc.)
+            
+        Returns:
+            Array of predicted class labels (in semantic label space, e.g. {-1, 1})
+        """
+        if task_type != "classification" or probabilities is None:
+            # For regression, we don't use this method - should use model.predict() directly
+            raise ValueError("_predict_with_thresholds_or_argmax should only be used for classification with probabilities")
+        
+        if probabilities.ndim != 2:
+            # Fallback to argmax if probabilities are not 2D
+            argmax_pred = np.argmax(probabilities, axis=1) if probabilities.ndim > 1 else np.array([np.argmax(probabilities)])
+            # Map back to semantic labels if label mapping exists
+            label_mapping = getattr(model, "_label_mapping_for_inference", None)
+            if label_mapping and isinstance(label_mapping, dict):
+                reverse_mapping = {v: k for k, v in label_mapping.items()}
+                return np.array([reverse_mapping.get(int(pred), pred) for pred in argmax_pred])
+            return argmax_pred
+        
+        # Get label mapping if available (for remapped labels like {-1,1} -> {0,1})
+        label_mapping = getattr(model, "_label_mapping_for_inference", None)
+        
+        # Build semantic probabilities mapping if label mapping exists
+        sem_probs_list: List[Dict[Any, float]] = []
+        if label_mapping and isinstance(label_mapping, dict):
+            for sample_idx in range(len(probabilities)):
+                sem_probs: Dict[Any, float] = {}
+                for class_idx, sem_label in label_mapping.items():
+                    try:
+                        idx = int(class_idx)
+                    except (TypeError, ValueError):
+                        idx = class_idx
+                    if isinstance(idx, int) and 0 <= idx < len(probabilities[sample_idx]):
+                        sem_probs[sem_label] = float(probabilities[sample_idx][idx])
+                sem_probs_list.append(sem_probs)
+        else:
+            # No label mapping - work directly with class indices
+            for sample_idx in range(len(probabilities)):
+                sem_probs_list.append({i: float(probabilities[sample_idx][i]) for i in range(len(probabilities[sample_idx]))})
+        
+        # Apply thresholds if available and this is binary classification
+        if (
+            probability_thresholds
+            and isinstance(probability_thresholds, dict)
+            and task_variant == "binary_classification"
+        ):
+            # Normalize threshold keys to semantic labels
+            thresholds_sem: Dict[Any, float] = {}
+            for k, v in probability_thresholds.items():
+                try:
+                    key = int(k)
+                except (TypeError, ValueError):
+                    key = k
+                thresholds_sem[key] = float(v)
+            
+            predictions = []
+            for sem_probs in sem_probs_list:
+                buy_threshold = thresholds_sem.get(1)
+                sell_threshold = thresholds_sem.get(-1)
+                p_buy = sem_probs.get(1, 0.0)
+                p_sell = sem_probs.get(-1, 0.0)
+                
+                candidates: Dict[Any, float] = {}
+                
+                # Кандидат на buy, если P(buy) >= T_buy
+                if buy_threshold is not None and 1 in sem_probs and p_buy >= buy_threshold:
+                    candidates[1] = p_buy
+                
+                # Кандидат на sell, если P(sell) >= T_sell
+                if sell_threshold is not None and -1 in sem_probs and p_sell >= sell_threshold:
+                    candidates[-1] = p_sell
+                
+                if candidates:
+                    # Если обе стороны прошли порог, выбираем с максимальной вероятностью
+                    semantic_prediction = max(candidates.items(), key=lambda kv: kv[1])[0]
+                else:
+                    # Ни один порог не выполнен — интерпретируем как отсутствие сигнала (hold)
+                    semantic_prediction = 0
+                
+                predictions.append(semantic_prediction)
+            
+            return np.array(predictions)
+        else:
+            # No thresholds or not binary classification - use argmax
+            # Map back to semantic labels if label mapping exists
+            if label_mapping and isinstance(label_mapping, dict):
+                # Reverse mapping: semantic_label -> class_idx
+                reverse_mapping = {v: k for k, v in label_mapping.items()}
+                argmax_predictions = np.argmax(probabilities, axis=1)
+                # Convert class indices to semantic labels
+                semantic_predictions = np.array([reverse_mapping.get(int(pred), pred) for pred in argmax_predictions])
+                return semantic_predictions
+            else:
+                return np.argmax(probabilities, axis=1)
+    
     def _validate_data_quality(
         self,
         features_df: pd.DataFrame,

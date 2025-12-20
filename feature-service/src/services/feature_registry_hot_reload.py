@@ -1,7 +1,7 @@
 """
 Hot reload mechanism for Feature Registry.
 """
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, TYPE_CHECKING
 from threading import Lock
 from src.logging import get_logger
 from src.services.feature_computer import FeatureComputer
@@ -9,6 +9,10 @@ from src.services.orderbook_manager import OrderbookManager
 from src.services.optimized_dataset.optimized_builder import OptimizedDatasetBuilder
 from src.services.feature_registry import FeatureRegistryLoader
 from src.api.features import set_feature_computer
+
+if TYPE_CHECKING:
+    from src.services.feature_scheduler import FeatureScheduler
+    from src.services.target_registry_version_manager import TargetRegistryVersionManager
 
 logger = get_logger(__name__)
 
@@ -22,6 +26,8 @@ async def reload_registry_in_memory(
     feature_registry_loader: FeatureRegistryLoader,
     dataset_builder: Optional[OptimizedDatasetBuilder],
     orderbook_manager: OrderbookManager,
+    feature_scheduler: Optional["FeatureScheduler"] = None,
+    target_registry_version_manager: Optional["TargetRegistryVersionManager"] = None,
 ) -> Dict[str, Any]:
     """
     Reload Feature Registry in memory without service restart (hot reload).
@@ -30,6 +36,7 @@ async def reload_registry_in_memory(
     - FeatureComputer with new version
     - DatasetBuilder version (for new datasets only)
     - FeatureRegistryLoader config
+    - FeatureScheduler intervals (if provided)
     - Global variables atomically
     
     Args:
@@ -38,6 +45,8 @@ async def reload_registry_in_memory(
         feature_registry_loader: Current FeatureRegistryLoader instance
         dataset_builder: Current DatasetBuilder instance (optional)
         orderbook_manager: OrderbookManager instance
+        feature_scheduler: Optional FeatureScheduler instance to update intervals
+        target_registry_version_manager: Optional TargetRegistryVersionManager for interval computation
         
     Returns:
         Reload result with status
@@ -92,10 +101,28 @@ async def reload_registry_in_memory(
             # Version is managed through feature_registry_loader, no direct update needed
             pass
         
+        # Update FeatureScheduler intervals if provided
+        scheduler_updated = False
+        if feature_scheduler:
+            try:
+                await feature_scheduler.update_intervals()
+                scheduler_updated = True
+                logger.info(
+                    "FeatureScheduler intervals updated after hot reload",
+                    new_intervals=feature_scheduler._intervals,
+                )
+            except Exception as scheduler_error:
+                logger.warning(
+                    "failed_to_update_scheduler_after_hot_reload",
+                    error=str(scheduler_error),
+                    message="Hot reload succeeded but scheduler intervals not updated",
+                )
+        
         logger.info(
             "Feature Registry hot reload completed successfully",
             old_version=old_version,
             new_version=new_version,
+            scheduler_updated=scheduler_updated,
         )
         
         return {

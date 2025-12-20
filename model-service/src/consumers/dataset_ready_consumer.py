@@ -226,18 +226,28 @@ class DatasetReadyConsumer:
             dataset_id = validation_result["dataset_id"]
             symbol = validation_result.get("symbol")
             trace_id = data.get("trace_id") or data.get("traceId")
+            # Extract optional strategy_id from message
+            strategy_id = data.get("strategy_id") or data.get("strategyId")
 
             logger.info(
                 "Dataset ready notification received",
                 dataset_id=str(dataset_id),
                 symbol=symbol,
+                strategy_id=strategy_id,
                 trace_id=trace_id,
             )
 
             # Call callback if provided
             if self.dataset_ready_callback:
                 try:
-                    await self.dataset_ready_callback(dataset_id, symbol, trace_id)
+                    # Pass strategy_id to callback if it accepts it
+                    import inspect
+                    sig = inspect.signature(self.dataset_ready_callback)
+                    if "strategy_id" in sig.parameters:
+                        await self.dataset_ready_callback(dataset_id, symbol, trace_id, strategy_id)
+                    else:
+                        # Fallback for callbacks that don't accept strategy_id
+                        await self.dataset_ready_callback(dataset_id, symbol, trace_id)
                 except Exception as e:
                     logger.error(
                         "Error in dataset ready callback",

@@ -52,26 +52,38 @@ class PredictionTradingLinker:
             prediction_target = await self.prediction_target_repo.get_by_signal_id(signal_id)
             if not prediction_target:
                 logger.debug(
-                    "No prediction target found for signal",
+                    "No prediction target found for signal, skipping prediction trading result creation",
                     signal_id=signal_id,
                 )
                 return None
 
             # Check if trading result already exists
+            # Convert asyncpg UUID to Python UUID via string
+            prediction_target_id = prediction_target["id"]
+            if not isinstance(prediction_target_id, UUID):
+                prediction_target_id = UUID(str(prediction_target_id))
             existing_result = await self.prediction_trading_results_repo.get_by_prediction_target_id(
-                UUID(prediction_target["id"])
+                prediction_target_id
             )
             if existing_result:
                 logger.debug(
-                    "Prediction trading result already exists",
+                    "Prediction trading result already exists, returning existing result",
                     signal_id=signal_id,
+                    prediction_target_id=prediction_target["id"],
                     result_id=existing_result["id"],
                 )
                 return existing_result
 
             # Create new trading result
+            logger.debug(
+                "Creating prediction trading result",
+                signal_id=signal_id,
+                prediction_target_id=prediction_target["id"],
+                position_id=str(position_id) if position_id else None,
+                entry_price=str(entry_price) if entry_price else None,
+            )
             result = await self.prediction_trading_results_repo.create(
-                prediction_target_id=UUID(prediction_target["id"]),
+                prediction_target_id=prediction_target_id,
                 signal_id=signal_id,
                 entry_signal_id=entry_signal_id or signal_id,
                 position_id=position_id,
@@ -81,10 +93,11 @@ class PredictionTradingLinker:
             )
 
             logger.info(
-                "Prediction linked to trading result",
+                "Prediction linked to trading result successfully",
                 signal_id=signal_id,
                 prediction_target_id=prediction_target["id"],
                 result_id=result["id"],
+                position_id=str(position_id) if position_id else None,
             )
 
             return result
@@ -144,8 +157,13 @@ class PredictionTradingLinker:
                 # Determine if position is closed
                 is_closed = relationship_type == "closed"
 
+                # Convert asyncpg UUID to Python UUID if needed
+                result_id = result["id"]
+                if not isinstance(result_id, UUID):
+                    result_id = UUID(str(result_id))
+                
                 await self.prediction_trading_results_repo.update(
-                    result_id=UUID(result["id"]),
+                    result_id=result_id,
                     realized_pnl=new_realized_pnl,
                     total_pnl=new_total_pnl,
                     exit_price=execution_price if is_closed else None,

@@ -65,23 +65,24 @@ class WarmUpSignalGenerator:
         # Feature Service provides features that include price, spread, volume, volatility
         market_data = None
         
-        # Try to get from feature cache first
-        if settings.feature_service_use_queue:
-            feature_vector = feature_cache.get_latest_features(asset)
-            if feature_vector and feature_vector.features:
-                # Extract market data from features (Feature Service provides price, spread, volume, volatility as features)
-                market_data = {
-                    "price": feature_vector.features.get("price", feature_vector.features.get("close_price", None)),
-                    "spread": feature_vector.features.get("spread", feature_vector.features.get("bid_ask_spread", 0.0)),
-                    "volume_24h": feature_vector.features.get("volume_24h", feature_vector.features.get("volume", 0.0)),
-                    "volatility": feature_vector.features.get("volatility", feature_vector.features.get("realized_volatility", 0.0)),
-                    "last_updated": feature_vector.timestamp,
-                }
+        # Always try to get from feature cache first (cache can be populated from queue or previous REST API calls)
+        feature_vector = await feature_cache.get(asset, max_age_seconds=settings.feature_service_feature_cache_ttl_seconds)
+        if feature_vector and feature_vector.features:
+            # Extract market data from features (Feature Service provides price, spread, volume, volatility as features)
+            market_data = {
+                "price": feature_vector.features.get("price", feature_vector.features.get("close_price", None)),
+                "spread": feature_vector.features.get("spread", feature_vector.features.get("bid_ask_spread", 0.0)),
+                "volume_24h": feature_vector.features.get("volume_24h", feature_vector.features.get("volume", 0.0)),
+                "volatility": feature_vector.features.get("volatility", feature_vector.features.get("realized_volatility", 0.0)),
+                "last_updated": feature_vector.timestamp,
+            }
         
         # Fallback to REST API if cache is empty
         if not market_data:
             feature_vector = await feature_service_client.get_latest_features(asset, trace_id)
             if feature_vector and feature_vector.features:
+                # Cache the result for future use (regardless of queue setting)
+                await feature_cache.set(asset, feature_vector)
                 market_data = {
                     "price": feature_vector.features.get("price", feature_vector.features.get("close_price", None)),
                     "spread": feature_vector.features.get("spread", feature_vector.features.get("bid_ask_spread", 0.0)),

@@ -159,6 +159,19 @@ class ModelTrainer:
         if hasattr(dataset, "metadata") and isinstance(dataset.metadata, dict):
             task_variant = dataset.metadata.get("task_variant")
 
+        # Log original distribution for train split BEFORE drop_zero_class
+        if task_type == "classification":
+            train_class_dist_original = y.value_counts().to_dict()
+            train_class_dist_pct_original = {k: (v / len(y) * 100) for k, v in train_class_dist_original.items()}
+            logger.info(
+                "Train dataset loaded (original, before drop_zero_class)",
+                dataset_id=getattr(dataset, "dataset_id", None),
+                record_count=len(y),
+                class_distribution=train_class_dist_original,
+                class_distribution_percentage={k: round(v, 2) for k, v in train_class_dist_pct_original.items()},
+                unique_labels=sorted(unique_labels.tolist()) if hasattr(unique_labels, "tolist") else sorted(list(unique_labels)),
+            )
+
         # Optional: drop strictly zero-class samples for binary candle-color tasks.
         # Policy is driven from hyperparameters config (drop_zero_class flag).
         if (

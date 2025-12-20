@@ -213,7 +213,9 @@ class ExecutionEventConsumer:
         """
         try:
             body = message.body.decode("utf-8")
+            logger.info("Received message from execution events queue", body_preview=body[:200] if len(body) > 200 else body)
             data = json.loads(body)
+            logger.info("Parsed message JSON", event_type=data.get("event_type"), has_order="order" in data)
 
             # Only process filled events - other events don't have execution details
             event_type = data.get("event_type", "")
@@ -222,7 +224,7 @@ class ExecutionEventConsumer:
                 return
             
             # Transform order-manager format to expected format
-            logger.debug("Processing filled order event", event_keys=list(data.keys()), has_order="order" in data)
+            logger.info("Processing filled order event", event_keys=list(data.keys()), has_order="order" in data, event_type=event_type)
             transformed_data = await self._transform_order_manager_event(data)
             if not transformed_data:
                 logger.warning("Failed to transform order-manager event", event_data_keys=list(data.keys()), has_order="order" in data)

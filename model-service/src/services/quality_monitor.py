@@ -183,7 +183,7 @@ class QualityMonitor:
             previous_profit_factor = await metrics_repo.get_latest_by_model_version(model_version_id, metric_name="profit_factor")
 
             # Check thresholds using ML metrics (configurable)
-            accuracy_threshold = getattr(settings, "model_quality_threshold_accuracy", 0.75)
+            accuracy_threshold = getattr(settings, "model_activation_threshold", 0.75)
             f1_threshold = getattr(settings, "model_quality_threshold_f1", 0.7)
 
             degradation_detected = False

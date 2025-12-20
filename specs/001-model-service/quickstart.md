@@ -60,7 +60,7 @@ MODEL_STORAGE_PATH=/models  # Directory for model files (mounted as Docker volum
 # Training Configuration
 MODEL_TRAINING_MIN_DATASET_SIZE=1000  # Minimum records for training
 MODEL_TRAINING_MAX_DURATION_SECONDS=1800  # 30 minutes max training time
-MODEL_QUALITY_THRESHOLD_ACCURACY=0.75  # Minimum accuracy for model activation
+MODEL_ACTIVATION_THRESHOLD=0.75  # Minimum threshold for model activation (used with metric from MODEL_TRAINING_THRESHOLD_OPTIMIZATION_METRIC)
 
 # Time-based Retraining Configuration (market-data-only training)
 MODEL_RETRAINING_INTERVAL_DAYS=7  # Retrain every 7 days

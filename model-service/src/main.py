@@ -9,6 +9,7 @@ import signal
 from contextlib import asynccontextmanager
 from typing import Optional
 from uuid import UUID
+from datetime import timezone
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
@@ -253,11 +254,11 @@ async def lifespan(app: FastAPI):
                 
                 order_uuid = order_row["id"]
                 
-                # Query position_orders to get relationship_type
+                # Query position_orders to get relationship_type and position_id
                 position_order_query = """
-                    SELECT relationship_type, size_delta, execution_price
-                    FROM position_orders
-                    WHERE order_id = $1
+                    SELECT por.relationship_type, por.size_delta, por.execution_price, por.position_id
+                    FROM position_orders por
+                    WHERE por.order_id = $1
                     LIMIT 1
                 """
                 position_order_row = await pool.fetchrow(position_order_query, order_uuid)
@@ -272,40 +273,97 @@ async def lifespan(app: FastAPI):
                     return
                 
                 relationship_type = position_order_row["relationship_type"]
+                position_id = position_order_row["position_id"]
                 
-                # Get realized_pnl_delta from position change
-                # For now, use 0 as delta (will be updated when position is closed)
-                # The actual realized_pnl is stored in positions table
+                # Calculate realized_pnl_delta for this specific order execution
+                # For closed or decreased positions, calculate PnL based on entry and exit prices
                 realized_pnl_delta = Decimal("0")
                 
-                # If position is closed, try to get realized_pnl from position
-                if relationship_type == "closed":
-                    position_query = """
-                        SELECT realized_pnl
-                        FROM positions
-                        WHERE asset = $1 AND mode = 'one-way'
-                        LIMIT 1
-                    """
-                    position_row = await pool.fetchrow(position_query, event.asset.upper())
-                    if position_row and position_row["realized_pnl"]:
-                        # This is cumulative realized_pnl, not delta
-                        # For now, use 0 as delta - actual calculation should be done by position-manager
-                        realized_pnl_delta = Decimal("0")
+                # Get existing prediction trading results (used for both realized_pnl calculation and creation check)
+                existing_results = await prediction_trading_linker.prediction_trading_results_repo.get_by_signal_id(event.signal_id)
+                
+                if relationship_type in ("closed", "decreased") and existing_results and len(existing_results) > 0:
+                        # Use the first (most recent) open result that's not yet closed
+                        result = None
+                        for res in existing_results:
+                            if not res.get("is_closed", False):
+                                result = res
+                                break
+                        
+                        if result:
+                            entry_price = Decimal(str(result.get("entry_price", 0)))
+                            position_size_at_entry = Decimal(str(result.get("position_size_at_entry", 0)))
+                            
+                            if entry_price > 0 and position_size_at_entry != 0:
+                                # Determine position direction from size_at_entry
+                                # Positive = long, Negative = short
+                                is_long = position_size_at_entry > 0
+                                
+                                # Calculate closed quantity
+                                closed_quantity = Decimal(str(event.execution_quantity))
+                                
+                                exit_price = Decimal(str(event.execution_price))
+                                execution_fees = Decimal(str(event.execution_fees))
+                                
+                                # Calculate realized PnL
+                                if is_long:
+                                    # Long position: profit = (exit_price - entry_price) * quantity - fees
+                                    # For SELL order closing long position
+                                    realized_pnl_delta = (exit_price - entry_price) * closed_quantity - execution_fees
+                                else:
+                                    # Short position: profit = (entry_price - exit_price) * quantity - fees
+                                    # For BUY order closing short position
+                                    realized_pnl_delta = (entry_price - exit_price) * closed_quantity - execution_fees
+                                
+                                logger.info(
+                                    "Calculated realized PnL delta",
+                                    signal_id=event.signal_id,
+                                    relationship_type=relationship_type,
+                                    entry_price=str(entry_price),
+                                    exit_price=str(exit_price),
+                                    closed_quantity=str(closed_quantity),
+                                    execution_fees=str(execution_fees),
+                                    realized_pnl_delta=str(realized_pnl_delta),
+                                    is_long=is_long,
+                                )
                 
                 # Check if prediction trading result exists, if not create it
-                existing_results = await prediction_trading_linker.prediction_trading_results_repo.get_by_signal_id(event.signal_id)
                 if not existing_results:
-                    # Link prediction to trading when order opens a position
-                    if relationship_type in ("opened", "increased"):
-                        await prediction_trading_linker.link_prediction_to_trading(
+                    # Normalize entry_timestamp to timezone-aware UTC, then to naive for PostgreSQL
+                    # This prevents asyncpg errors when comparing datetime objects
+                    entry_timestamp = event.executed_at
+                    if entry_timestamp.tzinfo is None:
+                        entry_timestamp = entry_timestamp.replace(tzinfo=timezone.utc)
+                    else:
+                        entry_timestamp = entry_timestamp.astimezone(timezone.utc)
+                    entry_timestamp = entry_timestamp.replace(tzinfo=None)  # Convert to naive for PostgreSQL
+                    
+                    # Create prediction trading result for any relationship_type if prediction_target exists
+                    # This ensures we track all predictions that result in trading activity
+                    result = await prediction_trading_linker.link_prediction_to_trading(
+                        signal_id=event.signal_id,
+                        entry_signal_id=event.signal_id,
+                        position_id=position_id,
+                        entry_price=Decimal(str(event.execution_price)),
+                        entry_timestamp=entry_timestamp,
+                        position_size_at_entry=Decimal(str(event.execution_quantity)),
+                    )
+                    if result:
+                        logger.info(
+                            "Prediction trading result created from execution event",
                             signal_id=event.signal_id,
-                            entry_signal_id=event.signal_id,
-                            entry_price=Decimal(str(event.execution_price)),
-                            entry_timestamp=event.executed_at,
-                            position_size_at_entry=Decimal(str(event.execution_quantity)),
+                            order_id=str(order_uuid),
+                            relationship_type=relationship_type,
+                            result_id=result.get("id"),
+                        )
+                    else:
+                        logger.debug(
+                            "No prediction target found for signal, skipping prediction trading result creation",
+                            signal_id=event.signal_id,
+                            order_id=str(order_uuid),
                         )
                 
-                # Update prediction trading result
+                # Update prediction trading result (will do nothing if it doesn't exist)
                 await prediction_trading_linker.update_trading_result_on_order_fill(
                     signal_id=event.signal_id,
                     order_id=order_uuid,

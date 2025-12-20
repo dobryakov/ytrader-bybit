@@ -20,6 +20,8 @@ from sklearn.metrics import (
     roc_curve,
     confusion_matrix,
     average_precision_score,
+    precision_recall_curve,
+    balanced_accuracy_score,
 )
 
 from ..config.logging import get_logger
@@ -157,6 +159,8 @@ class QualityEvaluator:
             metrics["precision"] = float(precision_score(y_true, y_pred, average="weighted", zero_division=0))
             metrics["recall"] = float(recall_score(y_true, y_pred, average="weighted", zero_division=0))
             metrics["f1_score"] = float(f1_score(y_true, y_pred, average="weighted", zero_division=0))
+            # Balanced accuracy (average of recall per class)
+            metrics["balanced_accuracy"] = float(balanced_accuracy_score(y_true, y_pred))
             
             # Per-class metrics for binary classification (and expose them in metrics)
             # Use same unique_classes as defined earlier for confusion matrix
@@ -188,10 +192,11 @@ class QualityEvaluator:
                 except Exception as e:
                     logger.debug("Failed to calculate per-class metrics", error=str(e))
         except Exception as e:
-            logger.warning("Failed to calculate precision/recall/f1", error=str(e))
+            logger.warning("Failed to calculate precision/recall/f1/balanced_accuracy", error=str(e))
             metrics["precision"] = 0.0
             metrics["recall"] = 0.0
             metrics["f1_score"] = 0.0
+            metrics["balanced_accuracy"] = 0.0
 
         # ROC AUC and PR-AUC (for binary and multi-class classification with probabilities)
         metrics["roc_auc"] = 0.0
@@ -415,20 +420,25 @@ class QualityEvaluator:
         y_true: pd.Series,
         y_pred_proba: np.ndarray,
         target_recall: float = 0.5,
+        optimization_metric: str = "f1",
     ) -> Dict[int, float]:
         """
-        Calibrate prediction thresholds for each class to improve recall for minority classes.
+        Calibrate prediction thresholds for each class using specified optimization metric.
         
-        Uses ROC curve to find optimal thresholds that achieve target recall for each class.
-        Lower thresholds improve recall but may decrease precision.
+        Supports multiple optimization strategies:
+        - 'f1': Maximize F1-score (default, recommended for imbalanced datasets)
+        - 'pr_auc': Maximize PR-AUC (area under precision-recall curve)
+        - 'balanced_accuracy': Maximize balanced accuracy
+        - 'recall': Achieve target recall (legacy method, fallback)
         
         Args:
             y_true: True labels
             y_pred_proba: Predicted probabilities (2D array: n_samples, n_classes)
-            target_recall: Target recall to achieve (default: 0.5)
+            target_recall: Target recall to achieve (used only for 'recall' method)
+            optimization_metric: Metric to optimize ('f1', 'pr_auc', 'balanced_accuracy', 'recall')
             
         Returns:
-            Dictionary mapping class index to optimal threshold
+            Dictionary mapping class label to optimal threshold
         """
         if y_pred_proba.ndim != 2:
             logger.warning(
@@ -448,6 +458,268 @@ class QualityEvaluator:
             )
             return {}
         
+        optimization_metric = optimization_metric.lower()
+        
+        # Try new optimization methods first, fallback to legacy method
+        try:
+            if optimization_metric == "f1":
+                thresholds = self._optimize_thresholds_by_f1(y_true, y_pred_proba, unique_labels)
+            elif optimization_metric == "pr_auc":
+                thresholds = self._optimize_thresholds_by_pr_auc(y_true, y_pred_proba, unique_labels)
+            elif optimization_metric == "balanced_accuracy":
+                thresholds = self._optimize_thresholds_by_balanced_accuracy(y_true, y_pred_proba, unique_labels)
+            elif optimization_metric == "recall":
+                # Legacy method: use target_recall
+                thresholds = self._calibrate_by_target_recall(y_true, y_pred_proba, unique_labels, target_recall)
+            else:
+                logger.warning(
+                    "Unknown optimization metric, falling back to target_recall method",
+                    optimization_metric=optimization_metric,
+                )
+                thresholds = self._calibrate_by_target_recall(y_true, y_pred_proba, unique_labels, target_recall)
+        except Exception as e:
+            logger.warning(
+                "Threshold optimization failed, falling back to target_recall method",
+                optimization_metric=optimization_metric,
+                error=str(e),
+                exc_info=True,
+            )
+            thresholds = self._calibrate_by_target_recall(y_true, y_pred_proba, unique_labels, target_recall)
+        
+        return thresholds
+    
+    def _optimize_thresholds_by_f1(
+        self,
+        y_true: pd.Series,
+        y_pred_proba: np.ndarray,
+        unique_labels: List[int],
+    ) -> Dict[int, float]:
+        """
+        Optimize thresholds by maximizing F1-score for each class.
+        
+        Args:
+            y_true: True labels
+            y_pred_proba: Predicted probabilities (2D array)
+            unique_labels: List of unique class labels
+            
+        Returns:
+            Dictionary mapping class label to optimal threshold
+        """
+        thresholds = {}
+        
+        for class_idx, class_label in enumerate(unique_labels):
+            # Create binary labels: 1 for this class, 0 for others
+            y_binary = (y_true == class_label).astype(int)
+            
+            # Get probabilities for this class
+            class_probs = y_pred_proba[:, class_idx]
+            
+            # Calculate precision-recall curve
+            try:
+                precision, recall, threshold_candidates = precision_recall_curve(y_binary, class_probs)
+                
+                # Calculate F1-score for each threshold
+                f1_scores = []
+                for i in range(len(threshold_candidates)):
+                    y_pred_binary = (class_probs >= threshold_candidates[i]).astype(int)
+                    f1 = f1_score(y_binary, y_pred_binary, zero_division=0)
+                    f1_scores.append(f1)
+                
+                # Find threshold with maximum F1-score
+                if f1_scores:
+                    best_idx = np.argmax(f1_scores)
+                    optimal_threshold = float(threshold_candidates[best_idx])
+                    best_f1 = float(f1_scores[best_idx])
+                    
+                    thresholds[class_label] = optimal_threshold
+                    
+                    logger.info(
+                        "Threshold optimized by F1-score for class",
+                        class_label=class_label,
+                        class_idx=class_idx,
+                        optimal_threshold=optimal_threshold,
+                        best_f1_score=best_f1,
+                    )
+                else:
+                    # Fallback: use median threshold
+                    optimal_threshold = float(np.median(threshold_candidates)) if len(threshold_candidates) > 0 else 0.5
+                    thresholds[class_label] = optimal_threshold
+                    logger.warning(
+                        "No F1 scores calculated, using median threshold",
+                        class_label=class_label,
+                        threshold=optimal_threshold,
+                    )
+            except Exception as e:
+                logger.warning(
+                    "Failed to optimize threshold by F1-score for class",
+                    class_label=class_label,
+                    class_idx=class_idx,
+                    error=str(e),
+                )
+                # Fallback: use default threshold
+                class_freq = (y_true == class_label).sum() / len(y_true)
+                default_threshold = max(0.1, min(0.5, class_freq * 2))
+                thresholds[class_label] = default_threshold
+        
+        return thresholds
+    
+    def _optimize_thresholds_by_pr_auc(
+        self,
+        y_true: pd.Series,
+        y_pred_proba: np.ndarray,
+        unique_labels: List[int],
+    ) -> Dict[int, float]:
+        """
+        Optimize thresholds by maximizing PR-AUC for each class.
+        
+        Args:
+            y_true: True labels
+            y_pred_proba: Predicted probabilities (2D array)
+            unique_labels: List of unique class labels
+            
+        Returns:
+            Dictionary mapping class label to optimal threshold
+        """
+        thresholds = {}
+        
+        for class_idx, class_label in enumerate(unique_labels):
+            # Create binary labels: 1 for this class, 0 for others
+            y_binary = (y_true == class_label).astype(int)
+            
+            # Get probabilities for this class
+            class_probs = y_pred_proba[:, class_idx]
+            
+            try:
+                precision, recall, threshold_candidates = precision_recall_curve(y_binary, class_probs)
+                
+                # Calculate PR-AUC for each threshold (approximate by integrating)
+                # We'll use the threshold that maximizes the area under the precision-recall curve
+                # by finding the point with best precision-recall trade-off
+                best_idx = 0
+                best_score = 0.0
+                
+                for i in range(len(threshold_candidates)):
+                    # Calculate approximate PR-AUC up to this threshold
+                    # Use precision * recall as a proxy for PR-AUC contribution
+                    score = precision[i] * recall[i] if i < len(precision) and i < len(recall) else 0.0
+                    if score > best_score:
+                        best_score = score
+                        best_idx = i
+                
+                optimal_threshold = float(threshold_candidates[best_idx])
+                thresholds[class_label] = optimal_threshold
+                
+                logger.info(
+                    "Threshold optimized by PR-AUC proxy for class",
+                    class_label=class_label,
+                    class_idx=class_idx,
+                    optimal_threshold=optimal_threshold,
+                    best_score=best_score,
+                )
+            except Exception as e:
+                logger.warning(
+                    "Failed to optimize threshold by PR-AUC for class",
+                    class_label=class_label,
+                    class_idx=class_idx,
+                    error=str(e),
+                )
+                # Fallback: use default threshold
+                class_freq = (y_true == class_label).sum() / len(y_true)
+                default_threshold = max(0.1, min(0.5, class_freq * 2))
+                thresholds[class_label] = default_threshold
+        
+        return thresholds
+    
+    def _optimize_thresholds_by_balanced_accuracy(
+        self,
+        y_true: pd.Series,
+        y_pred_proba: np.ndarray,
+        unique_labels: List[int],
+    ) -> Dict[int, float]:
+        """
+        Optimize thresholds by maximizing balanced accuracy for each class.
+        
+        Args:
+            y_true: True labels
+            y_pred_proba: Predicted probabilities (2D array)
+            unique_labels: List of unique class labels
+            
+        Returns:
+            Dictionary mapping class label to optimal threshold
+        """
+        thresholds = {}
+        
+        for class_idx, class_label in enumerate(unique_labels):
+            # Create binary labels: 1 for this class, 0 for others
+            y_binary = (y_true == class_label).astype(int)
+            
+            # Get probabilities for this class
+            class_probs = y_pred_proba[:, class_idx]
+            
+            try:
+                fpr, tpr, threshold_candidates = roc_curve(y_binary, class_probs)
+                
+                # Calculate balanced accuracy for each threshold
+                balanced_acc_scores = []
+                for i in range(len(threshold_candidates)):
+                    y_pred_binary = (class_probs >= threshold_candidates[i]).astype(int)
+                    balanced_acc = balanced_accuracy_score(y_binary, y_pred_binary)
+                    balanced_acc_scores.append(balanced_acc)
+                
+                # Find threshold with maximum balanced accuracy
+                if balanced_acc_scores:
+                    best_idx = np.argmax(balanced_acc_scores)
+                    optimal_threshold = float(threshold_candidates[best_idx])
+                    best_balanced_acc = float(balanced_acc_scores[best_idx])
+                    
+                    thresholds[class_label] = optimal_threshold
+                    
+                    logger.info(
+                        "Threshold optimized by balanced accuracy for class",
+                        class_label=class_label,
+                        class_idx=class_idx,
+                        optimal_threshold=optimal_threshold,
+                        best_balanced_accuracy=best_balanced_acc,
+                    )
+                else:
+                    # Fallback: use median threshold
+                    optimal_threshold = float(np.median(threshold_candidates)) if len(threshold_candidates) > 0 else 0.5
+                    thresholds[class_label] = optimal_threshold
+            except Exception as e:
+                logger.warning(
+                    "Failed to optimize threshold by balanced accuracy for class",
+                    class_label=class_label,
+                    class_idx=class_idx,
+                    error=str(e),
+                )
+                # Fallback: use default threshold
+                class_freq = (y_true == class_label).sum() / len(y_true)
+                default_threshold = max(0.1, min(0.5, class_freq * 2))
+                thresholds[class_label] = default_threshold
+        
+        return thresholds
+    
+    def _calibrate_by_target_recall(
+        self,
+        y_true: pd.Series,
+        y_pred_proba: np.ndarray,
+        unique_labels: List[int],
+        target_recall: float = 0.5,
+    ) -> Dict[int, float]:
+        """
+        Legacy method: Calibrate thresholds to achieve target recall for each class.
+        
+        This is the original implementation, kept as fallback.
+        
+        Args:
+            y_true: True labels
+            y_pred_proba: Predicted probabilities (2D array)
+            unique_labels: List of unique class labels
+            target_recall: Target recall to achieve
+            
+        Returns:
+            Dictionary mapping class label to optimal threshold
+        """
         thresholds = {}
         
         # For each class, find threshold that achieves target recall

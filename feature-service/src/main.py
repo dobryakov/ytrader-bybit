@@ -266,7 +266,10 @@ async def startup():
             set_feature_computer_for_registry,
             set_dataset_builder_for_registry,
             set_orderbook_manager_for_registry,
+            set_feature_scheduler_for_registry,
+            set_target_registry_version_manager_for_registry,
         )
+        from src.api.target_registry import set_feature_scheduler_for_target_registry
         set_feature_computer_for_registry(feature_computer)
         set_dataset_builder_for_registry(dataset_builder)
         set_orderbook_manager_for_registry(orderbook_manager)
@@ -353,11 +356,13 @@ async def startup():
             symbols=symbols,
         )
         
-        # Initialize Scheduler
+        # Initialize Scheduler with registry loaders for dynamic intervals
         feature_scheduler = FeatureScheduler(
             feature_computer=feature_computer,
             feature_publisher=feature_publisher,
             symbols=symbols,
+            feature_registry_loader=feature_registry_loader,
+            target_registry_version_manager=target_registry_version_manager,
         )
         
         # Connect to RabbitMQ
@@ -384,6 +389,25 @@ async def startup():
                     error_type=type(e).__name__,
                     message="Continuing without warmup - klines will accumulate from WebSocket stream",
                 )
+        
+        # Compute and set intervals dynamically from registries
+        try:
+            await feature_scheduler.update_intervals()
+            logger.info(
+                "scheduler_intervals_initialized",
+                intervals=feature_scheduler._intervals,
+            )
+        except Exception as e:
+            logger.warning(
+                "failed_to_compute_initial_intervals",
+                error=str(e),
+                message="Using default intervals",
+            )
+        
+        # Set scheduler for hot reload (after initialization)
+        set_feature_scheduler_for_registry(feature_scheduler)
+        set_feature_scheduler_for_target_registry(feature_scheduler)
+        set_target_registry_version_manager_for_registry(target_registry_version_manager)
         
         # Start consumer and scheduler
         await market_data_consumer.start()

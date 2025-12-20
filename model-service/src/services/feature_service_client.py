@@ -26,7 +26,7 @@ class FeatureServiceClient:
         """Initialize Feature Service client."""
         self.base_url = settings.feature_service_url
         self.api_key = settings.feature_service_api_key
-        self.timeout = 10.0  # 10 second timeout for feature requests
+        self.timeout = settings.feature_service_feature_timeout_seconds  # Configurable timeout for feature requests
         self.dataset_timeout = settings.feature_service_dataset_build_timeout_seconds
         self.dataset_metadata_timeout = settings.feature_service_dataset_metadata_timeout_seconds
         self.dataset_download_timeout = settings.feature_service_dataset_download_timeout_seconds
@@ -520,12 +520,28 @@ class FeatureServiceClient:
                 response = await client.post(url, headers=headers, json=payload)
                 
                 if response.status_code == 404:
-                    # Data unavailable
-                    logger.debug(
+                    # Data unavailable - try to extract error details from response
+                    error_detail = None
+                    try:
+                        error_data = response.json()
+                        if isinstance(error_data, dict):
+                            error_detail = error_data.get("detail")
+                            if isinstance(error_detail, dict):
+                                error_detail = error_detail.get("message", str(error_detail))
+                            elif isinstance(error_detail, str):
+                                pass  # Use as-is
+                    except Exception:
+                        pass  # Ignore JSON parsing errors
+                    
+                    logger.warning(
                         "Target computation data unavailable",
                         symbol=symbol,
                         prediction_timestamp=prediction_timestamp.isoformat(),
                         target_timestamp=target_timestamp.isoformat(),
+                        target_registry_version=target_registry_version,
+                        horizon_seconds=horizon_seconds,
+                        max_lookback_seconds=max_lookback_seconds,
+                        error_detail=error_detail,
                         trace_id=trace_id,
                     )
                     return None

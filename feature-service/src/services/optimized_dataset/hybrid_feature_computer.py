@@ -96,9 +96,15 @@ class HybridFeatureComputer:
         if timestamps.empty:
             return pd.DataFrame()
         
-        # Ensure timestamps are datetime
+        # Ensure timestamps are datetime and timezone-aware UTC
         if not pd.api.types.is_datetime64_any_dtype(timestamps):
             timestamps = pd.to_datetime(timestamps, utc=True)
+        else:
+            # Normalize timezone to UTC
+            if timestamps.dt.tz is None:
+                timestamps = timestamps.dt.tz_localize(timezone.utc)
+            else:
+                timestamps = timestamps.dt.tz_convert(timezone.utc)
         
         # Initialize result DataFrame
         result = pd.DataFrame({"timestamp": timestamps})
@@ -208,15 +214,41 @@ class HybridFeatureComputer:
         if klines_df.empty or "timestamp" not in klines_df.columns or "close" not in klines_df.columns:
             return current_prices
         
-        # Ensure timestamp is datetime
+        # Ensure timestamp is datetime and timezone-aware UTC
+        klines_df = klines_df.copy()
         if not pd.api.types.is_datetime64_any_dtype(klines_df["timestamp"]):
-            klines_df = klines_df.copy()
             klines_df["timestamp"] = pd.to_datetime(klines_df["timestamp"], utc=True)
+        else:
+            # Normalize timezone to UTC
+            if klines_df["timestamp"].dt.tz is None:
+                klines_df["timestamp"] = klines_df["timestamp"].dt.tz_localize(timezone.utc)
+            else:
+                klines_df["timestamp"] = klines_df["timestamp"].dt.tz_convert(timezone.utc)
+        
+        # Normalize timestamps Series to timezone-aware UTC
+        timestamps_normalized = timestamps.copy()
+        if not pd.api.types.is_datetime64_any_dtype(timestamps_normalized):
+            timestamps_normalized = pd.to_datetime(timestamps_normalized, utc=True)
+        else:
+            if timestamps_normalized.dt.tz is None:
+                timestamps_normalized = timestamps_normalized.dt.tz_localize(timezone.utc)
+            else:
+                timestamps_normalized = timestamps_normalized.dt.tz_convert(timezone.utc)
         
         klines_sorted = klines_df.sort_values("timestamp").reset_index(drop=True)
         
-        for idx, ts in enumerate(timestamps):
-            klines_before = klines_sorted[klines_sorted["timestamp"] <= ts]
+        for idx, ts in enumerate(timestamps_normalized):
+            # Ensure ts is timezone-aware UTC datetime for comparison
+            if isinstance(ts, pd.Timestamp):
+                ts_dt = ts.to_pydatetime()
+            else:
+                ts_dt = ts
+            if ts_dt.tzinfo is None:
+                ts_dt = ts_dt.replace(tzinfo=timezone.utc)
+            else:
+                ts_dt = ts_dt.astimezone(timezone.utc)
+            
+            klines_before = klines_sorted[klines_sorted["timestamp"] <= ts_dt]
             if not klines_before.empty:
                 latest_close = klines_before.iloc[-1]["close"]
                 current_prices.iloc[idx] = pd.to_numeric(latest_close, errors='coerce')
