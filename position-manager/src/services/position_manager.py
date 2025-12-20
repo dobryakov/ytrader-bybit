@@ -481,9 +481,9 @@ class PositionManager:
                         SET size = CAST($1 AS numeric),
                             average_entry_price = CASE 
                                 WHEN CAST($1 AS numeric) = 0 THEN NULL
-                                WHEN $2 IS NULL THEN NULL
-                                WHEN CAST($2 AS numeric) <= 0 THEN NULL
-                                ELSE CAST($2 AS numeric)
+                                WHEN $2::text = '' THEN NULL
+                                WHEN CAST($2::text AS numeric) <= 0 THEN NULL
+                                ELSE CAST($2::text AS numeric)
                             END,
                             unrealized_pnl = CAST($3 AS numeric),
                             realized_pnl = realized_pnl + CAST($4 AS numeric),
@@ -501,7 +501,7 @@ class PositionManager:
                     row = await pool.fetchrow(
                         update_query,
                         str(new_size),
-                        str(new_avg_price) if new_avg_price is not None else None,
+                        str(new_avg_price) if new_avg_price is not None else "",
                         str(new_unrealized_pnl),
                         str(realized_pnl_delta),
                         asset.upper(),
@@ -889,14 +889,17 @@ class PositionManager:
                     update_query = """
                         UPDATE positions
                         SET size = CAST($1 AS numeric),
-                            current_price = CAST($2 AS numeric),
+                            current_price = CASE 
+                                WHEN $2::text = '' THEN NULL
+                                ELSE CAST($2::text AS numeric)
+                            END,
                             unrealized_pnl = CAST($3 AS numeric),
                             realized_pnl = CAST($4 AS numeric),
                             average_entry_price = CASE 
                                 WHEN CAST($1 AS numeric) = 0 THEN NULL
-                                WHEN $5::text IS NULL OR $5::text = '' THEN average_entry_price
-                                WHEN CAST($5 AS numeric) <= 0 THEN NULL
-                                ELSE CAST($5 AS numeric)
+                                WHEN $5::text = '' THEN average_entry_price
+                                WHEN CAST($5::text AS numeric) <= 0 THEN NULL
+                                ELSE CAST($5::text AS numeric)
                             END,
                             version = version + 1,
                             last_updated = NOW(),
@@ -909,14 +912,15 @@ class PositionManager:
                                   long_size, short_size, version,
                                   last_updated, closed_at, created_at
                     """
-                    # Always pass string for $5 to help asyncpg determine parameter type
+                    # Always pass string for $2 and $5 to help asyncpg determine parameter type
                     # Pass empty string instead of None to avoid type inference issues
                     # This workaround is similar to the datetime issue fix ($4::timestamptz)
+                    current_price_param = str(current_price) if current_price is not None else ''
                     avg_price_param = str(new_avg_price) if new_avg_price is not None else ''
                     row = await pool.fetchrow(
                         update_query,
                         str(resolved_size),
-                        str(current_price) if current_price is not None else None,
+                        current_price_param,
                         str(new_unrealized),
                         str(new_realized),
                         avg_price_param,
@@ -1319,7 +1323,10 @@ class PositionManager:
                 upsert_query = """
                     UPDATE positions
                     SET size = $1,
-                        average_entry_price = $2,
+                        average_entry_price = CASE 
+                            WHEN $2::text = '' THEN NULL
+                            ELSE CAST($2::text AS numeric)
+                        END,
                         last_updated = NOW(),
                         version = version + 1
                     WHERE asset = $3 AND mode = $4
@@ -1328,10 +1335,13 @@ class PositionManager:
                               long_size, short_size, version,
                               last_updated, closed_at, created_at
                 """
+                # Always pass string for $2 to help asyncpg determine parameter type
+                # Pass empty string instead of None to avoid type inference issues
+                avg_price_param = str(computed_avg_price) if computed_avg_price is not None else ''
                 row = await pool.fetchrow(
                     upsert_query,
                     str(computed_size),
-                    str(computed_avg_price) if computed_avg_price is not None else None,
+                    avg_price_param,
                     asset.upper(),
                     mode.lower(),
                 )

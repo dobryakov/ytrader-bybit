@@ -29,7 +29,6 @@ class PredictionTradingResultsRepository(BaseRepository[Dict[str, Any]]):
         prediction_target_id: UUID,
         signal_id: str,
         entry_signal_id: Optional[str] = None,
-        position_id: Optional[UUID] = None,
         entry_price: Optional[Decimal] = None,
         entry_timestamp: Optional[datetime] = None,
         position_size_at_entry: Optional[Decimal] = None,
@@ -41,7 +40,6 @@ class PredictionTradingResultsRepository(BaseRepository[Dict[str, Any]]):
             prediction_target_id: Prediction target UUID
             signal_id: Trading signal UUID
             entry_signal_id: Entry signal UUID (optional)
-            position_id: Position UUID (optional)
             entry_price: Entry price (optional)
             entry_timestamp: Entry timestamp (optional)
             position_size_at_entry: Position size at entry (optional)
@@ -55,10 +53,10 @@ class PredictionTradingResultsRepository(BaseRepository[Dict[str, Any]]):
         query = f"""
             INSERT INTO {self.table_name} (
                 prediction_target_id, signal_id, entry_signal_id,
-                position_id, entry_price, entry_timestamp,
+                entry_price, entry_timestamp,
                 position_size_at_entry, realized_pnl, unrealized_pnl, total_pnl
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             RETURNING *
         """
         try:
@@ -70,7 +68,6 @@ class PredictionTradingResultsRepository(BaseRepository[Dict[str, Any]]):
                 prediction_target_id,
                 signal_uuid,
                 entry_signal_uuid,
-                position_id,
                 str(entry_price) if entry_price is not None else None,
                 entry_timestamp,
                 str(position_size_at_entry) if position_size_at_entry is not None else None,

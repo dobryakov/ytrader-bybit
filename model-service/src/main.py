@@ -37,6 +37,7 @@ from .services.mode_transition import mode_transition
 from .services.quality_monitor import quality_monitor
 from .database.repositories.model_version_repo import ModelVersionRepository
 from .services.prediction_trading_linker import prediction_trading_linker
+from .services.position_based_signal_generator import position_based_signal_generator
 from .models.execution_event import OrderExecutionEvent
 from decimal import Decimal
 
@@ -173,7 +174,6 @@ async def lifespan(app: FastAPI):
             # If exit strategy is enabled, start fallback mode
             if settings.exit_strategy_enabled:
                 try:
-                    from ..services.position_based_signal_generator import position_based_signal_generator
                     await position_based_signal_generator.start_fallback_mode()
                     logger.warning("Started fallback mode for exit strategy evaluation")
                 except Exception as fallback_error:
@@ -343,7 +343,6 @@ async def lifespan(app: FastAPI):
                     result = await prediction_trading_linker.link_prediction_to_trading(
                         signal_id=event.signal_id,
                         entry_signal_id=event.signal_id,
-                        position_id=position_id,
                         entry_price=Decimal(str(event.execution_price)),
                         entry_timestamp=entry_timestamp,
                         position_size_at_entry=Decimal(str(event.execution_quantity)),
@@ -492,7 +491,6 @@ async def lifespan(app: FastAPI):
         # Stop position-based signal generator fallback mode if active
         async def stop_position_based_signal_generator():
             try:
-                from ..services.position_based_signal_generator import position_based_signal_generator
                 await asyncio.wait_for(position_based_signal_generator.stop_fallback_mode(), timeout=5.0)
                 logger.info("Position-based signal generator stopped")
             except asyncio.TimeoutError:

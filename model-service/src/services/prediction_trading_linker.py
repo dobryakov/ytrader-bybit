@@ -28,7 +28,6 @@ class PredictionTradingLinker:
         self,
         signal_id: str,
         entry_signal_id: Optional[str] = None,
-        position_id: Optional[UUID] = None,
         entry_price: Optional[Decimal] = None,
         entry_timestamp: Optional[datetime] = None,
         position_size_at_entry: Optional[Decimal] = None,
@@ -39,7 +38,6 @@ class PredictionTradingLinker:
         Args:
             signal_id: Trading signal UUID
             entry_signal_id: Entry signal UUID (optional, defaults to signal_id)
-            position_id: Position UUID (optional)
             entry_price: Entry price (optional)
             entry_timestamp: Entry timestamp (optional)
             position_size_at_entry: Position size at entry (optional)
@@ -79,14 +77,12 @@ class PredictionTradingLinker:
                 "Creating prediction trading result",
                 signal_id=signal_id,
                 prediction_target_id=prediction_target["id"],
-                position_id=str(position_id) if position_id else None,
                 entry_price=str(entry_price) if entry_price else None,
             )
             result = await self.prediction_trading_results_repo.create(
                 prediction_target_id=prediction_target_id,
                 signal_id=signal_id,
                 entry_signal_id=entry_signal_id or signal_id,
-                position_id=position_id,
                 entry_price=entry_price,
                 entry_timestamp=entry_timestamp,
                 position_size_at_entry=position_size_at_entry,
@@ -97,7 +93,6 @@ class PredictionTradingLinker:
                 signal_id=signal_id,
                 prediction_target_id=prediction_target["id"],
                 result_id=result["id"],
-                position_id=str(position_id) if position_id else None,
             )
 
             return result

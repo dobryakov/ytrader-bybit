@@ -313,18 +313,38 @@ async def get_position_stats(
                 -- Предсказания через prediction_trading_results
                 ptr.entry_signal_id,
                 ptr.exit_signal_id,
+                ptr.entry_price,
+                ptr.exit_price,
+                ptr.position_size_at_entry,
+                ptr.position_size_at_exit,
+                ptr.entry_timestamp,
+                ptr.exit_timestamp,
+                ptr.realized_pnl as ptr_realized_pnl,
+                ptr.total_pnl as ptr_total_pnl,
                 entry_ts.metadata->>'prediction_result' as entry_prediction_json,
                 entry_pt.predicted_values as entry_predicted_values,
                 entry_pt.actual_values as entry_actual_values,
+                entry_pt.target_timestamp,
+                entry_pt.prediction_timestamp,
                 -- Причина закрытия через exit signal
                 exit_ts.metadata->>'exit_reason' as exit_reason,
                 exit_ts.metadata->>'rule_triggered' as exit_rule_triggered,
                 -- Альтернативный путь через orders (если exit_signal_id NULL)
                 o_closed.signal_id as closing_order_signal_id,
                 ts_closed.metadata->>'exit_reason' as closing_exit_reason,
-                ts_closed.metadata->>'rule_triggered' as closing_rule_triggered
+                ts_closed.metadata->>'rule_triggered' as closing_rule_triggered,
+                -- Ордера для входа
+                sor_entry.order_id as entry_order_id,
+                o_entry.side as entry_order_side,
+                o_entry.status as entry_order_status,
+                o_entry.price as entry_order_price,
+                o_entry.quantity as entry_order_quantity,
+                o_entry.created_at as entry_order_created
             FROM position_stats ps
-            LEFT JOIN prediction_trading_results ptr ON ptr.position_id = ps.id
+            LEFT JOIN position_orders po_entry ON po_entry.position_id = ps.id
+            LEFT JOIN signal_order_relationships sor_entry ON sor_entry.order_id = po_entry.order_id
+            LEFT JOIN orders o_entry ON o_entry.id = sor_entry.order_id
+            LEFT JOIN prediction_trading_results ptr ON ptr.signal_id = sor_entry.signal_id
             LEFT JOIN trading_signals entry_ts ON entry_ts.signal_id = ptr.entry_signal_id
             LEFT JOIN trading_signals exit_ts ON exit_ts.signal_id = ptr.exit_signal_id
             LEFT JOIN prediction_targets entry_pt ON entry_pt.signal_id = entry_ts.signal_id
@@ -359,6 +379,64 @@ async def get_position_stats(
                     except Exception:
                         entry_prediction = row["entry_prediction_json"]
                 
+                # Парсим predicted_values и actual_values
+                predicted_values = None
+                actual_values = None
+                if row["entry_predicted_values"]:
+                    try:
+                        predicted_values = json.loads(row["entry_predicted_values"]) if isinstance(row["entry_predicted_values"], str) else row["entry_predicted_values"]
+                    except Exception:
+                        predicted_values = row["entry_predicted_values"]
+                
+                if row["entry_actual_values"]:
+                    try:
+                        actual_values = json.loads(row["entry_actual_values"]) if isinstance(row["entry_actual_values"], str) else row["entry_actual_values"]
+                    except Exception:
+                        actual_values = row["entry_actual_values"]
+                
+                # Анализ сравнения предсказания с реальностью
+                market_analysis = None
+                if predicted_values and actual_values:
+                    predicted_dir = predicted_values.get("direction") if isinstance(predicted_values, dict) else None
+                    actual_dir = actual_values.get("direction") if isinstance(actual_values, dict) else None
+                    predicted_conf = predicted_values.get("confidence") if isinstance(predicted_values, dict) else None
+                    actual_open = actual_values.get("candle_open") if isinstance(actual_values, dict) else None
+                    actual_close = actual_values.get("candle_close") if isinstance(actual_values, dict) else None
+                    actual_return = actual_values.get("return_value") if isinstance(actual_values, dict) else None
+                    
+                    prediction_correct = predicted_dir == actual_dir if predicted_dir and actual_dir else None
+                    price_change = None
+                    if actual_open and actual_close:
+                        try:
+                            price_change = float(actual_close) - float(actual_open)
+                            price_change_pct = (price_change / float(actual_open)) * 100 if float(actual_open) != 0 else 0
+                        except (ValueError, TypeError):
+                            pass
+                    
+                    market_analysis = {
+                        "prediction_direction": predicted_dir,
+                        "actual_direction": actual_dir,
+                        "prediction_correct": prediction_correct,
+                        "predicted_confidence": float(predicted_conf) if predicted_conf else None,
+                        "actual_price_open": float(actual_open) if actual_open else None,
+                        "actual_price_close": float(actual_close) if actual_close else None,
+                        "price_change": price_change,
+                        "price_change_percent": round(price_change_pct, 4) if price_change is not None else None,
+                        "actual_return": float(actual_return) if actual_return else None,
+                    }
+                
+                # Информация об ордерах
+                entry_order = None
+                if row["entry_order_id"]:
+                    entry_order = {
+                        "order_id": str(row["entry_order_id"]),
+                        "side": row["entry_order_side"],
+                        "status": row["entry_order_status"],
+                        "price": float(row["entry_order_price"]) if row["entry_order_price"] else None,
+                        "quantity": float(row["entry_order_quantity"]) if row["entry_order_quantity"] else None,
+                        "created_at": row["entry_order_created"].isoformat() + "Z" if row["entry_order_created"] else None,
+                    }
+                
                 position_details.append({
                     "position_id": str(row["position_id"]),
                     "asset": row["asset"],
@@ -372,9 +450,23 @@ async def get_position_stats(
                     "prediction": {
                         "entry_signal_id": str(row["entry_signal_id"]) if row["entry_signal_id"] else None,
                         "entry_prediction": entry_prediction,
-                        "predicted_values": row["entry_predicted_values"],
-                        "actual_values": row["entry_actual_values"],
+                        "predicted_values": predicted_values,
+                        "actual_values": actual_values,
+                        "target_timestamp": row["target_timestamp"].isoformat() + "Z" if row["target_timestamp"] else None,
+                        "prediction_timestamp": row["prediction_timestamp"].isoformat() + "Z" if row["prediction_timestamp"] else None,
                     } if row["entry_signal_id"] or row["entry_predicted_values"] else None,
+                    "trading": {
+                        "entry_price": float(row["entry_price"]) if row["entry_price"] else None,
+                        "exit_price": float(row["exit_price"]) if row["exit_price"] else None,
+                        "entry_timestamp": row["entry_timestamp"].isoformat() + "Z" if row["entry_timestamp"] else None,
+                        "exit_timestamp": row["exit_timestamp"].isoformat() + "Z" if row["exit_timestamp"] else None,
+                        "position_size_at_entry": float(row["position_size_at_entry"]) if row["position_size_at_entry"] else None,
+                        "position_size_at_exit": float(row["position_size_at_exit"]) if row["position_size_at_exit"] else None,
+                        "realized_pnl": float(row["ptr_realized_pnl"]) if row["ptr_realized_pnl"] else None,
+                        "total_pnl": float(row["ptr_total_pnl"]) if row["ptr_total_pnl"] else None,
+                        "entry_order": entry_order,
+                    } if row["entry_signal_id"] else None,
+                    "market_analysis": market_analysis,
                     "close_reason": {
                         "reason": close_reason,
                         "rule_triggered": close_rule,
