@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from ..database.repositories.model_version_repo import ModelVersionRepository
 from ..database.repositories.quality_metrics_repo import ModelQualityMetricsRepository
 from ..config.logging import get_logger
+from .middleware.security import validate_version_string
 
 logger = get_logger(__name__)
 
@@ -73,6 +74,11 @@ async def get_model_quality_metrics(
     Raises:
         HTTPException: If model version not found
     """
+    # Validate version string to prevent path traversal
+    if not validate_version_string(version):
+        logger.warning("Invalid version string detected", version=version)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid version format")
+    
     try:
         version_repo = ModelVersionRepository()
         model_version = await version_repo.get_by_version(version)
@@ -112,6 +118,10 @@ async def get_time_series_metrics(
     end_time: Optional[str] = Query(None, description="End time (ISO 8601 format)"),
     metric_names: Optional[str] = Query(None, description="Comma-separated list of metric names to include"),
 ) -> TimeSeriesResponse:
+    # Validate version string to prevent path traversal
+    if not validate_version_string(version):
+        logger.warning("Invalid version string detected", version=version)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid version format")
     """
     Get time-series metrics data for a model version.
 

@@ -13,6 +13,7 @@ import joblib
 from ..config.settings import settings
 from ..config.exceptions import ModelStorageError, ModelNotFoundError, ModelLoadError, ModelSaveError
 from ..config.logging import get_logger
+from ..api.middleware.security import validate_version_string, validate_path_safe, is_path_traversal_attempt
 
 logger = get_logger(__name__)
 
@@ -49,9 +50,26 @@ class ModelStorage:
 
         Returns:
             Full path to model file
+            
+        Raises:
+            ModelStorageError: If version or filename contains path traversal
         """
+        # Validate version string
+        if not validate_version_string(version):
+            raise ModelStorageError(f"Invalid version format: {version}")
+        
+        # Validate filename
+        if is_path_traversal_attempt(filename):
+            raise ModelStorageError(f"Invalid filename: {filename}")
+        
         version_dir = self.base_path / f"v{version.lstrip('v')}"
-        return version_dir / filename
+        file_path = version_dir / filename
+        
+        # Validate that the resulting path is within base_path
+        if not validate_path_safe(self.base_path, file_path):
+            raise ModelStorageError(f"Path traversal detected: version={version}, filename={filename}")
+        
+        return file_path
 
     def get_version_directory(self, version: str) -> Path:
         """
@@ -62,8 +80,21 @@ class ModelStorage:
 
         Returns:
             Directory path for the version
+            
+        Raises:
+            ModelStorageError: If version contains path traversal
         """
-        return self.base_path / f"v{version.lstrip('v')}"
+        # Validate version string
+        if not validate_version_string(version):
+            raise ModelStorageError(f"Invalid version format: {version}")
+        
+        version_dir = self.base_path / f"v{version.lstrip('v')}"
+        
+        # Validate that the resulting path is within base_path
+        if not validate_path_safe(self.base_path, version_dir):
+            raise ModelStorageError(f"Path traversal detected: version={version}")
+        
+        return version_dir
 
     def save_model(self, model: any, version: str, filename: str = "model.pkl") -> str:
         """

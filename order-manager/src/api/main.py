@@ -10,6 +10,7 @@ from fastapi.exceptions import RequestValidationError
 
 from .middleware.auth import APIKeyAuthMiddleware
 from .middleware.logging import LoggingMiddleware
+from .middleware.security import SecurityMiddleware
 from ..config.settings import settings
 from ..config.logging import get_logger, configure_logging
 from ..exceptions import (
@@ -56,6 +57,9 @@ def create_app(lifespan_context=None) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Add security middleware first (before other middleware)
+    app.add_middleware(SecurityMiddleware)
 
     # Add request/response logging middleware (before auth middleware to log all requests)
     app.add_middleware(LoggingMiddleware)
@@ -127,6 +131,29 @@ def create_app(lifespan_context=None) -> FastAPI:
     async def validation_exception_handler(request: Request, exc: RequestValidationError):
         """Handle request validation errors with consistent error response."""
         trace_id = get_or_create_trace_id()
+        path = request.url.path
+        
+        # Check if path looks suspicious (even if normalized by uvicorn)
+        suspicious_patterns = ["/etc/passwd", "/etc/shadow", "/proc/", "/sys/", "/dev/", "passwd", "shadow"]
+        if any(suspicious in path.lower() for suspicious in suspicious_patterns):
+            logger.warning(
+                "Suspicious path in validation error - returning 404",
+                path=path,
+                client_ip=request.client.host if request.client else None,
+                trace_id=trace_id,
+            )
+            return JSONResponse(
+                status_code=status.HTTP_404_NOT_FOUND,
+                content={
+                    "error": {
+                        "type": "NotFound",
+                        "message": "Not found",
+                        "trace_id": trace_id,
+                    },
+                    "timestamp": datetime.utcnow().isoformat() + "Z",
+                },
+            )
+        
         logger.warning(
             "validation_error",
             errors=exc.errors(),
@@ -150,6 +177,30 @@ def create_app(lifespan_context=None) -> FastAPI:
     async def general_exception_handler(request: Request, exc: Exception):
         """Handle unexpected exceptions with consistent error response."""
         trace_id = get_or_create_trace_id()
+        path = request.url.path
+        
+        # Check if path looks suspicious (even if normalized by uvicorn)
+        suspicious_patterns = ["/etc/passwd", "/etc/shadow", "/proc/", "/sys/", "/dev/", "passwd", "shadow"]
+        if any(suspicious in path.lower() for suspicious in suspicious_patterns):
+            logger.warning(
+                "Suspicious path in exception - returning 404",
+                path=path,
+                client_ip=request.client.host if request.client else None,
+                error_type=type(exc).__name__,
+                trace_id=trace_id,
+            )
+            return JSONResponse(
+                status_code=status.HTTP_404_NOT_FOUND,
+                content={
+                    "error": {
+                        "type": "NotFound",
+                        "message": "Not found",
+                        "trace_id": trace_id,
+                    },
+                    "timestamp": datetime.utcnow().isoformat() + "Z",
+                },
+            )
+        
         logger.error(
             "unexpected_error",
             error_type=type(exc).__name__,

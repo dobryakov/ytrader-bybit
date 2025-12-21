@@ -9,7 +9,7 @@ import structlog
 from src.services.target_registry_version_manager import TargetRegistryVersionManager
 from src.storage.metadata_storage import MetadataStorage
 from src.models.dataset import TargetConfig
-from src.api.middleware.auth import verify_api_key
+from .middleware.auth import verify_api_key
 
 if TYPE_CHECKING:
     from src.services.feature_scheduler import FeatureScheduler

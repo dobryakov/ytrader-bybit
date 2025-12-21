@@ -219,20 +219,19 @@ def test_has_size_discrepancy() -> None:
 
 
 def test_timestamp_conflict_resolution_ws_fresher(monkeypatch) -> None:
-    """_should_update_size_from_ws should return True when WS event is fresher."""
+    """_should_update_size_from_ws should return True - WebSocket is always source of truth."""
     manager = PositionManager()
 
     from src.config.settings import settings
 
-    monkeypatch.setattr(settings, "position_manager_enable_timestamp_resolution", True)
     monkeypatch.setattr(settings, "position_manager_size_validation_threshold", 0.0001)
-    monkeypatch.setattr(settings, "position_manager_timestamp_tolerance_seconds", 0)
 
     db_size = Decimal("1.0")
     ws_size = Decimal("1.5")
     order_ts = datetime.utcnow()
     ws_ts = order_ts + timedelta(seconds=1)
 
+    # NOTE: WebSocket is always the source of truth, regardless of timestamps
     assert manager._should_update_size_from_ws(  # type: ignore[attr-defined]
         db_size=db_size,
         ws_size=ws_size,
@@ -242,21 +241,20 @@ def test_timestamp_conflict_resolution_ws_fresher(monkeypatch) -> None:
 
 
 def test_timestamp_conflict_resolution_order_fresher(monkeypatch) -> None:
-    """_should_update_size_from_ws should return False when Order Manager is fresher."""
+    """_should_update_size_from_ws should return True - WebSocket is always source of truth."""
     manager = PositionManager()
 
     from src.config.settings import settings
 
-    monkeypatch.setattr(settings, "position_manager_enable_timestamp_resolution", True)
     monkeypatch.setattr(settings, "position_manager_size_validation_threshold", 0.0001)
-    monkeypatch.setattr(settings, "position_manager_timestamp_tolerance_seconds", 0)
 
     db_size = Decimal("1.0")
     ws_size = Decimal("1.5")
     ws_ts = datetime.utcnow()
     order_ts = ws_ts + timedelta(seconds=1)
 
-    assert not manager._should_update_size_from_ws(  # type: ignore[attr-defined]
+    # NOTE: WebSocket is always the source of truth, regardless of order_timestamp
+    assert manager._should_update_size_from_ws(  # type: ignore[attr-defined]
         db_size=db_size,
         ws_size=ws_size,
         ws_timestamp=ws_ts,
@@ -265,54 +263,63 @@ def test_timestamp_conflict_resolution_order_fresher(monkeypatch) -> None:
 
 
 def test_timestamp_conflict_resolution_missing_timestamps(monkeypatch) -> None:
-    """_should_update_size_from_ws should fallback to validation-only when timestamps missing."""
+    """_should_update_size_from_ws handles missing timestamps - WebSocket is source of truth."""
     manager = PositionManager()
 
     from src.config.settings import settings
 
-    monkeypatch.setattr(settings, "position_manager_enable_timestamp_resolution", True)
     monkeypatch.setattr(settings, "position_manager_size_validation_threshold", 0.0001)
-    monkeypatch.setattr(settings, "position_manager_timestamp_tolerance_seconds", 0)
 
     db_size = Decimal("1.0")
     ws_size = Decimal("1.5")
     now = datetime.utcnow()
 
-    # Missing WS timestamp
+    # Missing WS timestamp (ws_size is None effectively means no update)
+    # If ws_size is None, method returns False
     assert not manager._should_update_size_from_ws(  # type: ignore[attr-defined]
         db_size=db_size,
-        ws_size=ws_size,
+        ws_size=None,  # No WebSocket size means no update
         ws_timestamp=None,
         order_timestamp=now,
     )
 
-    # Missing Order Manager timestamp
-    assert not manager._should_update_size_from_ws(  # type: ignore[attr-defined]
+    # Missing Order Manager timestamp - doesn't matter, WebSocket is source of truth
+    # With ws_size available and significant discrepancy, should return True
+    assert manager._should_update_size_from_ws(  # type: ignore[attr-defined]
         db_size=db_size,
         ws_size=ws_size,
         ws_timestamp=now,
-        order_timestamp=None,
+        order_timestamp=None,  # order_timestamp is deprecated and ignored
     )
 
 
 def test_timestamp_conflict_resolution_disabled_feature(monkeypatch) -> None:
-    """_should_update_size_from_ws should return False when feature flag is disabled."""
+    """_should_update_size_from_ws always uses WebSocket as source of truth (feature flag removed)."""
     manager = PositionManager()
 
     from src.config.settings import settings
 
-    monkeypatch.setattr(settings, "position_manager_enable_timestamp_resolution", False)
+    # NOTE: position_manager_enable_timestamp_resolution is no longer used
     monkeypatch.setattr(settings, "position_manager_size_validation_threshold", 0.0001)
-    monkeypatch.setattr(settings, "position_manager_timestamp_tolerance_seconds", 0)
 
     db_size = Decimal("1.0")
     ws_size = Decimal("1.5")
     order_ts = datetime.utcnow()
     ws_ts = order_ts + timedelta(seconds=1)
 
-    assert not manager._should_update_size_from_ws(  # type: ignore[attr-defined]
+    # WebSocket is always source of truth, regardless of feature flags
+    assert manager._should_update_size_from_ws(  # type: ignore[attr-defined]
         db_size=db_size,
         ws_size=ws_size,
+        ws_timestamp=ws_ts,
+        order_timestamp=order_ts,
+    )
+    
+    # Test case: no significant discrepancy (below threshold)
+    small_ws_size = db_size + Decimal("0.00001")  # Very small difference
+    assert not manager._should_update_size_from_ws(  # type: ignore[attr-defined]
+        db_size=db_size,
+        ws_size=small_ws_size,
         ws_timestamp=ws_ts,
         order_timestamp=order_ts,
     )

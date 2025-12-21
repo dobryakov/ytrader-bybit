@@ -25,6 +25,7 @@ class SignalConsumer:
         self.signal_processor = SignalProcessor()
         self.queue_name = "model-service.trading_signals"
         self._consumer_tag = f"order-manager-signal-consumer-{id(self)}"
+        self._queue: Optional[aio_pika.Queue] = None
 
     async def start(self) -> None:
         """Start consuming signals from RabbitMQ queue."""
@@ -36,6 +37,7 @@ class SignalConsumer:
                 self.queue_name,
                 durable=True,  # Queue survives broker restart
             )
+            self._queue = queue  # Save reference for stop()
 
             logger.info(
                 "signal_consumer_starting",
@@ -64,10 +66,8 @@ class SignalConsumer:
     async def stop(self) -> None:
         """Stop consuming signals from RabbitMQ queue."""
         try:
-            channel = await RabbitMQConnection.get_channel()
-
-            if self._consumer_tag:
-                await channel.cancel(self._consumer_tag)
+            if self._queue and self._consumer_tag:
+                await self._queue.cancel(self._consumer_tag)
 
             logger.info(
                 "signal_consumer_stopped",

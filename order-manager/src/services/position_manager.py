@@ -8,7 +8,6 @@ from ..config.database import DatabaseConnection
 from ..config.logging import get_logger
 from ..models.position import Position, PositionSnapshot
 from ..exceptions import DatabaseError
-from ..database.repositories.position_order_repo import PositionOrderRepository
 from datetime import datetime
 
 logger = get_logger(__name__)
@@ -70,6 +69,12 @@ class PositionManager:
         executed_at: Optional[datetime] = None,
     ) -> Position:
         """Update position based on order execution.
+        
+        DEPRECATED: This method is deprecated. Positions should be updated only
+        by position-manager from WebSocket position events. This method is kept
+        for backward compatibility but should not be used in new code.
+        Position-order relationships are now created by position-manager based
+        on order-manager.order_events.
 
         Args:
             asset: Trading pair symbol
@@ -77,6 +82,8 @@ class PositionManager:
             execution_price: Price at which order was executed
             mode: Trading mode ('one-way' or 'hedge')
             trace_id: Optional trace ID for request tracking
+            order_id: DEPRECATED - no longer used, kept for compatibility
+            executed_at: DEPRECATED - no longer used, kept for compatibility
 
         Returns:
             Updated Position object
@@ -145,39 +152,9 @@ class PositionManager:
             position_data = dict(row)
             position = Position.from_dict(position_data)
 
-            # Create position-order relationship if order_id provided
-            if order_id:
-                try:
-                    relationship_type = self._determine_relationship_type(
-                        current_position=current_position,
-                        new_size=new_size,
-                        size_delta=size_delta,
-                    )
-                    position_order_repo = PositionOrderRepository()
-                    await position_order_repo.create(
-                        position_id=position.id,
-                        order_id=order_id,
-                        relationship_type=relationship_type,
-                        size_delta=size_delta,
-                        execution_price=execution_price,
-                        executed_at=executed_at or datetime.utcnow(),
-                    )
-                    logger.debug(
-                        "Position-order relationship created",
-                        position_id=str(position.id),
-                        order_id=str(order_id),
-                        relationship_type=relationship_type,
-                        trace_id=trace_id,
-                    )
-                except Exception as e:
-                    # Log error but don't fail position update
-                    logger.warning(
-                        "Failed to create position-order relationship (continuing)",
-                        position_id=str(position.id),
-                        order_id=str(order_id),
-                        error=str(e),
-                        trace_id=trace_id,
-                    )
+            # NOTE: Position-order relationships are now created by position-manager
+            # based on order-manager.order_events. This method no longer creates
+            # position_orders to maintain separation of responsibilities.
 
             logger.info(
                 "position_updated",

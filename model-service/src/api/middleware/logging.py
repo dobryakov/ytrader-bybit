@@ -11,7 +11,7 @@ from starlette.requests import Request
 from starlette.responses import Response
 from fastapi import status
 
-from ..config.logging import get_logger, bind_context
+from ...config.logging import get_logger, bind_context
 
 logger = get_logger(__name__)
 

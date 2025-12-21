@@ -424,21 +424,11 @@ async def lifespan(app: FastAPI):
             # Don't fail startup if reconciliation fails - service can still operate
 
         # Initialize and start event subscriber for order execution events
-        # Make it optional - service can operate without event subscription
-        event_subscriber = None
-        try:
-            event_subscriber = EventSubscriber()
-            await event_subscriber.start()
-            logger.info("event_subscriber_started", trace_id=trace_id)
-            app.state.event_subscriber = event_subscriber
-        except Exception as e:
-            logger.warning(
-                "event_subscriber_start_failed_continuing",
-                error=str(e),
-                trace_id=trace_id,
-                message="Service will continue without event subscription. Order state sync will rely on manual sync."
-            )
-            app.state.event_subscriber = None
+        # Service must have event subscription to operate correctly
+        event_subscriber = EventSubscriber()
+        await event_subscriber.start()
+        logger.info("event_subscriber_started", trace_id=trace_id)
+        app.state.event_subscriber = event_subscriber
 
         # Start background tasks (position snapshots, validation)
         snapshot_task = PositionSnapshotTask()

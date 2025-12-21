@@ -11,7 +11,7 @@ from ..config.database import DatabaseConnection
 from ..config.logging import configure_logging, get_logger
 from ..config.rabbitmq import RabbitMQConnection
 from ..config.settings import settings
-from ..consumers import OrderPositionConsumer, WebSocketPositionConsumer
+from ..consumers import PositionOrderLinkerConsumer, WebSocketPositionConsumer
 from ..exceptions import QueueError
 from ..services.ws_gateway_client import WSGatewayClient
 from ..tasks import (
@@ -22,6 +22,7 @@ from ..tasks import (
 )
 from .error_handlers import register_error_handlers
 from .middleware.logging import logging_middleware
+from .middleware.security import security_middleware
 from .routes.portfolio import get_portfolio_manager
 from .routes import health as health_routes
 from .routes import portfolio as portfolio_routes
@@ -35,7 +36,7 @@ logger = get_logger(__name__)
 
 # Global instances so we can start/stop background components with the app lifecycle.
 _ws_consumer: Optional[WebSocketPositionConsumer] = None
-_order_consumer: Optional[OrderPositionConsumer] = None
+_order_consumer: Optional[PositionOrderLinkerConsumer] = None
 _snapshot_task: Optional[PositionSnapshotTask] = None
 _validation_task: Optional[PositionValidationTask] = None
 _bybit_sync_task: Optional[PositionBybitSyncTask] = None
@@ -50,7 +51,8 @@ def create_app() -> FastAPI:
     # Global error handlers
     register_error_handlers(app)
 
-    # Middleware
+    # Middleware (security first, then logging)
+    app.middleware("http")(security_middleware)
     app.middleware("http")(logging_middleware)
 
     # Routes
@@ -82,27 +84,14 @@ def create_app() -> FastAPI:
             await RabbitMQConnection.create_connection()
 
             # Subscribe to position updates from ws-gateway
-            try:
-                ws_gateway_client = WSGatewayClient()
-                subscription_success = await ws_gateway_client.subscribe_to_position()
-                if subscription_success:
-                    logger.info("ws_gateway_position_subscription_completed")
-                else:
-                    logger.warning(
-                        "ws_gateway_position_subscription_failed_non_fatal",
-                        message="Position updates may not be received until subscription is created manually",
-                    )
-            except Exception as e:
-                # Non-fatal: subscription can be created manually or retried later
-                logger.warning(
-                    "ws_gateway_position_subscription_error_non_fatal",
-                    error=str(e),
-                    error_type=type(e).__name__,
-                )
+            # Service must have event subscription to operate correctly
+            ws_gateway_client = WSGatewayClient()
+            await ws_gateway_client.subscribe_to_position()
+            logger.info("ws_gateway_position_subscription_completed")
 
             # Start background consumers for WS and order events.
             _ws_consumer = WebSocketPositionConsumer()
-            _order_consumer = OrderPositionConsumer()
+            _order_consumer = PositionOrderLinkerConsumer()
             _ws_consumer.spawn()
             _order_consumer.spawn()
             logger.info("position_manager_consumers_started")

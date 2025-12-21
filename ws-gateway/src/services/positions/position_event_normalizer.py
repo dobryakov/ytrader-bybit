@@ -153,6 +153,7 @@ class PositionEventNormalizer:
 
         # PnL fields (optional)
         unrealised_raw = raw.get("unrealisedPnl") or raw.get("unrealisedPnlUsd")
+        # cumRealisedPnl is the cumulative realized PnL from Bybit (includes fees)
         realised_raw = raw.get("cumRealisedPnl") or raw.get("realisedPnl")
 
         def _to_decimal(value: Any) -> Decimal | None:
@@ -170,11 +171,15 @@ class PositionEventNormalizer:
         mark_price_raw = raw.get("markPrice") or raw.get("mark_price")
         mark_price = _to_decimal(mark_price_raw)
         
+        # Extract and normalize avg_price (average entry price)
+        avg_price_raw = raw.get("avgPrice") or raw.get("avgEntryPrice") or raw.get("entryPrice")
+        avg_price = _to_decimal(avg_price_raw)
+        
         normalized: Dict[str, Any] = {
             "symbol": symbol,
             "size": str(size_dec),
             "side": side,
-            "avg_price": raw.get("avgPrice") or raw.get("avgEntryPrice") or raw.get("entryPrice"),
+            "avg_price": str(avg_price) if avg_price is not None else None,
             "markPrice": str(mark_price) if mark_price is not None else None,
             "unrealised_pnl": str(unrealised_pnl) if unrealised_pnl is not None else None,
             "realised_pnl": str(realised_pnl) if realised_pnl is not None else None,

@@ -16,6 +16,7 @@ from ..database.repositories.model_version_repo import ModelVersionRepository
 from ..database.repositories.quality_metrics_repo import ModelQualityMetricsRepository
 from ..services.model_version_manager import model_version_manager
 from ..config.logging import get_logger
+from .middleware.security import validate_version_string
 
 logger = get_logger(__name__)
 
@@ -144,6 +145,11 @@ async def get_model_version_details(version: str) -> ModelVersionDetailResponse:
     Raises:
         HTTPException: If model version not found
     """
+    # Validate version string to prevent path traversal
+    if not validate_version_string(version):
+        logger.warning("Invalid version string detected", version=version)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid version format")
+    
     try:
         repo = ModelVersionRepository()
         model_version = await repo.get_by_version(version)
@@ -187,6 +193,11 @@ async def activate_model_version(
     Raises:
         HTTPException: If model version not found or activation fails
     """
+    # Validate version string to prevent path traversal
+    if not validate_version_string(version):
+        logger.warning("Invalid version string detected", version=version)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid version format")
+    
     try:
         repo = ModelVersionRepository()
         model_version = await repo.get_by_version(version)

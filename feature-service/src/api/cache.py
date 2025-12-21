@@ -6,7 +6,7 @@ from typing import Optional
 from datetime import datetime
 from pydantic import BaseModel
 
-from src.api.middleware.auth import verify_api_key
+from .middleware.auth import verify_api_key
 from src.services.cache_service import CacheService
 from src.services.cache_invalidation import CacheInvalidationService
 

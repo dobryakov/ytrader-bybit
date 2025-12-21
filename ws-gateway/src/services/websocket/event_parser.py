@@ -17,17 +17,19 @@ def _normalize_channel_type_to_event_type(channel_type: str) -> EventType:
     """
     Convert channel_type to event_type.
 
-    For current usage, event_type is expected to match the channel_type used
-    in subscriptions/tests (e.g., \"trades\" -> \"trades\").
+    Normalizes channel types to match EventType literals.
+    Bybit uses "trades" (plural) but EventType uses "trade" (singular).
 
     Args:
-        channel_type: Channel type from subscription
+        channel_type: Channel type from subscription (e.g., "trades", "balance")
 
     Returns:
-        Event type matching EventType literal
+        Event type matching EventType literal (e.g., "trade", "balance")
     """
-    # Keep event_type equal to channel_type (e.g., \"trades\" -> \"trades\"),
-    # so that downstream consumers and tests receive the plural form.
+    # Normalize "trades" (plural) to "trade" (singular) to match EventType definition
+    if channel_type == "trades":
+        return "trade"  # type: ignore
+    # All other channel types match EventType literals directly
     return channel_type  # type: ignore
 
 

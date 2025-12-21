@@ -164,9 +164,13 @@ class Position(BaseModel):
     @classmethod
     def from_db_dict(cls, data: Dict[str, Any]) -> "Position":
         """Create Position from a database row dict, handling type conversion."""
-        # UUID conversion
-        if "id" in data and isinstance(data["id"], str):
-            data["id"] = UUID(data["id"])
+        # UUID conversion - handle both string and UUID objects from asyncpg
+        if "id" in data and data["id"] is not None:
+            if isinstance(data["id"], str):
+                data["id"] = UUID(data["id"])
+            elif not isinstance(data["id"], UUID):
+                # Convert asyncpg UUID or other UUID-like objects to standard UUID
+                data["id"] = UUID(str(data["id"]))
 
         # Decimal conversion and NULL handling
         # For fields with default values, remove None to let Pydantic use defaults
@@ -232,9 +236,14 @@ class PositionSnapshot(BaseModel):
 
     @classmethod
     def from_db_dict(cls, data: Dict[str, Any]) -> "PositionSnapshot":
+        # UUID conversion - handle both string and UUID objects from asyncpg
         for field in ["id", "position_id"]:
-            if field in data and isinstance(data[field], str):
-                data[field] = UUID(data[field])
+            if field in data and data[field] is not None:
+                if isinstance(data[field], str):
+                    data[field] = UUID(data[field])
+                elif not isinstance(data[field], UUID):
+                    # Convert asyncpg UUID or other UUID-like objects to standard UUID
+                    data[field] = UUID(str(data[field]))
         # Map snapshot_timestamp to created_at if present (for backward compatibility)
         if "snapshot_timestamp" in data and "created_at" not in data:
             data["created_at"] = data.pop("snapshot_timestamp")

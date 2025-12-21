@@ -62,37 +62,106 @@ async def find_available_data_range(
     else:
         target_timestamp = target_timestamp.astimezone(timezone.utc)
     
+    logger.info(
+        "find_available_data_range_start",
+        symbol=symbol,
+        target_timestamp=target_timestamp.isoformat(),
+        max_lookback_seconds=max_lookback_seconds,
+        max_expected_delay_seconds=max_expected_delay_seconds,
+    )
+    
     # Determine date range to check
     target_date = target_timestamp.date()
     previous_date = target_date - timedelta(days=1)
     
+    logger.debug(
+        "find_available_data_range_dates",
+        symbol=symbol,
+        target_date=target_date.isoformat(),
+        previous_date=previous_date.isoformat(),
+    )
+    
     # Try to load data for target_date and previous_date
     all_data = []
+    dates_checked = []
+    dates_found = []
+    dates_not_found = []
     
     for check_date in [target_date, previous_date]:
         date_str = check_date.strftime("%Y-%m-%d")
+        dates_checked.append(date_str)
         try:
             klines_df = await parquet_storage.read_klines(symbol, date_str)
             if not klines_df.empty and "timestamp" in klines_df.columns:
                 all_data.append(klines_df)
-        except FileNotFoundError:
+                dates_found.append(date_str)
+                logger.debug(
+                    "find_available_data_range_date_found",
+                    symbol=symbol,
+                    date=date_str,
+                    rows=len(klines_df),
+                    timestamp_min=klines_df["timestamp"].min().isoformat() if "timestamp" in klines_df.columns else None,
+                    timestamp_max=klines_df["timestamp"].max().isoformat() if "timestamp" in klines_df.columns else None,
+                )
+            else:
+                dates_not_found.append(date_str)
+                logger.debug(
+                    "find_available_data_range_date_empty",
+                    symbol=symbol,
+                    date=date_str,
+                    empty=klines_df.empty,
+                    has_timestamp="timestamp" in klines_df.columns if not klines_df.empty else False,
+                )
+        except FileNotFoundError as e:
+            dates_not_found.append(date_str)
             logger.debug(
                 "no_klines_data_for_date",
                 symbol=symbol,
                 date=date_str,
+                error=str(e),
             )
             continue
+        except Exception as e:
+            dates_not_found.append(date_str)
+            logger.warning(
+                "find_available_data_range_date_error",
+                symbol=symbol,
+                date=date_str,
+                error=str(e),
+                error_type=type(e).__name__,
+                exc_info=True,
+            )
+            continue
+    
+    logger.info(
+        "find_available_data_range_dates_summary",
+        symbol=symbol,
+        dates_checked=dates_checked,
+        dates_found=dates_found,
+        dates_not_found=dates_not_found,
+        data_frames_count=len(all_data),
+    )
     
     if not all_data:
         logger.warning(
             "no_data_available_for_target_computation",
             symbol=symbol,
             target_timestamp=target_timestamp.isoformat(),
+            target_date=target_date.isoformat(),
+            previous_date=previous_date.isoformat(),
+            dates_checked=dates_checked,
         )
         return None
     
     # Combine all data
     combined_df = pd.concat(all_data, ignore_index=True)
+    
+    logger.debug(
+        "find_available_data_range_combined",
+        symbol=symbol,
+        combined_rows=len(combined_df),
+        columns=list(combined_df.columns) if not combined_df.empty else [],
+    )
     
     # Normalize timestamps
     if "timestamp" in combined_df.columns:
@@ -106,31 +175,83 @@ async def find_available_data_range(
         
         # Find latest available timestamp
         latest_available_timestamp = combined_df["timestamp"].max()
+        earliest_available_timestamp = combined_df["timestamp"].min()
+        
+        logger.info(
+            "find_available_data_range_timestamps",
+            symbol=symbol,
+            earliest_available=earliest_available_timestamp.isoformat(),
+            latest_available=latest_available_timestamp.isoformat(),
+            target_timestamp=target_timestamp.isoformat(),
+            total_rows=len(combined_df),
+        )
         
         # Check if data is too old (beyond expected delay)
         now_utc = datetime.now(timezone.utc)
         data_age_seconds = (now_utc - latest_available_timestamp).total_seconds()
+        max_allowed_age = max_expected_delay_seconds + max_lookback_seconds
         
-        if data_age_seconds > max_expected_delay_seconds + max_lookback_seconds:
+        logger.debug(
+            "find_available_data_range_age_check",
+            symbol=symbol,
+            now_utc=now_utc.isoformat(),
+            latest_available=latest_available_timestamp.isoformat(),
+            data_age_seconds=data_age_seconds,
+            max_expected_delay_seconds=max_expected_delay_seconds,
+            max_lookback_seconds=max_lookback_seconds,
+            max_allowed_age=max_allowed_age,
+        )
+        
+        if data_age_seconds > max_allowed_age:
             logger.warning(
                 "data_too_old_for_target_computation",
                 symbol=symbol,
                 target_timestamp=target_timestamp.isoformat(),
                 latest_available=latest_available_timestamp.isoformat(),
                 data_age_seconds=data_age_seconds,
+                max_allowed_age=max_allowed_age,
                 max_lookback=max_lookback_seconds,
+                max_expected_delay=max_expected_delay_seconds,
             )
             return None
         
         # Check if target_timestamp is available or needs adjustment
+        target_vs_latest_diff = (target_timestamp - latest_available_timestamp).total_seconds()
+        
+        logger.debug(
+            "find_available_data_range_timestamp_comparison",
+            symbol=symbol,
+            target_timestamp=target_timestamp.isoformat(),
+            latest_available_timestamp=latest_available_timestamp.isoformat(),
+            target_vs_latest_diff_seconds=target_vs_latest_diff,
+            target_is_before_latest=target_timestamp <= latest_available_timestamp,
+        )
+        
         if target_timestamp <= latest_available_timestamp:
             # Data is available, use as-is
             timestamp_adjusted = False
             adjusted_target_timestamp = target_timestamp
             lookback_seconds_used = 0
+            
+            logger.info(
+                "find_available_data_range_success_no_adjustment",
+                symbol=symbol,
+                target_timestamp=target_timestamp.isoformat(),
+                latest_available=latest_available_timestamp.isoformat(),
+            )
         else:
             # Data is not available, check if we can adjust
             gap_seconds = (target_timestamp - latest_available_timestamp).total_seconds()
+            
+            logger.debug(
+                "find_available_data_range_gap_check",
+                symbol=symbol,
+                target_timestamp=target_timestamp.isoformat(),
+                latest_available=latest_available_timestamp.isoformat(),
+                gap_seconds=gap_seconds,
+                max_lookback_seconds=max_lookback_seconds,
+                gap_exceeds_max=gap_seconds > max_lookback_seconds,
+            )
             
             if gap_seconds > max_lookback_seconds:
                 logger.warning(
@@ -140,6 +261,7 @@ async def find_available_data_range(
                     latest_available=latest_available_timestamp.isoformat(),
                     gap_seconds=gap_seconds,
                     max_lookback=max_lookback_seconds,
+                    gap_exceeds_max_by=gap_seconds - max_lookback_seconds,
                 )
                 return None
             
@@ -156,14 +278,32 @@ async def find_available_data_range(
                 lookback_seconds=lookback_seconds_used,
             )
         
-        return {
+        result = {
             "adjusted_target_timestamp": adjusted_target_timestamp,
             "latest_available_timestamp": latest_available_timestamp,
             "timestamp_adjusted": timestamp_adjusted,
             "lookback_seconds_used": lookback_seconds_used,
             "historical_data": combined_df,
         }
+        
+        logger.info(
+            "find_available_data_range_success",
+            symbol=symbol,
+            adjusted_target_timestamp=adjusted_target_timestamp.isoformat(),
+            latest_available_timestamp=latest_available_timestamp.isoformat(),
+            timestamp_adjusted=timestamp_adjusted,
+            lookback_seconds_used=lookback_seconds_used,
+            historical_data_rows=len(combined_df),
+        )
+        
+        return result
     
+    logger.warning(
+        "find_available_data_range_no_timestamp_column",
+        symbol=symbol,
+        target_timestamp=target_timestamp.isoformat(),
+        columns=list(combined_df.columns) if not combined_df.empty else [],
+    )
     return None
 
 

@@ -14,14 +14,14 @@ from src.services.positions.position_event_normalizer import PositionEventNormal
 def test_subscription_create_builds_expected_fields():
     sub = Subscription.create(
         channel_type="trades",
-        topic="trade.BTCUSDT",
+        topic="publicTrade.BTCUSDT",  # Bybit v5 uses publicTrade format
         requesting_service="test-service",
         symbol="BTCUSDT",
     )
 
     assert sub.id is not None
     assert sub.channel_type == "trades"
-    assert sub.topic == "trade.BTCUSDT"
+    assert sub.topic == "publicTrade.BTCUSDT"
     assert sub.requesting_service == "test-service"
     assert sub.is_active is True
     assert sub.symbol == "BTCUSDT"
@@ -33,7 +33,7 @@ def test_event_create_sets_timestamps_and_ids():
     ts = dt.datetime.utcnow()
     event = Event.create(
         event_type="trade",
-        topic="trade.BTCUSDT",
+        topic="publicTrade.BTCUSDT",  # Bybit v5 uses publicTrade format
         timestamp=ts,
         payload={"symbol": "BTCUSDT"},
         trace_id="trace-123",
@@ -41,7 +41,7 @@ def test_event_create_sets_timestamps_and_ids():
 
     assert event.event_id is not None
     assert event.event_type == "trade"
-    assert event.topic == "trade.BTCUSDT"
+    assert event.topic == "publicTrade.BTCUSDT"
     assert event.timestamp == ts
     assert event.received_at is not None
     assert event.payload["symbol"] == "BTCUSDT"
@@ -51,7 +51,7 @@ def test_event_create_sets_timestamps_and_ids():
 @pytest.mark.parametrize(
     "channel_type, symbol, expected_topic",
     [
-        ("trades", "BTCUSDT", "trade.BTCUSDT"),
+        ("trades", "BTCUSDT", "publicTrade.BTCUSDT"),  # Bybit v5 uses publicTrade format for spot
         ("ticker", "BTCUSDT", "tickers.BTCUSDT"),
         ("orderbook", "BTCUSDT", "orderbook.1.BTCUSDT"),
         ("balance", None, "wallet"),
@@ -67,12 +67,12 @@ def test_subscription_service_build_topic(channel_type, symbol, expected_topic):
 def test_event_parser_builds_events_from_message():
     sub = Subscription.create(
         channel_type="trades",
-        topic="trade.BTCUSDT",
+        topic="publicTrade.BTCUSDT",  # Bybit v5 uses publicTrade format
         requesting_service="test-service",
         symbol="BTCUSDT",
     )
     message = {
-        "topic": "trade.BTCUSDT",
+        "topic": "publicTrade.BTCUSDT",  # Bybit v5 uses publicTrade format
         "ts": int(dt.datetime.utcnow().timestamp() * 1000),
         "data": [
             {
@@ -92,8 +92,8 @@ def test_event_parser_builds_events_from_message():
 
     assert len(events) == 1
     event = events[0]
-    assert event.event_type == "trades"
-    assert event.topic == "trade.BTCUSDT"
+    assert event.event_type == "trade"  # Normalized from "trades" to match EventType
+    assert event.topic == "publicTrade.BTCUSDT"
     assert event.payload["symbol"] == "BTCUSDT"
     assert event.trace_id == "trace-123"
 

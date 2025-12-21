@@ -17,7 +17,7 @@ from src.services.target_computation_data import (
     load_historical_data_for_target_computation,
 )
 from src.config import config
-from src.api.middleware.auth import verify_api_key
+from .middleware.auth import verify_api_key
 
 logger = structlog.get_logger(__name__)
 

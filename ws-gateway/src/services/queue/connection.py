@@ -81,3 +81,10 @@ class QueueConnection:
             return False
         return not cls._connection.is_closed
 
+    @classmethod
+    def invalidate_channel(cls) -> None:
+        """Invalidate the cached channel, forcing recreation on next get_channel call."""
+        if cls._channel is not None:
+            cls._channel = None
+            logger.info("rabbitmq_channel_invalidated")
+

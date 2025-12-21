@@ -2,10 +2,13 @@
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, status
+from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
 
 from .api.health import router as health_router
 from .api.middleware import APIKeyAuthMiddleware, RequestLoggingMiddleware
+from .api.middleware.security import SecurityMiddleware
 from .api.v1 import balances_router, subscriptions_router
 from .config.logging import get_logger, setup_logging
 from .config.settings import settings
@@ -20,6 +23,7 @@ from .services.websocket.connection import get_connection
 from .services.websocket.connection_manager import get_connection_manager
 from .services.websocket.heartbeat import HeartbeatManager
 from .services.websocket.reconnection import ReconnectionManager
+from .services.subscription.subscription_monitor import SubscriptionMonitor
 
 # Setup logging first
 setup_logging()
@@ -36,6 +40,7 @@ async def lifespan(app: FastAPI):
     websocket_connection = None
     reconnection_manager = None
     heartbeat_manager = None
+    subscription_monitor = None
 
     try:
         # Initialize database connection pool
@@ -61,6 +66,11 @@ async def lifespan(app: FastAPI):
         # Start queue backlog monitoring (EC7: Monitor slow subscriber consumption)
         await start_backlog_monitoring()
         logger.info("queue_backlog_monitoring_started")
+
+        # Start subscription monitoring (monitor stale subscriptions)
+        subscription_monitor = SubscriptionMonitor()
+        await subscription_monitor.start()
+        logger.info("subscription_monitoring_started")
 
         # Initialize WebSocket connection
         websocket_connection = get_connection()
@@ -152,6 +162,11 @@ async def lifespan(app: FastAPI):
             await websocket_connection.disconnect()
             logger.info("websocket_connection_closed")
 
+        # Stop subscription monitoring
+        if subscription_monitor:
+            await subscription_monitor.stop()
+            logger.info("subscription_monitoring_stopped")
+
         # Stop queue backlog monitoring
         await stop_backlog_monitoring()
         logger.info("queue_backlog_monitoring_stopped")
@@ -194,8 +209,9 @@ app = FastAPI(
 )
 
 #
-# Middleware
+# Middleware (security first, then logging, then auth)
 #
+app.add_middleware(SecurityMiddleware)
 app.add_middleware(RequestLoggingMiddleware)
 app.add_middleware(APIKeyAuthMiddleware)
 
@@ -220,4 +236,66 @@ try:
     app.include_router(view_data_router)
 except ImportError:
     pass
+
+
+#
+# Exception handlers
+#
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Handle validation errors, returning 404 for suspicious paths."""
+    path = request.url.path
+    
+    # Check if path looks suspicious (even if normalized by uvicorn)
+    suspicious_patterns = ["/etc/passwd", "/etc/shadow", "/proc/", "/sys/", "/dev/", "passwd", "shadow"]
+    if any(suspicious in path.lower() for suspicious in suspicious_patterns):
+        logger.warning(
+            "Suspicious path in validation error - returning 404",
+            path=path,
+            client_ip=request.client.host if request.client else None,
+        )
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={"detail": "Not found"}
+        )
+    
+    # For other validation errors, return standard 422
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={"detail": exc.errors()}
+    )
+
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request: Request, exc: Exception):
+    """Handle general exceptions, returning 404 for suspicious paths."""
+    path = request.url.path
+    
+    # Check if path looks suspicious (even if normalized by uvicorn)
+    suspicious_patterns = ["/etc/passwd", "/etc/shadow", "/proc/", "/sys/", "/dev/", "passwd", "shadow"]
+    if any(suspicious in path.lower() for suspicious in suspicious_patterns):
+        logger.warning(
+            "Suspicious path in exception - returning 404",
+            path=path,
+            client_ip=request.client.host if request.client else None,
+            error_type=type(exc).__name__,
+        )
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={"detail": "Not found"}
+        )
+    
+    # For other exceptions, log and return 500
+    logger.error(
+        "Unhandled exception",
+        path=path,
+        client_ip=request.client.host if request.client else None,
+        error_type=type(exc).__name__,
+        error=str(exc),
+        exc_info=True,
+    )
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={"detail": "Internal server error"}
+    )
 

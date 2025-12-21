@@ -11,7 +11,7 @@ from src.services.feature_registry_version_manager import FeatureRegistryVersion
 from src.services.feature_registry_hot_reload import reload_registry_in_memory
 from src.storage.metadata_storage import MetadataStorage
 from src.models.feature_registry import FeatureRegistry
-from src.api.middleware.auth import verify_api_key
+from .middleware.auth import verify_api_key
 
 logger = structlog.get_logger(__name__)
 
@@ -565,11 +565,40 @@ async def sync_feature_registry_file(
         
         file_path = version_record["file_path"]
         
-        # Load and validate config from file
+        # Validate file_path for path traversal
+        from .middleware.security import is_path_traversal_attempt, validate_path_safe
         from pathlib import Path
         import yaml
         
+        if is_path_traversal_attempt(file_path):
+            logger.warning(
+                "Path traversal detected in file_path",
+                version=version,
+                file_path=file_path,
+            )
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid file path"
+            )
+        
         path = Path(file_path)
+        
+        # Validate that file_path is within allowed base directory (if configured)
+        # For now, just check that path is valid
+        try:
+            path.resolve()
+        except (OSError, ValueError) as e:
+            logger.warning(
+                "Invalid file path",
+                version=version,
+                file_path=file_path,
+                error=str(e),
+            )
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid file path"
+            )
+        
         if not path.exists():
             raise HTTPException(
                 status_code=404,

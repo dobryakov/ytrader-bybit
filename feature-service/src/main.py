@@ -5,8 +5,10 @@ Initializes FastAPI application with basic routing and health check.
 """
 
 import asyncio
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, Request, status
 from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import Response
 from src.api.health import router as health_router
 from src.api.features import router as features_router, set_feature_computer
 from src.api.dataset import (
@@ -34,9 +36,10 @@ from src.api.feature_registry import (
     set_feature_registry_version_manager as set_feature_registry_version_manager_api,
     set_metadata_storage_for_registry,
 )
-from src.api.middleware.auth import verify_api_key
-from src.logging import setup_logging, get_logger
-from src.config import config
+from .api.middleware.auth import verify_api_key
+from .api.middleware.security import security_middleware
+from .logging import setup_logging, get_logger
+from .config import config
 
 # Service components
 from src.mq.connection import MQConnectionManager
@@ -94,6 +97,12 @@ app.include_router(cache_router)
 app.include_router(historical_router)
 app.include_router(targets_router)
 
+# Add security middleware first (before auth) to catch path traversal attempts
+@app.middleware("http")
+async def security_middleware_wrapper(request, call_next):
+    """Security middleware wrapper."""
+    return await security_middleware(request, call_next)
+
 # Add authentication middleware to all routes except health
 @app.middleware("http")
 async def auth_middleware(request, call_next):
@@ -118,6 +127,76 @@ async def root():
             "status": "running",
         }
     )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """
+    Handle validation errors (e.g., invalid UUID in path parameters).
+    
+    Returns 404 for path validation errors to prevent information leakage.
+    """
+    # Check if this is a path parameter validation error (e.g., invalid UUID)
+    path = request.url.path
+    
+    # If path contains suspicious patterns, return 404 instead of 422
+    if ".." in path or any(char in path for char in ["\x00", "~", "//"]):
+        logger.warning(
+            "Invalid path in validation error",
+            path=path,
+            client_ip=request.client.host if request.client else None,
+            errors=exc.errors(),
+        )
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={"detail": "Not found"}
+        )
+    
+    # For other validation errors, return standard 422
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={"detail": exc.errors()}
+    )
+
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request: Request, exc: Exception):
+    """
+    Handle general exceptions, including path-related errors.
+    
+    Returns 404 for suspicious paths to prevent information leakage.
+    """
+    path = request.url.path
+    
+    # Check if path looks suspicious (even if normalized by uvicorn)
+    suspicious_patterns = ["/etc/passwd", "/etc/shadow", "/proc/", "/sys/", "/dev/", "passwd", "shadow"]
+    if any(suspicious in path.lower() for suspicious in suspicious_patterns):
+        logger.warning(
+            "Suspicious path in exception - returning 404",
+            path=path,
+            client_ip=request.client.host if request.client else None,
+            error_type=type(exc).__name__,
+        )
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={"detail": "Not found"}
+        )
+    
+    # For other exceptions, log and return 500
+    logger.error(
+        "Unhandled exception",
+        path=path,
+        client_ip=request.client.host if request.client else None,
+        error_type=type(exc).__name__,
+        error=str(exc),
+        exc_info=True,
+    )
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={"detail": "Internal server error"}
+    )
+
+
 
 
 @app.on_event("startup")

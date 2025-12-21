@@ -515,15 +515,22 @@ class WebSocketConnection:
         This implements the core of User Story 2 for event parsing and
         subscription tracking. Queue publishing and persistence are handled
         in later phases.
+        
+        Note: Multiple services can subscribe to the same topic (fan-out pattern).
+        We update last_event_at for ALL active subscriptions to this topic.
         """
         topic = data.get("topic")
         if not topic:
             return
 
-        # Look up active subscription for this topic
-        subscription = await SubscriptionRepository.find_active_by_topic(topic)
-        if not subscription:
+        # Look up ALL active subscriptions for this topic
+        # Multiple services can subscribe to the same topic (fan-out pattern)
+        subscriptions = await SubscriptionRepository.get_active_subscriptions_by_topic(topic)
+        if not subscriptions:
             return
+
+        # Use first subscription for event parsing (all subscriptions for same topic have same structure)
+        subscription = subscriptions[0]
 
         events = parse_events_from_message(
             message=data,
@@ -534,15 +541,25 @@ class WebSocketConnection:
         if not events:
             return
 
-        # Update subscription last_event_at
+        # Update last_event_at for ALL active subscriptions to this topic
+        # This ensures all services tracking this topic have accurate last_event_at
         last_ts = events[-1].timestamp
-        await SubscriptionService.update_last_event_at(subscription.id, last_ts)
+        for sub in subscriptions:
+            await SubscriptionService.update_last_event_at(sub.id, last_ts)
+            logger.debug(
+                "subscription_last_event_updated",
+                subscription_id=str(sub.id),
+                requesting_service=sub.requesting_service,
+                topic=sub.topic,
+                last_event_at=last_ts.isoformat(),
+            )
 
-        # Log events
+        # Log events for all subscriptions
         for event in events:
             logger.info(
                 "subscription_event_received",
-                subscription_id=str(subscription.id),
+                subscription_count=len(subscriptions),
+                subscription_services=[sub.requesting_service for sub in subscriptions],
                 channel_type=subscription.channel_type,
                 topic=subscription.topic,
                 event_type=event.event_type,

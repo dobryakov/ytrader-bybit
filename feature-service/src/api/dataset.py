@@ -11,19 +11,20 @@ import structlog
 import shutil
 import asyncio
 
-from src.models.dataset import (
+from ..models.dataset import (
     Dataset,
     DatasetStatus,
     SplitStrategy,
     TargetConfig,
     WalkForwardConfig,
 )
-from src.api.middleware.auth import verify_api_key
-from src.storage.metadata_storage import MetadataStorage
-from src.services.optimized_dataset.optimized_builder import OptimizedDatasetBuilder
-from src.services.target_registry_version_manager import TargetRegistryVersionManager
-from src.storage.parquet_storage import ParquetStorage
-from src.config import config
+from .middleware.auth import verify_api_key
+from ..storage.metadata_storage import MetadataStorage
+from ..services.optimized_dataset.optimized_builder import OptimizedDatasetBuilder
+from ..services.target_registry_version_manager import TargetRegistryVersionManager
+from ..storage.parquet_storage import ParquetStorage
+from ..config import config
+from .middleware.security import validate_path_safe, is_path_traversal_attempt
 
 logger = structlog.get_logger(__name__)
 
@@ -275,8 +276,53 @@ async def download_dataset(
     if not storage_path:
         raise HTTPException(status_code=404, detail="Dataset file not found")
     
+    # Validate storage_path for path traversal
+    if is_path_traversal_attempt(storage_path):
+        logger.warning(
+            "Path traversal detected in storage_path",
+            dataset_id=str(dataset_id),
+            storage_path=storage_path,
+        )
+        raise HTTPException(status_code=400, detail="Invalid storage path")
+    
+    # Validate that storage_path is within allowed base directory
+    base_path = PathLib(config.feature_service_dataset_storage_path)
+    storage_path_obj = PathLib(storage_path)
+    if not validate_path_safe(base_path, storage_path_obj):
+        logger.warning(
+            "Storage path outside allowed directory",
+            dataset_id=str(dataset_id),
+            storage_path=storage_path,
+            base_path=str(base_path),
+        )
+        raise HTTPException(status_code=400, detail="Invalid storage path")
+    
     output_format = dataset.get("output_format", "parquet")
-    file_path = PathLib(storage_path) / f"{split}.{output_format}"
+    
+    # Validate output_format
+    if output_format not in ["parquet", "csv", "hdf5"]:
+        raise HTTPException(status_code=400, detail="Invalid output format")
+    
+    # Validate split name for path traversal
+    if is_path_traversal_attempt(split):
+        logger.warning(
+            "Path traversal detected in split name",
+            dataset_id=str(dataset_id),
+            split=split,
+        )
+        raise HTTPException(status_code=400, detail="Invalid split name")
+    
+    file_path = storage_path_obj / f"{split}.{output_format}"
+    
+    # Final validation: ensure file_path is still within base_path
+    if not validate_path_safe(base_path, file_path):
+        logger.warning(
+            "File path outside allowed directory",
+            dataset_id=str(dataset_id),
+            file_path=str(file_path),
+            base_path=str(base_path),
+        )
+        raise HTTPException(status_code=400, detail="Invalid file path")
     
     if not file_path.exists():
         raise HTTPException(status_code=404, detail=f"Split file not found: {split}")

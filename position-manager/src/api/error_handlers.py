@@ -10,8 +10,9 @@ from __future__ import annotations
 
 from typing import Any, Dict, Tuple, Type
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
 
 from ..config.logging import get_logger
 from ..exceptions import (
@@ -79,14 +80,64 @@ def register_error_handlers(app: FastAPI) -> None:
             )
             return JSONResponse(status_code=_status, content=payload)
 
+    @app.exception_handler(RequestValidationError)
+    async def _validation_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+        """Handle request validation errors, returning 404 for suspicious paths."""
+        trace_id = get_or_create_trace_id()
+        path = request.url.path
+        
+        # Check if path looks suspicious (even if normalized by uvicorn)
+        suspicious_patterns = ["/etc/passwd", "/etc/shadow", "/proc/", "/sys/", "/dev/", "passwd", "shadow"]
+        if any(suspicious in path.lower() for suspicious in suspicious_patterns):
+            logger.warning(
+                "Suspicious path in validation error - returning 404",
+                path=path,
+                client_ip=request.client.host if request.client else None,
+                trace_id=trace_id,
+            )
+            payload = _build_error_payload(
+                code="NOT_FOUND",
+                message="Not found",
+                trace_id=trace_id,
+            )
+            return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content=payload)
+        
+        # For other validation errors, return standard 422
+        payload = _build_error_payload(
+            code="VALIDATION_ERROR",
+            message="Request validation failed",
+            trace_id=trace_id,
+            extra={"errors": exc.errors()},
+        )
+        return JSONResponse(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, content=payload)
+
     @app.exception_handler(Exception)
     async def _generic_handler(request: Request, exc: Exception) -> JSONResponse:  # pragma: no cover - defensive
         trace_id = get_or_create_trace_id()
+        path = request.url.path
+        
+        # Check if path looks suspicious (even if normalized by uvicorn)
+        suspicious_patterns = ["/etc/passwd", "/etc/shadow", "/proc/", "/sys/", "/dev/", "passwd", "shadow"]
+        if any(suspicious in path.lower() for suspicious in suspicious_patterns):
+            logger.warning(
+                "Suspicious path in exception - returning 404",
+                path=path,
+                client_ip=request.client.host if request.client else None,
+                error_type=exc.__class__.__name__,
+                trace_id=trace_id,
+            )
+            payload = _build_error_payload(
+                code="NOT_FOUND",
+                message="Not found",
+                trace_id=trace_id,
+            )
+            return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content=payload)
+        
         logger.error(
             "unhandled_generic_exception",
             error_type=exc.__class__.__name__,
             error=str(exc),
-            path=request.url.path,
+            path=path,
             method=request.method,
             trace_id=trace_id,
             exc_info=True,

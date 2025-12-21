@@ -33,6 +33,12 @@ class Settings(BaseSettings):
     rabbitmq_port: int = Field(default=5672, description="RabbitMQ port")
     rabbitmq_user: str = Field(default="guest", description="RabbitMQ username")
     rabbitmq_password: str = Field(default="guest", description="RabbitMQ password")
+    rabbitmq_connection_timeout: int = Field(
+        default=30, description="RabbitMQ connection timeout in seconds"
+    )
+    rabbitmq_rpc_timeout: int = Field(
+        default=60, description="RabbitMQ RPC timeout in seconds"
+    )
 
     # WebSocket Gateway Service Configuration
     ws_gateway_port: int = Field(default=4400, description="REST API port")

@@ -7,6 +7,7 @@ from typing import Optional
 
 from ..config.logging import get_logger
 from ..config.settings import settings
+from ..exceptions import QueueError
 
 logger = get_logger(__name__)
 
@@ -19,12 +20,12 @@ class WSGatewayClient:
         self.base_url = base_url or settings.ws_gateway_url
         self.api_key = api_key or settings.ws_gateway_api_key
 
-    async def subscribe_to_position(self) -> bool:
+    async def subscribe_to_position(self) -> None:
         """
         Subscribe to position updates from ws-gateway.
 
-        Returns:
-            True if subscription was successful, False otherwise
+        Raises:
+            QueueError: If subscription fails
         """
         url = f"{self.base_url}/api/v1/subscriptions"
         headers = {
@@ -46,7 +47,6 @@ class WSGatewayClient:
                     subscription_id=result.get("id"),
                     topic=result.get("topic"),
                 )
-                return True
         except httpx.HTTPStatusError as e:
             # If subscription already exists (409), that's okay
             if e.response.status_code == 409:
@@ -54,14 +54,15 @@ class WSGatewayClient:
                     "ws_gateway_position_subscription_already_exists",
                     error=e.response.text,
                 )
-                return True
+                return
+            error_msg = f"Failed to create subscription: {e.response.status_code} - {e.response.text}"
             logger.error(
                 "ws_gateway_position_subscription_failed",
                 status_code=e.response.status_code,
                 error=e.response.text,
                 exc_info=True,
             )
-            return False
+            raise QueueError(error_msg) from e
         except httpx.RequestError as e:
             logger.error(
                 "ws_gateway_position_subscription_request_failed",
@@ -69,7 +70,7 @@ class WSGatewayClient:
                 error_type=type(e).__name__,
                 exc_info=True,
             )
-            return False
+            raise QueueError(f"HTTP error creating subscription: {e}") from e
         except Exception as e:
             logger.error(
                 "ws_gateway_position_subscription_unexpected_error",
@@ -77,5 +78,5 @@ class WSGatewayClient:
                 error_type=type(e).__name__,
                 exc_info=True,
             )
-            return False
+            raise QueueError(f"Failed to subscribe to position events: {e}") from e
 

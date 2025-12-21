@@ -284,18 +284,34 @@ class MarketDataConsumer:
                     async with message.process():
                         try:
                             body = json.loads(message.body.decode())
-                            logger.debug(
+                            event_type = body.get("event_type")
+                            topic = body.get("topic")
+                            symbol = body.get("symbol") or (body.get("payload", {}).get("symbol") if isinstance(body.get("payload"), dict) else None)
+                            
+                            logger.info(
                                 "message_received",
                                 queue=queue_name,
-                                event_type=body.get("event_type"),
-                                topic=body.get("topic"),
+                                event_type=event_type,
+                                topic=topic,
+                                symbol=symbol,
+                                service_name=self._service_name,
                             )
                             await self._process_market_data_event(body, queue_name)
+                            logger.debug(
+                                "message_processed",
+                                queue=queue_name,
+                                event_type=event_type,
+                                topic=topic,
+                                symbol=symbol,
+                            )
                         except Exception as e:
                             logger.error(
                                 "message_processing_error",
                                 queue=queue_name,
+                                event_type=body.get("event_type") if 'body' in locals() else None,
+                                topic=body.get("topic") if 'body' in locals() else None,
                                 error=str(e),
+                                error_type=type(e).__name__,
                                 exc_info=True,
                             )
                 

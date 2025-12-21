@@ -92,6 +92,8 @@ async def get_prediction_chain(signal_id: str) -> Dict[str, Any]:
             orders = [dict(row) for row in order_rows]
 
             # Position_orders and positions via join (if any orders exist)
+            # Note: By the time this API is called, position_orders.order_id should already be filled
+            # (order-manager updates position_orders.order_id after creating the order in DB)
             if orders:
                 order_ids = [row["id"] for row in order_rows]
                 po_rows = await conn.fetch(

@@ -297,157 +297,16 @@ async def test_update_position_from_websocket_uses_mark_price_fallback():
     assert position.average_entry_price == Decimal("51000.0")
 
 
-@pytest.mark.asyncio
-async def test_update_position_from_order_fill_fixes_missing_avg_price():
-    """Test that update_position_from_order_fill fixes missing average_entry_price."""
-    manager = PositionManager()
-    
-    # Mock existing position with NULL average_entry_price
-    # Use model_construct to bypass Pydantic validation (simulating DB state before fix)
-    existing_position = Position.model_construct(
-        id="123e4567-e89b-12d3-a456-426614174000",
-        asset="BTCUSDT",
-        mode="one-way",
-        size=Decimal("-0.542"),
-        average_entry_price=None,  # Missing!
-        current_price=Decimal("50000.0"),
-        unrealized_pnl=Decimal("0.0"),
-        realized_pnl=Decimal("0.0"),
-        long_size=None,
-        short_size=None,
-        version=1,
-        last_updated=datetime.utcnow(),
-        closed_at=None,
-        created_at=datetime.utcnow(),
-    )
-    
-    # asyncpg records support dict() conversion
-    class MockRow(dict):
-        def __init__(self, data):
-            super().__init__(data)
-            self._data = data
-        def __getitem__(self, key):
-            return self._data.get(key)
-    
-    now = datetime.utcnow()
-    mock_pool = AsyncMock()
-    
-    # Mock update query result
-    mock_update_row = MockRow({
-        "id": "123e4567-e89b-12d3-a456-426614174000",
-        "asset": "BTCUSDT",
-        "mode": "one-way",
-        "size": Decimal("-0.542"),
-        "average_entry_price": Decimal("49000.0"),  # Fixed
-        "current_price": Decimal("50000.0"),
-        "unrealized_pnl": Decimal("0.0"),
-        "realized_pnl": Decimal("0.0"),
-        "long_size": None,
-        "short_size": None,
-        "version": 2,
-        "last_updated": now,
-        "closed_at": None,
-        "created_at": now,
-    })
-    
-    # Mock get_position to return existing position (bypassing DB query)
-    async def mock_get_position(asset: str, mode: str = "one-way"):
-        return existing_position
-    
-    mock_pool.fetchrow = AsyncMock(return_value=mock_update_row)
-    
-    # Mock calculation to return a price
-    with patch.object(manager, "get_position", side_effect=mock_get_position):
-        with patch.object(
-            manager,
-            "_calculate_average_entry_price_from_orders",
-            return_value=Decimal("49000.0"),
-        ):
-            with patch("src.services.position_manager.DatabaseConnection.get_pool", return_value=mock_pool):
-                position = await manager.update_position_from_order_fill(
-                    asset="BTCUSDT",
-                    size_delta=Decimal("0"),
-                    execution_price=Decimal("50000.0"),
-                    execution_fees=None,
-                    mode="one-way",
-                )
-    
-    assert position is not None
-    # Verify that average_entry_price was fixed
-    assert position.average_entry_price == Decimal("49000.0")
-
-
-@pytest.mark.asyncio
-async def test_update_position_from_order_fill_uses_execution_price_fallback():
-    """Test that update_position_from_order_fill uses execution_price as fallback."""
-    manager = PositionManager()
-    
-    # Mock existing position with NULL average_entry_price
-    # Use model_construct to bypass Pydantic validation (simulating DB state before fix)
-    existing_position = Position.model_construct(
-        id="123e4567-e89b-12d3-a456-426614174000",
-        asset="BTCUSDT",
-        mode="one-way",
-        size=Decimal("-0.542"),
-        average_entry_price=None,  # Missing!
-        current_price=Decimal("50000.0"),
-        unrealized_pnl=Decimal("0.0"),
-        realized_pnl=Decimal("0.0"),
-        long_size=None,
-        short_size=None,
-        version=1,
-        last_updated=datetime.utcnow(),
-        closed_at=None,
-        created_at=datetime.utcnow(),
-    )
-    
-    # asyncpg records support dict() conversion
-    class MockRow(dict):
-        def __init__(self, data):
-            super().__init__(data)
-            self._data = data
-        def __getitem__(self, key):
-            return self._data.get(key)
-    
-    now = datetime.utcnow()
-    mock_pool = AsyncMock()
-    
-    mock_update_row = MockRow({
-        "id": "123e4567-e89b-12d3-a456-426614174000",
-        "asset": "BTCUSDT",
-        "mode": "one-way",
-        "size": Decimal("-0.542"),
-        "average_entry_price": Decimal("50000.0"),  # Should use execution_price
-        "current_price": Decimal("50000.0"),
-        "unrealized_pnl": Decimal("0.0"),
-        "realized_pnl": Decimal("0.0"),
-        "long_size": None,
-        "short_size": None,
-        "version": 2,
-        "last_updated": now,
-        "closed_at": None,
-        "created_at": now,
-    })
-    
-    mock_pool.fetchrow = AsyncMock(return_value=mock_update_row)
-    
-    with patch.object(manager, "get_position", return_value=existing_position):
-        # Mock calculation to return None
-        with patch.object(
-            manager,
-            "_calculate_average_entry_price_from_orders",
-            return_value=None,
-        ):
-            with patch("src.services.position_manager.DatabaseConnection.get_pool", return_value=mock_pool):
-                position = await manager.update_position_from_order_fill(
-                    asset="BTCUSDT",
-                    size_delta=Decimal("0"),
-                    execution_price=Decimal("50000.0"),  # Should be used as fallback
-                    execution_fees=None,
-                    mode="one-way",
-                )
-    
-    assert position is not None
-    # Verify that execution_price was used as fallback
-    assert position.average_entry_price == Decimal("50000.0")
+# NOTE: These tests are deprecated. The update_position_from_order_fill method has been removed.
+# Positions are now updated only from WebSocket events.
+# 
+# @pytest.mark.asyncio
+# async def test_update_position_from_order_fill_fixes_missing_avg_price():
+#     """Test that update_position_from_order_fill fixes missing average_entry_price."""
+#     ... (test implementation removed)
+#
+# @pytest.mark.asyncio
+# async def test_update_position_from_order_fill_uses_execution_price_fallback():
+#     """Test that update_position_from_order_fill uses execution_price as fallback."""
+#     ... (test implementation removed)
 

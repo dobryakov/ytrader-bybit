@@ -29,9 +29,9 @@ __all__ = ["PositionManager", "httpx"]
 class PositionManager:
     """Service for managing position state, queries, and ML feature helpers."""
 
-    # In-memory tracking of last-seen timestamps per source for conflict resolution.
+    # In-memory tracking of last-seen WebSocket timestamps for conflict resolution.
     # Keys are (asset_upper, mode_lower).
-    _last_order_timestamp: Dict[Tuple[str, str], datetime] = {}
+    # NOTE: _last_order_timestamp removed - positions are now updated only from WebSocket events
     _last_ws_timestamp: Dict[Tuple[str, str], datetime] = {}
 
     # === Core queries ======================================================
@@ -221,359 +221,6 @@ class PositionManager:
         except Exception as e:  # pragma: no cover
             logger.error("get_all_positions_failed", error=str(e))
             raise DatabaseError(f"Failed to retrieve all positions: {e}") from e
-
-    # === Order-fill based update (Phase 3 scope) ===========================
-
-    async def update_position_from_order_fill(
-        self,
-        asset: str,
-        size_delta: Decimal,
-        execution_price: Decimal,
-        execution_fees: Optional[Decimal] = None,
-        mode: str = "one-way",
-        execution_timestamp: Optional[datetime] = None,
-    ) -> Position:
-        """Update position based on order execution.
-
-        This is a direct adaptation of Order Manager's position update logic,
-        extended to work with the shared `positions` schema and optimistic
-        locking semantics (version field).
-        """
-        max_retries = settings.position_manager_optimistic_lock_retries
-        backoff_base_ms = settings.position_manager_optimistic_lock_backoff_base
-
-        try:
-            pool = await DatabaseConnection.get_pool()
-
-            for attempt in range(max_retries):
-                # Fetch the current position (if any)
-                current_position = await self.get_position(asset, mode)
-
-                if current_position is None:
-                    # Position creation on first order update
-                    new_size = size_delta
-                    new_avg_price: Optional[Decimal] = execution_price if new_size != 0 else None
-                    version = 1
-
-                    insert_query = """
-                        INSERT INTO positions (
-                            asset, mode, size, average_entry_price,
-                            unrealized_pnl, realized_pnl,
-                            current_price, version, last_updated, created_at
-                        )
-                        VALUES ($1, $2, $3, $4, 0, 0, NULL, $5, NOW(), NOW())
-                        ON CONFLICT (asset, mode) DO NOTHING
-                        RETURNING id, asset, mode, size, average_entry_price, current_price,
-                                  unrealized_pnl, realized_pnl,
-                                  long_size, short_size, version,
-                                  last_updated, closed_at, created_at
-                    """
-                    row = await pool.fetchrow(
-                        insert_query,
-                        asset.upper(),
-                        mode.lower(),
-                        str(new_size),
-                        str(new_avg_price) if new_avg_price is not None else None,
-                        version,
-                    )
-                    if row:
-                        position = Position.from_db_dict(dict(row))
-                        # Record last order timestamp for conflict resolution (Phase 9)
-                        effective_ts = execution_timestamp or position.last_updated
-                        if effective_ts is not None:
-                            key = (position.asset, position.mode)
-                            self._last_order_timestamp[key] = effective_ts
-                        logger.info(
-                            "position_created_from_order_fill",
-                            asset=asset,
-                            mode=mode,
-                            size_delta=str(size_delta),
-                            execution_price=str(execution_price),
-                            new_size=str(position.size),
-                        )
-                        # Invalidate portfolio cache on new position
-                        try:
-                            from .portfolio_manager import default_portfolio_manager
-
-                            default_portfolio_manager.invalidate_cache()
-                        except Exception:  # pragma: no cover
-                            logger.warning("portfolio_cache_invalidation_failed_from_order_fill")
-                        # Best-effort publish position + portfolio events
-                        try:
-                            await PositionEventPublisher.publish_position_updated(
-                                position=position,
-                                update_source="order_execution",
-                                trace_id=None,
-                            )
-                        except Exception:  # pragma: no cover
-                            logger.warning("position_event_publish_failed_from_order_fill_create")
-                        return position
-
-                    # If insert did not return a row, a concurrent creator won; retry.
-                    logger.warning(
-                        "position_order_fill_insert_conflict_retry",
-                        asset=asset,
-                        mode=mode,
-                        attempt=attempt + 1,
-                    )
-                else:
-                    # Existing position - apply execution-based update rules
-                    current_size = current_position.size
-                    current_avg_price = current_position.average_entry_price
-                    
-                    # Fix missing average_entry_price for existing non-zero positions
-                    if current_avg_price is None and current_size != 0:
-                        calculated_avg_price = await self._calculate_average_entry_price_from_orders(
-                            asset, current_size
-                        )
-                        if calculated_avg_price:
-                            current_avg_price = calculated_avg_price
-                            logger.info(
-                                "average_entry_price_fixed_during_order_fill",
-                                asset=asset,
-                                mode=mode,
-                                size=str(current_size),
-                                calculated_avg_price=str(current_avg_price),
-                            )
-                        else:
-                            # Fallback to execution_price if calculation fails
-                            current_avg_price = execution_price
-                            logger.warning(
-                                "average_entry_price_using_execution_price_fallback",
-                                asset=asset,
-                                mode=mode,
-                                size=str(current_size),
-                                execution_price=str(execution_price),
-                            )
-                    elif current_avg_price is None:
-                        # Position size is 0, use execution_price as fallback
-                        current_avg_price = execution_price
-
-                    new_size = current_size + size_delta
-
-                    # Realized PnL for the portion that is being closed
-                    realized_pnl_delta = Decimal("0")
-                    if (current_size > 0 and size_delta < 0) or (
-                        current_size < 0 and size_delta > 0
-                    ):
-                        closed_qty = min(abs(current_size), abs(size_delta))
-                        fees = execution_fees or Decimal("0")
-                        if current_size > 0:
-                            # Long: profit when execution_price > avg_price
-                            realized_pnl_delta = (execution_price - current_avg_price) * closed_qty
-                        else:
-                            # Short: profit when execution_price < avg_price
-                            realized_pnl_delta = (current_avg_price - execution_price) * closed_qty
-                        realized_pnl_delta -= fees
-
-                    if new_size != 0:
-                        # Check if position direction is flipping (long to short or short to long)
-                        # This can happen in two scenarios:
-                        # 1. Sign changes: current_size > 0 and new_size < 0 (or vice versa)
-                        # 2. Position closes and reopens in opposite direction: size_delta is opposite to current_size
-                        #    and abs(size_delta) >= abs(current_size) but new_size != 0
-                        sign_changed = (current_size > 0 and new_size < 0) or (current_size < 0 and new_size > 0)
-                        position_closing_and_reopening = (
-                            (current_size > 0 and size_delta < 0 and abs(size_delta) >= abs(current_size) and new_size < 0) or
-                            (current_size < 0 and size_delta > 0 and abs(size_delta) >= abs(current_size) and new_size > 0)
-                        )
-                        is_flipping = sign_changed or position_closing_and_reopening
-                        
-                        if is_flipping:
-                            # Position is flipping: use execution_price for the new direction
-                            new_avg_price = execution_price
-                            logger.info(
-                                "position_flipping_detected",
-                                asset=asset,
-                                mode=mode,
-                                current_size=str(current_size),
-                                size_delta=str(size_delta),
-                                new_size=str(new_size),
-                                sign_changed=sign_changed,
-                                position_closing_and_reopening=position_closing_and_reopening,
-                                new_avg_price=str(new_avg_price),
-                            )
-                        elif (current_size > 0 and size_delta > 0) or (
-                            current_size < 0 and size_delta < 0
-                        ):
-                            # Increasing position in same direction: weighted average
-                            total_value = (current_size * current_avg_price) + (
-                                size_delta * execution_price
-                            )
-                            abs_new_size = abs(new_size)
-                            # Safety check: avoid division by very small numbers that could produce anomalies
-                            if abs_new_size < Decimal("0.001"):
-                                logger.warning(
-                                    "average_entry_price_calculation_skipped_tiny_size",
-                                    asset=asset,
-                                    mode=mode,
-                                    current_size=str(current_size),
-                                    size_delta=str(size_delta),
-                                    new_size=str(new_size),
-                                    current_avg_price=str(current_avg_price),
-                                    execution_price=str(execution_price),
-                                )
-                                # Use execution_price as fallback for very small positions
-                                new_avg_price = execution_price
-                            else:
-                                new_avg_price = total_value / abs_new_size
-                        else:
-                            # Decreasing position but not flipping: keep current average or set to execution_price if fully closed
-                            if abs(size_delta) >= abs(current_size):
-                                # Fully closing the position, but new_size != 0 means we're flipping
-                                # This shouldn't happen if is_flipping check above works, but keep as safety
-                                new_avg_price = execution_price
-                            else:
-                                # Partially closing: keep current average
-                                new_avg_price = current_avg_price
-                    else:
-                        new_avg_price = None
-
-                    # Validate calculated average_entry_price (defensive check)
-                    # Average entry price should be reasonable (between 0.1x and 10x of execution_price)
-                    if new_avg_price is not None and new_avg_price > 0:
-                        max_reasonable_price = execution_price * Decimal("10")
-                        min_reasonable_price = execution_price / Decimal("10")
-                        if new_avg_price > max_reasonable_price or new_avg_price < min_reasonable_price:
-                            logger.error(
-                                "average_entry_price_calculation_anomaly_detected",
-                                asset=asset,
-                                mode=mode,
-                                calculated_avg_price=str(new_avg_price),
-                                execution_price=str(execution_price),
-                                current_size=str(current_size),
-                                size_delta=str(size_delta),
-                                new_size=str(new_size),
-                                current_avg_price=str(current_avg_price),
-                            )
-                            # Fallback to execution_price if calculated value is unreasonable
-                            new_avg_price = execution_price
-
-                    # Update current_price and unrealized_pnl if we have the necessary data
-                    # Use existing current_price from position (don't fetch from API on every order fill for performance)
-                    current_price_for_pnl = current_position.current_price
-                    new_unrealized_pnl = current_position.unrealized_pnl
-                    
-                    # Calculate unrealized_pnl if we have current_price and average_entry_price
-                    if current_price_for_pnl is not None and new_avg_price is not None and new_size != 0:
-                        # Formula: (current_price - average_entry_price) * size
-                        # Works for both long (size > 0) and short (size < 0) positions
-                        new_unrealized_pnl = (current_price_for_pnl - new_avg_price) * new_size
-                    
-                    # Closed position handling: set average_entry_price to NULL when size = 0
-                    if new_size == 0:
-                        new_avg_price = None
-                    # Also ensure new_avg_price is not <= 0
-                    elif new_avg_price is not None and new_avg_price <= 0:
-                        logger.warning(
-                            "avg_price_invalid_negative_or_zero_order_fill",
-                            asset=asset,
-                            mode=mode,
-                            invalid_avg=str(new_avg_price),
-                            new_size=str(new_size),
-                        )
-                        new_avg_price = None
-
-                    closed_at_expr = "NOW()" if new_size == 0 else "NULL"
-
-                    update_query = f"""
-                        UPDATE positions
-                        SET size = CAST($1 AS numeric),
-                            average_entry_price = CASE 
-                                WHEN CAST($1 AS numeric) = 0 THEN NULL
-                                WHEN $2::text = '' THEN NULL
-                                WHEN CAST($2::text AS numeric) <= 0 THEN NULL
-                                ELSE CAST($2::text AS numeric)
-                            END,
-                            unrealized_pnl = CAST($3 AS numeric),
-                            realized_pnl = realized_pnl + CAST($4 AS numeric),
-                            version = version + 1,
-                            last_updated = NOW(),
-                            closed_at = {closed_at_expr}
-                        WHERE asset = $5
-                          AND mode = $6
-                          AND version = $7
-                        RETURNING id, asset, mode, size, average_entry_price, current_price,
-                                  unrealized_pnl, realized_pnl,
-                                  long_size, short_size, version,
-                                  last_updated, closed_at, created_at
-                    """
-                    row = await pool.fetchrow(
-                        update_query,
-                        str(new_size),
-                        str(new_avg_price) if new_avg_price is not None else "",
-                        str(new_unrealized_pnl),
-                        str(realized_pnl_delta),
-                        asset.upper(),
-                        mode.lower(),
-                        current_position.version,
-                    )
-                    if row:
-                        position = Position.from_db_dict(dict(row))
-                        # Record last order timestamp for conflict resolution (Phase 9)
-                        effective_ts = execution_timestamp or position.last_updated
-                        if effective_ts is not None:
-                            key = (position.asset, position.mode)
-                            self._last_order_timestamp[key] = effective_ts
-                        logger.info(
-                            "position_updated_from_order_fill",
-                            asset=asset,
-                            mode=mode,
-                            size_delta=str(size_delta),
-                            execution_price=str(execution_price),
-                            new_size=str(position.size),
-                            new_avg_price=str(position.average_entry_price)
-                            if position.average_entry_price is not None
-                            else None,
-                        )
-                        try:
-                            from .portfolio_manager import default_portfolio_manager
-
-                            default_portfolio_manager.invalidate_cache()
-                        except Exception:  # pragma: no cover
-                            logger.warning("portfolio_cache_invalidation_failed_from_order_fill")
-                        # Best-effort publish position event
-                        try:
-                            await PositionEventPublisher.publish_position_updated(
-                                position=position,
-                                update_source="order_execution",
-                                trace_id=None,
-                            )
-                        except Exception:  # pragma: no cover
-                            logger.warning("position_event_publish_failed_from_order_fill_update")
-                        return position
-
-                    # Conflict: someone updated the row first; retry with backoff.
-                    delay_ms = backoff_base_ms * (2**attempt)
-                    logger.warning(
-                        "position_order_fill_optimistic_lock_conflict",
-                        asset=asset,
-                        mode=mode,
-                        attempt=attempt + 1,
-                        delay_ms=delay_ms,
-                    )
-                    await asyncio.sleep(delay_ms / 1000.0)
-
-            logger.error(
-                "position_order_fill_optimistic_lock_failed",
-                asset=asset,
-                mode=mode,
-                retries=max_retries,
-            )
-            raise DatabaseError(
-                f"Failed to update position from order fill after {max_retries} optimistic-lock retries"
-            )
-        except DatabaseError:
-            raise
-        except Exception as e:  # pragma: no cover
-            logger.error(
-                "position_update_from_order_fill_failed",
-                asset=asset,
-                mode=mode,
-                size_delta=str(size_delta),
-                error=str(e),
-            )
-            raise DatabaseError(f"Failed to update position from order fill: {e}") from e
 
     # === WebSocket-based update (Phase 4 enhanced) ==========================
 
@@ -811,14 +458,15 @@ class PositionManager:
                             trace_id=trace_id,
                         )
 
-                        order_ts = self._last_order_timestamp.get(
-                            (position.asset, position.mode)
-                        )
+                        # NOTE: Positions are now updated only from WebSocket events.
+                        # Size discrepancy resolution is based on WebSocket data as source of truth.
+                        # Always use WebSocket size if there's a significant discrepancy.
+                        # (Previous order_timestamp-based conflict resolution removed)
                         if self._should_update_size_from_ws(
                             db_size=position.size,
                             ws_size=size_from_ws,
                             ws_timestamp=ws_effective_ts,
-                            order_timestamp=order_ts,
+                            order_timestamp=None,  # DEPRECATED: no longer used
                         ):
                             size_update_from_ws = True
                             resolved_size = size_from_ws  # type: ignore[assignment]
@@ -831,14 +479,11 @@ class PositionManager:
                                 ws_timestamp=ws_effective_ts.isoformat()
                                 if ws_effective_ts is not None
                                 else None,
-                                order_timestamp=order_ts.isoformat()
-                                if order_ts is not None
-                                else None,
                                 trace_id=trace_id,
                             )
                         else:
                             logger.info(
-                                "position_size_ws_not_applied_due_to_timestamp_or_config",
+                                "position_size_ws_not_applied_due_to_threshold",
                                 asset=asset,
                                 mode=mode,
                                 db_size=str(position.size),
@@ -846,10 +491,6 @@ class PositionManager:
                                 ws_timestamp=ws_effective_ts.isoformat()
                                 if ws_effective_ts is not None
                                 else None,
-                                order_timestamp=order_ts.isoformat()
-                                if order_ts is not None
-                                else None,
-                                timestamp_resolution_enabled=settings.position_manager_enable_timestamp_resolution,
                                 trace_id=trace_id,
                             )
                     
@@ -1540,22 +1181,23 @@ class PositionManager:
         db_size: Decimal,
         ws_size: Optional[Decimal],
         ws_timestamp: Optional[datetime],
-        order_timestamp: Optional[datetime],
+        order_timestamp: Optional[datetime],  # DEPRECATED: kept for compatibility, no longer used
     ) -> bool:
-        """Decide if size should be updated from WebSocket based on timestamps.
-
-        Rules (Phase 9 - T117):
-        - Feature must be enabled via POSITION_MANAGER_ENABLE_TIMESTAMP_RESOLUTION
-        - Both WebSocket and Order Manager timestamps must be present
-        - Size discrepancy must exceed POSITION_MANAGER_SIZE_VALIDATION_THRESHOLD
-        - WebSocket event timestamp must be fresher than Order Manager execution
-          timestamp (optionally plus POSITION_MANAGER_TIMESTAMP_TOLERANCE_SECONDS)
+        """Decide if size should be updated from WebSocket.
         
-        Special case: If size discrepancy is very large (> 1.0) and opposite signs,
-        always update from WebSocket (likely position flip issue).
+        NOTE: This method is simplified - positions are now updated only from WebSocket events,
+        so WebSocket is always the source of truth. This method is kept for compatibility
+        but always returns True if ws_size is available and differs significantly from db_size.
+
+        Args:
+            db_size: Current position size in database
+            ws_size: Position size from WebSocket event
+            ws_timestamp: WebSocket event timestamp (optional, for logging)
+            order_timestamp: DEPRECATED - no longer used, kept for compatibility
+
+        Returns:
+            True if size should be updated from WebSocket
         """
-        if not settings.position_manager_enable_timestamp_resolution:
-            return False
         if ws_size is None:
             return False
 
@@ -1577,16 +1219,9 @@ class PositionManager:
             )
             return True
 
-        # Normal timestamp-based resolution
-        if ws_timestamp is None or order_timestamp is None:
-            return False
-
-        tolerance_seconds = settings.position_manager_timestamp_tolerance_seconds
-        effective_order_ts = order_timestamp
-        if tolerance_seconds > 0:
-            effective_order_ts = order_timestamp + timedelta(seconds=tolerance_seconds)
-
-        return ws_timestamp > effective_order_ts
+        # Always use WebSocket as source of truth if there's a significant discrepancy
+        # (order_timestamp-based resolution removed as positions are only updated from WebSocket)
+        return True
 
     async def _get_current_price_from_api(
         self,
@@ -1594,16 +1229,22 @@ class PositionManager:
         trace_id: Optional[str] = None,
     ) -> Optional[Decimal]:
         """Query external price API (Bybit) with retries and backoff."""
-        base_url = "https://api.bybit.com/v5/market/tickers"
+        base_url = (
+            "https://api-testnet.bybit.com"
+            if settings.bybit_environment == "testnet"
+            else "https://api.bybit.com"
+        )
+        endpoint = "/v5/market/tickers"
+        url = f"{base_url}{endpoint}"
         retries = settings.position_manager_price_api_retries
         timeout_s = settings.position_manager_price_api_timeout
 
-        params = {"symbol": asset.upper()}
+        params = {"category": "linear", "symbol": asset.upper()}
 
         for attempt in range(retries):
             try:
                 async with httpx.AsyncClient(timeout=timeout_s) as client:
-                    response = await client.get(base_url, params=params)
+                    response = await client.get(url, params=params)
                 response.raise_for_status()
                 data = response.json()
                 # Minimal parsing: expect first ticker entry with "markPrice" or "lastPrice"
@@ -1749,6 +1390,16 @@ class PositionManager:
         trace_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Synchronize local positions with Bybit API positions.
+        
+        NOTE: This method updates positions directly via SQL, bypassing the normal
+        WebSocket-based update mechanism. This is intentional and acceptable because:
+        - This is a manual administrative tool for fixing discrepancies
+        - Bybit API is also a valid source of truth (like WebSocket events)
+        - This is not part of the normal position update flow
+        - Used only for manual synchronization when discrepancies are detected
+        
+        Normal position updates should go through update_position_from_websocket()
+        which is called by WebSocketPositionConsumer from ws-gateway.position events.
 
         Args:
             force: If True, force update local positions to match Bybit

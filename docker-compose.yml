@@ -5,7 +5,7 @@ services:
       dockerfile: Dockerfile
     container_name: ws-gateway
     ports:
-      - "${WS_GATEWAY_PORT:-4400}:4400"
+      - "127.0.0.1:${WS_GATEWAY_PORT:-4400}:4400"
     volumes:
       - ./ws-gateway/src:/app/src
       - ./ws-gateway/migrations:/app/migrations
@@ -58,6 +58,8 @@ services:
       - postgres_data:/var/lib/postgresql/data
     networks:
       - ytrader-network
+    ports:
+      - "127.0.0.1:5432:5432"
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ytrader}"]
@@ -82,10 +84,10 @@ services:
       timeout: 10s
       retries: 10
       start_period: 60s
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
+#    deploy:
+#      resources:
+#        limits:
+#          cpus: '0.5'
 
   redis:
     image: redis:7-alpine
@@ -108,7 +110,7 @@ services:
       dockerfile: Dockerfile
     container_name: model-service
     ports:
-      - "${MODEL_SERVICE_PORT:-4500}:4500"
+      - "127.0.0.1:${MODEL_SERVICE_PORT:-4500}:4500"
     environment:
       - POSTGRES_HOST=${POSTGRES_HOST:-postgres}
       - POSTGRES_PORT=${POSTGRES_PORT:-5432}
@@ -220,7 +222,7 @@ services:
       dockerfile: Dockerfile
     container_name: feature-service
     ports:
-      - "${FEATURE_SERVICE_PORT:-4900}:4900"
+      - "127.0.0.1:${FEATURE_SERVICE_PORT:-4900}:4900"
     deploy:
       resources:
         limits:
@@ -325,7 +327,7 @@ services:
       dockerfile: Dockerfile
     container_name: order-manager
     ports:
-      - "${ORDERMANAGER_PORT:-4600}:4600"
+      - "127.0.0.1:${ORDERMANAGER_PORT:-4600}:4600"
     environment:
       - BYBIT_API_KEY=${BYBIT_API_KEY}
       - BYBIT_API_SECRET=${BYBIT_API_SECRET}
@@ -419,7 +421,7 @@ services:
       dockerfile: Dockerfile
     container_name: position-manager
     ports:
-      - "${POSITION_MANAGER_PORT:-4800}:4800"
+      - "127.0.0.1:${POSITION_MANAGER_PORT:-4800}:4800"
     environment:
       - POSTGRES_HOST=${POSTGRES_HOST:-postgres}
       - POSTGRES_PORT=${POSTGRES_PORT:-5432}
@@ -522,8 +524,8 @@ services:
     image: graylog/graylog:5.2
     container_name: graylog
     ports:
-      - "${GRAYLOG_WEB_PORT:-4701}:4701"
-      - "${GRAYLOG_GELF_PORT:-4711}:4711/udp"
+      - "127.0.0.1:${GRAYLOG_WEB_PORT:-4701}:4701"
+      - "127.0.0.1:${GRAYLOG_GELF_PORT:-4711}:4711/udp"
     environment:
       - GRAYLOG_PASSWORD_SECRET=${GRAYLOG_PASSWORD_SECRET}
       - GRAYLOG_ROOT_PASSWORD_SHA2=${GRAYLOG_ROOT_PASSWORD_SHA2}
@@ -557,7 +559,7 @@ services:
       dockerfile: Dockerfile
     container_name: grafana
     ports:
-      - "${GRAFANA_PORT:-4700}:3000"
+      - "127.0.0.1:${GRAFANA_PORT:-4700}:3000"
     environment:
       - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}

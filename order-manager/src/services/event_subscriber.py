@@ -15,7 +15,6 @@ from ..config.logging import get_logger
 from ..config.rabbitmq import RabbitMQConnection
 from ..config.settings import settings
 from ..models.order import Order
-from ..services.position_manager import PositionManager
 from ..publishers.order_event_publisher import OrderEventPublisher
 from ..exceptions import DatabaseError, QueueError
 from ..utils.tracing import generate_trace_id, set_trace_id
@@ -30,9 +29,9 @@ class EventSubscriber:
         """Initialize event subscriber service."""
         self.queue_name = "ws-gateway.order"
         self._consumer_tag = f"order-manager-event-subscriber-{id(self)}"
-        self.position_manager = PositionManager()
         self.event_publisher = OrderEventPublisher()
         self._subscription_id: Optional[str] = None
+        self._queue: Optional[aio_pika.Queue] = None
 
     async def subscribe_to_order_events(self, trace_id: Optional[str] = None) -> None:
         """
@@ -152,6 +151,7 @@ class EventSubscriber:
                     "x-overflow": "drop-head",  # Drop oldest messages when limit reached
                 },
             )
+            self._queue = queue  # Save reference for stop()
 
             logger.info(
                 "event_subscriber_starting",
@@ -180,10 +180,8 @@ class EventSubscriber:
     async def stop(self) -> None:
         """Stop consuming order execution events."""
         try:
-            channel = await RabbitMQConnection.get_channel()
-
-            if self._consumer_tag:
-                await channel.cancel(self._consumer_tag)
+            if self._queue and self._consumer_tag:
+                await self._queue.cancel(self._consumer_tag)
 
             logger.info(
                 "event_subscriber_stopped",
@@ -462,10 +460,10 @@ class EventSubscriber:
                     market_conditions=market_conditions,
                 )
 
-            # Update position if order was filled (fully or partially)
-            if new_status in ["filled", "partially_filled"] and status_changed:
-                await self._update_position_from_order_fill(
-                    order, filled_qty, avg_price, trace_id, executed_at
+            # Update position_orders.order_id if order was created/updated (for linking with position-manager)
+            if status_changed:
+                await self._update_position_orders_order_id(
+                    updated_order.order_id, updated_order.id, trace_id
                 )
 
         except Exception as e:
@@ -478,62 +476,48 @@ class EventSubscriber:
             )
             raise DatabaseError(f"Failed to update order state: {e}") from e
 
-    async def _update_position_from_order_fill(
+    async def _update_position_orders_order_id(
         self,
-        order: Order,
-        filled_quantity: Decimal,
-        execution_price: Decimal,
+        bybit_order_id: str,
+        order_id: UUID,
         trace_id: Optional[str] = None,
-        executed_at: Optional[datetime] = None,
     ) -> None:
         """
-        Update position when order is filled.
+        Update position_orders.order_id after order is created/updated in DB.
+
+        This links position_orders created by position-manager (with NULL order_id)
+        to the actual order record once it's created in the database.
 
         Args:
-            order: Order that was filled
-            filled_quantity: Quantity that was filled
-            execution_price: Price at which order was executed
+            bybit_order_id: Bybit order ID (external identifier)
+            order_id: Internal order UUID
             trace_id: Optional trace ID
-            executed_at: Execution timestamp
         """
         try:
-            # Calculate size delta based on order side
-            # Buy orders increase position (positive), Sell orders decrease position (negative)
-            if order.side.upper() == "BUY":
-                size_delta = filled_quantity
-            else:  # SELL
-                size_delta = -filled_quantity
-
-            # Update position
-            await self.position_manager.update_position(
-                asset=order.asset,
-                size_delta=size_delta,
-                execution_price=execution_price,
-                mode="one-way",  # Default to one-way mode
-                trace_id=trace_id,
-                order_id=order.id,
-                executed_at=executed_at,
-            )
-
-            logger.info(
-                "position_updated_from_order_fill",
-                order_id=order.order_id,
-                asset=order.asset,
-                side=order.side,
-                filled_quantity=float(filled_quantity),
-                execution_price=float(execution_price),
-                size_delta=float(size_delta),
+            pool = await DatabaseConnection.get_pool()
+            query = """
+                UPDATE position_orders
+                SET order_id = $1
+                WHERE bybit_order_id = $2
+                  AND order_id IS NULL
+            """
+            result = await pool.execute(query, order_id, bybit_order_id)
+            
+            logger.debug(
+                "position_orders_order_id_updated",
+                bybit_order_id=bybit_order_id,
+                order_id=str(order_id),
                 trace_id=trace_id,
             )
 
         except Exception as e:
-            logger.error(
-                "position_update_from_order_fill_failed",
-                order_id=order.order_id,
-                asset=order.asset,
+            logger.warning(
+                "position_orders_order_id_update_failed",
+                bybit_order_id=bybit_order_id,
+                order_id=str(order_id),
                 error=str(e),
                 trace_id=trace_id,
                 exc_info=True,
             )
-            # Don't raise - position update failure shouldn't block order state update
+            # Don't raise - this is a best-effort update for linking
 

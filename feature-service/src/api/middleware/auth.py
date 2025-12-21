@@ -3,8 +3,8 @@ API authentication middleware.
 """
 from fastapi import Request, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from src.config import config
-from src.logging import get_logger
+from ...config import config
+from ...logging import get_logger
 
 logger = get_logger(__name__)
 security = HTTPBearer(auto_error=False)

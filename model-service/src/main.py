@@ -10,8 +10,9 @@ from contextlib import asynccontextmanager
 from typing import Optional
 from uuid import UUID
 from datetime import timezone
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
 
 from .config.settings import settings
 from .config.logging import configure_logging, get_logger
@@ -20,6 +21,7 @@ from .database.connection import db_pool
 from .config.rabbitmq import rabbitmq_manager
 from .api.router import api_router, APIKeyMiddleware, TraceIDMiddleware
 from .api.middleware import RequestResponseLoggingMiddleware
+from .api.middleware.security import security_middleware
 from .api.health import router as health_router
 # Market data subscription and consumer removed - now using Feature Service
 # Execution event consumer removed - training pipeline now uses Feature Service datasets
@@ -255,6 +257,8 @@ async def lifespan(app: FastAPI):
                 order_uuid = order_row["id"]
                 
                 # Query position_orders and order to get relationship_type, position_id, and correct prices
+                # Support both order_id (preferred) and bybit_order_id (for race condition cases)
+                # Note: position_orders.order_id may be NULL if position-manager created it before order-manager created the order
                 position_order_query = """
                     SELECT 
                         por.relationship_type, 
@@ -264,11 +268,12 @@ async def lifespan(app: FastAPI):
                         o.price as order_price,
                         o.average_price as order_average_price
                     FROM position_orders por
-                    JOIN orders o ON o.id = por.order_id
-                    WHERE por.order_id = $1
+                    LEFT JOIN orders o ON o.id = por.order_id
+                    WHERE por.order_id = $1 
+                       OR (por.order_id IS NULL AND por.bybit_order_id = $2)
                     LIMIT 1
                 """
-                position_order_row = await pool.fetchrow(position_order_query, order_uuid)
+                position_order_row = await pool.fetchrow(position_order_query, order_uuid, event.order_id)
                 
                 if not position_order_row:
                     logger.debug(
@@ -278,6 +283,28 @@ async def lifespan(app: FastAPI):
                         signal_id=event.signal_id,
                     )
                     return
+                
+                # If position_orders was found by bybit_order_id (order_id IS NULL),
+                # LEFT JOIN with orders won't return order data, so fetch it separately
+                # asyncpg.Record supports [] access, check if order_price is None
+                try:
+                    order_price = position_order_row["order_price"]
+                except (KeyError, TypeError):
+                    order_price = None
+                if order_price is None:
+                    # Get order data from the order we already found
+                    order_data_query = """
+                        SELECT price, average_price
+                        FROM orders
+                        WHERE id = $1
+                        LIMIT 1
+                    """
+                    order_data_row = await pool.fetchrow(order_data_query, order_uuid)
+                    if order_data_row:
+                        # Convert asyncpg.Record to dict and update with order data
+                        position_order_row = dict(position_order_row)
+                        position_order_row["order_price"] = order_data_row["price"]
+                        position_order_row["order_average_price"] = order_data_row["average_price"]
                 
                 relationship_type = position_order_row["relationship_type"]
                 position_id = position_order_row["position_id"]
@@ -645,7 +672,12 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Add middleware (order matters - TraceID first, then logging, then auth)
+# Add middleware (order matters - security first, then TraceID, then logging, then auth)
+@app.middleware("http")
+async def security_middleware_wrapper(request, call_next):
+    """Security middleware wrapper."""
+    return await security_middleware(request, call_next)
+
 app.add_middleware(TraceIDMiddleware)
 app.add_middleware(RequestResponseLoggingMiddleware)
 app.add_middleware(APIKeyMiddleware)
@@ -722,8 +754,54 @@ async def model_service_error_handler(request, exc: ModelServiceError):
     )
 
 
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """
+    Handle validation errors (e.g., invalid parameters in path).
+    
+    Returns 404 for path validation errors to prevent information leakage.
+    """
+    path = request.url.path
+    
+    # Check if path looks suspicious (even if normalized by uvicorn)
+    suspicious_patterns = ["/etc/passwd", "/etc/shadow", "/proc/", "/sys/", "/dev/", "passwd", "shadow"]
+    if any(suspicious in path.lower() for suspicious in suspicious_patterns):
+        logger.warning(
+            "Suspicious path in validation error - returning 404",
+            path=path,
+            client_ip=request.client.host if request.client else None,
+        )
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={"detail": "Not found"}
+        )
+    
+    # Check if any error is related to path parameters
+    path_related_errors = any(
+        "path" in str(err.get("loc", [])).lower() or "version" in str(err.get("loc", [])).lower()
+        for err in exc.errors()
+    )
+    
+    if path_related_errors:
+        logger.warning(
+            "Path validation error - returning 404",
+            path=path,
+            client_ip=request.client.host if request.client else None,
+        )
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={"detail": "Not found"}
+        )
+    
+    # For other validation errors, return standard 422
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={"detail": exc.errors()}
+    )
+
+
 @app.exception_handler(Exception)
-async def general_exception_handler(request, exc: Exception):
+async def general_exception_handler(request: Request, exc: Exception):
     """
     Global exception handler for unhandled exceptions.
 
@@ -734,7 +812,21 @@ async def general_exception_handler(request, exc: Exception):
     Returns:
         JSON error response
     """
-    from fastapi import status
+    path = request.url.path
+    
+    # Check if path looks suspicious (even if normalized by uvicorn)
+    suspicious_patterns = ["/etc/passwd", "/etc/shadow", "/proc/", "/sys/", "/dev/", "passwd", "shadow"]
+    if any(suspicious in path.lower() for suspicious in suspicious_patterns):
+        logger.warning(
+            "Suspicious path in exception - returning 404",
+            path=path,
+            client_ip=request.client.host if request.client else None,
+            error_type=type(exc).__name__,
+        )
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={"detail": "Not found"}
+        )
 
     # Map common exception types to status codes
     if isinstance(exc, ValueError):
@@ -755,6 +847,7 @@ async def general_exception_handler(request, exc: Exception):
         error=str(exc),
         error_type=type(exc).__name__,
         status_code=status_code,
+        path=path,
         exc_info=True,
     )
 

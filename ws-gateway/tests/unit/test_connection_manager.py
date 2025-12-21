@@ -99,7 +99,7 @@ async def test_get_connection_for_subscription_public_channel(connection_manager
     """Test that get_connection_for_subscription returns public connection for public channels."""
     subscription = Subscription.create(
         channel_type="trades",
-        topic="trade.BTCUSDT",
+        topic="publicTrade.BTCUSDT",  # Bybit v5 uses publicTrade format
         requesting_service="test-service",
         symbol="BTCUSDT",
     )

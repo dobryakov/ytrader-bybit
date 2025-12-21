@@ -4,7 +4,7 @@ Health check endpoint.
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends
 from typing import Dict, Any
-from src.api.middleware.auth import verify_api_key
+from .middleware.auth import verify_api_key
 from src.logging import get_logger
 
 logger = get_logger(__name__)

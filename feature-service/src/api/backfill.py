@@ -6,7 +6,7 @@ from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from src.api.middleware.auth import verify_api_key
+from .middleware.auth import verify_api_key
 from src.logging import get_logger
 
 logger = get_logger(__name__)
