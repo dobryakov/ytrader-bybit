@@ -254,10 +254,17 @@ async def lifespan(app: FastAPI):
                 
                 order_uuid = order_row["id"]
                 
-                # Query position_orders to get relationship_type and position_id
+                # Query position_orders and order to get relationship_type, position_id, and correct prices
                 position_order_query = """
-                    SELECT por.relationship_type, por.size_delta, por.execution_price, por.position_id
+                    SELECT 
+                        por.relationship_type, 
+                        por.size_delta, 
+                        por.execution_price as position_order_execution_price, 
+                        por.position_id,
+                        o.price as order_price,
+                        o.average_price as order_average_price
                     FROM position_orders por
+                    JOIN orders o ON o.id = por.order_id
                     WHERE por.order_id = $1
                     LIMIT 1
                 """
@@ -275,6 +282,26 @@ async def lifespan(app: FastAPI):
                 relationship_type = position_order_row["relationship_type"]
                 position_id = position_order_row["position_id"]
                 
+                # Get correct execution price: prefer position_orders.execution_price, then order.price, then order.average_price, fallback to event.execution_price
+                correct_execution_price = (
+                    position_order_row["position_order_execution_price"] or
+                    position_order_row["order_price"] or
+                    position_order_row["order_average_price"] or
+                    Decimal(str(event.execution_price))
+                )
+                
+                # Get position average entry price for PnL calculation
+                position_avg_entry_query = """
+                    SELECT average_entry_price, size
+                    FROM positions
+                    WHERE id = $1
+                    LIMIT 1
+                """
+                position_row = await pool.fetchrow(position_avg_entry_query, position_id)
+                position_avg_entry_price = None
+                if position_row and position_row["average_entry_price"]:
+                    position_avg_entry_price = Decimal(str(position_row["average_entry_price"]))
+                
                 # Calculate realized_pnl_delta for this specific order execution
                 # For closed or decreased positions, calculate PnL based on entry and exit prices
                 realized_pnl_delta = Decimal("0")
@@ -291,7 +318,19 @@ async def lifespan(app: FastAPI):
                                 break
                         
                         if result:
-                            entry_price = Decimal(str(result.get("entry_price", 0)))
+                            # Use position average entry price if available, otherwise use result entry_price
+                            # This ensures we use the correct average price for the position, not just the signal entry price
+                            if position_avg_entry_price and position_avg_entry_price > 0:
+                                entry_price = position_avg_entry_price
+                                logger.debug(
+                                    "Using position average entry price for PnL calculation",
+                                    signal_id=event.signal_id,
+                                    position_avg_entry_price=str(entry_price),
+                                    result_entry_price=str(result.get("entry_price", 0)),
+                                )
+                            else:
+                                entry_price = Decimal(str(result.get("entry_price", 0)))
+                            
                             position_size_at_entry = Decimal(str(result.get("position_size_at_entry", 0)))
                             
                             if entry_price > 0 and position_size_at_entry != 0:
@@ -302,8 +341,22 @@ async def lifespan(app: FastAPI):
                                 # Calculate closed quantity
                                 closed_quantity = Decimal(str(event.execution_quantity))
                                 
-                                exit_price = Decimal(str(event.execution_price))
+                                # Use correct execution price (from position_orders or order, not execution_events)
+                                exit_price = correct_execution_price
                                 execution_fees = Decimal(str(event.execution_fees))
+                                
+                                # Validate that exit_price is reasonable (within 50% of entry_price)
+                                price_diff_pct = abs((exit_price - entry_price) / entry_price * 100) if entry_price > 0 else 0
+                                if price_diff_pct > 50:
+                                    logger.warning(
+                                        "Suspicious price difference detected",
+                                        signal_id=event.signal_id,
+                                        entry_price=str(entry_price),
+                                        exit_price=str(exit_price),
+                                        price_diff_pct=round(price_diff_pct, 2),
+                                        event_execution_price=str(event.execution_price),
+                                        correct_execution_price=str(correct_execution_price),
+                                    )
                                 
                                 # Calculate realized PnL
                                 if is_long:
@@ -325,6 +378,7 @@ async def lifespan(app: FastAPI):
                                     execution_fees=str(execution_fees),
                                     realized_pnl_delta=str(realized_pnl_delta),
                                     is_long=is_long,
+                                    used_position_avg_entry=position_avg_entry_price is not None,
                                 )
                 
                 # Check if prediction trading result exists, if not create it
@@ -340,10 +394,11 @@ async def lifespan(app: FastAPI):
                     
                     # Create prediction trading result for any relationship_type if prediction_target exists
                     # This ensures we track all predictions that result in trading activity
+                    # Use correct execution price (from position_orders or order, not execution_events)
                     result = await prediction_trading_linker.link_prediction_to_trading(
                         signal_id=event.signal_id,
                         entry_signal_id=event.signal_id,
-                        entry_price=Decimal(str(event.execution_price)),
+                        entry_price=correct_execution_price,
                         entry_timestamp=entry_timestamp,
                         position_size_at_entry=Decimal(str(event.execution_quantity)),
                     )
@@ -363,10 +418,11 @@ async def lifespan(app: FastAPI):
                         )
                 
                 # Update prediction trading result (will do nothing if it doesn't exist)
+                # Use correct execution price (from position_orders or order, not execution_events)
                 await prediction_trading_linker.update_trading_result_on_order_fill(
                     signal_id=event.signal_id,
                     order_id=order_uuid,
-                    execution_price=Decimal(str(event.execution_price)),
+                    execution_price=correct_execution_price,
                     execution_quantity=Decimal(str(event.execution_quantity)),
                     realized_pnl_delta=realized_pnl_delta,
                     relationship_type=relationship_type,
