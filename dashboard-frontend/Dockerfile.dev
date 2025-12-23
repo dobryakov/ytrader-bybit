@@ -1,0 +1,19 @@
+FROM node:20-alpine
+
+WORKDIR /app
+
+# Install dependencies first (cached layer)
+COPY package*.json ./
+# Use npm install for dev (more flexible, works without package-lock.json)
+RUN npm install
+
+# Copy source code (mounted as volume for live reload)
+# Note: We still copy it here so it works even without volume mount
+COPY . .
+
+# Expose Vite dev server port
+EXPOSE 4051
+
+# Run dev server with host 0.0.0.0 to allow external connections
+CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", "4051"]
+

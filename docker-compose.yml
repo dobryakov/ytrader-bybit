@@ -528,30 +528,30 @@ services:
       retries: 5
       start_period: 60s
 
-  kibana:
-    image: docker.elastic.co/kibana/kibana:7.17.0
-    container_name: kibana
-    ports:
-      - "127.0.0.1:${KIBANA_PORT:-4704}:4704"
-    environment:
-      - SERVER_PORT=4704
-      - SERVER_HOST=0.0.0.0
-      - ELASTICSEARCH_HOSTS=http://elasticsearch:4703
-      - XPACK_SECURITY_ENABLED=false
-      - XPACK_REPORTING_ENABLED=false
-      - XPACK_FLEET_ENABLED=false
-    depends_on:
-      elasticsearch:
-        condition: service_healthy
-    networks:
-      - ytrader-network
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:4704/api/status"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
+#  kibana:
+#    image: docker.elastic.co/kibana/kibana:7.17.0
+#    container_name: kibana
+#    ports:
+#      - "127.0.0.1:${KIBANA_PORT:-4704}:4704"
+#    environment:
+#      - SERVER_PORT=4704
+#      - SERVER_HOST=0.0.0.0
+#      - ELASTICSEARCH_HOSTS=http://elasticsearch:4703
+#      - XPACK_SECURITY_ENABLED=false
+#      - XPACK_REPORTING_ENABLED=false
+#      - XPACK_FLEET_ENABLED=false
+#    depends_on:
+#      elasticsearch:
+#        condition: service_healthy
+#    networks:
+#      - ytrader-network
+#    restart: unless-stopped
+#    healthcheck:
+#      test: ["CMD", "curl", "-f", "http://localhost:4704/api/status"]
+#      interval: 30s
+#      timeout: 10s
+#      retries: 3
+#      start_period: 60s
 
   graylog:
     image: graylog/graylog:5.2
@@ -618,6 +618,82 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
+
+  dashboard-api:
+    build:
+      context: ./dashboard-api
+      dockerfile: Dockerfile
+    container_name: dashboard-api
+    ports:
+      - "127.0.0.1:${DASHBOARD_API_PORT:-4050}:4050"
+    volumes:
+      - ./dashboard-api/src:/app/src
+      - ./dashboard-api/tests:/app/tests
+    environment:
+      - POSTGRES_HOST=${POSTGRES_HOST:-postgres}
+      - POSTGRES_PORT=${POSTGRES_PORT:-5432}
+      - POSTGRES_DB=${POSTGRES_DB:-ytrader}
+      - POSTGRES_USER=${POSTGRES_USER:-ytrader}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - DASHBOARD_API_PORT=${DASHBOARD_API_PORT:-4050}
+      - DASHBOARD_API_KEY=${DASHBOARD_API_KEY}
+      - DASHBOARD_API_LOG_LEVEL=${DASHBOARD_API_LOG_LEVEL:-INFO}
+      - DASHBOARD_API_SERVICE_NAME=${DASHBOARD_API_SERVICE_NAME:-dashboard-api}
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - ytrader-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4050/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    logging:
+      driver: "gelf"
+      options:
+        gelf-address: "udp://127.0.0.1:4711"
+        tag: "{{.Name}}"
+        labels: "service"
+
+  dashboard-frontend:
+    build:
+      context: ./dashboard-frontend
+      dockerfile: Dockerfile.dev
+    container_name: dashboard-frontend
+    ports:
+      - "127.0.0.1:${DASHBOARD_FRONTEND_PORT:-4051}:4051"
+    volumes:
+      # Mount entire directory for live reload, but exclude node_modules
+      - ./dashboard-frontend:/app
+      # Use anonymous volume for node_modules to preserve container's dependencies
+      - /app/node_modules
+    environment:
+      # Use relative path /api for dev proxy to work
+      # VITE_API_URL is not set, so api.ts will use '/api' as default
+      - VITE_API_KEY=${DASHBOARD_API_KEY}
+      - NODE_ENV=development
+    depends_on:
+      - dashboard-api
+    networks:
+      - ytrader-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:4051"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    # Use stdin_open and tty for better terminal interaction if needed
+    stdin_open: true
+    tty: true
 
 
 #  grafana:
