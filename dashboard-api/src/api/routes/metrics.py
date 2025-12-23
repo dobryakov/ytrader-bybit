@@ -110,3 +110,62 @@ async def get_portfolio_metrics():
         logger.error("metrics_portfolio_failed", error=str(e), trace_id=trace_id, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to retrieve portfolio metrics: {str(e)}")
 
+
+@router.get("/metrics/balances")
+async def get_balances_by_asset():
+    """Get available balances by asset/coin for trading."""
+    trace_id = get_or_create_trace_id()
+    logger.info("metrics_balances_request", trace_id=trace_id)
+
+    try:
+        # Get latest available balance for each coin
+        # available_balance is the balance available for trading (not frozen)
+        query = """
+            WITH latest_balances AS (
+                SELECT DISTINCT ON (coin)
+                    coin,
+                    available_balance,
+                    wallet_balance,
+                    frozen,
+                    received_at
+                FROM account_balances
+                ORDER BY coin, received_at DESC
+            )
+            SELECT 
+                coin,
+                available_balance,
+                wallet_balance,
+                frozen,
+                received_at
+            FROM latest_balances
+            WHERE available_balance > 0 OR wallet_balance > 0
+            ORDER BY coin
+        """
+
+        rows = await DatabaseConnection.fetch(query)
+
+        balances_data = []
+        for row in rows:
+            balance_dict = {
+                "coin": row["coin"],
+                "available_balance": str(row["available_balance"]),  # Available for trading
+                "wallet_balance": str(row["wallet_balance"]),  # Total balance
+                "frozen": str(row["frozen"]),  # Frozen balance
+                "last_updated": row["received_at"].isoformat() + "Z" if row["received_at"] else None,
+            }
+            balances_data.append(balance_dict)
+
+        logger.info("metrics_balances_completed", count=len(balances_data), trace_id=trace_id)
+
+        return JSONResponse(
+            status_code=200,
+            content={
+                "balances": balances_data,
+                "count": len(balances_data),
+            },
+        )
+
+    except Exception as e:
+        logger.error("metrics_balances_failed", error=str(e), trace_id=trace_id, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve balances: {str(e)}")
+

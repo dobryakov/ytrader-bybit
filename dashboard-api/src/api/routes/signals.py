@@ -37,10 +37,19 @@ async def list_signals(
                 ts.market_data_snapshot->>'price' as price_from,
                 pt.actual_values->>'candle_close' as price_to,
                 pt.actual_values->>'direction' as actual_direction,
-                pt.actual_values->>'return_value' as actual_return
+                pt.actual_values->>'return_value' as actual_return,
+                COALESCE(SUM((ee.performance->>'realized_pnl')::numeric) FILTER (WHERE ee.performance->>'realized_pnl' IS NOT NULL), 0) as total_pnl
             FROM trading_signals ts
             LEFT JOIN prediction_targets pt ON ts.signal_id = pt.signal_id
+            LEFT JOIN execution_events ee ON ts.signal_id = ee.signal_id
             WHERE 1=1
+            GROUP BY ts.signal_id, ts.side, ts.asset, ts.price, ts.confidence,
+                     ts.strategy_id, ts.model_version, ts.timestamp, ts.is_warmup, ts.prediction_horizon_seconds,
+                     pt.predicted_values->>'direction',
+                     ts.market_data_snapshot->>'price',
+                     pt.actual_values->>'candle_close',
+                     pt.actual_values->>'direction',
+                     pt.actual_values->>'return_value'
         """
         params = []
         param_idx = 1
@@ -185,6 +194,14 @@ async def list_signals(
                 except (ValueError, TypeError, ZeroDivisionError):
                     pass
             
+            # Get total PnL from execution events
+            total_pnl = None
+            if row.get("total_pnl") is not None:
+                try:
+                    total_pnl = float(row["total_pnl"])
+                except (ValueError, TypeError):
+                    pass
+            
             signal_dict = {
                 "signal_id": str(row["signal_id"]),
                 "signal_type": row["side"],  # Map 'side' to 'signal_type' for API compatibility
@@ -203,6 +220,7 @@ async def list_signals(
                     "direction": actual_direction,  # "UP", "DOWN", or None
                     "return_value": actual_return,  # Decimal value (e.g., 0.00002 for 0.002%)
                 } if price_from is not None or price_to is not None else None,
+                "total_pnl": str(total_pnl) if total_pnl is not None else None,  # Total PnL from execution events
             }
             signals_data.append(signal_dict)
 

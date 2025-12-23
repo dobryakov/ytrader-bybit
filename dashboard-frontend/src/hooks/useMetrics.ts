@@ -42,3 +42,27 @@ export function usePortfolioMetrics() {
   })
 }
 
+export interface BalanceByAsset {
+  coin: string
+  available_balance: string  // Available for trading
+  wallet_balance: string    // Total balance
+  frozen: string           // Frozen balance
+  last_updated: string | null
+}
+
+export interface BalancesResponse {
+  balances: BalanceByAsset[]
+  count: number
+}
+
+export function useBalances() {
+  return useQuery<BalancesResponse>({
+    queryKey: ['metrics', 'balances'],
+    queryFn: async () => {
+      const response = await api.get('/v1/metrics/balances')
+      return response.data
+    },
+    refetchInterval: 10000,
+  })
+}
+

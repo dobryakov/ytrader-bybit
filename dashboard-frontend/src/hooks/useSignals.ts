@@ -19,6 +19,7 @@ export interface Signal {
     direction: string | null  // "UP", "DOWN", or null
     return_value: number | null
   } | null
+  total_pnl: string | null // Total PnL from execution events
 }
 
 export interface SignalsResponse {

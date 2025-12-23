@@ -138,6 +138,20 @@ class ModelVersionRepository(BaseRepository[Dict[str, Any]]):
         record = await self._fetchrow(query, strategy_id)
         return self._record_to_dict(record) if record else None
 
+    async def has_active_models_for_strategy(self, strategy_id: Optional[str] = None) -> bool:
+        """
+        Check if there are any active models for a strategy (with any symbol or without symbol).
+
+        Args:
+            strategy_id: Trading strategy identifier (None for general models)
+
+        Returns:
+            True if at least one active model exists for the strategy, False otherwise
+        """
+        query = f"SELECT COUNT(*) FROM {self.table_name} WHERE strategy_id = $1 AND is_active = true"
+        count = await self._fetchval(query, strategy_id)
+        return count > 0 if count is not None else False
+
     async def get_active_by_strategy_and_symbol(
         self, 
         strategy_id: Optional[str] = None,

@@ -109,18 +109,27 @@ async def lifespan(app: FastAPI):
         strategies = settings.trading_strategy_list
         
         if strategies:
-            # Check each strategy for active model
+            # Check each strategy for active model (with any symbol or without symbol)
             for strategy_id in strategies:
-                model = await model_version_repo.get_active_by_strategy(strategy_id)
-                if model:
-                    has_trained_model = True
-                    active_model = model
-                    logger.info(
-                        "Active model found for strategy",
-                        strategy_id=strategy_id,
-                        model_version=model["version"],
-                    )
-                    break
+                # First check if there are any active models for this strategy
+                has_models = await model_version_repo.has_active_models_for_strategy(strategy_id)
+                if has_models:
+                    # Get any active model (prefer universal model, but accept symbol-specific)
+                    model = await model_version_repo.get_active_by_strategy(strategy_id)
+                    if not model:
+                        # If no universal model, get first active model with symbol
+                        models_list = await model_version_repo.list_by_strategy(strategy_id, limit=1)
+                        model = next((m for m in models_list if m.get("is_active")), None)
+                    if model:
+                        has_trained_model = True
+                        active_model = model
+                        logger.info(
+                            "Active model found for strategy",
+                            strategy_id=strategy_id,
+                            model_version=model["version"],
+                            symbol=model.get("symbol"),
+                        )
+                        break
         else:
             # If no strategies configured, check for default strategy (None)
             active_model = await model_version_repo.get_active_by_strategy(None)

@@ -66,6 +66,7 @@ export default function Signals() {
                 <TableHead>Confidence</TableHead>
                 <TableHead>Model Prediction</TableHead>
                 <TableHead>Actual Movement</TableHead>
+                <TableHead>PnL</TableHead>
                 <TableHead>Strategy</TableHead>
                 <TableHead>Model</TableHead>
                 <TableHead>Timestamp</TableHead>
@@ -75,7 +76,7 @@ export default function Signals() {
             <TableBody>
               {data?.signals.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={11} className="text-center text-muted-foreground">
+                  <TableCell colSpan={12} className="text-center text-muted-foreground">
                     Нет сигналов
                   </TableCell>
                 </TableRow>
@@ -127,6 +128,19 @@ export default function Signals() {
                             </div>
                           )}
                         </div>
+                      ) : (
+                        <span className="text-muted-foreground">N/A</span>
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      {signal.total_pnl !== null ? (
+                        <span className={parseFloat(signal.total_pnl) >= 0 ? 'text-green-600' : 'text-red-600'}>
+                          {new Intl.NumberFormat('ru-RU', {
+                            style: 'currency',
+                            currency: 'USD',
+                            minimumFractionDigits: 2,
+                          }).format(parseFloat(signal.total_pnl))}
+                        </span>
                       ) : (
                         <span className="text-muted-foreground">N/A</span>
                       )}

@@ -1,4 +1,4 @@
-import { useOverviewMetrics, usePortfolioMetrics, useSignals } from '@/hooks'
+import { useOverviewMetrics, usePortfolioMetrics, useSignals, useBalances } from '@/hooks'
 import { MetricCard } from '@/components/metrics/MetricCard'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -10,6 +10,7 @@ export default function Overview() {
   const { data: metrics, isLoading: metricsLoading } = useOverviewMetrics()
   const { data: portfolio, isLoading: portfolioLoading } = usePortfolioMetrics()
   const { data: signals, isLoading: signalsLoading } = useSignals({ page_size: 10 })
+  const { data: balances, isLoading: balancesLoading } = useBalances()
 
   const formatCurrency = (value: string | null) => {
     if (!value) return 'N/A'
@@ -19,6 +20,27 @@ export default function Overview() {
       currency: 'USD',
       minimumFractionDigits: 2,
     }).format(num)
+  }
+
+  const formatBalance = (value: string | null, coin: string) => {
+    if (!value) return 'N/A'
+    const num = parseFloat(value)
+    // For USDT/USDC, format as currency. For crypto (BTC, ETH), format as number with appropriate decimals
+    if (coin === 'USDT' || coin === 'USDC') {
+      return new Intl.NumberFormat('ru-RU', {
+        style: 'currency',
+        currency: 'USD',
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      }).format(num)
+    } else {
+      // For crypto: use more decimals for small amounts, fewer for large
+      const decimals = num < 1 ? 8 : (num < 100 ? 4 : 2)
+      return new Intl.NumberFormat('ru-RU', {
+        minimumFractionDigits: decimals,
+        maximumFractionDigits: decimals,
+      }).format(num) + ` ${coin}`
+    }
   }
 
   return (
@@ -85,6 +107,51 @@ export default function Overview() {
             <Skeleton className="h-64" />
           ) : (
             <SignalsTable signals={signals?.signals || []} />
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Balances by Asset */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Балансы по активам</CardTitle>
+          <CardDescription>Доступный баланс для торговли</CardDescription>
+        </CardHeader>
+        <CardContent>
+          {balancesLoading ? (
+            <Skeleton className="h-32" />
+          ) : balances && balances.balances.length > 0 ? (
+            <div className="space-y-2">
+              {balances.balances.map((balance) => (
+                <div key={balance.coin} className="flex justify-between items-center py-2 border-b last:border-b-0">
+                  <span className="font-medium">{balance.coin}</span>
+                  <div className="flex gap-4">
+                    <div className="text-right">
+                      <div className="text-sm font-semibold text-green-600">
+                        {formatBalance(balance.available_balance, balance.coin)}
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        Доступно для торговли
+                      </div>
+                    </div>
+                    {parseFloat(balance.frozen) > 0 && (
+                      <div className="text-right">
+                        <div className="text-sm text-muted-foreground">
+                          {formatBalance(balance.frozen, balance.coin)}
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          Заморожено
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-center text-muted-foreground py-4">
+              Нет данных о балансах
+            </div>
           )}
         </CardContent>
       </Card>
