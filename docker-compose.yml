@@ -520,6 +520,31 @@ services:
       retries: 5
       start_period: 60s
 
+  kibana:
+    image: docker.elastic.co/kibana/kibana:7.17.0
+    container_name: kibana
+    ports:
+      - "127.0.0.1:${KIBANA_PORT:-4704}:4704"
+    environment:
+      - SERVER_PORT=4704
+      - SERVER_HOST=0.0.0.0
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:4703
+      - XPACK_SECURITY_ENABLED=false
+      - XPACK_REPORTING_ENABLED=false
+      - XPACK_FLEET_ENABLED=false
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    networks:
+      - ytrader-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4704/api/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
   graylog:
     image: graylog/graylog:5.2
     container_name: graylog
@@ -553,40 +578,40 @@ services:
       start_period: 60s
 
 
-  grafana:
-    build:
-      context: ./grafana
-      dockerfile: Dockerfile
-    container_name: grafana
-    ports:
-      - "127.0.0.1:${GRAFANA_PORT:-4700}:3000"
-    environment:
-      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
-      - GF_INSTALL_PLUGINS=yesoreyeram-infinity-datasource
-      - POSTGRES_DB=${POSTGRES_DB:-ytrader}
-      - GRAFANA_POSTGRES_USER=${GRAFANA_POSTGRES_USER:-grafana_monitor}
-      - GRAFANA_POSTGRES_PASSWORD=${GRAFANA_POSTGRES_PASSWORD}
-      - RABBITMQ_USER=${RABBITMQ_USER:-guest}
-      - RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD:-guest}
-      - POSITION_MANAGER_API_KEY=${POSITION_MANAGER_API_KEY}
-      - MODEL_SERVICE_API_KEY=${MODEL_SERVICE_API_KEY}
-    volumes:
-      - grafana_data:/var/lib/grafana
-      - ./grafana/provisioning:/etc/grafana/provisioning
-      - ./grafana/dashboards:/var/lib/grafana/dashboards
-    depends_on:
-      - postgres
-      - rabbitmq
-    networks:
-      - ytrader-network
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
+#  grafana:
+#    build:
+#      context: ./grafana
+#      dockerfile: Dockerfile
+#    container_name: grafana
+#    ports:
+#      - "127.0.0.1:${GRAFANA_PORT:-4700}:3000"
+#    environment:
+#      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+#      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
+#      - GF_INSTALL_PLUGINS=yesoreyeram-infinity-datasource
+#      - POSTGRES_DB=${POSTGRES_DB:-ytrader}
+#      - GRAFANA_POSTGRES_USER=${GRAFANA_POSTGRES_USER:-grafana_monitor}
+#      - GRAFANA_POSTGRES_PASSWORD=${GRAFANA_POSTGRES_PASSWORD}
+#      - RABBITMQ_USER=${RABBITMQ_USER:-guest}
+#      - RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD:-guest}
+#      - POSITION_MANAGER_API_KEY=${POSITION_MANAGER_API_KEY}
+#      - MODEL_SERVICE_API_KEY=${MODEL_SERVICE_API_KEY}
+#    volumes:
+#      - grafana_data:/var/lib/grafana
+#      - ./grafana/provisioning:/etc/grafana/provisioning
+#      - ./grafana/dashboards:/var/lib/grafana/dashboards
+#    depends_on:
+#      - postgres
+#      - rabbitmq
+#    networks:
+#      - ytrader-network
+#    restart: unless-stopped
+#    healthcheck:
+#      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+#      interval: 30s
+#      timeout: 10s
+#      retries: 3
+#      start_period: 40s
 
   test-grafana:
     build:

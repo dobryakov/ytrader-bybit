@@ -49,6 +49,7 @@ class WebSocketConnection:
         self._websocket: Optional[WebSocketClientProtocol] = None
         self._state = WebSocketState(
             environment=settings.bybit_environment,
+            endpoint_type=endpoint_type,
             status=ConnectionStatus.DISCONNECTED,
         )
         self._receive_task: Optional[asyncio.Task] = None
@@ -114,6 +115,7 @@ class WebSocketConnection:
             url=ws_url,
             endpoint_type=self._endpoint_type,
             environment=settings.bybit_environment,
+            public_category=settings.bybit_ws_public_category if self._endpoint_type == "public" else None,
             connection_id=str(self._state.connection_id),
             trace_id=trace_id,
         )
@@ -154,6 +156,8 @@ class WebSocketConnection:
                 "websocket_connected",
                 url=ws_url,
                 endpoint_type=self._endpoint_type,
+                environment=settings.bybit_environment,
+                public_category=settings.bybit_ws_public_category if self._endpoint_type == "public" else None,
                 connection_id=str(self._state.connection_id),
                 trace_id=trace_id,
             )
@@ -164,7 +168,9 @@ class WebSocketConnection:
             # Update state and log state change
             old_status = self._state.status
             self._state.status = ConnectionStatus.CONNECTED
-            self._state.connected_at = datetime.now()
+            now = datetime.now()
+            self._state.connected_at = now
+            self._state.last_message_at = None
             self._state.last_error = None
             self._connected_event.set()
 
@@ -329,6 +335,10 @@ class WebSocketConnection:
         try:
             async for message in self._websocket:
                 try:
+                    # Update last message timestamp as soon as we successfully receive bytes
+                    now = datetime.now()
+                    self._state.last_message_at = now
+
                     data = json.loads(message)
                     # Generate trace ID for this message or use existing one
                     trace_id = data.get("trace_id") or get_or_create_trace_id()
@@ -358,7 +368,7 @@ class WebSocketConnection:
                     # Store message for viewing via API (testing)
                     _recent_messages.append(
                         {
-                            "timestamp": data.get("ts", datetime.now().isoformat()),
+                            "timestamp": data.get("ts", now.isoformat()),
                             "topic": data.get("topic", ""),
                             "op": data.get("op", ""),
                             "type": data.get("type", ""),

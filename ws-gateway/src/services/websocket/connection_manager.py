@@ -1,5 +1,7 @@
 """Connection manager for managing dual WebSocket connections (public and private)."""
 
+import asyncio
+
 from typing import Optional
 
 from ...config.logging import get_logger
@@ -157,6 +159,64 @@ class ConnectionManager:
             self._private_connection = None
 
         logger.info("connection_manager_all_disconnected")
+
+    async def resubscribe_all_active(self) -> None:
+        """
+        Resubscribe all active subscriptions on both public and private connections.
+
+        This is a periodic maintenance operation to refresh subscriptions at Bybit side.
+        """
+        from ..subscription.subscription_service import SubscriptionService
+        from .channel_types import get_endpoint_type_for_channel
+        from .subscription import build_subscribe_messages
+
+        all_subscriptions = await SubscriptionService.get_active_subscriptions()
+        if not all_subscriptions:
+            return
+
+        public_subs = []
+        private_subs = []
+        for sub in all_subscriptions:
+            endpoint_type = get_endpoint_type_for_channel(sub.channel_type)
+            if endpoint_type == "public":
+                public_subs.append(sub)
+            else:
+                private_subs.append(sub)
+
+        # Helper to send batches
+        async def _send_batches(connection, subs, endpoint_type: str) -> None:
+            if not subs:
+                return
+            messages = build_subscribe_messages(subs, max_topics_per_message=10)
+            for msg in messages:
+                try:
+                    await connection.send(msg)
+                except Exception as e:
+                    logger.warning(
+                        "connection_manager_resubscribe_send_failed",
+                        error=str(e),
+                        error_type=type(e).__name__,
+                        endpoint_type=endpoint_type,
+                    )
+                if len(messages) > 1:
+                    await asyncio.sleep(0.1)
+
+            logger.info(
+                "connection_manager_resubscribed_all_active",
+                endpoint_type=endpoint_type,
+                subscription_count=len(subs),
+                message_batches=len(messages),
+            )
+
+        # Public
+        if public_subs:
+            public_conn = await self.get_public_connection()
+            await _send_batches(public_conn, public_subs, "public")
+
+        # Private
+        if private_subs:
+            private_conn = await self.get_private_connection()
+            await _send_batches(private_conn, private_subs, "private")
 
     def get_public_connection_sync(self) -> Optional[WebSocketConnection]:
         """

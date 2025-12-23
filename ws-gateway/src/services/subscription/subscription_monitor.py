@@ -6,11 +6,12 @@ This helps identify subscriptions that are not receiving events.
 
 import asyncio
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from ...config.logging import get_logger
 from ...services.database.subscription_repository import SubscriptionRepository
 from .subscription_service import SubscriptionService
+from ..websocket.connection_manager import get_connection_manager
 
 logger = get_logger(__name__)
 
@@ -42,6 +43,11 @@ class SubscriptionMonitor:
         self._critical_threshold = timedelta(minutes=critical_threshold_minutes)
         self._monitoring_task: Optional[asyncio.Task] = None
         self._is_running = False
+        # Cached connection manager for resubscribe operations
+        self._connection_manager = get_connection_manager()
+        # Last time full resubscribe was attempted (to rate-limit)
+        self._last_full_resubscribe_at: Optional[datetime] = None
+        self._full_resubscribe_interval = timedelta(minutes=5)
 
     async def start(self) -> None:
         """Start monitoring subscriptions."""
@@ -89,9 +95,9 @@ class SubscriptionMonitor:
         now = datetime.now(timezone.utc)
         all_subscriptions = await SubscriptionService.get_active_subscriptions()
 
-        stale_warning = []
-        stale_critical = []
-        never_received = []
+        stale_warning: List[Tuple[object, timedelta]] = []
+        stale_critical: List[Tuple[object, timedelta]] = []
+        never_received: List[object] = []
 
         for subscription in all_subscriptions:
             if not subscription.last_event_at:
@@ -128,6 +134,12 @@ class SubscriptionMonitor:
 
         # Log critical alerts
         if stale_critical:
+            # Group critical subscriptions by (symbol, channel_type) for nicer diagnostics
+            grouped: Dict[Tuple[Optional[str], str], List[Tuple[object, timedelta]]] = {}
+            for subscription, age in stale_critical:
+                key = (getattr(subscription, "symbol", None), subscription.channel_type)
+                grouped.setdefault(key, []).append((subscription, age))
+
             for subscription, age in stale_critical:
                 # Normalize last_event_at for logging
                 last_event_at = subscription.last_event_at
@@ -147,6 +159,49 @@ class SubscriptionMonitor:
                     age_minutes=age.total_seconds() / 60,
                     threshold_minutes=self._critical_threshold.total_seconds() / 60,
                 )
+
+            # Log aggregated symbol-level view and trigger resubscribe attempts
+            for (symbol, channel_type), items in grouped.items():
+                subscriptions_for_key = [sub for sub, _ in items]
+                logger.warning(
+                    "subscription_stale_critical_group",
+                    symbol=symbol,
+                    channel_type=channel_type,
+                    subscription_ids=[str(sub.id) for sub in subscriptions_for_key],
+                    requesting_services=[sub.requesting_service for sub in subscriptions_for_key],
+                    count=len(subscriptions_for_key),
+                )
+
+                # Attempt lightweight resubscribe for these subscriptions
+                await self._resubscribe_subscriptions(subscriptions_for_key)
+
+            # If a large portion of subscriptions are critical, trigger a full resubscribe
+            critical_ratio = len(stale_critical) / max(len(all_subscriptions), 1)
+            now = datetime.now(timezone.utc)
+            should_full_resubscribe = (
+                critical_ratio >= 0.5
+                and (
+                    self._last_full_resubscribe_at is None
+                    or (now - self._last_full_resubscribe_at) >= self._full_resubscribe_interval
+                )
+            )
+            if should_full_resubscribe:
+                try:
+                    await self._connection_manager.resubscribe_all_active()
+                    self._last_full_resubscribe_at = now
+                    logger.info(
+                        "subscription_full_resubscribe_triggered",
+                        critical_count=len(stale_critical),
+                        total_subscriptions=len(all_subscriptions),
+                        critical_ratio=critical_ratio,
+                    )
+                except Exception as e:
+                    logger.error(
+                        "subscription_full_resubscribe_failed",
+                        error=str(e),
+                        error_type=type(e).__name__,
+                        exc_info=True,
+                    )
 
         # Log subscriptions that never received events (only if created more than threshold ago)
         if never_received:
@@ -179,5 +234,62 @@ class SubscriptionMonitor:
                 stale_warning_count=len(stale_warning),
                 stale_critical_count=len(stale_critical),
                 never_received_count=len(never_received),
+            )
+
+    async def _resubscribe_subscriptions(self, subscriptions: List[object]) -> None:
+        """
+        Attempt lightweight resubscribe for a set of subscriptions.
+
+        This is a best-effort operation: errors are logged but do not stop monitoring.
+        It relies on ConnectionManager to pick the correct (public/private) connection.
+        """
+        if not subscriptions:
+            return
+
+        try:
+            from ..websocket.subscription import build_subscribe_messages  # local import to avoid cycles
+            from ..websocket.channel_types import get_endpoint_type_for_channel
+
+            # Group subscriptions by endpoint type to send via appropriate connections
+            by_endpoint: Dict[str, List[object]] = {}
+            for sub in subscriptions:
+                endpoint_type = get_endpoint_type_for_channel(sub.channel_type)
+                by_endpoint.setdefault(endpoint_type, []).append(sub)
+
+            for endpoint_type, subs in by_endpoint.items():
+                # Get appropriate connection
+                if endpoint_type == "public":
+                    connection = await self._connection_manager.get_public_connection()
+                else:
+                    connection = await self._connection_manager.get_private_connection()
+
+                messages = build_subscribe_messages(subs, max_topics_per_message=10)
+                for msg in messages:
+                    try:
+                        await connection.send(msg)
+                    except Exception as e:
+                        logger.warning(
+                            "subscription_resubscribe_send_failed",
+                            error=str(e),
+                            error_type=type(e).__name__,
+                            endpoint_type=endpoint_type,
+                        )
+                        continue
+
+                logger.info(
+                    "subscription_resubscribed_group",
+                    endpoint_type=endpoint_type,
+                    subscription_ids=[str(s.id) for s in subs],
+                    topics=[s.topic for s in subs],
+                    count=len(subs),
+                    message_batches=len(messages),
+                )
+
+        except Exception as e:
+            logger.error(
+                "subscription_resubscribe_unexpected_error",
+                error=str(e),
+                error_type=type(e).__name__,
+                exc_info=True,
             )
 

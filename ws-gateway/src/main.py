@@ -23,6 +23,7 @@ from .services.websocket.connection import get_connection
 from .services.websocket.connection_manager import get_connection_manager
 from .services.websocket.heartbeat import HeartbeatManager
 from .services.websocket.reconnection import ReconnectionManager
+from .services.websocket.stream_monitor import StreamActivityMonitor
 from .services.subscription.subscription_monitor import SubscriptionMonitor
 
 # Setup logging first
@@ -41,6 +42,7 @@ async def lifespan(app: FastAPI):
     reconnection_manager = None
     heartbeat_manager = None
     subscription_monitor = None
+    stream_activity_monitor = None
 
     try:
         # Initialize database connection pool
@@ -71,6 +73,11 @@ async def lifespan(app: FastAPI):
         subscription_monitor = SubscriptionMonitor()
         await subscription_monitor.start()
         logger.info("subscription_monitoring_started")
+
+        # Start stream activity monitoring (monitor last_message_at and trigger reconnects)
+        stream_activity_monitor = StreamActivityMonitor()
+        await stream_activity_monitor.start()
+        logger.info("stream_activity_monitoring_started")
 
         # Initialize WebSocket connection
         websocket_connection = get_connection()
@@ -166,6 +173,11 @@ async def lifespan(app: FastAPI):
         if subscription_monitor:
             await subscription_monitor.stop()
             logger.info("subscription_monitoring_stopped")
+
+        # Stop stream activity monitoring
+        if stream_activity_monitor:
+            await stream_activity_monitor.stop()
+            logger.info("stream_activity_monitoring_stopped")
 
         # Stop queue backlog monitoring
         await stop_backlog_monitoring()
