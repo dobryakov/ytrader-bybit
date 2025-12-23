@@ -37,6 +37,7 @@ class ModelVersionResponse(BaseModel):
     training_config: Optional[dict] = None
     is_active: bool
     is_warmup_mode: bool
+    auto_activation_disabled: bool = False
     created_at: str
     updated_at: str
 
@@ -223,5 +224,51 @@ async def activate_model_version(
         raise
     except Exception as e:
         logger.error("Failed to activate model version", version=version, error=str(e), exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+
+@router.post("/models/{version}/deactivate", response_model=ModelVersionResponse)
+async def deactivate_model_version(version: str) -> ModelVersionResponse:
+    """
+    Deactivate a model version and block automatic reactivation.
+
+    Args:
+        version: Model version identifier (e.g., 'v1', 'v2.1')
+
+    Returns:
+        Deactivated model version record
+
+    Raises:
+        HTTPException: If model version not found or deactivation fails
+    """
+    # Validate version string to prevent path traversal
+    if not validate_version_string(version):
+        logger.warning("Invalid version string detected", version=version)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid version format")
+    
+    try:
+        repo = ModelVersionRepository()
+        model_version = await repo.get_by_version(version)
+
+        if not model_version:
+            logger.warning("Model version not found for deactivation", version=version)
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Model version {version} not found")
+
+        deactivated_version = await model_version_manager.deactivate_version(UUID(model_version["id"]))
+
+        if not deactivated_version:
+            logger.error("Failed to deactivate model version", version=version)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to deactivate model version {version}",
+            )
+
+        logger.info("Model version deactivated", version=version)
+
+        return ModelVersionResponse(**deactivated_version)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to deactivate model version", version=version, error=str(e), exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 

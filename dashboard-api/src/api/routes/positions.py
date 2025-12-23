@@ -20,6 +20,7 @@ async def list_positions(
     mode: Optional[str] = Query(None, description="Filter by trading mode (one-way, hedge)"),
     size_min: Optional[float] = Query(None, description="Minimum position size"),
     size_max: Optional[float] = Query(None, description="Maximum position size"),
+    position_id: Optional[str] = Query(None, description="Filter by position ID (UUID)"),
 ):
     """List positions with optional filtering."""
     trace_id = get_or_create_trace_id()
@@ -36,24 +37,34 @@ async def list_positions(
             WHERE 1=1
         """
         params = []
+        param_idx = 1
 
         if asset:
-            query += " AND asset = $1"
+            query += f" AND asset = ${param_idx}"
             params.append(asset)
+            param_idx += 1
 
         if mode:
             if mode.lower() not in {"one-way", "hedge"}:
                 raise HTTPException(status_code=400, detail="Invalid mode. Must be 'one-way' or 'hedge'")
-            query += f" AND mode = ${len(params) + 1}"
+            query += f" AND mode = ${param_idx}"
             params.append(mode)
+            param_idx += 1
 
         if size_min is not None:
-            query += f" AND ABS(size) >= ${len(params) + 1}"
+            query += f" AND ABS(size) >= ${param_idx}"
             params.append(size_min)
+            param_idx += 1
 
         if size_max is not None:
-            query += f" AND ABS(size) <= ${len(params) + 1}"
+            query += f" AND ABS(size) <= ${param_idx}"
             params.append(size_max)
+            param_idx += 1
+
+        if position_id:
+            query += f" AND id = ${param_idx}::uuid"
+            params.append(position_id)
+            param_idx += 1
 
         query += " ORDER BY last_updated DESC"
 

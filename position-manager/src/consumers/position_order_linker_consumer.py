@@ -227,9 +227,17 @@ class PositionOrderLinkerConsumer:
                 trace_id=trace_id,
             )
 
-            # 4. Determine relationship_type based on current position state
+            # 4. Determine relationship_type based on position size at order execution time
+            # Calculate position size at the moment of order execution by summing all previous size_deltas
+            executed_at = event.execution_timestamp or datetime.utcnow()
+            position_size_at_execution = await self._calculate_position_size_at_time(
+                position_id=position.id,
+                execution_time=executed_at,
+                trace_id=trace_id,
+            )
+            
             relationship_type = await self._determine_relationship_type(
-                position=position,
+                position_size_at_execution=position_size_at_execution,
                 side=event.side,
                 size_delta=size_delta,
                 trace_id=trace_id,
@@ -369,15 +377,67 @@ class PositionOrderLinkerConsumer:
             )
             raise DatabaseError(f"Failed to create position: {e}") from e
 
+    async def _calculate_position_size_at_time(
+        self,
+        position_id: UUID,
+        execution_time: datetime,
+        trace_id: Optional[str],
+    ) -> Decimal:
+        """Calculate position size at a specific moment in time by summing all size_deltas before that time.
+        
+        This gives us the accurate position size at the moment of order execution,
+        regardless of what the current position size is in the database.
+        
+        Args:
+            position_id: Position UUID
+            execution_time: Timestamp to calculate size at
+            trace_id: Optional trace ID
+            
+        Returns:
+            Position size at the specified time
+        """
+        try:
+            pool = await DatabaseConnection.get_pool()
+            query = """
+                SELECT COALESCE(SUM(size_delta), 0) as total_size
+                FROM position_orders
+                WHERE position_id = $1
+                  AND executed_at < $2
+            """
+            row = await pool.fetchrow(query, position_id, execution_time)
+            if row:
+                return Decimal(str(row["total_size"]))
+            return Decimal("0")
+        except Exception as e:
+            logger.warning(
+                "position_size_calculation_failed",
+                position_id=str(position_id),
+                execution_time=execution_time.isoformat(),
+                error=str(e),
+                trace_id=trace_id,
+            )
+            # Fallback: return 0 if calculation fails
+            return Decimal("0")
+
     async def _determine_relationship_type(
         self,
-        position: Any,  # Position
+        position_size_at_execution: Decimal,
         side: str,
         size_delta: Decimal,
         trace_id: Optional[str],
     ) -> str:
-        """Determine relationship_type based on current position state and order."""
-        current_size = position.size or Decimal(0)
+        """Determine relationship_type based on position size at order execution time.
+        
+        Args:
+            position_size_at_execution: Position size at the moment of order execution
+            side: Order side ("buy" or "sell")
+            size_delta: Size delta from this order
+            trace_id: Optional trace ID
+            
+        Returns:
+            Relationship type: "opened", "increased", "decreased", "closed", or "reversed"
+        """
+        current_size = position_size_at_execution
 
         if current_size == 0:
             # Position is empty - this order opens it

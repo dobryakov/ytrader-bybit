@@ -129,24 +129,23 @@ class PositionManager:
             closed_at = position_dict.get("closed_at")
             
             # Fix position desynchronization: if position is marked as closed (closed_at is set)
-            # but size is not zero, force close it (set size to 0 and clear closed_at)
-            # This can happen when position is closed via Bybit sync but size wasn't properly updated
+            # but size is not zero, this might be a new position opened after the previous one was closed.
+            # Instead of force-closing, we should clear closed_at to indicate the position is active again.
+            # Only force-close if size is actually zero (true desynchronization).
             if closed_at is not None and position_size != 0:
                 logger.warning(
-                    "position_desynchronization_detected",
+                    "position_reopened_after_close",
                     asset=asset,
                     mode=mode,
                     size=str(position_size),
                     closed_at=closed_at.isoformat() if hasattr(closed_at, 'isoformat') else str(closed_at),
-                    action="forcing_close",
+                    action="clearing_closed_at",
                 )
-                # Force close: set size to 0 and clear closed_at
+                # Clear closed_at to indicate position is active again
                 await pool.execute(
                     """
                     UPDATE positions
-                    SET size = 0,
-                        average_entry_price = NULL,
-                        closed_at = NOW(),
+                    SET closed_at = NULL,
                         version = version + 1,
                         last_updated = NOW()
                     WHERE asset = $1 AND mode = $2
@@ -154,15 +153,17 @@ class PositionManager:
                     asset.upper(),
                     mode.lower(),
                 )
-                position_dict["size"] = "0"
-                position_dict["average_entry_price"] = None
-                position_dict["closed_at"] = datetime.utcnow()
-                position_size = Decimal("0")
+                position_dict["closed_at"] = None
                 logger.info(
-                    "position_force_closed_due_to_desynchronization",
+                    "position_closed_at_cleared_after_reopen",
                     asset=asset,
                     mode=mode,
+                    size=str(position_size),
                 )
+            elif closed_at is not None and position_size == 0:
+                # Position is marked as closed and size is zero - this is correct state
+                # No action needed
+                pass
             
             # Fix missing average_entry_price for non-zero positions
             if position_dict["average_entry_price"] is None and position_size != 0:
@@ -497,17 +498,19 @@ class PositionManager:
                     # If position is closed (size = 0), set average_entry_price to NULL
                     if resolved_size == 0:
                         new_avg_price = None
+                        # Also set current_price to NULL for closed positions
+                        current_price = None
+                    else:
+                        # Price and PnL updates
+                        current_price = mark_price or position.current_price
 
-                    # Price and PnL updates
-                    current_price = mark_price or position.current_price
-
-                    # Refresh price if stale
-                    if current_price is not None and self._is_price_stale(position.last_updated):
-                        refreshed = await self._get_current_price_from_api(
-                            asset, trace_id=trace_id
-                        )
-                        if refreshed is not None:
-                            current_price = refreshed
+                        # Refresh price if stale
+                        if current_price is not None and self._is_price_stale(position.last_updated):
+                            refreshed = await self._get_current_price_from_api(
+                                asset, trace_id=trace_id
+                            )
+                            if refreshed is not None:
+                                current_price = refreshed
 
                     # Use unrealized_pnl from WebSocket if provided, otherwise calculate from current_price
                     new_unrealized = unrealized_pnl
@@ -521,7 +524,46 @@ class PositionManager:
                             # Fallback to existing unrealized_pnl if cannot calculate
                             new_unrealized = position.unrealized_pnl
                     
-                    new_realized = realized_pnl or position.realized_pnl
+                    # Handle realized_pnl: validate value from WebSocket for open positions
+                    # cumRealisedPnl from Bybit can be cumulative across all positions for the asset,
+                    # so for open positions (size != 0) we need to validate it's reasonable
+                    if realized_pnl is not None:
+                        # For open positions, validate that realized_pnl is reasonable
+                        # It should not be orders of magnitude larger than unrealized_pnl
+                        if resolved_size != 0:
+                            # Calculate expected maximum reasonable realized_pnl
+                            # For an open position, realized_pnl should be small compared to position value
+                            position_value = abs(resolved_size * (new_avg_price or current_price or Decimal("1")))
+                            # Allow realized_pnl up to 10x position value (for partial closes)
+                            max_reasonable_realized = abs(position_value * Decimal("10"))
+                            
+                            if abs(realized_pnl) > max_reasonable_realized:
+                                # Value is unreasonably large, likely cumulative from previous positions
+                                # For open positions, reset to 0 (existing value might also be incorrect)
+                                logger.warning(
+                                    "realized_pnl_unreasonable_for_open_position",
+                                    asset=asset,
+                                    mode=mode,
+                                    size=str(resolved_size),
+                                    realized_pnl_from_ws=str(realized_pnl),
+                                    existing_realized_pnl=str(position.realized_pnl),
+                                    max_reasonable=str(max_reasonable_realized),
+                                    position_value=str(position_value),
+                                    action="resetting_to_zero",
+                                    trace_id=trace_id,
+                                )
+                                # Reset to 0 for open positions when value is unreasonable
+                                # This handles cases where existing value is also incorrect (cumulative from previous positions)
+                                new_realized = Decimal("0")
+                            else:
+                                # Value is reasonable, use it
+                                new_realized = realized_pnl
+                        else:
+                            # Position is closed (size == 0), use realized_pnl from WebSocket
+                            new_realized = realized_pnl
+                    else:
+                        # No realized_pnl from WebSocket, keep existing value
+                        new_realized = position.realized_pnl or Decimal("0")
 
                     # Final validation: ensure new_avg_price is None if size is 0 or if it's <= 0
                     if resolved_size == 0 or (new_avg_price is not None and new_avg_price <= 0):
@@ -544,7 +586,10 @@ class PositionManager:
                             END,
                             version = version + 1,
                             last_updated = NOW(),
-                            closed_at = CASE WHEN CAST($1 AS numeric) = 0 THEN NOW() ELSE closed_at END
+                            closed_at = CASE 
+                                WHEN CAST($1 AS numeric) = 0 THEN NOW() 
+                                ELSE NULL 
+                            END
                         WHERE asset = $6
                           AND mode = $7
                           AND version = $8
@@ -580,6 +625,10 @@ class PositionManager:
                             "position_updated_from_websocket",
                             asset=asset,
                             mode=mode,
+                            size=str(updated.size),
+                            resolved_size=str(resolved_size),
+                            ws_size=str(size_from_ws) if size_from_ws is not None else None,
+                            size_update_from_ws=size_update_from_ws,
                             current_price=str(updated.current_price)
                             if updated.current_price is not None
                             else None,
@@ -968,6 +1017,7 @@ class PositionManager:
                             WHEN $2::text = '' THEN NULL
                             ELSE CAST($2::text AS numeric)
                         END,
+                        closed_at = CASE WHEN CAST($1 AS numeric) = 0 THEN closed_at ELSE NULL END,
                         last_updated = NOW(),
                         version = version + 1
                     WHERE asset = $3 AND mode = $4

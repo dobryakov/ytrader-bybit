@@ -31,6 +31,10 @@ class TargetEvaluationTask:
         self._stopped.clear()
         self._task = asyncio.create_task(self._evaluation_loop(), name="target_evaluation_task")
         logger.info("TargetEvaluationTask started")
+        
+        # Восстанавливаем pending targets после рестарта
+        # Запускаем в фоне, чтобы не блокировать старт сервиса
+        asyncio.create_task(self._recover_pending_targets(), name="target_evaluation_recovery")
 
     async def stop(self) -> None:
         """Stop background evaluation loop."""
@@ -63,6 +67,45 @@ class TargetEvaluationTask:
                 error=str(e),
                 exc_info=True,
             )
+
+    async def _recover_pending_targets(self) -> None:
+        """
+        Восстанавливает обработку pending targets после рестарта сервиса.
+        
+        Вызывается сразу после старта задачи, чтобы обработать таргеты,
+        у которых target_timestamp уже прошел, но actual_values еще не заполнены.
+        """
+        try:
+            logger.info("Starting recovery of pending targets after service restart")
+            # Обрабатываем все pending targets с небольшим батчем, чтобы не перегрузить систему
+            batch_size = 100
+            total_evaluated = 0
+            
+            while True:
+                evaluated = await target_evaluator.evaluate_pending_targets(limit=batch_size)
+                total_evaluated += evaluated
+                
+                if evaluated == 0:
+                    # Больше нет pending targets
+                    break
+                
+                # Небольшая пауза между батчами, чтобы не перегружать систему
+                await asyncio.sleep(0.5)
+            
+            if total_evaluated > 0:
+                logger.info(
+                    "Recovery of pending targets completed",
+                    total_evaluated=total_evaluated,
+                )
+            else:
+                logger.debug("No pending targets found during recovery")
+        except Exception as e:
+            logger.error(
+                "Failed to recover pending targets after restart",
+                error=str(e),
+                exc_info=True,
+            )
+            # Не падаем - основная задача продолжит работу
 
     async def _evaluation_loop(self) -> None:
         """Main evaluation loop with adaptive interval."""

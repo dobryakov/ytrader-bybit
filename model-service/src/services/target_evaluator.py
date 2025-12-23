@@ -21,6 +21,66 @@ from ..database.repositories.prediction_target_repo import PredictionTargetRepos
 from ..database.repositories.trading_signal_repo import TradingSignalRepository
 from ..services.feature_service_client import feature_service_client
 
+
+def _normalize_timestamp(ts: Any) -> datetime:
+    """
+    Нормализует timestamp к UTC timezone-aware datetime.
+    
+    Обрабатывает случаи, когда timestamp может быть:
+    - datetime объектом (с tzinfo или без)
+    - строкой (ISO format)
+    
+    Args:
+        ts: Timestamp в любом формате
+        
+    Returns:
+        datetime объект с UTC timezone
+    """
+    if isinstance(ts, str):
+        # Парсим строку в datetime
+        # Пробуем ISO format сначала
+        ts_str = ts.replace("Z", "+00:00")
+        try:
+            ts = datetime.fromisoformat(ts_str)
+        except (ValueError, AttributeError):
+            # Fallback: пробуем стандартные форматы PostgreSQL
+            # Формат: 'YYYY-MM-DD HH:MM:SS.microseconds' или 'YYYY-MM-DD HH:MM:SS'
+            ts_clean = ts_str.split("+")[0].rstrip()
+            # Убираем timezone offset если есть
+            if ts_clean.endswith("Z"):
+                ts_clean = ts_clean[:-1]
+            
+            # Пробуем разные форматы
+            formats = [
+                "%Y-%m-%d %H:%M:%S.%f",  # С микросекундами
+                "%Y-%m-%d %H:%M:%S",      # Без микросекунд
+                "%Y-%m-%dT%H:%M:%S.%f",   # ISO с микросекундами
+                "%Y-%m-%dT%H:%M:%S",     # ISO без микросекунд
+            ]
+            
+            parsed = None
+            for fmt in formats:
+                try:
+                    parsed = datetime.strptime(ts_clean, fmt)
+                    break
+                except ValueError:
+                    continue
+            
+            if parsed is None:
+                raise ValueError(f"Cannot parse timestamp string: {ts}")
+            ts = parsed
+    
+    if not isinstance(ts, datetime):
+        raise ValueError(f"Invalid timestamp type: {type(ts)}, value: {ts}")
+    
+    # Нормализуем к UTC timezone-aware
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    else:
+        ts = ts.astimezone(timezone.utc)
+    
+    return ts
+
 # Импорт общего модуля для публикации событий
 try:
     from common.trading_events import trading_events_publisher
@@ -121,13 +181,13 @@ class TargetEvaluator:
             )
             return False
 
-        target_ts: datetime = target["target_timestamp"]
-        # Приводим к UTC-наивному для корректного сравнения
-        if target_ts.tzinfo is not None:
-            target_ts = target_ts.astimezone(timezone.utc).replace(tzinfo=None)
+        # Нормализуем timestamp (может быть строкой или datetime)
+        target_ts = _normalize_timestamp(target["target_timestamp"])
+        # Приводим к UTC-наивному для корректного сравнения с utcnow()
+        target_ts_naive = target_ts.astimezone(timezone.utc).replace(tzinfo=None)
 
         now = datetime.utcnow()
-        if target_ts > now:
+        if target_ts_naive > now:
             logger.debug(
                 "Target timestamp not reached yet, skipping immediate evaluation",
                 prediction_target_id=prediction_target_id,
@@ -269,19 +329,9 @@ class TargetEvaluator:
             raise ValueError(f"Trading signal not found for signal_id={signal_id}")
 
         asset: str = signal["asset"]
-        prediction_ts: datetime = target["prediction_timestamp"]
-        target_ts: datetime = target["target_timestamp"]
-
-        # Нормализуем к UTC timezone-aware
-        if prediction_ts.tzinfo is None:
-            prediction_ts = prediction_ts.replace(tzinfo=timezone.utc)
-        else:
-            prediction_ts = prediction_ts.astimezone(timezone.utc)
-        
-        if target_ts.tzinfo is None:
-            target_ts = target_ts.replace(tzinfo=timezone.utc)
-        else:
-            target_ts = target_ts.astimezone(timezone.utc)
+        # Нормализуем timestamp'ы (могут быть строками или datetime)
+        prediction_ts = _normalize_timestamp(target["prediction_timestamp"])
+        target_ts = _normalize_timestamp(target["target_timestamp"])
 
         # Получаем target_registry_version из prediction_targets
         target_registry_version = target["target_registry_version"]
@@ -353,19 +403,9 @@ class TargetEvaluator:
             raise ValueError(f"Trading signal not found for signal_id={signal_id}")
 
         asset: str = signal["asset"]
-        prediction_ts: datetime = target["prediction_timestamp"]
-        target_ts: datetime = target["target_timestamp"]
-
-        # Нормализуем к UTC timezone-aware
-        if prediction_ts.tzinfo is None:
-            prediction_ts = prediction_ts.replace(tzinfo=timezone.utc)
-        else:
-            prediction_ts = prediction_ts.astimezone(timezone.utc)
-        
-        if target_ts.tzinfo is None:
-            target_ts = target_ts.replace(tzinfo=timezone.utc)
-        else:
-            target_ts = target_ts.astimezone(timezone.utc)
+        # Нормализуем timestamp'ы (могут быть строками или datetime)
+        prediction_ts = _normalize_timestamp(target["prediction_timestamp"])
+        target_ts = _normalize_timestamp(target["target_timestamp"])
 
         # Получаем target_registry_version из prediction_targets
         target_registry_version = target["target_registry_version"]
@@ -427,19 +467,9 @@ class TargetEvaluator:
             raise ValueError(f"Trading signal not found for signal_id={signal_id}")
 
         asset: str = signal["asset"]
-        prediction_ts: datetime = target["prediction_timestamp"]
-        target_ts: datetime = target["target_timestamp"]
-
-        # Нормализуем к UTC timezone-aware
-        if prediction_ts.tzinfo is None:
-            prediction_ts = prediction_ts.replace(tzinfo=timezone.utc)
-        else:
-            prediction_ts = prediction_ts.astimezone(timezone.utc)
-        
-        if target_ts.tzinfo is None:
-            target_ts = target_ts.replace(tzinfo=timezone.utc)
-        else:
-            target_ts = target_ts.astimezone(timezone.utc)
+        # Нормализуем timestamp'ы (могут быть строками или datetime)
+        prediction_ts = _normalize_timestamp(target["prediction_timestamp"])
+        target_ts = _normalize_timestamp(target["target_timestamp"])
 
         # Получаем target_registry_version из prediction_targets
         target_registry_version = target["target_registry_version"]

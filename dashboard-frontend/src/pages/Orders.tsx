@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import { useSearchParams, useNavigate } from 'react-router-dom'
 import { useOrders } from '@/hooks/useOrders'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Badge } from '@/components/ui/badge'
@@ -8,9 +9,34 @@ import { format } from 'date-fns'
 import { parseISO } from 'date-fns'
 
 export default function Orders() {
+  const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const signalIdFromUrl = searchParams.get('signal_id') || undefined
+  const positionIdFromUrl = searchParams.get('position_id') || undefined
+  
   const [page, setPage] = useState(1)
-  const [filters, setFilters] = useState<{ asset?: string; status?: string }>({})
-  const { data, isLoading } = useOrders({ ...filters, page, page_size: 20 })
+  const [filters, setFilters] = useState<{ asset?: string; status?: string; signal_id?: string; position_id?: string }>({})
+  
+  // Sync filters from URL
+  useEffect(() => {
+    if (signalIdFromUrl) {
+      setFilters(prev => ({ ...prev, signal_id: signalIdFromUrl }))
+    }
+    if (positionIdFromUrl) {
+      setFilters(prev => ({ ...prev, position_id: positionIdFromUrl }))
+    }
+  }, [signalIdFromUrl, positionIdFromUrl])
+  
+  const { data, isLoading } = useOrders({ ...filters, signal_id: signalIdFromUrl, position_id: positionIdFromUrl, page, page_size: 20 })
+  
+  const handleViewPosition = (positionId: string | null, asset: string) => {
+    if (positionId) {
+      navigate(`/positions?position_id=${positionId}`)
+    } else {
+      // Fallback to asset filter if position_id is not available
+      navigate(`/positions?asset=${asset}`)
+    }
+  }
 
   const formatCurrency = (value: string | null) => {
     if (!value) return 'N/A'
@@ -37,7 +63,49 @@ export default function Orders() {
       </div>
 
       {/* Filters */}
-      <div className="flex gap-4">
+      <div className="flex gap-4 items-center">
+        {positionIdFromUrl && (
+          <div className="px-3 py-2 bg-muted rounded-md text-sm">
+            Фильтр по Position ID: <span className="font-mono">{positionIdFromUrl.slice(0, 8)}...</span>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="ml-2 h-6 px-2"
+              onClick={() => {
+                const newParams = new URLSearchParams(searchParams)
+                newParams.delete('position_id')
+                setSearchParams(newParams)
+                setFilters(prev => {
+                  const { position_id, ...rest } = prev
+                  return rest
+                })
+              }}
+            >
+              ✕
+            </Button>
+          </div>
+        )}
+        {signalIdFromUrl && !positionIdFromUrl && (
+          <div className="px-3 py-2 bg-muted rounded-md text-sm">
+            Фильтр по Signal ID: <span className="font-mono">{signalIdFromUrl.slice(0, 8)}...</span>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="ml-2 h-6 px-2"
+              onClick={() => {
+                const newParams = new URLSearchParams(searchParams)
+                newParams.delete('signal_id')
+                setSearchParams(newParams)
+                setFilters(prev => {
+                  const { signal_id, ...rest } = prev
+                  return rest
+                })
+              }}
+            >
+              ✕
+            </Button>
+          </div>
+        )}
         <input
           type="text"
           placeholder="Asset"
@@ -82,12 +150,13 @@ export default function Orders() {
                 <TableHead>Filled</TableHead>
                 <TableHead>Avg Price</TableHead>
                 <TableHead>Created At</TableHead>
+                <TableHead>Position</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {data?.orders.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={10} className="text-center text-muted-foreground">
+                  <TableCell colSpan={11} className="text-center text-muted-foreground">
                     Нет ордеров
                   </TableCell>
                 </TableRow>
@@ -112,6 +181,19 @@ export default function Orders() {
                     <TableCell>{parseFloat(order.filled_quantity).toFixed(8)}</TableCell>
                     <TableCell>{formatCurrency(order.average_price)}</TableCell>
                     <TableCell>{format(parseISO(order.created_at), 'dd.MM.yyyy HH:mm:ss')}</TableCell>
+                    <TableCell>
+                      {order.position_id ? (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => handleViewPosition(order.position_id, order.asset)}
+                        >
+                          Позиция
+                        </Button>
+                      ) : (
+                        <span className="text-muted-foreground text-sm">N/A</span>
+                      )}
+                    </TableCell>
                   </TableRow>
                 ))
               )}

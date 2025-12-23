@@ -272,7 +272,7 @@ class ModelVersionRepository(BaseRepository[Dict[str, Any]]):
         """
         query = f"""
             UPDATE {self.table_name}
-            SET is_active = false, updated_at = $1
+            SET is_active = false, auto_activation_disabled = true, updated_at = $1
             WHERE strategy_id = $2 AND is_active = true AND symbol IS NULL
         """
         result = await self._execute(query, datetime.utcnow(), strategy_id)
@@ -299,14 +299,14 @@ class ModelVersionRepository(BaseRepository[Dict[str, Any]]):
         if symbol:
             query = f"""
                 UPDATE {self.table_name}
-                SET is_active = false, updated_at = $1
+                SET is_active = false, auto_activation_disabled = true, updated_at = $1
                 WHERE strategy_id = $2 AND symbol = $3 AND is_active = true
             """
             result = await self._execute(query, datetime.utcnow(), strategy_id, symbol)
         else:
             query = f"""
                 UPDATE {self.table_name}
-                SET is_active = false, updated_at = $1
+                SET is_active = false, auto_activation_disabled = true, updated_at = $1
                 WHERE strategy_id = $2 AND symbol IS NULL AND is_active = true
             """
             result = await self._execute(query, datetime.utcnow(), strategy_id)
@@ -334,6 +334,8 @@ class ModelVersionRepository(BaseRepository[Dict[str, Any]]):
                     symbol = model_version.get("symbol")
             
             # Deactivate all models for this strategy and symbol combination
+            # Note: We don't set auto_activation_disabled here because these models
+            # are being deactivated as part of activating another model, not manually
             if symbol:
                 await conn.execute(
                     f"""
@@ -357,10 +359,10 @@ class ModelVersionRepository(BaseRepository[Dict[str, Any]]):
                     strategy_id,
                 )
 
-            # Activate the specified model
+            # Activate the specified model and remove auto-activation block
             query = f"""
                 UPDATE {self.table_name}
-                SET is_active = true, updated_at = $1
+                SET is_active = true, auto_activation_disabled = false, updated_at = $1
                 WHERE id = $2
                 RETURNING *
             """

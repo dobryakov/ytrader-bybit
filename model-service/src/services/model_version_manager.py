@@ -124,7 +124,7 @@ class ModelVersionManager:
 
     async def deactivate_version(self, model_version_id: UUID) -> Optional[Dict[str, Any]]:
         """
-        Deactivate a model version.
+        Deactivate a model version and block automatic reactivation.
 
         Args:
             model_version_id: Model version UUID to deactivate
@@ -132,10 +132,19 @@ class ModelVersionManager:
         Returns:
             Deactivated model version record or None if not found
         """
-        updated_version = await self.model_version_repo.update(model_version_id, is_active=False)
+        # Deactivate and block automatic reactivation
+        updated_version = await self.model_version_repo.update(
+            model_version_id, 
+            is_active=False,
+            auto_activation_disabled=True
+        )
 
         if updated_version:
-            logger.info("Model version deactivated", model_version_id=str(model_version_id))
+            logger.info(
+                "Model version deactivated and auto-activation blocked",
+                model_version_id=str(model_version_id),
+                version=updated_version.get("version")
+            )
         else:
             logger.warning("Model version not found for deactivation", model_version_id=str(model_version_id))
 

@@ -6,7 +6,10 @@ Provides common database operations and transaction management for repositories.
 
 from typing import Optional, List, Dict, Any, TypeVar, Generic, AsyncContextManager
 from contextlib import asynccontextmanager
+from datetime import datetime, date
+from uuid import UUID
 import asyncpg
+import json
 from abc import ABC, abstractmethod
 
 from .connection import db_pool
@@ -141,14 +144,31 @@ class BaseRepository(ABC, Generic[T]):
     def _record_to_dict(self, record: asyncpg.Record) -> Dict[str, Any]:
         """
         Convert an asyncpg record to a dictionary.
+        
+        Converts UUID objects to strings, datetime objects to ISO format strings,
+        and JSONB fields (stored as strings) to dictionaries for JSON serialization compatibility.
 
         Args:
             record: Database record
 
         Returns:
-            Dictionary representation
+            Dictionary representation with serializable types
         """
-        return dict(record)
+        result = {}
+        for key, value in record.items():
+            if isinstance(value, UUID):
+                result[key] = str(value)
+            elif isinstance(value, (datetime, date)):
+                result[key] = value.isoformat()
+            elif isinstance(value, str) and key in ('training_config', 'metadata', 'config'):
+                # Try to parse JSON strings (JSONB fields stored as strings)
+                try:
+                    result[key] = json.loads(value) if value else None
+                except (json.JSONDecodeError, TypeError):
+                    result[key] = value
+            else:
+                result[key] = value
+        return result
 
     def _records_to_dicts(self, records: List[asyncpg.Record]) -> List[Dict[str, Any]]:
         """

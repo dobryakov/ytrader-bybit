@@ -145,8 +145,11 @@ class PredictionTargetRepository(BaseRepository[Dict[str, Any]]):
         """
         query = f"""
             SELECT * FROM {self.table_name}
-            WHERE actual_values_computed_at IS NULL
-              AND target_timestamp <= NOW()
+            WHERE target_timestamp <= NOW()
+              AND (actual_values IS NULL OR actual_values = '{{}}'::jsonb)
+              AND (actual_values_computed_at IS NULL 
+                   OR (actual_values_computation_error IS NOT NULL 
+                       AND actual_values_computed_at < NOW() - INTERVAL '1 hour'))
             ORDER BY target_timestamp ASC
         """
         if limit:

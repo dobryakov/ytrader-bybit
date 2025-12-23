@@ -1,12 +1,18 @@
+import { useMemo } from 'react'
 import { usePnLChart } from '@/hooks/useCharts'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts'
 import { format, parseISO } from 'date-fns'
 import { Skeleton } from '@/components/ui/skeleton'
 
 export function PnLChart() {
+  // Memoize date_from to prevent infinite re-renders
+  const dateFrom = useMemo(() => {
+    return new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
+  }, [])
+
   const { data, isLoading } = usePnLChart({
     interval: '1h',
-    date_from: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
+    date_from: dateFrom,
   })
 
   if (isLoading) {

@@ -16,6 +16,7 @@ export interface Order {
   fees: string | null
   created_at: string
   updated_at: string
+  position_id: string | null
 }
 
 export interface OrdersResponse {
@@ -36,6 +37,7 @@ export function useOrders(filters?: {
   side?: string
   date_from?: string
   date_to?: string
+  position_id?: string
   page?: number
   page_size?: number
   sort_by?: string
@@ -52,6 +54,7 @@ export function useOrders(filters?: {
       if (filters?.side) params.append('side', filters.side)
       if (filters?.date_from) params.append('date_from', filters.date_from)
       if (filters?.date_to) params.append('date_to', filters.date_to)
+      if (filters?.position_id) params.append('position_id', filters.position_id)
       params.append('page', (filters?.page || 1).toString())
       params.append('page_size', (filters?.page_size || 20).toString())
       params.append('sort_by', filters?.sort_by || 'created_at')

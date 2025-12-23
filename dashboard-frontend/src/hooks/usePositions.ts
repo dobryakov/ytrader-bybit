@@ -29,6 +29,7 @@ export function usePositions(filters?: {
   mode?: string
   size_min?: number
   size_max?: number
+  position_id?: string
 }) {
   return useQuery<PositionsResponse>({
     queryKey: ['positions', filters],
@@ -38,6 +39,7 @@ export function usePositions(filters?: {
       if (filters?.mode) params.append('mode', filters.mode)
       if (filters?.size_min) params.append('size_min', filters.size_min.toString())
       if (filters?.size_max) params.append('size_max', filters.size_max.toString())
+      if (filters?.position_id) params.append('position_id', filters.position_id)
 
       const response = await api.get(`/v1/positions?${params.toString()}`)
       return response.data

@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useSignals } from '@/hooks/useSignals'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Badge } from '@/components/ui/badge'
@@ -8,9 +9,14 @@ import { format } from 'date-fns'
 import { parseISO } from 'date-fns'
 
 export default function Signals() {
+  const navigate = useNavigate()
   const [page, setPage] = useState(1)
   const [filters, setFilters] = useState<{ asset?: string; signal_type?: string }>({})
   const { data, isLoading } = useSignals({ ...filters, page, page_size: 20 })
+  
+  const handleViewOrders = (signalId: string) => {
+    navigate(`/orders?signal_id=${signalId}`)
+  }
 
   return (
     <div className="space-y-6">
@@ -63,12 +69,13 @@ export default function Signals() {
                 <TableHead>Strategy</TableHead>
                 <TableHead>Model</TableHead>
                 <TableHead>Timestamp</TableHead>
+                <TableHead>Orders</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {data?.signals.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={10} className="text-center text-muted-foreground">
+                  <TableCell colSpan={11} className="text-center text-muted-foreground">
                     Нет сигналов
                   </TableCell>
                 </TableRow>
@@ -127,6 +134,15 @@ export default function Signals() {
                     <TableCell>{signal.strategy_id || 'N/A'}</TableCell>
                     <TableCell>{signal.model_version || 'N/A'}</TableCell>
                     <TableCell>{format(parseISO(signal.timestamp), 'dd.MM.yyyy HH:mm:ss')}</TableCell>
+                    <TableCell>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => handleViewOrders(signal.signal_id)}
+                      >
+                        Ордера
+                      </Button>
+                    </TableCell>
                   </TableRow>
                 ))
               )}

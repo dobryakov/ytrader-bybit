@@ -29,21 +29,21 @@ async def get_overview_metrics():
         """
         position_row = await DatabaseConnection.fetchrow(position_query)
 
-        # Get latest balance (sum of all coins for USDT from most recent snapshot)
+        # Get latest balance (USDT from most recent snapshot, regardless of time)
         balance_query = """
             WITH latest_snapshot AS (
                 SELECT MAX(received_at) as max_received_at
                 FROM account_balances
                 WHERE coin = 'USDT'
-                AND received_at >= NOW() - INTERVAL '5 minutes'
             )
             SELECT 
-                COALESCE(SUM(wallet_balance), 0) as total_balance,
-                COALESCE(SUM(available_balance), 0) as total_available_balance
+                wallet_balance as total_balance,
+                available_balance as total_available_balance
             FROM account_balances ab
             CROSS JOIN latest_snapshot ls
             WHERE ab.coin = 'USDT'
             AND ab.received_at = ls.max_received_at
+            LIMIT 1
         """
         balance_row = await DatabaseConnection.fetchrow(balance_query)
 

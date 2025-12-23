@@ -174,6 +174,17 @@ async def list_signals(
                 except (ValueError, TypeError):
                     pass
             
+            # Fallback: calculate return_value from price_from and price_to if it's missing or zero
+            # but we have both prices (this handles cases where return_value was incorrectly stored as 0.0)
+            if actual_return == 0.0 and price_from is not None and price_to is not None and price_from != 0:
+                try:
+                    calculated_return = (price_to - price_from) / price_from
+                    # Only use calculated return if it's significantly different from 0 (more than 0.0001%)
+                    if abs(calculated_return) > 0.000001:
+                        actual_return = calculated_return
+                except (ValueError, TypeError, ZeroDivisionError):
+                    pass
+            
             signal_dict = {
                 "signal_id": str(row["signal_id"]),
                 "signal_type": row["side"],  # Map 'side' to 'signal_type' for API compatibility

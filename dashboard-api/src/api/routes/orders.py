@@ -23,6 +23,7 @@ async def list_orders(
     side: Optional[str] = Query(None, description="Filter by order side (Buy, Sell)"),
     date_from: Optional[str] = Query(None, description="Filter orders from date (ISO 8601)"),
     date_to: Optional[str] = Query(None, description="Filter orders until date (ISO 8601)"),
+    position_id: Optional[str] = Query(None, description="Filter by position ID (UUID)"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(20, ge=1, le=100, description="Items per page"),
     sort_by: str = Query("created_at", description="Field to sort by"),
@@ -48,13 +49,19 @@ async def list_orders(
         if sort_order.lower() not in {"asc", "desc"}:
             raise HTTPException(status_code=400, detail="Invalid sort_order. Must be 'asc' or 'desc'")
 
-        # Build query
-        query = """
+        # Determine JOIN type: use INNER JOIN when filtering by position_id for better performance
+        # Otherwise use LEFT JOIN to include orders without position relationships
+        join_type = "INNER JOIN" if position_id else "LEFT JOIN"
+        
+        # Build query with JOIN to position_orders to get position_id
+        query = f"""
             SELECT 
-                id, order_id, signal_id, asset, side, order_type,
-                quantity, price, status, filled_quantity, average_price,
-                fees, created_at, updated_at
-            FROM orders
+                o.id, o.order_id, o.signal_id, o.asset, o.side, o.order_type,
+                o.quantity, o.price, o.status, o.filled_quantity, o.average_price,
+                o.fees, o.created_at, o.updated_at,
+                po.position_id
+            FROM orders o
+            {join_type} position_orders po ON o.id = po.order_id
             WHERE 1=1
         """
         params = []
@@ -103,6 +110,11 @@ async def list_orders(
             except ValueError:
                 raise HTTPException(status_code=400, detail="Invalid date_to format. Use ISO 8601 format.")
 
+        if position_id:
+            query += f" AND po.position_id = ${param_idx}::uuid"
+            params.append(position_id)
+            param_idx += 1
+
         # Add sorting
         query += f" ORDER BY {sort_by} {sort_order.upper()}"
 
@@ -113,10 +125,11 @@ async def list_orders(
 
         rows = await DatabaseConnection.fetch(query, *params)
 
-        # Get total count
-        count_query = """
+        # Get total count - use same JOIN type as main query
+        count_query = f"""
             SELECT COUNT(*) as count
-            FROM orders
+            FROM orders o
+            {join_type} position_orders po ON o.id = po.order_id
             WHERE 1=1
         """
         count_params = []
@@ -151,6 +164,10 @@ async def list_orders(
             count_query += f" AND created_at <= ${count_param_idx}::timestamptz"
             count_params.append(date_to_dt)
             count_param_idx += 1
+        if position_id:
+            count_query += f" AND po.position_id = ${count_param_idx}::uuid"
+            count_params.append(position_id)
+            count_param_idx += 1
 
         total_count = await DatabaseConnection.fetchval(count_query, *count_params)
 
@@ -171,6 +188,7 @@ async def list_orders(
                 "fees": str(row["fees"]) if row["fees"] else None,
                 "created_at": row["created_at"].isoformat() + "Z",
                 "updated_at": row["updated_at"].isoformat() + "Z",
+                "position_id": str(row["position_id"]) if row["position_id"] else None,
             }
             orders_data.append(order_dict)
 

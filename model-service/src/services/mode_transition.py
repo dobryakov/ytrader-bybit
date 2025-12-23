@@ -135,6 +135,15 @@ class ModeTransition:
             if model_version.get("is_active"):
                 continue
 
+            # Skip if auto-activation is disabled for this model
+            if model_version.get("auto_activation_disabled"):
+                logger.debug(
+                    "Skipping model with auto-activation disabled",
+                    strategy_id=strategy_id,
+                    model_version=model_version.get("version"),
+                )
+                continue
+
             # Get model quality
             quality = await self._get_model_quality(model_version["id"])
             if quality and quality >= self.activation_threshold and quality > best_quality:

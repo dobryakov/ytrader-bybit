@@ -1,14 +1,36 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import { useSearchParams, useNavigate } from 'react-router-dom'
 import { usePositions } from '@/hooks/usePositions'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Badge } from '@/components/ui/badge'
 import { Skeleton } from '@/components/ui/skeleton'
+import { Button } from '@/components/ui/button'
 import { format } from 'date-fns'
 import { parseISO } from 'date-fns'
 
 export default function Positions() {
-  const [filters, setFilters] = useState<{ asset?: string; mode?: string }>({})
-  const { data, isLoading } = usePositions(filters)
+  const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const assetFromUrl = searchParams.get('asset') || undefined
+  const positionIdFromUrl = searchParams.get('position_id') || undefined
+  
+  const [filters, setFilters] = useState<{ asset?: string; mode?: string; position_id?: string }>({})
+  
+  // Sync filters from URL
+  useEffect(() => {
+    if (assetFromUrl) {
+      setFilters(prev => ({ ...prev, asset: assetFromUrl }))
+    }
+    if (positionIdFromUrl) {
+      setFilters(prev => ({ ...prev, position_id: positionIdFromUrl }))
+    }
+  }, [assetFromUrl, positionIdFromUrl])
+  
+  const { data, isLoading } = usePositions({ ...filters, asset: assetFromUrl, position_id: positionIdFromUrl })
+  
+  const handleViewOrders = (positionId: string) => {
+    navigate(`/orders?position_id=${positionId}`)
+  }
 
   const formatCurrency = (value: string | null) => {
     if (!value) return 'N/A'
@@ -28,7 +50,45 @@ export default function Positions() {
       </div>
 
       {/* Filters */}
-      <div className="flex gap-4">
+      <div className="flex gap-4 items-center">
+        {positionIdFromUrl && (
+          <div className="px-3 py-2 bg-muted rounded-md text-sm">
+            Фильтр по Position ID: <span className="font-mono">{positionIdFromUrl.slice(0, 8)}...</span>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="ml-2 h-6 px-2"
+              onClick={() => {
+                setSearchParams({})
+                setFilters(prev => {
+                  const { position_id, ...rest } = prev
+                  return rest
+                })
+              }}
+            >
+              ✕
+            </Button>
+          </div>
+        )}
+        {assetFromUrl && !positionIdFromUrl && (
+          <div className="px-3 py-2 bg-muted rounded-md text-sm">
+            Фильтр по Asset: <span className="font-mono">{assetFromUrl}</span>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="ml-2 h-6 px-2"
+              onClick={() => {
+                setSearchParams({})
+                setFilters(prev => {
+                  const { asset, ...rest } = prev
+                  return rest
+                })
+              }}
+            >
+              ✕
+            </Button>
+          </div>
+        )}
         <input
           type="text"
           placeholder="Asset (e.g., BTCUSDT)"
@@ -54,6 +114,7 @@ export default function Positions() {
         <Table>
           <TableHeader>
             <TableRow>
+              <TableHead>Position ID</TableHead>
               <TableHead>Asset</TableHead>
               <TableHead>Status</TableHead>
               <TableHead>Size</TableHead>
@@ -63,12 +124,13 @@ export default function Positions() {
               <TableHead>Realized PnL</TableHead>
               <TableHead>Mode</TableHead>
               <TableHead>Last Updated</TableHead>
+              <TableHead>Orders</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {data?.positions.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={9} className="text-center text-muted-foreground">
+                <TableCell colSpan={11} className="text-center text-muted-foreground">
                   Нет позиций
                 </TableCell>
               </TableRow>
@@ -78,6 +140,7 @@ export default function Positions() {
                 const isOpen = position.closed_at === null && parseFloat(position.size || '0') !== 0
                 return (
                   <TableRow key={position.id}>
+                    <TableCell className="font-mono text-xs">{position.id.slice(0, 8)}...</TableCell>
                     <TableCell className="font-medium">{position.asset}</TableCell>
                     <TableCell>
                       <Badge variant={isOpen ? 'default' : 'secondary'}>
@@ -97,6 +160,15 @@ export default function Positions() {
                       <Badge variant="outline">{position.mode}</Badge>
                     </TableCell>
                     <TableCell>{position.last_updated ? format(parseISO(position.last_updated), 'dd.MM.yyyy HH:mm:ss') : 'N/A'}</TableCell>
+                    <TableCell>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => handleViewOrders(position.id)}
+                      >
+                        Ордера
+                      </Button>
+                    </TableCell>
                   </TableRow>
                 )
               })
