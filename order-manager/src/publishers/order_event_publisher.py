@@ -14,6 +14,7 @@ from ..config.settings import settings
 from ..models.order import Order
 from ..exceptions import QueueError
 from ..utils.tracing import get_or_create_trace_id
+from common.trading_events import trading_events_publisher
 
 logger = get_logger(__name__)
 
@@ -75,6 +76,24 @@ class OrderEventPublisher:
                 queue_name=self.queue_name,
                 trace_id=trace_id,
             )
+
+            # Publish trading event for product analytics (non-blocking best-effort)
+            try:
+                await self._publish_trading_event(
+                    order=order,
+                    event_type=event_type,
+                    trace_id=trace_id,
+                    signal_info=signal_info,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "trading_event_publish_failed",
+                    order_id=order.order_id,
+                    event_type=event_type,
+                    error=str(e),
+                    trace_id=trace_id,
+                    exc_info=True,
+                )
 
         except Exception as e:
             logger.error(
@@ -177,6 +196,62 @@ class OrderEventPublisher:
             enriched_event["signal"] = signal_info
 
         return enriched_event
+
+    async def _publish_trading_event(
+        self,
+        *,
+        order: Order,
+        event_type: str,
+        trace_id: str,
+        signal_info: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """
+        Publish simplified trading event to trading_events exchange for Kibana analytics.
+
+        Maps internal order events to product-oriented event types and payload.
+        """
+        # Map internal event_type to product-level name
+        event_type_map = {
+            "created": "order_created",
+            "filled": "order_filled",
+            "partially_filled": "order_partially_filled",
+            "cancelled": "order_cancelled",
+            "rejected": "order_rejected",
+            "modified": "order_modified",
+        }
+        product_event_type = event_type_map.get(event_type, f"order_{event_type}")
+
+        payload: Dict[str, Any] = {
+            "signal_id": str(order.signal_id),
+            "order_id": order.order_id,
+            "order_internal_id": str(order.id),
+            "asset": order.asset,
+            "side": order.side,
+            "type": order.order_type,
+            "status": order.status,
+            "quantity": str(order.quantity),
+            "filled_quantity": str(order.filled_quantity),
+            "price": str(order.price) if order.price is not None else None,
+            "average_price": str(order.average_price) if order.average_price is not None else None,
+            "fees": str(order.fees) if order.fees is not None else None,
+            "is_dry_run": order.is_dry_run,
+            "rejection_reason": order.rejection_reason,
+            "created_at": order.created_at.isoformat() if order.created_at else None,
+            "updated_at": order.updated_at.isoformat() if order.updated_at else None,
+            "executed_at": order.executed_at.isoformat() if order.executed_at else None,
+        }
+
+        if signal_info:
+            payload["strategy_id"] = signal_info.get("strategy_id")
+            payload["signal_type"] = signal_info.get("signal_type")
+            payload["signal_confidence"] = signal_info.get("confidence")
+
+        await trading_events_publisher.publish_trading_signal_event(
+            event_type=product_event_type,
+            service="order-manager",
+            signal_payload=payload,
+            trace_id=trace_id,
+        )
 
     async def _publish_to_queue(self, event: Dict[str, Any], trace_id: str) -> None:
         """

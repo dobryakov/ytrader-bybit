@@ -21,6 +21,13 @@ from ..database.repositories.prediction_target_repo import PredictionTargetRepos
 from ..database.repositories.trading_signal_repo import TradingSignalRepository
 from ..services.feature_service_client import feature_service_client
 
+# Импорт общего модуля для публикации событий
+try:
+    from common.trading_events import trading_events_publisher
+except ImportError:
+    # Fallback для случаев, когда модуль не доступен
+    trading_events_publisher = None
+
 logger = get_logger(__name__)
 
 
@@ -65,6 +72,9 @@ class TargetEvaluator:
                     computation_error=None,
                 )
                 evaluated_count += 1
+
+                # Публикуем событие о вычислении фактического таргета
+                await self._publish_target_evaluated_event(target, actual_values)
 
             except Exception as e:
                 logger.error(
@@ -139,6 +149,10 @@ class TargetEvaluator:
                 "Immediate target evaluation completed",
                 prediction_target_id=prediction_target_id,
             )
+
+            # Публикуем событие о вычислении фактического таргета
+            await self._publish_target_evaluated_event(target, actual_values)
+
             return True
         except Exception as e:
             logger.error(
@@ -469,6 +483,85 @@ class TargetEvaluator:
             "returns_series": result.get("returns_series", []),
             "volatility": result.get("volatility"),
         }
+
+    async def _publish_target_evaluated_event(
+        self,
+        target: Dict[str, Any],
+        actual_values: Dict[str, Any],
+    ) -> None:
+        """
+        Публикует событие о вычислении фактического таргета для связи с исходным торговым сигналом.
+
+        Args:
+            target: Словарь с данными prediction_target из БД
+            actual_values: Вычисленные фактические значения таргета
+        """
+        if trading_events_publisher is None:
+            logger.debug(
+                "trading_events_publisher not available, skipping event publication",
+                prediction_target_id=str(target.get("id")),
+            )
+            return
+
+        try:
+            signal_id = str(target["signal_id"])
+            prediction_target_id = str(target["id"])
+
+            # Получаем сигнал для извлечения asset и strategy_id
+            signal = await self.trading_signal_repo.get_by_signal_id(signal_id)
+            if not signal:
+                logger.warning(
+                    "Cannot publish target_evaluated event: signal not found",
+                    signal_id=signal_id,
+                    prediction_target_id=prediction_target_id,
+                )
+                return
+
+            asset = signal.get("asset")
+            strategy_id = signal.get("strategy_id")
+
+            # Формируем payload события
+            payload: Dict[str, Any] = {
+                "signal_id": signal_id,
+                "prediction_target_id": prediction_target_id,
+                "asset": asset,
+                "strategy_id": strategy_id,
+                "prediction_timestamp": target.get("prediction_timestamp"),
+                "target_timestamp": target.get("target_timestamp"),
+                "predicted_values": target.get("predicted_values"),
+                "actual_values": actual_values,
+                "model_version": target.get("model_version"),
+                "target_registry_version": target.get("target_registry_version"),
+                "feature_registry_version": target.get("feature_registry_version"),
+            }
+
+            # Публикуем событие
+            await trading_events_publisher.publish_event(
+                {
+                    "event_type": "prediction_target_evaluated",
+                    "service": "model-service",
+                    "ts": datetime.utcnow().isoformat() + "Z",
+                    "level": "info",
+                    "env": trading_events_publisher._environment,
+                    "payload": payload,
+                }
+            )
+
+            logger.debug(
+                "Published prediction_target_evaluated event",
+                signal_id=signal_id,
+                prediction_target_id=prediction_target_id,
+                asset=asset,
+            )
+
+        except Exception as e:
+            # Не блокируем основной процесс при ошибке публикации события
+            logger.warning(
+                "Failed to publish prediction_target_evaluated event",
+                prediction_target_id=str(target.get("id")),
+                error=str(e),
+                exc_info=True,
+            )
 
 
 # Глобальный инстанс по аналогии с другими сервисами

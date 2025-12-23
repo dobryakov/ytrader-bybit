@@ -397,6 +397,7 @@ services:
       - ./order-manager/src:/app/src
       - ./order-manager/scripts:/app/scripts
       - ./order-manager/tests:/app/tests
+      - ./common:/app/common
     depends_on:
       postgres:
         condition: service_healthy
@@ -466,6 +467,7 @@ services:
     volumes:
       - ./position-manager/src:/app/src
       - ./position-manager/tests:/app/tests
+      - ./common:/app/common
     depends_on:
       postgres:
         condition: service_healthy

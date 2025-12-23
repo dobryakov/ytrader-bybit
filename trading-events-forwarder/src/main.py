@@ -101,8 +101,61 @@ def build_gelf(event: Dict[str, Any]) -> Dict[str, Any]:
     if trace_id:
         gelf["_trace_id"] = str(trace_id)
 
+    # Универсальная распаковка payload:
+    #  - все вложенные поля превращаются в плоские поля с префиксом _payload_
+    #  - структура не зашита в код (работает для любых новых полей)
+    def _flatten_payload(obj: Any, prefix: str) -> None:
+        """
+        Рекурсивно разворачивает словари/списки в плоские ключи.
+
+        Пример:
+          {"predicted_values": {"direction": "green"}}
+        ->
+          _payload_predicted_values_direction = "green"
+        """
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                new_prefix = f"{prefix}_{k}" if prefix else k
+                _flatten_payload(v, new_prefix)
+        elif isinstance(obj, list):
+            for idx, v in enumerate(obj):
+                new_prefix = f"{prefix}_{idx}" if prefix else str(idx)
+                _flatten_payload(v, new_prefix)
+        else:
+            # Листовой узел — сохраняем как отдельное поле
+            field_name = f"_payload_{prefix}" if prefix else "_payload_value"
+            # Простые типы пишем как есть, сложные всё равно пройдут через json.dumps выше по стеку
+            gelf[field_name] = obj
+
     if payload:
-        gelf["_payload"] = payload
+        # Сохраним "сырой" payload для отладки
+        try:
+            gelf["_payload_raw"] = (
+                json.dumps(payload, default=str)
+                if not isinstance(payload, str)
+                else payload
+            )
+        except Exception:  # noqa: BLE001
+            # В худшем случае просто проигнорируем raw-представление
+            pass
+
+        if isinstance(payload, dict):
+            _flatten_payload(payload, "")
+        elif isinstance(payload, str):
+            # Если payload строка JSON - пробуем распарсить и развернуть
+            try:
+                parsed_payload = json.loads(payload)
+                if isinstance(parsed_payload, dict):
+                    _flatten_payload(parsed_payload, "")
+                else:
+                    # Нестандартный формат - сохраняем как одно поле
+                    gelf["_payload_value"] = parsed_payload
+            except (json.JSONDecodeError, TypeError):
+                # Некорректный JSON - просто сохраняем как строку
+                gelf["_payload_value"] = payload
+        else:
+            # Для других типов сохраняем как одно поле
+            gelf["_payload_value"] = payload
 
     # Добавим все дополнительные поля с префиксом _
     for key, value in event.items():
