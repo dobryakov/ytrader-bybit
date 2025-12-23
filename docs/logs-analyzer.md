@@ -694,6 +694,121 @@ docker compose exec ws-gateway echo "Test log message"
    - Создать extractors для специфичных форматов логов
    - Настроить pipelines для автоматической обработки
 
+## Кастомные торговые события через RabbitMQ exchange и Graylog
+
+### Архитектура
+
+- Все сервисы публикуют **торговые/бизнес-события** в RabbitMQ **exchange** `trading_events` (fanout/direct) в виде JSON.
+- Отдельный микросервис `trading-events-forwarder`:
+  - объявляет собственную очередь (по умолчанию `trading_events_forwarder`) и биндит её к exchange `trading_events`,
+  - преобразует каждое событие в GELF-сообщение,
+  - отправляет его в Graylog на отдельный GELF UDP input (например, порт `4712`),
+  - Graylog роутит эти события в отдельный index set (`events__*`),
+  - Kibana использует индексы `events__*` для аналитики.
+
+### Формат сообщения, публикуемого в exchange `trading_events`
+
+Рекомендуемый формат JSON, который отправляют сервисы (в exchange `trading_events`):
+
+```json
+{
+  "event_type": "position_closed",
+  "service": "position-manager",
+  "ts": "2025-12-23T14:20:13.837Z",
+  "level": "info",
+  "env": "production",
+  "payload": {
+    "symbol": "BTCUSDT",
+    "side": "long",
+    "pnl": 42.5
+  },
+  "trace_id": "abc123"
+}
+```
+
+- **event_type** — тип события (обязательное поле, основной ключ для аналитики).
+- **service** — имя сервиса-источника (можно использовать существующие `*_SERVICE_NAME`).
+- **ts** — время события (может быть ISO-строкой или unix timestamp; при отсутствии будет использовано текущее время).
+- **level** — уровень важности (`info`, `warning`, `error` и т.п.).
+- **env** — окружение (`production`, `staging` и т.п.).
+- **payload** — произвольный JSON с доменными данными.
+- **trace_id** — опциональный идентификатор трассировки.
+
+### Микросервис `trading-events-forwarder`
+
+- Расположение кода: `trading-events-forwarder/src`.
+- Функции:
+  - Подключается к RabbitMQ (`RABBITMQ_HOST`, `RABBITMQ_PORT`, `RABBITMQ_USER`, `RABBITMQ_PASSWORD`).
+  - Объявляет exchange `RABBITMQ_TRADING_EVENTS_EXCHANGE` (по умолчанию `trading_events`) и собственную очередь `RABBITMQ_TRADING_EVENTS_QUEUE` (по умолчанию `trading_events_forwarder`), биндит очередь к exchange.
+  - Для каждого сообщения:
+    - декодирует JSON,
+    - собирает GELF:
+      - `short_message` = `event_type`,
+      - `host` = `service`,
+      - `timestamp` = `ts` или текущее время,
+      - `level` = маппинг `level` → syslog level,
+      - дополнительные поля: `_event_type`, `_service_name`, `_env`, `_payload`, `_trace_id` и т.п.
+    - отправляет GELF по UDP на `GRAYLOG_HOST:GRAYLOG_CUSTOM_EVENTS_GELF_PORT` (например, `graylog:4712`).
+
+### Конфигурация в docker-compose
+
+- Сервис `trading-events-forwarder` добавлен в `docker-compose.yml`:
+  - использует образ на базе `python:3.11-slim`,
+  - читает настройки из `.env`:
+    - `RABBITMQ_TRADING_EVENTS_EXCHANGE`
+    - `RABBITMQ_TRADING_EVENTS_QUEUE`
+    - `GRAYLOG_HOST`
+    - `GRAYLOG_CUSTOM_EVENTS_GELF_PORT`
+    - `TRADING_EVENTS_FORWARDER_SERVICE_NAME`
+    - `TRADING_EVENTS_FORWARDER_LOG_LEVEL`
+    - `ENVIRONMENT`
+  - healthcheck (`python -m src.healthcheck`) проверяет доступность RabbitMQ и возможность отправки UDP-пакета до Graylog.
+
+- Основные сервисы (`ws-gateway`, `model-service`, `feature-service`, `order-manager`, `position-manager`) получают имя exchange для торговых событий через переменную окружения:
+  - `RABBITMQ_TRADING_EVENTS_EXCHANGE=${RABBITMQ_TRADING_EVENTS_EXCHANGE:-trading_events}`
+  - В коде сервисов следует читать эту переменную и публиковать события именно в этот exchange.
+
+### Настройка в Graylog
+
+1. **Создать отдельный GELF UDP input для торговых событий**:
+   - Тип: `GELF UDP`.
+   - Порт: `4712` (должен совпадать с `GRAYLOG_CUSTOM_EVENTS_GELF_PORT`).
+   - Title: `trading_events`.
+
+2. **Создать index set для торговых событий**:
+   - Название: `Trading Events`.
+   - Index prefix: `events__`.
+
+3. **Создать stream для торговых событий**:
+   - Название: `trading-events-stream`.
+   - Привязать к index set `Trading Events`.
+   - Правила:
+     - `event_type` exists (или `event_type` matches `position_*`, `trade_*` и т.п.).
+     - опционально: ограничить по `gl2_source_input` на input `trading_events`.
+
+После этого все события из очереди `trading_events` будут оказываться в индексах `events__*`, отдельно от обычных логов `graylog_*`.
+
+### Настройка в Kibana для торговых событий
+
+1. Убедиться, что индексы `events__*` создаются:
+
+```bash
+docker compose exec elasticsearch curl -sS 'http://localhost:4703/_cat/indices/events__*?v'
+```
+
+2. В Kibana:
+   - `Stack Management → Data views → Create data view`.
+   - **Index pattern**: `events__*`.
+   - Time field: использовать поле времени, которое Graylog добавляет к сообщениям (обычно `timestamp`).
+
+3. В Discover:
+   - выбрать data view `events__*`,
+   - фильтровать по `event_type`, `service_name`, `env`, `payload.*` и т.д.
+
+Таким образом:
+- обычные логи сервисов продолжают уходить в `graylog_*` и анализируются как раньше;
+- торговые/бизнес-события идут через RabbitMQ → `trading-events-forwarder` → Graylog → Elasticsearch (`events__*`) и анализируются в Kibana как отдельный поток данных.
+
 ## Используемые порты
 
 ### Портовая карта

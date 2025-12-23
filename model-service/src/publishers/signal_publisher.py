@@ -18,6 +18,7 @@ from ..config.exceptions import MessageQueueError
 from ..database.repositories.trading_signal_repo import TradingSignalRepository
 from ..config.settings import settings
 from ..services.signal_processing_metrics import signal_processing_metrics
+from common.trading_events import trading_events_publisher
 
 logger = get_logger(__name__)
 
@@ -284,6 +285,41 @@ class SignalPublisher:
                         target_timestamp = datetime.fromisoformat(target_timestamp_str.replace("Z", "+00:00"))
                     except Exception:
                         pass
+
+            # Сформируем payload для торгового события (те же поля, что пишутся в БД)
+            signal_payload = {
+                "signal_id": signal.signal_id,
+                "strategy_id": signal.strategy_id,
+                "asset": signal.asset,
+                "side": signal.signal_type,
+                "price": price,
+                "confidence": signal.confidence,
+                "timestamp": signal.timestamp,
+                "model_version": signal.model_version,
+                "is_warmup": signal.is_warmup,
+                "market_data_snapshot": market_data_dict,
+                "metadata": signal.metadata,
+                "trace_id": signal.trace_id,
+                "prediction_horizon_seconds": prediction_horizon_seconds,
+                "target_timestamp": target_timestamp,
+            }
+
+            # Отправляем событие в trading_events exchange (не блокируя сохранение в БД)
+            try:
+                await trading_events_publisher.publish_trading_signal_event(
+                    event_type="trading_signal_created",
+                    service="model-service",
+                    signal_payload=signal_payload,
+                    trace_id=signal.trace_id,
+                    level="info",
+                    ts=signal.timestamp,
+                )
+            except Exception as pub_exc:  # noqa: BLE001
+                logger.warning(
+                    "Failed to publish trading signal event (continuing)",
+                    signal_id=signal.signal_id,
+                    error=str(pub_exc),
+                )
 
             await self.trading_signal_repo.create(
                 signal_id=signal.signal_id,

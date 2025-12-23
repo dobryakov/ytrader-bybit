@@ -26,6 +26,7 @@ services:
       - RABBITMQ_PORT=${RABBITMQ_PORT:-5672}
       - RABBITMQ_USER=${RABBITMQ_USER:-guest}
       - RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD:-guest}
+      - RABBITMQ_TRADING_EVENTS_EXCHANGE=${RABBITMQ_TRADING_EVENTS_EXCHANGE:-trading_events}
       - WS_GATEWAY_PORT=${WS_GATEWAY_PORT:-4400}
       - WS_GATEWAY_API_KEY=${WS_GATEWAY_API_KEY}
       - WS_GATEWAY_LOG_LEVEL=${WS_GATEWAY_LOG_LEVEL:-INFO}
@@ -121,6 +122,7 @@ services:
       - RABBITMQ_PORT=${RABBITMQ_PORT:-5672}
       - RABBITMQ_USER=${RABBITMQ_USER:-guest}
       - RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD:-guest}
+      - RABBITMQ_TRADING_EVENTS_EXCHANGE=${RABBITMQ_TRADING_EVENTS_EXCHANGE:-trading_events}
       - MODEL_SERVICE_PORT=${MODEL_SERVICE_PORT:-4500}
       - MODEL_SERVICE_API_KEY=${MODEL_SERVICE_API_KEY}
       - MODEL_SERVICE_LOG_LEVEL=${MODEL_SERVICE_LOG_LEVEL:-INFO}
@@ -191,6 +193,7 @@ services:
       - ./model-service/tests:/app/tests
       # Mount model hyperparameters and other config files into container
       - ./model-service/config:/app/config
+      - ./common:/app/common
     depends_on:
       postgres:
         condition: service_healthy
@@ -237,6 +240,7 @@ services:
       - RABBITMQ_PORT=${RABBITMQ_PORT:-5672}
       - RABBITMQ_USER=${RABBITMQ_USER:-guest}
       - RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD:-guest}
+      - RABBITMQ_TRADING_EVENTS_EXCHANGE=${RABBITMQ_TRADING_EVENTS_EXCHANGE:-trading_events}
       - FEATURE_SERVICE_PORT=${FEATURE_SERVICE_PORT:-4900}
       - FEATURE_SERVICE_API_KEY=${FEATURE_SERVICE_API_KEY}
       - FEATURE_SERVICE_LOG_LEVEL=${FEATURE_SERVICE_LOG_LEVEL:-INFO}
@@ -341,6 +345,7 @@ services:
       - RABBITMQ_PORT=${RABBITMQ_PORT:-5672}
       - RABBITMQ_USER=${RABBITMQ_USER:-guest}
       - RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD:-guest}
+      - RABBITMQ_TRADING_EVENTS_EXCHANGE=${RABBITMQ_TRADING_EVENTS_EXCHANGE:-trading_events}
       - ORDERMANAGER_PORT=${ORDERMANAGER_PORT:-4600}
       - ORDERMANAGER_API_KEY=${ORDERMANAGER_API_KEY}
       - ORDERMANAGER_LOG_LEVEL=${ORDERMANAGER_LOG_LEVEL:-INFO}
@@ -432,6 +437,7 @@ services:
       - RABBITMQ_PORT=${RABBITMQ_PORT:-5672}
       - RABBITMQ_USER=${RABBITMQ_USER:-guest}
       - RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD:-guest}
+      - RABBITMQ_TRADING_EVENTS_EXCHANGE=${RABBITMQ_TRADING_EVENTS_EXCHANGE:-trading_events}
       - POSITION_MANAGER_PORT=${POSITION_MANAGER_PORT:-4800}
       - POSITION_MANAGER_API_KEY=${POSITION_MANAGER_API_KEY}
       - POSITION_MANAGER_LOG_LEVEL=${POSITION_MANAGER_LOG_LEVEL:-INFO}
@@ -576,6 +582,40 @@ services:
       timeout: 10s
       retries: 3
       start_period: 60s
+
+  trading-events-forwarder:
+    build:
+      context: ./trading-events-forwarder
+      dockerfile: Dockerfile
+    container_name: trading-events-forwarder
+    volumes:
+      - ./trading-events-forwarder/src:/app/src
+    environment:
+      - RABBITMQ_HOST=${RABBITMQ_HOST:-rabbitmq}
+      - RABBITMQ_PORT=${RABBITMQ_PORT:-5672}
+      - RABBITMQ_USER=${RABBITMQ_USER:-guest}
+      - RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD:-guest}
+      - RABBITMQ_TRADING_EVENTS_EXCHANGE=${RABBITMQ_TRADING_EVENTS_EXCHANGE:-trading_events}
+      - RABBITMQ_TRADING_EVENTS_QUEUE=${RABBITMQ_TRADING_EVENTS_QUEUE:-trading_events_forwarder}
+      - GRAYLOG_HOST=${GRAYLOG_HOST:-graylog}
+      - GRAYLOG_CUSTOM_EVENTS_GELF_PORT=${GRAYLOG_CUSTOM_EVENTS_GELF_PORT:-4712}
+      - TRADING_EVENTS_FORWARDER_SERVICE_NAME=${TRADING_EVENTS_FORWARDER_SERVICE_NAME:-trading-events-forwarder}
+      - TRADING_EVENTS_FORWARDER_LOG_LEVEL=${TRADING_EVENTS_FORWARDER_LOG_LEVEL:-INFO}
+      - ENVIRONMENT=${ENVIRONMENT:-production}
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      graylog:
+        condition: service_started
+    networks:
+      - ytrader-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-m", "src.healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
 
 #  grafana:

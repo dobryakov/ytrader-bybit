@@ -1,0 +1,5 @@
+aio-pika==9.4.1
+async-timeout==4.0.3
+structlog==24.1.0
+
+
