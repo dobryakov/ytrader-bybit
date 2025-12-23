@@ -55,6 +55,7 @@ export default function Positions() {
           <TableHeader>
             <TableRow>
               <TableHead>Asset</TableHead>
+              <TableHead>Status</TableHead>
               <TableHead>Size</TableHead>
               <TableHead>Entry Price</TableHead>
               <TableHead>Current Price</TableHead>
@@ -67,29 +68,38 @@ export default function Positions() {
           <TableBody>
             {data?.positions.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={8} className="text-center text-muted-foreground">
+                <TableCell colSpan={9} className="text-center text-muted-foreground">
                   Нет позиций
                 </TableCell>
               </TableRow>
             ) : (
-              data?.positions.map((position) => (
-                <TableRow key={position.id}>
-                  <TableCell className="font-medium">{position.asset}</TableCell>
-                  <TableCell>{parseFloat(position.size).toFixed(8)}</TableCell>
-                  <TableCell>{formatCurrency(position.average_entry_price)}</TableCell>
-                  <TableCell>{formatCurrency(position.current_price)}</TableCell>
-                  <TableCell>
-                    <span className={parseFloat(position.unrealized_pnl || '0') >= 0 ? 'text-green-600' : 'text-red-600'}>
-                      {formatCurrency(position.unrealized_pnl)}
-                    </span>
-                  </TableCell>
-                  <TableCell>{formatCurrency(position.realized_pnl)}</TableCell>
-                  <TableCell>
-                    <Badge variant="outline">{position.mode}</Badge>
-                  </TableCell>
-                  <TableCell>{format(parseISO(position.last_updated), 'dd.MM.yyyy HH:mm:ss')}</TableCell>
-                </TableRow>
-              ))
+              data?.positions.map((position) => {
+                // Position is open if closed_at is null AND size is not zero
+                const isOpen = position.closed_at === null && parseFloat(position.size || '0') !== 0
+                return (
+                  <TableRow key={position.id}>
+                    <TableCell className="font-medium">{position.asset}</TableCell>
+                    <TableCell>
+                      <Badge variant={isOpen ? 'default' : 'secondary'}>
+                        {isOpen ? 'Открыта' : 'Закрыта'}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>{parseFloat(position.size).toFixed(8)}</TableCell>
+                    <TableCell>{formatCurrency(position.average_entry_price)}</TableCell>
+                    <TableCell>{formatCurrency(position.current_price)}</TableCell>
+                    <TableCell>
+                      <span className={parseFloat(position.unrealized_pnl || '0') >= 0 ? 'text-green-600' : 'text-red-600'}>
+                        {formatCurrency(position.unrealized_pnl)}
+                      </span>
+                    </TableCell>
+                    <TableCell>{formatCurrency(position.realized_pnl)}</TableCell>
+                    <TableCell>
+                      <Badge variant="outline">{position.mode}</Badge>
+                    </TableCell>
+                    <TableCell>{position.last_updated ? format(parseISO(position.last_updated), 'dd.MM.yyyy HH:mm:ss') : 'N/A'}</TableCell>
+                  </TableRow>
+                )
+              })
             )}
           </TableBody>
         </Table>
