@@ -333,9 +333,10 @@ class PositionManagerClient:
             )
 
             bybit_client = get_bybit_client()
+            from ..config.settings import settings
             response = await bybit_client.get(
                 "/v5/position/list",
-                params={"category": "linear", "symbol": asset},
+                params={"category": settings.bybit_market_category, "symbol": asset},
                 authenticated=True,
             )
 

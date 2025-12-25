@@ -48,6 +48,7 @@ class Config(BaseSettings):
     bybit_api_key: Optional[str] = Field(default=None, env="BYBIT_API_KEY", description="Bybit API key (optional for public market data endpoints)")
     bybit_api_secret: Optional[str] = Field(default=None, env="BYBIT_API_SECRET", description="Bybit API secret (optional for public market data endpoints)")
     bybit_environment: str = Field(default="testnet", env="BYBIT_ENVIRONMENT", description="Bybit environment: mainnet or testnet (default: testnet for development)")
+    bybit_market_category: str = Field(default="linear", env="BYBIT_MARKET_CATEGORY", description="Bybit market category for REST API requests: 'spot', 'linear', 'inverse', 'option', 'spread' (default: 'linear')")
     feature_service_backfill_rate_limit_delay_ms: int = Field(default=100, env="FEATURE_SERVICE_BACKFILL_RATE_LIMIT_DELAY_MS", description="Delay between API requests in milliseconds to respect rate limits (for backfilling)")
     
     # Backfilling Configuration
@@ -128,6 +129,16 @@ class Config(BaseSettings):
         if value < 0:
             raise ValueError(f"Retention days must be non-negative, got {value}")
         return value
+    
+    @field_validator("bybit_market_category")
+    @classmethod
+    def validate_bybit_market_category(cls, value: str) -> str:
+        """Validate Bybit market category."""
+        valid_categories = {"spot", "linear", "inverse", "option", "spread"}
+        value_lower = value.lower()
+        if value_lower not in valid_categories:
+            raise ValueError(f"Bybit market category must be one of {valid_categories}, got {value}")
+        return value_lower
 
 
 # Global configuration instance

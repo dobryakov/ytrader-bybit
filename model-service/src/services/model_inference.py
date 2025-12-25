@@ -9,7 +9,6 @@ from typing import Optional, Dict, Any, List
 import pandas as pd
 import numpy as np
 
-from ..models.position_state import OrderPositionState
 from ..models.feature_vector import FeatureVector
 from ..models.signal import MarketDataSnapshot
 from ..services.feature_cache import feature_cache
@@ -31,18 +30,16 @@ class ModelInference:
     def prepare_features(
         self,
         feature_vector: FeatureVector,
-        order_position_state: Optional[OrderPositionState] = None,
         asset: Optional[str] = None,
     ) -> pd.DataFrame:
         """
         Prepare features for model inference from Feature Service feature vector.
 
         Receives ready FeatureVector from Feature Service, extracts features dict,
-        adds position features if available, and performs feature alignment with model's expected features.
+        and performs feature alignment with model's expected features.
 
         Args:
             feature_vector: FeatureVector from Feature Service
-            order_position_state: Optional current order and position state (for position features)
             asset: Optional asset symbol (defaults to feature_vector.symbol)
 
         Returns:
@@ -56,12 +53,6 @@ class ModelInference:
         # Start with features from Feature Service
         features = feature_vector.features.copy()
 
-        # Add position features if order_position_state is available
-        # These features are computed locally as they depend on current state
-        if order_position_state:
-            position_features = self._add_position_features(asset, order_position_state, features)
-            features.update(position_features)
-
         # Convert to DataFrame (single row)
         features_df = pd.DataFrame([features])
         
@@ -73,81 +64,6 @@ class ModelInference:
             trace_id=feature_vector.trace_id,
         )
         return features_df
-
-    def _add_position_features(
-        self,
-        asset: str,
-        order_position_state: OrderPositionState,
-        existing_features: Dict[str, float],
-    ) -> Dict[str, float]:
-        """
-        Add position and order features to existing features from Feature Service.
-
-        These features are computed locally as they depend on current order/position state
-        which is not included in Feature Service feature vectors.
-
-        Args:
-            asset: Trading pair symbol
-            order_position_state: Current order and position state
-            existing_features: Existing features from Feature Service
-
-        Returns:
-            Dictionary of additional position/order feature names to values
-        """
-        position_features = {}
-
-        # Extract current price from existing features (should be in FeatureVector)
-        current_price = existing_features.get("mid_price", existing_features.get("price", 0.0))
-
-        # Open orders features (must match training dataset features for consistency)
-        asset_orders = [
-            order
-            for order in order_position_state.orders
-            if order.asset == asset and order.status in ("pending", "partially_filled")
-        ]
-        position_features["open_orders_count"] = float(len(asset_orders))
-        position_features["pending_buy_orders"] = float(len([o for o in asset_orders if o.side.upper() == "BUY"]))
-        position_features["pending_sell_orders"] = float(len([o for o in asset_orders if o.side.upper() == "SELL"]))
-
-        # Position features (from order/position state)
-        position = order_position_state.get_position(asset)
-        if position:
-            position_features["position_size"] = float(position.size)
-            position_features["position_size_abs"] = abs(float(position.size))
-            position_features["unrealized_pnl"] = float(position.unrealized_pnl)
-            position_features["realized_pnl"] = float(position.realized_pnl)
-            position_features["has_position"] = 1.0 if position.size != 0 else 0.0
-            if position.average_entry_price and position.average_entry_price > 0:
-                position_features["entry_price"] = float(position.average_entry_price)
-                position_features["price_vs_entry"] = (
-                    (current_price - float(position.average_entry_price)) / float(position.average_entry_price) * 100
-                )
-            else:
-                position_features["entry_price"] = current_price
-                position_features["price_vs_entry"] = 0.0
-        else:
-            # No position for this asset
-            position_features["position_size"] = 0.0
-            position_features["position_size_abs"] = 0.0
-            position_features["unrealized_pnl"] = 0.0
-            position_features["realized_pnl"] = 0.0
-            position_features["has_position"] = 0.0
-            position_features["entry_price"] = current_price
-            position_features["price_vs_entry"] = 0.0
-
-        # Total exposure
-        total_exposure = order_position_state.get_total_exposure(asset)
-        position_features["total_exposure"] = float(total_exposure)
-        position_features["total_exposure_abs"] = abs(float(total_exposure))
-
-        # Asset features (categorical - hash encoding)
-        position_features["asset_hash"] = float(hash(asset) % 1000)
-
-        # Strategy features (categorical - will be set by caller if available)
-        # Default to 0 if not provided
-        position_features["strategy_hash"] = 0.0
-
-        return position_features
 
     def _compute_legacy_features(self, features: pd.DataFrame) -> pd.DataFrame:
         """

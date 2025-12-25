@@ -393,7 +393,8 @@ class FeeRateRefreshTask:
         if not symbols:
             return 0
 
-        category = "linear"
+        from ..config.settings import settings
+        category = settings.bybit_market_category
         refreshed = 0
 
         for symbol in symbols:

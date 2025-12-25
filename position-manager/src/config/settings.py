@@ -46,6 +46,7 @@ class Settings(BaseSettings):
     bybit_api_key: Optional[str] = Field(default=None, alias="BYBIT_API_KEY")
     bybit_api_secret: Optional[str] = Field(default=None, alias="BYBIT_API_SECRET")
     bybit_environment: str = Field(default="testnet", alias="BYBIT_ENVIRONMENT")
+    bybit_market_category: str = Field(default="linear", alias="BYBIT_MARKET_CATEGORY", description="Bybit market category for REST API requests: 'spot', 'linear', 'inverse', 'option', 'spread' (default: 'linear')")
 
     # Position Management Configuration
     position_manager_snapshot_interval: int = Field(default=3600, alias="POSITION_MANAGER_SNAPSHOT_INTERVAL")
@@ -145,6 +146,26 @@ class Settings(BaseSettings):
         if v < 0:
             raise ValueError("Timestamp tolerance seconds must be non-negative")
         return v
+    
+    @field_validator("bybit_environment")
+    @classmethod
+    def validate_bybit_environment(cls, v: str) -> str:
+        """Validate Bybit environment is testnet or mainnet."""
+        valid_environments = {"testnet", "mainnet"}
+        v_lower = v.lower()
+        if v_lower not in valid_environments:
+            raise ValueError(f"Bybit environment must be one of {valid_environments}")
+        return v_lower
+    
+    @field_validator("bybit_market_category")
+    @classmethod
+    def validate_bybit_market_category(cls, v: str) -> str:
+        """Validate Bybit market category."""
+        valid_categories = {"spot", "linear", "inverse", "option", "spread"}
+        v_lower = v.lower()
+        if v_lower not in valid_categories:
+            raise ValueError(f"Bybit market category must be one of {valid_categories}")
+        return v_lower
 
     @property
     def database_url_async(self) -> str:

@@ -19,7 +19,6 @@ from ..services.model_inference import model_inference
 from ..services.signal_validator import signal_validator
 from ..services.rate_limiter import rate_limiter
 from ..services.balance_calculator import balance_calculator
-from ..services.position_manager_client import position_manager_client
 from ..services.feature_service_client import feature_service_client
 from ..services.feature_cache import feature_cache
 from ..consumers.feature_consumer import feature_consumer
@@ -87,22 +86,11 @@ class IntelligentSignalGenerator:
             logger.warning("Signal generation rate limited", asset=asset, strategy_id=strategy_id, reason=reason)
             return None
 
-        # Get order/position state early (needed for both open order check and feature engineering)
+        # Get order/position state early (needed for open order check)
         order_position_state = await self.position_state_repo.get_order_position_state(
             strategy_id=strategy_id,
             asset=asset,
         )
-
-        # Risk Management: Check take profit rule (before model inference)
-        take_profit_signal = await self._check_take_profit_rule(asset, strategy_id, trace_id)
-        if take_profit_signal:
-            logger.info(
-                "Take profit rule triggered, generating SELL signal",
-                asset=asset,
-                strategy_id=strategy_id,
-                trace_id=trace_id,
-            )
-            return take_profit_signal
 
         # Check for open orders if configured (before inference)
         # If check_opposite_orders_only is true, we'll check again after determining signal_type
@@ -198,7 +186,6 @@ class IntelligentSignalGenerator:
             logger.info("Preparing features for model", asset=asset, strategy_id=strategy_id, trace_id=trace_id)
             features_df = model_inference.prepare_features(
                 feature_vector=feature_vector,
-                order_position_state=order_position_state,
                 asset=asset,
             )
             logger.info("Features prepared", asset=asset, strategy_id=strategy_id, features_shape=features_df.shape if features_df is not None else None, trace_id=trace_id)
@@ -305,8 +292,6 @@ class IntelligentSignalGenerator:
             # Calculate order amount from model
             # Pass prediction_result for regression models to use predicted_return for position sizing
             model_amount = self._calculate_amount(
-                asset, 
-                order_position_state, 
                 current_price, 
                 confidence,
                 prediction_result=prediction_result
@@ -349,52 +334,6 @@ class IntelligentSignalGenerator:
                     adapted_amount=amount,
                     trace_id=trace_id,
                 )
-
-            # Risk Management: Check position size limit for BUY signals (after amount calculation)
-            if signal_type.lower() == "buy":
-                position_size_check = await self._check_position_size_limit(
-                    asset=asset,
-                    strategy_id=strategy_id,
-                    order_amount_usdt=amount,
-                    current_price=current_price,
-                    trace_id=trace_id,
-                )
-                if position_size_check["should_skip"]:
-                    # Try to adapt amount to fit within position limit
-                    adapted_amount = position_size_check.get("adapted_amount_usdt")
-                    if adapted_amount is not None and adapted_amount > 0:
-                        # Reduce amount to fit within limit
-                        logger.info(
-                            "Adapted signal amount to fit position size limit",
-                            asset=asset,
-                            strategy_id=strategy_id,
-                            original_amount=amount,
-                            adapted_amount=adapted_amount,
-                            current_position_size=position_size_check.get("current_position_size"),
-                            max_position_size=position_size_check.get("max_position_size"),
-                            trace_id=trace_id,
-                        )
-                        amount = adapted_amount
-                    else:
-                        # Cannot adapt - position already at or over limit
-                        reason = position_size_check.get("reason", "position_size_limit")
-                        signal_skip_metrics.record_skip(
-                            asset=asset,
-                            strategy_id=strategy_id,
-                            reason=reason,
-                        )
-                        logger.info(
-                            "Skipping BUY signal due to position size limit (cannot adapt)",
-                            asset=asset,
-                            strategy_id=strategy_id,
-                            current_position_size=position_size_check.get("current_position_size"),
-                            planned_order_quantity=position_size_check.get("planned_order_quantity"),
-                            new_position_size=position_size_check.get("new_position_size"),
-                            max_position_size=position_size_check.get("max_position_size"),
-                            reason=reason,
-                            trace_id=trace_id,
-                        )
-                        return None
 
             # active_model and model_version are already defined above
             # Create market data snapshot from feature vector for signal metadata
@@ -674,20 +613,16 @@ class IntelligentSignalGenerator:
 
     def _calculate_amount(
         self,
-        asset: str,
-        order_position_state: OrderPositionState,
         current_price: float,
         confidence: float,
         prediction_result: Optional[Dict[str, Any]] = None,
     ) -> float:
         """
-        Calculate order amount based on confidence and position state.
+        Calculate order amount based on confidence.
 
         For regression models, can use predicted_return for more sophisticated position sizing.
 
         Args:
-            asset: Trading pair symbol
-            order_position_state: Current order and position state
             current_price: Current market price
             confidence: Signal confidence score
             prediction_result: Optional prediction result (for regression models)
@@ -722,7 +657,6 @@ class IntelligentSignalGenerator:
                 
                 logger.debug(
                     "Calculating amount for regression model",
-                    asset=asset,
                     predicted_return=predicted_return,
                     predicted_return_pct=predicted_return * 100,
                     return_magnitude=return_magnitude,
@@ -739,264 +673,10 @@ class IntelligentSignalGenerator:
 
         amount = base_amount * confidence_multiplier
 
-        # Adjust based on position state (reduce if already have large position)
-        position = order_position_state.get_position(asset)
-        if position and position.size != 0:
-            # Reduce amount if we already have a position
-            position_size_abs = abs(float(position.size))
-            if position_size_abs > 0:
-                # Reduce amount proportionally to existing position
-                reduction_factor = min(1.0, 0.5 / (position_size_abs / base_amount + 0.5))
-                amount = amount * reduction_factor
-
         # Clamp to valid range
         amount = max(self.min_amount, min(self.max_amount, amount))
 
         return round(amount, 2)
-
-    async def _check_take_profit_rule(
-        self,
-        asset: str,
-        strategy_id: str,
-        trace_id: Optional[str] = None,
-    ) -> Optional[TradingSignal]:
-        """
-        Check take profit rule and generate SELL signal if threshold exceeded.
-
-        Args:
-            asset: Trading pair symbol
-            strategy_id: Trading strategy identifier
-            trace_id: Trace ID for request flow tracking
-
-        Returns:
-            TradingSignal (SELL) if take profit triggered, None otherwise
-        """
-        try:
-            unrealized_pnl_pct = await position_manager_client.get_unrealized_pnl_pct(asset)
-            if unrealized_pnl_pct is None:
-                # No position or error - continue with normal flow
-                logger.debug(
-                    "Take profit check: no position or error getting unrealized_pnl_pct",
-                    asset=asset,
-                    strategy_id=strategy_id,
-                    trace_id=trace_id,
-                )
-                return None
-
-            take_profit_threshold = settings.model_service_take_profit_pct
-
-            # Validate unrealized_pnl_pct is reasonable (between -100% and 1000%)
-            unrealized_pnl_pct_float = float(unrealized_pnl_pct)
-            if unrealized_pnl_pct_float < -100.0 or unrealized_pnl_pct_float > 1000.0:
-                logger.warning(
-                    "Take profit check: unrealized_pnl_pct seems invalid, skipping take profit",
-                    asset=asset,
-                    strategy_id=strategy_id,
-                    unrealized_pnl_pct=unrealized_pnl_pct_float,
-                    take_profit_threshold=take_profit_threshold,
-                    trace_id=trace_id,
-                )
-                return None
-
-            # Log take profit check (INFO level for visibility)
-            logger.info(
-                "Take profit check",
-                asset=asset,
-                strategy_id=strategy_id,
-                unrealized_pnl_pct=unrealized_pnl_pct_float,
-                take_profit_threshold=take_profit_threshold,
-                threshold_exceeded=unrealized_pnl_pct_float > take_profit_threshold,
-                margin_to_threshold=take_profit_threshold - unrealized_pnl_pct_float,
-                trace_id=trace_id,
-            )
-
-            if unrealized_pnl_pct > take_profit_threshold:
-                # Get position size to close
-                position_size = await position_manager_client.get_position_size(asset)
-                if position_size is None or position_size == 0:
-                    logger.warning(
-                        "Take profit triggered but position size unavailable",
-                        asset=asset,
-                        unrealized_pnl_pct=unrealized_pnl_pct,
-                    )
-                    return None
-
-                # Get feature vector for market data snapshot
-                feature_vector = await self._get_feature_vector(asset, trace_id)
-                if not feature_vector:
-                    logger.warning("Features unavailable for take profit signal", asset=asset, trace_id=trace_id)
-                    return None
-
-                # Create market data snapshot from feature vector
-                market_data_snapshot = self._create_market_data_snapshot_from_features(feature_vector)
-
-                # Force generate SELL signal to close position
-                signal = TradingSignal(
-                    signal_type="sell",
-                    asset=asset,
-                    amount=position_size,  # Close entire position
-                    confidence=1.0,  # Maximum confidence for take profit
-                    strategy_id=strategy_id,
-                    model_version=None,  # Not from model
-                    is_warmup=False,
-                    market_data_snapshot=market_data_snapshot,
-                    metadata={
-                        "reasoning": "take_profit_triggered",
-                        "unrealized_pnl_pct": unrealized_pnl_pct,
-                        "take_profit_threshold": take_profit_threshold,
-                        "position_size": position_size,
-                    },
-                    trace_id=trace_id,
-                )
-
-                logger.info(
-                    "Take profit rule triggered",
-                    asset=asset,
-                    strategy_id=strategy_id,
-                    unrealized_pnl_pct=unrealized_pnl_pct,
-                    take_profit_threshold=take_profit_threshold,
-                    position_size=position_size,
-                    trace_id=trace_id,
-                )
-
-                return signal
-
-            return None
-
-        except Exception as e:
-            logger.error(
-                "Error checking take profit rule",
-                asset=asset,
-                strategy_id=strategy_id,
-                error=str(e),
-                exc_info=True,
-            )
-            # Continue with normal flow on error
-            return None
-
-    async def _check_position_size_limit(
-        self,
-        asset: str,
-        strategy_id: str,
-        order_amount_usdt: float,
-        current_price: float,
-        trace_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """
-        Check position size limit before generating BUY signal.
-
-        Checks if current position size + planned order quantity would exceed
-        ORDERMANAGER_MAX_POSITION_SIZE limit (same as order-manager uses).
-        
-        If limit would be exceeded, attempts to adapt order amount to fit within limit.
-        If position is already at/over limit, returns should_skip=True without adaptation.
-
-        Args:
-            asset: Trading pair symbol
-            strategy_id: Trading strategy identifier
-            order_amount_usdt: Planned order amount in quote currency (USDT)
-            current_price: Current market price
-            trace_id: Trace ID for request flow tracking
-
-        Returns:
-            Dictionary with:
-                - should_skip: bool - whether original amount exceeds limit
-                - reason: str - reason for skipping (if should_skip is True)
-                - current_position_size: float - current position size in base currency
-                - planned_order_quantity: float - planned order quantity in base currency
-                - new_position_size: float - new position size after order
-                - max_position_size: float - maximum allowed position size
-                - adapted_amount_usdt: Optional[float] - reduced amount that fits within limit (if available)
-                - adapted_order_quantity: Optional[float] - reduced quantity in base currency (if available)
-        """
-        from decimal import Decimal
-
-        try:
-            # Get current position size (absolute value in base currency)
-            current_position_size = await position_manager_client.get_position_size(asset)
-            if current_position_size is None:
-                # No position or error - treat as 0
-                current_position_size = 0.0
-
-            # Convert order amount (USDT) to order quantity (base currency)
-            if current_price <= 0:
-                logger.warning(
-                    "Invalid market price for position size check",
-                    asset=asset,
-                    price=current_price,
-                    trace_id=trace_id,
-                )
-                # On error, allow signal generation (fail open)
-                return {"should_skip": False}
-
-            planned_order_quantity = Decimal(str(order_amount_usdt)) / Decimal(str(current_price))
-
-            # Calculate new position size after order
-            current_size_decimal = Decimal(str(current_position_size))
-            new_position_size = current_size_decimal + planned_order_quantity
-
-            # Get max position size limit (same as order-manager uses)
-            max_position_size = Decimal(str(settings.order_manager_max_position_size))
-
-            # Check if new position size would exceed limit
-            if abs(new_position_size) > max_position_size:
-                excess = abs(new_position_size) - max_position_size
-                excess_percentage = float((excess / abs(new_position_size)) * 100) if new_position_size != 0 else 0.0
-
-                # Calculate maximum allowed order quantity that fits within limit
-                max_allowed_quantity = max_position_size - abs(current_size_decimal)
-                
-                # If there's room for at least a minimal order (e.g., 0.001 of base currency)
-                min_order_quantity = Decimal("0.001")
-                if max_allowed_quantity >= min_order_quantity:
-                    # Calculate adapted amount in USDT
-                    adapted_order_quantity = max_allowed_quantity
-                    adapted_amount_usdt = float(adapted_order_quantity * Decimal(str(current_price)))
-                    
-                    return {
-                        "should_skip": True,  # Original amount exceeds limit
-                        "reason": "position_size_limit",
-                        "current_position_size": float(current_position_size),
-                        "planned_order_quantity": float(planned_order_quantity),
-                        "new_position_size": float(new_position_size),
-                        "max_position_size": float(max_position_size),
-                        "excess": float(excess),
-                        "excess_percentage": excess_percentage,
-                        "adapted_amount_usdt": adapted_amount_usdt,  # Reduced amount that fits
-                        "adapted_order_quantity": float(adapted_order_quantity),
-                    }
-                else:
-                    # Position already at or over limit - cannot adapt
-                    return {
-                        "should_skip": True,
-                        "reason": "position_size_limit",
-                        "current_position_size": float(current_position_size),
-                        "planned_order_quantity": float(planned_order_quantity),
-                        "new_position_size": float(new_position_size),
-                        "max_position_size": float(max_position_size),
-                        "excess": float(excess),
-                        "excess_percentage": excess_percentage,
-                        "adapted_amount_usdt": None,  # Cannot adapt
-                    }
-
-            return {
-                "should_skip": False,
-                "current_position_size": float(current_position_size),
-                "planned_order_quantity": float(planned_order_quantity),
-                "new_position_size": float(new_position_size),
-                "max_position_size": float(max_position_size),
-            }
-
-        except Exception as e:
-            logger.error(
-                "Error checking position size limit",
-                asset=asset,
-                strategy_id=strategy_id,
-                error=str(e),
-                exc_info=True,
-            )
-            # On error, allow signal generation (fail open)
-            return {"should_skip": False}
 
     async def _get_feature_vector(self, asset: str, trace_id: Optional[str] = None) -> Optional[FeatureVector]:
         """

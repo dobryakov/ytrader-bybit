@@ -76,12 +76,11 @@ class OrderExecutor:
             return
 
         # Get fee rate from cache/API; use worst-case (taker) fee
-        market_type = "linear"
         fee_info = None
         try:
             fee_info = await self.fee_rate_manager.get_fee_rate(
                 symbol=signal.asset,
-                market_type=market_type,
+                market_type=settings.bybit_market_category,
                 trace_id=trace_id,
                 allow_api_fallback=True,
             )
@@ -351,7 +350,7 @@ class OrderExecutor:
                     try:
                         price_limit_response = await bybit_client.get(
                             "/v5/market/price-limit",
-                            params={"category": "linear", "symbol": asset},
+                            params={"category": settings.bybit_market_category, "symbol": asset},
                             authenticated=False,
                         )
                         price_limits = price_limit_response.get("result", {})
@@ -377,12 +376,12 @@ class OrderExecutor:
                             "order_creation_enabling_price_adjustment",
                             signal_id=str(signal_id),
                             asset=asset,
-                            category="linear",
+                            category=settings.bybit_market_category,
                             trace_id=trace_id,
                         )
                         adjust_response = await bybit_client.post(
                             "/v5/account/set-limit-px-action",
-                            json_data={"category": "linear", "modifyEnable": True},
+                            json_data={"category": settings.bybit_market_category, "modifyEnable": True},
                             authenticated=True,
                         )
                         logger.info(
@@ -455,7 +454,7 @@ class OrderExecutor:
                         try:
                             ticker_response = await bybit_client.get(
                                 "/v5/market/tickers",
-                                params={"category": "linear", "symbol": asset},
+                                params={"category": settings.bybit_market_category, "symbol": asset},
                                 authenticated=False,
                             )
                             ticker_data = ticker_response.get("result", {}).get("list", [])
@@ -574,7 +573,7 @@ class OrderExecutor:
                                 )
                                 ticker_response = await bybit_client.get(
                                     "/v5/market/tickers",
-                                    params={"category": "linear", "symbol": asset},
+                                    params={"category": settings.bybit_market_category, "symbol": asset},
                                     authenticated=False,
                                 )
                                 ticker_data = ticker_response.get("result", {}).get("list", [])
@@ -964,7 +963,7 @@ class OrderExecutor:
                                 try:
                                     ticker_response = await bybit_client.get(
                                         "/v5/market/tickers",
-                                        params={"category": "linear", "symbol": asset},
+                                        params={"category": settings.bybit_market_category, "symbol": asset},
                                         authenticated=False,
                                     )
                                     ticker_data = ticker_response.get("result", {}).get("list", [])
@@ -1206,7 +1205,7 @@ class OrderExecutor:
         try:
             # Prepare cancellation parameters
             bybit_params = {
-                "category": "linear",
+                "category": settings.bybit_market_category,
                 "symbol": asset,
                 "orderId": order_id,
             }
@@ -1356,7 +1355,7 @@ class OrderExecutor:
         side_db = "Buy" if signal.signal_type.lower() == "buy" else "SELL"
 
         params = {
-            "category": "linear",
+            "category": settings.bybit_market_category,
             "symbol": asset,
             "side": side_api,
             "orderType": order_type,
@@ -1927,7 +1926,7 @@ class OrderExecutor:
         trailing_stop_abs = trailing_stop_abs.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
         params = {
-            "category": "linear",
+            "category": settings.bybit_market_category,
             "symbol": asset,
             "tpslMode": "Full",  # Required: Full or Partial. Using Full for trailing stop.
             "positionIdx": 0,  # Required: 0 for one-way mode, 1 for hedge-mode Buy, 2 for hedge-mode Sell
@@ -2032,7 +2031,7 @@ class OrderExecutor:
                 bybit_client = get_bybit_client()
                 ticker_response = await bybit_client.get(
                     "/v5/market/tickers",
-                    params={"category": "linear", "symbol": asset},
+                    params={"category": settings.bybit_market_category, "symbol": asset},
                     authenticated=False,
                 )
                 ticker_data = ticker_response.get("result", {}).get("list", [])
@@ -3135,7 +3134,7 @@ class OrderExecutor:
                     bybit_client = get_bybit_client()
                     ticker_response = await bybit_client.get(
                         "/v5/market/tickers",
-                        params={"category": "linear", "symbol": asset},
+                        params={"category": settings.bybit_market_category, "symbol": asset},
                         authenticated=False,
                     )
                     ticker_data = ticker_response.get("result", {}).get("list", [])

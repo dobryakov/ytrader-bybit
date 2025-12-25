@@ -8,6 +8,7 @@ from src.services.risk_manager import RiskManager
 from src.models.trading_signal import TradingSignal, MarketDataSnapshot
 from src.models.position import Position
 from src.exceptions import RiskLimitError
+from src.config.settings import settings
 
 
 @pytest.fixture
@@ -194,4 +195,164 @@ async def test_balance_check_with_position_from_position_manager(sample_signal):
     )
 
     assert result is True
+
+
+@pytest.mark.asyncio
+async def test_check_take_profit_stop_loss_take_profit_triggered():
+    """Test take profit exit rule triggers when threshold exceeded."""
+    risk_manager = RiskManager()
+    
+    # Mock Position Manager client to return a position with high PnL
+    from datetime import datetime
+    from uuid import uuid4
+    
+    # Position with 3.125% profit (above 3.0% threshold)
+    # unrealized_pnl = 0.5 * 48000 * 0.03125 = 750 USDT
+    mock_position = Position(
+        id=uuid4(),
+        asset="BTCUSDT",
+        size=Decimal("0.5"),
+        average_entry_price=Decimal("48000.0"),
+        unrealized_pnl=Decimal("750.0"),  # 3.125% of 24000
+        realized_pnl=Decimal("0.0"),
+        mode="one-way",
+        last_updated=datetime.utcnow(),
+        last_snapshot_at=None,
+    )
+    
+    mock_client = AsyncMock()
+    mock_client.get_position = AsyncMock(return_value=mock_position)
+    
+    # Replace the client with mock
+    original_client = risk_manager.position_manager_client
+    risk_manager.position_manager_client = mock_client
+    
+    try:
+        # Mock settings to enable TP
+        with patch.object(settings, 'order_manager_exit_tp_enabled', True):
+            with patch.object(settings, 'order_manager_exit_tp_threshold_pct', 3.0):
+                result = await risk_manager.check_take_profit_stop_loss(
+                    asset="BTCUSDT",
+                    position=mock_position,
+                    trace_id="test-trace",
+                )
+                
+                assert result is not None
+                assert result.get("should_close") is True
+                assert result.get("reason") == "take_profit"
+    finally:
+        # Restore original client
+        risk_manager.position_manager_client = original_client
+
+
+@pytest.mark.asyncio
+async def test_check_take_profit_stop_loss_stop_loss_triggered():
+    """Test stop loss exit rule triggers when threshold exceeded."""
+    risk_manager = RiskManager()
+    
+    # Mock Position Manager client to return a position with loss
+    from datetime import datetime
+    from uuid import uuid4
+    
+    # Position with -2.2% loss (below -2.0% threshold)
+    # unrealized_pnl = 0.5 * 50000 * -0.022 = -550 USDT
+    mock_position = Position(
+        id=uuid4(),
+        asset="BTCUSDT",
+        size=Decimal("0.5"),
+        average_entry_price=Decimal("50000.0"),
+        unrealized_pnl=Decimal("-550.0"),  # -2.2% of 25000
+        realized_pnl=Decimal("0.0"),
+        mode="one-way",
+        last_updated=datetime.utcnow(),
+        last_snapshot_at=None,
+    )
+    
+    mock_client = AsyncMock()
+    mock_client.get_position = AsyncMock(return_value=mock_position)
+    
+    # Replace the client with mock
+    original_client = risk_manager.position_manager_client
+    risk_manager.position_manager_client = mock_client
+    
+    try:
+        # Mock settings to enable SL
+        with patch.object(settings, 'order_manager_exit_sl_enabled', True):
+            with patch.object(settings, 'order_manager_exit_sl_threshold_pct', -2.0):
+                result = await risk_manager.check_take_profit_stop_loss(
+                    asset="BTCUSDT",
+                    position=mock_position,
+                    trace_id="test-trace",
+                )
+                
+                assert result is not None
+                assert result.get("should_close") is True
+                assert result.get("reason") == "stop_loss"
+    finally:
+        # Restore original client
+        risk_manager.position_manager_client = original_client
+
+
+@pytest.mark.asyncio
+async def test_check_take_profit_stop_loss_no_trigger():
+    """Test exit rules don't trigger when thresholds not met."""
+    risk_manager = RiskManager()
+    
+    # Mock Position Manager client to return a position with small profit
+    from datetime import datetime
+    from uuid import uuid4
+    
+    # Position with 1.0% profit (below 3.0% threshold, above -2.0% threshold)
+    # unrealized_pnl = 0.5 * 50000 * 0.01 = 250 USDT
+    mock_position = Position(
+        id=uuid4(),
+        asset="BTCUSDT",
+        size=Decimal("0.5"),
+        average_entry_price=Decimal("50000.0"),
+        unrealized_pnl=Decimal("250.0"),  # 1.0% of 25000
+        realized_pnl=Decimal("0.0"),
+        mode="one-way",
+        last_updated=datetime.utcnow(),
+        last_snapshot_at=None,
+    )
+    
+    mock_client = AsyncMock()
+    mock_client.get_position = AsyncMock(return_value=mock_position)
+    
+    # Replace the client with mock
+    original_client = risk_manager.position_manager_client
+    risk_manager.position_manager_client = mock_client
+    
+    try:
+        # Mock settings
+        with patch.object(settings, 'order_manager_exit_tp_enabled', True):
+            with patch.object(settings, 'order_manager_exit_tp_threshold_pct', 3.0):
+                with patch.object(settings, 'order_manager_exit_sl_enabled', True):
+                    with patch.object(settings, 'order_manager_exit_sl_threshold_pct', -2.0):
+                        result = await risk_manager.check_take_profit_stop_loss(
+                            asset="BTCUSDT",
+                            position=mock_position,
+                            trace_id="test-trace",
+                        )
+                        
+                        # Should return None when thresholds not met
+                        assert result is None
+    finally:
+        # Restore original client
+        risk_manager.position_manager_client = original_client
+
+
+@pytest.mark.asyncio
+async def test_check_take_profit_stop_loss_no_position():
+    """Test exit rules return None when no position exists."""
+    risk_manager = RiskManager()
+    
+    result = await risk_manager.check_take_profit_stop_loss(
+        asset="BTCUSDT",
+        position=None,
+        trace_id="test-trace",
+    )
+    
+    # Should return None when no position
+    assert result is None
 

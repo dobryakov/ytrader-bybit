@@ -1,7 +1,7 @@
 """Risk manager service for enforcing risk limits and safety checks."""
 
 from decimal import Decimal
-from typing import Optional
+from typing import Optional, Dict, Any
 
 from ..config.settings import settings
 from ..config.database import DatabaseConnection
@@ -676,6 +676,115 @@ class RiskManager:
         )
 
         return True
+
+    async def check_take_profit_stop_loss(
+        self,
+        asset: str,
+        position: Optional[Position],
+        trace_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Check if position should be closed due to take profit or stop loss.
+
+        Args:
+            asset: Trading pair symbol
+            position: Current position (None if no position)
+            trace_id: Optional trace ID for logging
+
+        Returns:
+            Dictionary with exit decision if position should be closed:
+                - should_close: bool - whether position should be closed
+                - reason: str - reason for closing ('take_profit' or 'stop_loss')
+                - unrealized_pnl_pct: float - current unrealized PnL percentage
+                - threshold_pct: float - threshold that was exceeded
+            None if position should not be closed
+        """
+        if not position or position.size == 0:
+            return None
+
+        # Get unrealized PnL percentage
+        if position.unrealized_pnl is None:
+            logger.debug(
+                "take_profit_stop_loss_check_no_pnl",
+                asset=asset,
+                trace_id=trace_id,
+                reason="Position has no unrealized_pnl data",
+            )
+            return None
+
+        # Calculate unrealized PnL percentage
+        # unrealized_pnl is in quote currency (USDT), need to calculate percentage
+        if position.average_entry_price and position.average_entry_price > 0:
+            # Calculate PnL percentage based on entry price
+            position_value = abs(position.size) * position.average_entry_price
+            if position_value > 0:
+                unrealized_pnl_pct = float((position.unrealized_pnl / position_value) * 100)
+            else:
+                logger.debug(
+                    "take_profit_stop_loss_check_zero_position_value",
+                    asset=asset,
+                    trace_id=trace_id,
+                )
+                return None
+        else:
+            # Fallback: use unrealized_pnl directly if no entry price
+            logger.debug(
+                "take_profit_stop_loss_check_no_entry_price",
+                asset=asset,
+                trace_id=trace_id,
+            )
+            return None
+
+        # Validate unrealized_pnl_pct is reasonable
+        if unrealized_pnl_pct < -100.0 or unrealized_pnl_pct > 1000.0:
+            logger.warning(
+                "take_profit_stop_loss_check_invalid_pnl",
+                asset=asset,
+                unrealized_pnl_pct=unrealized_pnl_pct,
+                trace_id=trace_id,
+                reason="Unrealized PnL percentage seems invalid",
+            )
+            return None
+
+        # Check stop loss first (higher priority - loss protection)
+        if settings.order_manager_exit_sl_enabled:
+            sl_threshold = settings.order_manager_exit_sl_threshold_pct
+            if unrealized_pnl_pct <= sl_threshold:
+                logger.warning(
+                    "stop_loss_exit_triggered",
+                    asset=asset,
+                    unrealized_pnl_pct=unrealized_pnl_pct,
+                    sl_threshold=sl_threshold,
+                    position_size=float(position.size),
+                    trace_id=trace_id,
+                )
+                return {
+                    "should_close": True,
+                    "reason": "stop_loss",
+                    "unrealized_pnl_pct": unrealized_pnl_pct,
+                    "threshold_pct": sl_threshold,
+                }
+
+        # Check take profit
+        if settings.order_manager_exit_tp_enabled:
+            tp_threshold = settings.order_manager_exit_tp_threshold_pct
+            if unrealized_pnl_pct >= tp_threshold:
+                logger.info(
+                    "take_profit_exit_triggered",
+                    asset=asset,
+                    unrealized_pnl_pct=unrealized_pnl_pct,
+                    tp_threshold=tp_threshold,
+                    position_size=float(position.size),
+                    trace_id=trace_id,
+                )
+                return {
+                    "should_close": True,
+                    "reason": "take_profit",
+                    "unrealized_pnl_pct": unrealized_pnl_pct,
+                    "threshold_pct": tp_threshold,
+                }
+
+        return None
 
     def check_max_exposure(self, total_exposure: Decimal, trace_id: Optional[str] = None) -> bool:
         """Check if total exposure across all positions exceeds maximum.

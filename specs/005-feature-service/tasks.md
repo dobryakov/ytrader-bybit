@@ -821,6 +821,7 @@
 - **User Story 4 (P2)**: Can start after Foundational (Phase 2) - Depends on US1 for orderbook manager and data quality monitoring
 - **User Story 5 (P3)**: Can start after Foundational (Phase 2) - Depends on US1 and US2 for feature computation integration
 - **Historical Data Backfilling (Phase 9)**: Depends on US2 (dataset building) and US3 (raw data storage) - requires ParquetStorage and DataStorageService infrastructure, enables immediate model training by fetching historical data from Bybit REST API when insufficient data is available
+- **Market Category Support in Data Storage (Phase 10)**: Depends on US3 (raw data storage), US2 (dataset building), and Phase 9 (backfilling service) - requires all data storage and retrieval infrastructure to be in place before adding category dimension. Optional long-term improvement to enable simultaneous storage of multiple market categories.
 
 ### Task Dependencies for Historical Data Backfilling (T256-T277)
 
@@ -949,6 +950,72 @@ With multiple developers:
 
 ---
 
+## Phase 10: Long-term Solution - Market Category Support in Data Storage (Priority: P3) 🔮
+
+**Purpose**: Enable storage and retrieval of market data for multiple market categories (spot, linear, inverse, option, spread) simultaneously, allowing models to be trained and tested on different market types without data conflicts.
+
+**Problem**: Currently, Parquet files are stored by path structure `{data_type}/{date}/{symbol}.parquet` without category information. When switching between market categories (e.g., from spot to linear), existing data files are overwritten, making it impossible to maintain historical data for both categories. This forces complete data re-backfilling when switching categories.
+
+**Solution**: Add market category to the storage path structure and update all data storage/retrieval logic to include category as a dimension.
+
+### Phase 10.1: Storage Path Structure Update
+
+- [ ] T370 [P] Update `ParquetStorage` path generation methods in `feature-service/src/storage/parquet_storage.py` to include category parameter: `_get_klines_path()`, `_get_trades_path()`, `_get_ticker_path()`, `_get_orderbook_snapshots_path()`, `_get_orderbook_deltas_path()`, `_get_funding_path()` - change from `{data_type}/{date}/{symbol}.parquet` to `{category}/{data_type}/{date}/{symbol}.parquet`
+- [ ] T371 [P] Update `DataStorageService` in `feature-service/src/services/data_storage.py` to accept and use category parameter in all storage methods: `store_ticker()`, `store_trade()`, `store_kline()`, `store_orderbook_snapshot()`, `store_orderbook_delta()`, `store_funding()`
+- [ ] T372 [P] Update `ParquetStorage` read methods in `feature-service/src/storage/parquet_storage.py` to include category parameter: `read_klines()`, `read_trades()`, `read_ticker()`, `read_orderbook_snapshots()`, `read_orderbook_deltas()`, `read_funding()`
+- [ ] T373 [P] Add category parameter to `DataStorageService.__init__()` in `feature-service/src/services/data_storage.py` - read from `config.bybit_market_category` as default
+- [ ] T374 [P] Update `MarketDataConsumer` in `feature-service/src/consumers/market_data_consumer.py` to pass category when storing events - read from `config.bybit_market_category`
+
+### Phase 10.2: Dataset Builder Category Support
+
+- [ ] T375 Update `OptimizedDatasetBuilder` in `feature-service/src/services/optimized_dataset/optimized_builder.py` to accept category parameter in `build_dataset()` method
+- [ ] T376 Update `StreamingDatasetBuilder` in `feature-service/src/services/optimized_dataset/streaming_builder.py` to pass category to `ParquetStorage` read methods
+- [ ] T377 Update dataset metadata storage in `feature-service/src/storage/metadata_storage.py` - add `category` column to `datasets` table via migration in `ws-gateway/migrations/`
+- [ ] T378 [P] Create database migration in `ws-gateway/migrations/XXX_add_category_to_datasets_table.sql` to add `category VARCHAR(20)` column to `datasets` table with default value 'linear' for backward compatibility
+- [ ] T379 Update dataset API endpoints in `feature-service/src/api/v1/datasets.py` to accept optional category parameter (defaults to current `BYBIT_MARKET_CATEGORY`)
+
+### Phase 10.3: Backfilling Service Category Support
+
+- [ ] T380 Update `BackfillingService` in `feature-service/src/services/backfilling_service.py` to accept category parameter in all backfilling methods (currently uses `config.bybit_market_category`)
+- [ ] T381 Update backfilling API endpoints in `feature-service/src/api/v1/backfill.py` to accept optional category parameter (defaults to current `BYBIT_MARKET_CATEGORY`)
+- [ ] T382 Update backfilling service to pass category to `DataStorageService` when storing backfilled data
+
+### Phase 10.4: Data Migration and Backward Compatibility
+
+- [ ] T383 [P] Create data migration script `feature-service/scripts/migrate_data_to_category_structure.py` to move existing Parquet files from `{data_type}/{date}/{symbol}.parquet` to `{category}/{data_type}/{date}/{symbol}.parquet` (assume 'spot' category for existing files, or allow category specification)
+- [ ] T384 [P] Add backward compatibility logic in `ParquetStorage` to check both old path (without category) and new path (with category) when reading data - fallback to old path if new path doesn't exist
+- [ ] T385 [P] Update `DataStorageService` to support reading from old structure during transition period (with deprecation warning)
+
+### Phase 10.5: Testing and Documentation
+
+- [ ] T386 [P] Add unit tests in `feature-service/tests/unit/test_parquet_storage_category.py` for category-aware path generation and data reading/writing
+- [ ] T387 [P] Add integration tests in `feature-service/tests/integration/test_data_storage_category.py` for storing and retrieving data with different categories
+- [ ] T388 [P] Add integration tests in `feature-service/tests/integration/test_dataset_builder_category.py` for building datasets with category parameter
+- [ ] T389 [P] Add integration tests in `feature-service/tests/integration/test_backfilling_category.py` for backfilling data with different categories
+- [ ] T390 Update `feature-service/README.md` to document category-aware data storage structure and migration process
+- [ ] T391 Update `env.example` to document `BYBIT_MARKET_CATEGORY` impact on data storage paths
+
+### Phase 10.6: Cleanup and Optimization
+
+- [ ] T392 Remove backward compatibility fallback logic after migration period (add configuration flag to enable/disable)
+- [ ] T393 [P] Add data cleanup script `feature-service/scripts/cleanup_old_data_structure.py` to remove old-format files after successful migration
+- [ ] T394 Update retention policy logic in `DataStorageService` to handle category-specific cleanup (clean up old data per category)
+
+**Expected Benefits**:
+- Ability to maintain historical data for multiple market categories simultaneously
+- No data loss when switching between categories
+- Support for training models on different market types (spot vs linear) for comparison
+- Easier A/B testing of models across different market categories
+
+**Migration Strategy**:
+1. Deploy code changes with backward compatibility enabled
+2. Run data migration script to move existing files to new structure
+3. Verify data integrity and dataset building with new structure
+4. Disable backward compatibility after verification period
+5. Clean up old-format files
+
+---
+
 ## Notes
 
 - [P] tasks = different files, no dependencies
@@ -970,7 +1037,7 @@ With multiple developers:
 
 ## Task Summary
 
-- **Total Tasks**: 377 (added 9 Grafana observability tasks T196-T204 + 4 migration application tasks T196a-T199a + 17 Feature Registry versioning tasks T208-T218, T166a-T166b, T169a-T169f: version management, backward compatibility, automatic migration, rollback, audit trail + 36 Statistics API tasks T219-T254: HTTP API endpoints for service statistics and monitoring + 1 dataset validation task T255: empty test split validation and warning + 23 Historical Data Backfilling tasks T256-T277, T263a: Feature Registry data type analysis, DatasetBuilder optimization, Bybit REST API client, backfilling service with data validation, API endpoints, automatic integration, error handling, testing + 3 walk-forward enhancement tasks T111a-T111c: multiple folds generation, tests + 3 new price feature tasks T285-T287: volatility for N candles, returns for N candles, volume z-score + 3 unit test tasks T288-T290 for new price features + 15 advanced feature tasks T291-T304: technical indicators (RSI, EMA, MACD, Bollinger Bands) with pandas_ta dependency, orderbook slope, orderbook churn rate with OrderbookManager extension, Rate of Change (ROC), relative volume, Feature Registry YAML updates + 36 Feature Registry Version Management via Database tasks T305-T323: database schema modification (remove config JSONB, add file_path), FeatureRegistryVersionManager service with file-based source of truth, MetadataStorage extensions, FeatureRegistryLoader db_mode support, startup process updates, API endpoints for version creation and hot reload activation, migration script, docker-compose volume mounting, documentation + 11 Dataset Building Performance Optimization tasks T324-T333, T330b: incremental orderbook reconstruction, incremental rolling windows update, vectorized pandas operations for incremental updates, parallel feature computation, performance metrics, configuration variables. Expected: 10-20x speedup, from ~2 hours to ~5-15 minutes for 60 days + 2 Dataset Quality Validation tasks T334-T335: feature quality checks, target quality validation + 12 Dataset Building Caching Strategy tasks T348-T359: historical data caching, computed features caching, Redis support, cache invalidation logic, cache statistics and monitoring, cache serialization and compression. Expected: 10-30x speedup for repeated builds with full cache hits, from ~5-15 minutes to ~30 seconds - 2 minutes for 60 days + 9 OfflineEngine and Feature Registry v1.3.0 Testing tasks T360-T369: comprehensive test coverage for OfflineEngine with Feature Registry v1.3.0, feature identity tests, integration tests for dataset building with v1.3.0, test fixtures and documentation). Dashboard creation tasks (3 tasks) are in `specs/001-grafana-monitoring/tasks.md`
+- **Total Tasks**: 402 (added 9 Grafana observability tasks T196-T204 + 4 migration application tasks T196a-T199a + 17 Feature Registry versioning tasks T208-T218, T166a-T166b, T169a-T169f: version management, backward compatibility, automatic migration, rollback, audit trail + 36 Statistics API tasks T219-T254: HTTP API endpoints for service statistics and monitoring + 1 dataset validation task T255: empty test split validation and warning + 23 Historical Data Backfilling tasks T256-T277, T263a: Feature Registry data type analysis, DatasetBuilder optimization, Bybit REST API client, backfilling service with data validation, API endpoints, automatic integration, error handling, testing + 3 walk-forward enhancement tasks T111a-T111c: multiple folds generation, tests + 3 new price feature tasks T285-T287: volatility for N candles, returns for N candles, volume z-score + 3 unit test tasks T288-T290 for new price features + 15 advanced feature tasks T291-T304: technical indicators (RSI, EMA, MACD, Bollinger Bands) with pandas_ta dependency, orderbook slope, orderbook churn rate with OrderbookManager extension, Rate of Change (ROC), relative volume, Feature Registry YAML updates + 36 Feature Registry Version Management via Database tasks T305-T323: database schema modification (remove config JSONB, add file_path), FeatureRegistryVersionManager service with file-based source of truth, MetadataStorage extensions, FeatureRegistryLoader db_mode support, startup process updates, API endpoints for version creation and hot reload activation, migration script, docker-compose volume mounting, documentation + 11 Dataset Building Performance Optimization tasks T324-T333, T330b: incremental orderbook reconstruction, incremental rolling windows update, vectorized pandas operations for incremental updates, parallel feature computation, performance metrics, configuration variables. Expected: 10-20x speedup, from ~2 hours to ~5-15 minutes for 60 days + 2 Dataset Quality Validation tasks T334-T335: feature quality checks, target quality validation + 12 Dataset Building Caching Strategy tasks T348-T359: historical data caching, computed features caching, Redis support, cache invalidation logic, cache statistics and monitoring, cache serialization and compression. Expected: 10-30x speedup for repeated builds with full cache hits, from ~5-15 minutes to ~30 seconds - 2 minutes for 60 days + 9 OfflineEngine and Feature Registry v1.3.0 Testing tasks T360-T369: comprehensive test coverage for OfflineEngine with Feature Registry v1.3.0, feature identity tests, integration tests for dataset building with v1.3.0, test fixtures and documentation + 25 Market Category Support in Data Storage tasks T370-T394: storage path structure update, Dataset Builder category support, Backfilling Service category support, data migration and backward compatibility, testing and documentation, cleanup and optimization). Dashboard creation tasks (3 tasks) are in `specs/001-grafana-monitoring/tasks.md`
 - **Phase 1 (Setup)**: 10 tasks (added test structure setup)
 - **Phase 2 (Foundational)**: 29 tasks (12 tests + 17 implementation: 3 migrations + 3 migration application tasks)
 - **Phase 3 (User Story 1)**: 72 tasks (29 tests + 35 implementation, added T285-T287 for new price features: volatility for N candles, returns for N candles, volume z-score, added T288-T290 for unit tests for new price features, added T291-T295 for unit tests for advanced features: technical indicators, orderbook slope/churn rate, ROC, relative volume, added T296-T304 for implementation of advanced features: technical indicators module, orderbook slope/churn rate, ROC, relative volume, Feature Registry updates, OrderbookManager extension, pandas_ta dependency, added T336-T340 for unit tests for minimal feature set: returns_5m, volatility_5m, ema_21, price_ema21_ratio, volume_ratio_20, added T341-T347 for implementation of minimal feature set: returns_5m, volatility_5m, ema_21, price_ema21_ratio, volume_ratio_20 computation, Feature Registry YAML updates, removal of features requiring unavailable backfill data)
@@ -983,6 +1050,7 @@ With multiple developers:
 - **Phase 7.7 (OfflineEngine and Feature Registry v1.3.0 Testing)**: 9 tasks (6 tests + 3 implementation: comprehensive test coverage for OfflineEngine with Feature Registry v1.3.0, feature identity tests between FeatureComputer and OfflineEngine, integration tests for dataset building with v1.3.0, test fixtures for v1.3.0, test coverage verification, documentation. Addresses critical bug: OfflineEngine not calling compute_all_candle_patterns_3m)
 - **Phase 8 (Polish)**: 61 tasks (5 additional tests + 12 implementation + 7 Grafana observability tasks: T196-T199 database migrations + T196a-T199a migration application, T200-T203 metrics persistence, T204 health check extension + 36 Statistics API tasks T219-T254: 16 tests + 20 implementation + 1 dataset validation task T255: empty test split validation). Grafana dashboard creation tasks (T205-T207) are in `specs/001-grafana-monitoring/tasks.md`
 - **Phase 9 (Historical Data Backfilling)**: 23 tasks (T256-T277, T263a: Feature Registry data type analysis and mapping, DatasetBuilder optimization to load only required data types, Bybit REST API client, backfilling service with Feature Registry awareness and data validation after save, API endpoints for manual and automatic backfilling, integration with dataset builder, comprehensive error handling and logging, unit/integration/contract tests)
+- **Phase 10 (Long-term Solution - Market Category Support in Data Storage)**: 25 tasks (T370-T394: Storage path structure update to include category dimension, Dataset Builder category support, Backfilling Service category support, data migration and backward compatibility, testing and documentation, cleanup and optimization. Enables storage and retrieval of market data for multiple market categories simultaneously)
 
 **Suggested MVP Scope**: Phase 1 + Phase 2 + Phase 3 (User Story 1) = 103 tasks (10 + 29 + 64)
 

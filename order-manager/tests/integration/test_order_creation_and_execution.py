@@ -428,7 +428,7 @@ class OrderCreationTest:
             bybit_client = get_bybit_client()
             ticker_response = await bybit_client.get(
                 "/v5/market/tickers",
-                params={"category": "linear", "symbol": "BTCUSDT"},
+                params={"category": "linear", "symbol": "BTCUSDT"},  # Using hardcoded "linear" for test compatibility
                 authenticated=False,
             )
             ticker_data = ticker_response.get("result", {}).get("list", [])

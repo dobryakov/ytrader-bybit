@@ -199,8 +199,9 @@ class OrderStateSync:
         try:
             # Query active orders (status: New, PartiallyFilled)
             # Bybit API endpoint: GET /v5/order/realtime
+            from ..config.settings import settings
             params = {
-                "category": "linear",  # Linear perpetual contracts
+                "category": settings.bybit_market_category,
                 "settleCoin": "USDT",
             }
 
@@ -486,8 +487,9 @@ class OrderStateSync:
 
         try:
             # First, try to find order in realtime endpoint (active orders)
+            from ..config.settings import settings
             params = {
-                "category": "linear",
+                "category": settings.bybit_market_category,
                 "orderId": bybit_order_id,
             }
 

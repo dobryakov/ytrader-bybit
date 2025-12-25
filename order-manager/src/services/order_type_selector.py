@@ -109,10 +109,11 @@ class OrderTypeSelector:
             Current market price from Bybit, or fallback_price if unavailable
         """
         try:
+            from ..config.settings import settings
             bybit_client = get_bybit_client()
             ticker_response = await bybit_client.get(
                 "/v5/market/tickers",
-                params={"category": "linear", "symbol": asset},
+                params={"category": settings.bybit_market_category, "symbol": asset},
                 authenticated=False,
             )
             ticker_data = ticker_response.get("result", {}).get("list", [])

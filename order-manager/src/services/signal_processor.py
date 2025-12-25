@@ -2,7 +2,7 @@
 
 import asyncio
 from decimal import Decimal
-from typing import Optional
+from typing import Optional, Dict, Any
 from uuid import UUID
 
 from ..config.logging import get_logger
@@ -219,6 +219,57 @@ class SignalProcessor:
 
                 # Step 4: Get current position from Position Manager service
                 current_position = await self.position_manager_client.get_position(asset, mode="one-way", trace_id=trace_id)
+
+                # Step 4.1: Check take profit / stop loss exit rules
+                # Skip exit check if this is already an exit signal from model-service exit strategy
+                # to avoid double processing (model-service exit strategy already evaluated PnL)
+                is_exit_signal = signal.metadata and signal.metadata.get("exit_strategy", False)
+                if not is_exit_signal:
+                    exit_check = await self.risk_manager.check_take_profit_stop_loss(asset, current_position, trace_id=trace_id)
+                    if exit_check and exit_check.get("should_close"):
+                        # Position should be closed due to take profit or stop loss
+                        # Create SELL signal to close position
+                        exit_reason = exit_check.get("reason", "unknown")
+                        logger.info(
+                            "position_exit_rule_triggered",
+                            asset=asset,
+                            exit_reason=exit_reason,
+                            unrealized_pnl_pct=exit_check.get("unrealized_pnl_pct"),
+                            threshold_pct=exit_check.get("threshold_pct"),
+                            trace_id=trace_id,
+                        )
+                        
+                        # Create close signal
+                        if current_position and current_position.size != 0:
+                            close_signal = await self._create_close_position_signal(
+                                signal=signal,
+                                position=current_position,
+                                exit_reason=exit_reason,
+                                exit_check=exit_check,
+                                trace_id=trace_id,
+                            )
+                            if close_signal:
+                                # Process close signal instead of original signal
+                                logger.info(
+                                    "processing_close_signal_instead_of_original",
+                                    original_signal_id=str(signal_id),
+                                    close_signal_id=str(close_signal.signal_id),
+                                    exit_reason=exit_reason,
+                                    trace_id=trace_id,
+                                )
+                                # Recursively process close signal
+                                return await self._process_signal_internal(close_signal)
+                        # If position is None or size is 0, continue with original signal
+                else:
+                    # This is an exit signal from model-service exit strategy
+                    # Skip order-manager exit check to avoid double processing
+                    logger.debug(
+                        "skipping_exit_check_for_model_service_exit_signal",
+                        asset=asset,
+                        signal_id=str(signal_id),
+                        trace_id=trace_id,
+                        reason="Signal is already an exit signal from model-service exit strategy",
+                    )
 
                 # Step 4.5: Close position if opposite signal and feature enabled
                 if settings.order_manager_close_position_before_opposite_signal:
@@ -1268,6 +1319,83 @@ class SignalProcessor:
             )
             # Fallback to stale data rather than failing
             return current_position
+
+    async def _create_close_position_signal(
+        self,
+        signal: TradingSignal,
+        position: Position,
+        exit_reason: str,
+        exit_check: Dict[str, Any],
+        trace_id: Optional[str],
+    ) -> Optional[TradingSignal]:
+        """Create a SELL signal to close position due to take profit or stop loss.
+
+        Args:
+            signal: Original trading signal (for context)
+            position: Current position to close
+            exit_reason: Exit reason ('take_profit' or 'stop_loss')
+            exit_check: Exit check result from risk_manager
+            trace_id: Trace ID for logging
+
+        Returns:
+            TradingSignal for closing position, or None if cannot create
+        """
+        from uuid import uuid4
+        from datetime import datetime, timezone
+        from decimal import Decimal
+
+        # Determine close side based on position direction
+        if position.size > 0:
+            # Long position - need SELL order to close
+            close_side = "sell"
+        else:
+            # Short position - need BUY order to close
+            close_side = "buy"
+
+        # Calculate close amount (position size in quote currency)
+        # Use current price from signal's market data snapshot
+        if signal.market_data_snapshot and signal.market_data_snapshot.price:
+            current_price = Decimal(str(signal.market_data_snapshot.price))
+            position_size_abs = abs(position.size)
+            close_amount = float(position_size_abs * current_price)
+        else:
+            # Fallback: use position size directly (will be converted later)
+            close_amount = float(abs(position.size))
+
+        # Create close signal
+        close_signal = TradingSignal(
+            signal_id=uuid4(),  # New signal ID for close order
+            asset=signal.asset,
+            signal_type=close_side,
+            amount=Decimal(str(close_amount)),
+            confidence=1.0,  # Maximum confidence for exit rules
+            strategy_id=signal.strategy_id,
+            timestamp=datetime.now(timezone.utc),
+            market_data_snapshot=signal.market_data_snapshot,
+            trace_id=trace_id,
+            model_version=None,  # Not from model
+            is_warmup=False,
+            metadata={
+                "reasoning": f"{exit_reason}_triggered",
+                "exit_reason": exit_reason,
+                "unrealized_pnl_pct": exit_check.get("unrealized_pnl_pct"),
+                "threshold_pct": exit_check.get("threshold_pct"),
+                "position_size": float(position.size),
+                "original_signal_id": str(signal.signal_id),
+            },
+        )
+
+        logger.info(
+            "close_position_signal_created",
+            asset=signal.asset,
+            exit_reason=exit_reason,
+            close_side=close_side,
+            position_size=float(position.size),
+            close_amount=close_amount,
+            trace_id=trace_id,
+        )
+
+        return close_signal
 
     async def _close_position_before_new_order(
         self,

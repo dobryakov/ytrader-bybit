@@ -48,7 +48,7 @@ class InstrumentInfoManager:
 
     async def refresh_all_instruments(
         self,
-        category: str = "linear",
+        category: Optional[str] = None,
         trace_id: Optional[str] = None,
     ) -> int:
         """Fetch instruments-info for the given category and upsert into database.
@@ -69,6 +69,10 @@ class InstrumentInfoManager:
         if trace_id is None:
             trace_id = generate_trace_id()
             set_trace_id(trace_id)
+
+        # Use settings default if category not provided
+        if category is None:
+            category = settings.bybit_market_category
 
         logger.info(
             "instrument_info_refresh_started",

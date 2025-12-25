@@ -113,10 +113,11 @@ class FeatureComputer:
                 end_timestamp_ms = int(now.timestamp() * 1000)
                 
                 # Fetch klines from Bybit REST API
+                from src.config import config
                 response = await bybit_client.get(
                     endpoint="/v5/market/kline",
                     params={
-                        "category": "spot",
+                        "category": config.bybit_market_category,
                         "symbol": symbol,
                         "interval": "1",  # 1-minute klines
                         "start": start_timestamp_ms,

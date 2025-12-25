@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     bybit_api_key: str = Field(..., alias="BYBIT_API_KEY")
     bybit_api_secret: str = Field(..., alias="BYBIT_API_SECRET")
     bybit_environment: str = Field(default="testnet", alias="BYBIT_ENVIRONMENT")
+    bybit_market_category: str = Field(default="linear", alias="BYBIT_MARKET_CATEGORY", description="Bybit market category for REST API requests: 'spot', 'linear', 'inverse', 'option', 'spread' (default: 'linear')")
 
     # Database Configuration
     postgres_host: str = Field(default="postgres", alias="POSTGRES_HOST")
@@ -176,6 +177,24 @@ class Settings(BaseSettings):
         default="LastPrice", alias="ORDERMANAGER_TP_SL_TRIGGER_BY",
         description="TP/SL trigger method: 'LastPrice', 'IndexPrice', or 'MarkPrice'. Default: 'LastPrice'"
     )
+    
+    # Take Profit / Stop Loss Position Exit Configuration
+    order_manager_exit_tp_enabled: bool = Field(
+        default=True, alias="ORDERMANAGER_EXIT_TP_ENABLED",
+        description="Enable take profit exit rule. If True, positions will be closed when unrealized PnL exceeds threshold. Default: True"
+    )
+    order_manager_exit_tp_threshold_pct: float = Field(
+        default=3.0, alias="ORDERMANAGER_EXIT_TP_THRESHOLD_PCT",
+        description="Take profit exit threshold as percentage. Position will be closed when unrealized PnL exceeds this value. Default: 3.0%"
+    )
+    order_manager_exit_sl_enabled: bool = Field(
+        default=True, alias="ORDERMANAGER_EXIT_SL_ENABLED",
+        description="Enable stop loss exit rule. If True, positions will be closed when unrealized PnL falls below threshold. Default: True"
+    )
+    order_manager_exit_sl_threshold_pct: float = Field(
+        default=-2.0, alias="ORDERMANAGER_EXIT_SL_THRESHOLD_PCT",
+        description="Stop loss exit threshold as percentage (negative value). Position will be closed when unrealized PnL falls below this value. Default: -2.0%"
+    )
 
     # Exchange Trailing Stop Configuration (Bybit Set Trading Stop)
     order_manager_exchange_trailing_stop_enabled: bool = Field(
@@ -254,6 +273,16 @@ class Settings(BaseSettings):
         v_lower = v.lower()
         if v_lower not in valid_environments:
             raise ValueError(f"Bybit environment must be one of {valid_environments}")
+        return v_lower
+    
+    @field_validator("bybit_market_category")
+    @classmethod
+    def validate_bybit_market_category(cls, v: str) -> str:
+        """Validate Bybit market category."""
+        valid_categories = {"spot", "linear", "inverse", "option", "spread"}
+        v_lower = v.lower()
+        if v_lower not in valid_categories:
+            raise ValueError(f"Bybit market category must be one of {valid_categories}")
         return v_lower
 
     @field_validator("order_manager_max_order_size_ratio")

@@ -778,10 +778,22 @@ class PositionManager:
             row = await pool.fetchrow(compute_query, asset.upper())
 
             computed_size = row["computed_size"] or Decimal("0")
-            # Average price validation is complex and position_manager correctly maintains it
-            # during order execution. We skip average price validation here as it requires
-            # tracking position direction changes which is already handled correctly.
-            computed_avg_price = None  # Skip average price validation - it's maintained correctly by update logic
+            # Calculate average entry price from order history if position size is non-zero
+            # This allows us to fix discrepancies even when stored average_entry_price is None
+            computed_avg_price = None
+            if computed_size != 0:
+                computed_avg_price = await self._calculate_average_entry_price_from_orders(
+                    asset, computed_size
+                )
+                if computed_avg_price:
+                    logger.debug(
+                        "computed_avg_price_from_orders",
+                        asset=asset,
+                        mode=mode,
+                        computed_size=float(computed_size),
+                        computed_avg_price=float(computed_avg_price),
+                        trace_id=trace_id,
+                    )
 
             # Get stored position
             stored_position = await self.get_position(asset, mode)
@@ -807,8 +819,6 @@ class PositionManager:
                 )
 
                 # If discrepancy fixing is enabled and computed position exists, create the position
-                # Note: We don't compute average_price here as it requires complex logic
-                # that's already handled correctly during order execution
                 if fix_discrepancies and computed_size != 0:
                     logger.info(
                         "fixing_position_discrepancy",
@@ -816,23 +826,29 @@ class PositionManager:
                         mode=mode,
                         action="creating_missing_position",
                         computed_size=float(computed_size),
+                        computed_avg_price=float(computed_avg_price) if computed_avg_price else None,
                         trace_id=trace_id,
                     )
-                    # Cannot create position with non-zero size without average_entry_price
-                    # Skip creation and return error - position will be created on next order execution
-                    logger.warning(
-                        "cannot_create_position_without_avg_price",
-                        asset=asset,
-                        mode=mode,
-                        computed_size=float(computed_size),
-                        reason="average_entry_price required for non-zero position",
-                        trace_id=trace_id,
+                    # Try to create position with computed average_entry_price
+                    if computed_avg_price is None:
+                        logger.warning(
+                            "cannot_create_position_without_avg_price",
+                            asset=asset,
+                            mode=mode,
+                            computed_size=float(computed_size),
+                            reason="could not calculate average_entry_price from orders",
+                            trace_id=trace_id,
+                        )
+                        return (
+                            False,
+                            f"Cannot create position: {error_msg}. Could not calculate average entry price from order history.",
+                            None,
+                        )
+                    # Create position with computed values
+                    updated_position = await self._update_position_from_computed(
+                        asset, computed_size, computed_avg_price, mode, trace_id
                     )
-                    return (
-                        False,
-                        f"Cannot create position: {error_msg}. Average entry price is required for non-zero positions.",
-                        None,
-                    )
+                    return (True, f"Created missing position: {error_msg}", updated_position)
 
                 return (False, error_msg, None)
 
@@ -855,13 +871,37 @@ class PositionManager:
                 )
 
                 # Handle discrepancy by updating stored position with computed values
-                # Note: We preserve the existing average_entry_price as it's correctly
-                # maintained by the position update logic during order execution
                 if fix_discrepancies:
-                    # Validate: cannot update position with non-zero size without average_entry_price
-                    if computed_size != 0 and stored_position.average_entry_price is None:
+                    # Determine which average_entry_price to use:
+                    # 1. If computed_size == 0, use None (position is closed)
+                    # 2. If stored average_entry_price exists, prefer it (it's maintained by update logic)
+                    # 3. Otherwise, use computed_avg_price from order history
+                    if computed_size == 0:
+                        avg_price_to_use = None
+                    elif stored_position.average_entry_price is not None:
+                        # Prefer existing average_entry_price as it's maintained by position update logic
+                        avg_price_to_use = stored_position.average_entry_price
+                        logger.debug(
+                            "using_existing_avg_price_for_fix",
+                            asset=asset,
+                            mode=mode,
+                            existing_avg_price=float(avg_price_to_use),
+                            trace_id=trace_id,
+                        )
+                    elif computed_avg_price is not None:
+                        # Use computed average_entry_price from order history
+                        avg_price_to_use = computed_avg_price
+                        logger.info(
+                            "using_computed_avg_price_for_fix",
+                            asset=asset,
+                            mode=mode,
+                            computed_avg_price=float(avg_price_to_use),
+                            trace_id=trace_id,
+                        )
+                    else:
+                        # Cannot fix: no average_entry_price available
                         error_msg_with_avg = (
-                            f"{error_msg}. Cannot fix: position has non-zero size but average_entry_price is None."
+                            f"{error_msg}. Cannot fix: position has non-zero size but average_entry_price cannot be determined."
                         )
                         logger.warning(
                             "cannot_fix_position_discrepancy_missing_avg_price",
@@ -869,6 +909,8 @@ class PositionManager:
                             mode=mode,
                             stored_size=float(stored_position.size),
                             computed_size=float(computed_size),
+                            stored_avg_price=None,
+                            computed_avg_price=None,
                             trace_id=trace_id,
                         )
                         return (False, error_msg_with_avg, None)
@@ -881,11 +923,9 @@ class PositionManager:
                         stored_size=float(stored_position.size),
                         computed_size=float(computed_size),
                         size_diff=float(size_diff),
+                        avg_price_to_use=float(avg_price_to_use) if avg_price_to_use else None,
                         trace_id=trace_id,
                     )
-                    # Preserve existing average_price - only update size
-                    # Use existing average_entry_price, or None if position is being closed (computed_size == 0)
-                    avg_price_to_use = stored_position.average_entry_price if computed_size != 0 else None
                     updated_position = await self._update_position_from_computed(
                         asset, computed_size, avg_price_to_use, mode, trace_id
                     )
@@ -1625,7 +1665,7 @@ class PositionManager:
         retries = settings.position_manager_price_api_retries
         timeout_s = settings.position_manager_price_api_timeout
 
-        params = {"category": "linear", "symbol": asset.upper()}
+        params = {"category": settings.bybit_market_category, "symbol": asset.upper()}
 
         for attempt in range(retries):
             try:
@@ -1700,7 +1740,7 @@ class PositionManager:
         endpoint = "/v5/position/list"
         url = f"{base_url}{endpoint}"
 
-        params = {"category": "linear", "settleCoin": "USDT"}
+        params = {"category": settings.bybit_market_category, "settleCoin": "USDT"}
         timestamp = str(int(time.time() * 1000))
         recv_window = "5000"
 

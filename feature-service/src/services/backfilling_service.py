@@ -126,7 +126,7 @@ class BackfillingService:
                 response = await self._bybit_client.get(
                     endpoint="/v5/market/kline",
                     params={
-                        "category": "spot",
+                        "category": config.bybit_market_category,
                         "symbol": symbol,
                         "interval": str(interval),
                         "start": current_start,
@@ -346,7 +346,7 @@ class BackfillingService:
             response = await self._bybit_client.get(
                 endpoint="/v5/market/recent-trade",
                 params={
-                    "category": "spot",
+                    "category": config.bybit_market_category,
                     "symbol": symbol,
                     "limit": 60,  # Max 60 for spot category
                 },
@@ -526,7 +526,7 @@ class BackfillingService:
             response = await self._bybit_client.get(
                 endpoint="/v5/market/tickers",
                 params={
-                    "category": "spot",
+                    "category": config.bybit_market_category,
                     "symbol": symbol,
                 },
                 authenticated=False,  # Public endpoint
