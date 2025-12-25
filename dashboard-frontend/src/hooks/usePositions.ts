@@ -60,3 +60,50 @@ export function usePosition(asset: string) {
   })
 }
 
+export interface ClosedPosition {
+  id: string
+  original_position_id: string
+  asset: string
+  mode: string
+  final_size: string
+  average_entry_price: string | null
+  exit_price: string | null
+  current_price: string | null
+  realized_pnl: string | null
+  unrealized_pnl_at_close: string | null
+  total_pnl: string
+  long_size: string | null
+  short_size: string | null
+  long_avg_price: string | null
+  short_avg_price: string | null
+  total_fees: string | null
+  opened_at: string
+  closed_at: string
+  version: number
+}
+
+export interface ClosedPositionsResponse {
+  closed_positions: ClosedPosition[]
+  count: number
+}
+
+export function useClosedPositions(filters?: {
+  asset?: string
+  limit?: number
+  offset?: number
+}) {
+  return useQuery<ClosedPositionsResponse>({
+    queryKey: ['closed-positions', filters],
+    queryFn: async () => {
+      const params = new URLSearchParams()
+      if (filters?.asset) params.append('asset', filters.asset)
+      if (filters?.limit) params.append('limit', filters.limit.toString())
+      if (filters?.offset) params.append('offset', filters.offset.toString())
+
+      const response = await api.get(`/v1/positions/closed?${params.toString()}`)
+      return response.data
+    },
+    refetchInterval: 30000, // Refetch every 30 seconds (closed positions change less frequently)
+  })
+}
+

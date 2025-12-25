@@ -250,4 +250,135 @@ class PositionSnapshot(BaseModel):
         return cls(**data)
 
 
+class ClosedPosition(BaseModel):
+    """Historical record of a closed position from closed_positions table."""
+
+    id: UUID = Field(default_factory=uuid4, description="Unique closed position identifier")
+    original_position_id: UUID = Field(..., description="ID from positions table at closure")
+    asset: str = Field(..., description="Trading pair symbol", max_length=20)
+    mode: str = Field(..., description="Trading mode", max_length=20)
+    
+    # Position state at closure
+    final_size: Decimal = Field(default=Decimal("0"), description="Position size at closure (always 0)")
+    average_entry_price: Optional[Decimal] = Field(None, description="Average entry price", gt=0)
+    exit_price: Optional[Decimal] = Field(None, description="Price at closure", gt=0)
+    current_price: Optional[Decimal] = Field(None, description="Current price at closure (same as exit_price)")
+    
+    # PnL at closure
+    realized_pnl: Decimal = Field(default=Decimal("0"), description="Realized profit/loss at closure")
+    unrealized_pnl_at_close: Decimal = Field(default=Decimal("0"), description="Unrealized PnL at closure")
+    
+    # Hedge mode fields
+    long_size: Optional[Decimal] = Field(None, description="Long position size (for hedge mode)")
+    short_size: Optional[Decimal] = Field(None, description="Short position size (for hedge mode)")
+    long_avg_price: Optional[Decimal] = Field(None, description="Long average price (for hedge mode)", gt=0)
+    short_avg_price: Optional[Decimal] = Field(None, description="Short average price (for hedge mode)", gt=0)
+    
+    # Fees
+    total_fees: Optional[Decimal] = Field(None, description="Total fees for this position")
+    
+    # Metadata
+    opened_at: datetime = Field(..., description="When position was opened (created_at from original position)")
+    closed_at: datetime = Field(..., description="When position was closed")
+    version: int = Field(..., description="Version number at closure", ge=1)
+
+    @field_validator("asset")
+    @classmethod
+    def validate_asset(cls, v: str) -> str:
+        """Validate asset format (e.g., BTCUSDT)."""
+        v = v.upper()
+        if len(v) < 3 or len(v) > 20:
+            raise ValueError("Asset must be between 3 and 20 characters")
+        return v
+
+    @field_validator("mode")
+    @classmethod
+    def validate_mode(cls, v: str) -> str:
+        """Validate trading mode is 'one-way' or 'hedge'."""
+        v_lower = v.lower()
+        if v_lower not in {"one-way", "hedge"}:
+            raise ValueError("Mode must be 'one-way' or 'hedge'")
+        return v_lower
+
+    @computed_field
+    @property
+    def holding_time_minutes(self) -> Optional[int]:
+        """Time position was held in minutes."""
+        try:
+            delta = self.closed_at - self.opened_at
+            return int(delta.total_seconds() // 60)
+        except Exception:
+            return None
+
+    @computed_field
+    @property
+    def total_pnl(self) -> Decimal:
+        """Total PnL for a closed position.
+        
+        For a fully closed position, realized_pnl already includes all PnL
+        (since unrealized_pnl_at_close became realized when position was closed).
+        Therefore, total_pnl = realized_pnl.
+        """
+        return self.realized_pnl
+
+    def to_db_dict(self) -> Dict[str, Any]:
+        """Serialize to a dict suitable for asyncpg operations."""
+        return {
+            "id": str(self.id),
+            "original_position_id": str(self.original_position_id),
+            "asset": self.asset,
+            "mode": self.mode,
+            "final_size": str(self.final_size),
+            "average_entry_price": str(self.average_entry_price) if self.average_entry_price is not None else None,
+            "exit_price": str(self.exit_price) if self.exit_price is not None else None,
+            "current_price": str(self.current_price) if self.current_price is not None else None,
+            "realized_pnl": str(self.realized_pnl),
+            "unrealized_pnl_at_close": str(self.unrealized_pnl_at_close),
+            "long_size": str(self.long_size) if self.long_size is not None else None,
+            "short_size": str(self.short_size) if self.short_size is not None else None,
+            "long_avg_price": str(self.long_avg_price) if self.long_avg_price is not None else None,
+            "short_avg_price": str(self.short_avg_price) if self.short_avg_price is not None else None,
+            "total_fees": str(self.total_fees) if self.total_fees is not None else None,
+            "opened_at": self.opened_at,
+            "closed_at": self.closed_at,
+            "version": self.version,
+        }
+
+    @classmethod
+    def from_db_dict(cls, data: Dict[str, Any]) -> "ClosedPosition":
+        """Create ClosedPosition from a database row dict, handling type conversion."""
+        # UUID conversion
+        for field in ["id", "original_position_id"]:
+            if field in data and data[field] is not None:
+                if isinstance(data[field], str):
+                    data[field] = UUID(data[field])
+                elif not isinstance(data[field], UUID):
+                    data[field] = UUID(str(data[field]))
+
+        # Decimal conversion
+        for field in [
+            "final_size",
+            "average_entry_price",
+            "exit_price",
+            "current_price",
+            "realized_pnl",
+            "unrealized_pnl_at_close",
+            "long_size",
+            "short_size",
+            "long_avg_price",
+            "short_avg_price",
+            "total_fees",
+        ]:
+            value = data.get(field)
+            if value is not None:
+                if not isinstance(value, Decimal):
+                    data[field] = Decimal(str(value))
+            else:
+                # Remove None for fields with defaults to let Pydantic use defaults
+                if field in ["realized_pnl", "unrealized_pnl_at_close", "final_size"]:
+                    data.pop(field, None)
+
+        return cls(**data)
+
+
 

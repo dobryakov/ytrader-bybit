@@ -108,6 +108,95 @@ async def list_positions(
         raise HTTPException(status_code=500, detail=f"Failed to retrieve positions: {str(e)}")
 
 
+@router.get("/positions/closed")
+async def list_closed_positions(
+    asset: Optional[str] = Query(None, description="Filter by trading pair"),
+    limit: int = Query(100, ge=1, le=1000, description="Maximum number of records to return"),
+    offset: int = Query(0, ge=0, description="Number of records to skip"),
+):
+    """List closed positions history."""
+    trace_id = get_or_create_trace_id()
+    logger.info("closed_positions_list_request", asset=asset, limit=limit, offset=offset, trace_id=trace_id)
+
+    try:
+        # Build query
+        query = """
+            SELECT 
+                id, original_position_id, asset, mode,
+                final_size, average_entry_price, exit_price, current_price,
+                realized_pnl, unrealized_pnl_at_close,
+                long_size, short_size, long_avg_price, short_avg_price,
+                total_fees, opened_at, closed_at, version
+            FROM closed_positions
+            WHERE 1=1
+        """
+        params = []
+        param_idx = 1
+
+        if asset:
+            query += f" AND asset = ${param_idx}"
+            params.append(asset)
+            param_idx += 1
+
+        query += " ORDER BY closed_at DESC"
+        query += f" LIMIT ${param_idx}"
+        params.append(limit)
+        param_idx += 1
+
+        if offset > 0:
+            query += f" OFFSET ${param_idx}"
+            params.append(offset)
+
+        rows = await DatabaseConnection.fetch(query, *params)
+
+        closed_positions_data = []
+        for row in rows:
+            # Calculate total_pnl for closed position
+            # For a fully closed position, realized_pnl already includes all PnL
+            # (unrealized_pnl_at_close became realized when position was closed)
+            # Therefore, total_pnl = realized_pnl
+            total_pnl = row["realized_pnl"] or Decimal("0")
+            
+            closed_position_dict = {
+                "id": str(row["id"]),
+                "original_position_id": str(row["original_position_id"]),
+                "asset": row["asset"],
+                "mode": row["mode"],
+                "final_size": str(row["final_size"]),
+                "average_entry_price": str(row["average_entry_price"]) if row["average_entry_price"] else None,
+                "exit_price": str(row["exit_price"]) if row["exit_price"] else None,
+                "current_price": str(row["current_price"]) if row["current_price"] else None,
+                "realized_pnl": str(row["realized_pnl"]) if row["realized_pnl"] else None,
+                "unrealized_pnl_at_close": str(row["unrealized_pnl_at_close"]) if row["unrealized_pnl_at_close"] else None,
+                "total_pnl": str(total_pnl),
+                "long_size": str(row["long_size"]) if row["long_size"] else None,
+                "short_size": str(row["short_size"]) if row["short_size"] else None,
+                "long_avg_price": str(row["long_avg_price"]) if row["long_avg_price"] else None,
+                "short_avg_price": str(row["short_avg_price"]) if row["short_avg_price"] else None,
+                "total_fees": str(row["total_fees"]) if row["total_fees"] else None,
+                "opened_at": row["opened_at"].isoformat() + "Z" if row["opened_at"] else None,
+                "closed_at": row["closed_at"].isoformat() + "Z" if row["closed_at"] else None,
+                "version": row["version"],
+            }
+            closed_positions_data.append(closed_position_dict)
+
+        logger.info("closed_positions_list_completed", count=len(closed_positions_data), trace_id=trace_id)
+
+        return JSONResponse(
+            status_code=200,
+            content={
+                "closed_positions": closed_positions_data,
+                "count": len(closed_positions_data),
+            },
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("closed_positions_list_failed", error=str(e), trace_id=trace_id, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve closed positions: {str(e)}")
+
+
 @router.get("/positions/{asset}")
 async def get_position_by_asset(asset: str):
     """Get position details for specific asset."""

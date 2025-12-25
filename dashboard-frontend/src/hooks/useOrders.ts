@@ -16,6 +16,7 @@ export interface Order {
   fees: string | null
   created_at: string
   updated_at: string
+  rejection_reason: string | null
   position_id: string | null
 }
 

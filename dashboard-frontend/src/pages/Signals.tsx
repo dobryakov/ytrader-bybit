@@ -104,27 +104,48 @@ export default function Signals() {
                       )}
                     </TableCell>
                     <TableCell>
-                      {signal.actual_movement && signal.actual_movement.price_from && signal.actual_movement.price_to ? (
+                      {signal.actual_movement ? (
                         <div className="flex flex-col gap-1">
-                          <div className="text-sm">
-                            <span className="text-muted-foreground">От:</span>{' '}
-                            <span className="font-mono">{signal.actual_movement.price_from.toFixed(2)}</span>
-                          </div>
-                          <div className="text-sm">
-                            <span className="text-muted-foreground">До:</span>{' '}
-                            <span className="font-mono">{signal.actual_movement.price_to.toFixed(2)}</span>
-                            {signal.actual_movement.direction && (
-                              <Badge 
-                                variant={signal.actual_movement.direction === 'UP' ? 'default' : 'destructive'}
-                                className="ml-2"
-                              >
-                                {signal.actual_movement.direction}
-                              </Badge>
-                            )}
-                          </div>
-                          {signal.actual_movement.return_value !== null && (
-                            <div className="text-xs text-muted-foreground">
-                              {(signal.actual_movement.return_value * 100).toFixed(4)}%
+                          {signal.actual_movement.price_from && signal.actual_movement.price_to ? (
+                            <>
+                              <div className="text-sm">
+                                <span className="text-muted-foreground">От:</span>{' '}
+                                <span className="font-mono">{signal.actual_movement.price_from.toFixed(2)}</span>
+                              </div>
+                              <div className="text-sm">
+                                <span className="text-muted-foreground">До:</span>{' '}
+                                <span className="font-mono">{signal.actual_movement.price_to.toFixed(2)}</span>
+                                {signal.actual_movement.direction && (
+                                  <Badge 
+                                    variant={signal.actual_movement.direction === 'UP' ? 'default' : 'destructive'}
+                                    className="ml-2"
+                                  >
+                                    {signal.actual_movement.direction}
+                                  </Badge>
+                                )}
+                              </div>
+                              {signal.actual_movement.return_value !== null && (
+                                <div className="text-xs text-muted-foreground">
+                                  {(signal.actual_movement.return_value * 100).toFixed(4)}%
+                                </div>
+                              )}
+                            </>
+                          ) : null}
+                          {signal.actual_movement.status && signal.actual_movement.status !== 'computed' && (
+                            <div className="mt-1">
+                              {signal.actual_movement.status === 'pending' ? (
+                                <Badge variant="outline" className="border-yellow-500 text-yellow-600">
+                                  Ожидается
+                                </Badge>
+                              ) : signal.actual_movement.status === 'waiting' ? (
+                                <Badge variant="outline" className="border-blue-500 text-blue-600">
+                                  Ожидается время
+                                </Badge>
+                              ) : signal.actual_movement.status === 'obsolete' ? (
+                                <Badge variant="destructive">
+                                  Попытки прекращены
+                                </Badge>
+                              ) : null}
                             </div>
                           )}
                         </div>

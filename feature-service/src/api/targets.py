@@ -237,6 +237,17 @@ async def compute_target(
         closest_timestamp = historical_data.loc[closest_idx, "timestamp"]
         time_diff = time_diffs[closest_idx]
         
+        # Check if target is historical (in the past)
+        now_utc = datetime.now(timezone.utc)
+        target_is_historical = target_timestamp < now_utc
+        
+        # For historical targets, allow larger tolerance (up to 1 hour)
+        # For recent targets, use smaller tolerance (10 minutes)
+        if target_is_historical:
+            max_tolerance_minutes = 60  # 1 hour for historical data
+        else:
+            max_tolerance_minutes = 10  # 10 minutes for recent data
+        
         logger.debug(
             "target_computation_price_search",
             symbol=request.symbol,
@@ -244,10 +255,12 @@ async def compute_target(
             closest_timestamp=closest_timestamp.isoformat() if hasattr(closest_timestamp, 'isoformat') else str(closest_timestamp),
             time_diff_seconds=time_diff.total_seconds(),
             time_diff_minutes=time_diff.total_seconds() / 60,
+            target_is_historical=target_is_historical,
+            max_tolerance_minutes=max_tolerance_minutes,
         )
         
-        # Allow up to 10 minutes tolerance for klines (to handle data gaps)
-        if time_diff <= pd.Timedelta(minutes=10):
+        # Allow tolerance based on whether target is historical
+        if time_diff <= pd.Timedelta(minutes=max_tolerance_minutes):
             price_at_prediction = float(historical_data.loc[closest_idx, "close"])
             time_diff_seconds = time_diff.total_seconds()
             
@@ -258,6 +271,7 @@ async def compute_target(
                 price_timestamp=closest_timestamp.isoformat() if hasattr(closest_timestamp, 'isoformat') else str(closest_timestamp),
                 time_diff_seconds=time_diff_seconds,
                 price_at_prediction=price_at_prediction,
+                target_is_historical=target_is_historical,
             )
         else:
             logger.warning(
@@ -266,7 +280,8 @@ async def compute_target(
                 prediction_timestamp=prediction_timestamp.isoformat(),
                 closest_timestamp=closest_timestamp.isoformat() if hasattr(closest_timestamp, 'isoformat') else str(closest_timestamp),
                 time_diff_minutes=time_diff.total_seconds() / 60,
-                max_tolerance_minutes=10,
+                max_tolerance_minutes=max_tolerance_minutes,
+                target_is_historical=target_is_historical,
             )
     
     if price_at_prediction is None:

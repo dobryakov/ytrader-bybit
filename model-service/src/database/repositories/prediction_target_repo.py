@@ -5,7 +5,7 @@ Provides CRUD operations for prediction_targets table.
 """
 
 from typing import Optional, List, Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID
 import asyncpg
 import json
@@ -66,6 +66,20 @@ class PredictionTargetRepository(BaseRepository[Dict[str, Any]]):
         """
         try:
             signal_uuid = UUID(signal_id) if isinstance(signal_id, str) else signal_id
+            
+            # Normalize all datetime objects to timezone-aware UTC, then to naive for PostgreSQL timestamp without time zone
+            # This prevents asyncpg errors when comparing datetime objects
+            if prediction_timestamp.tzinfo is None:
+                prediction_timestamp = prediction_timestamp.replace(tzinfo=timezone.utc)
+            else:
+                prediction_timestamp = prediction_timestamp.astimezone(timezone.utc)
+            prediction_timestamp = prediction_timestamp.replace(tzinfo=None)  # Convert to naive for PostgreSQL
+            
+            if target_timestamp.tzinfo is None:
+                target_timestamp = target_timestamp.replace(tzinfo=timezone.utc)
+            else:
+                target_timestamp = target_timestamp.astimezone(timezone.utc)
+            target_timestamp = target_timestamp.replace(tzinfo=None)  # Convert to naive for PostgreSQL
             
             # Convert dicts to JSON strings for JSONB columns
             target_config_json = json.dumps(target_config)
@@ -150,6 +164,7 @@ class PredictionTargetRepository(BaseRepository[Dict[str, Any]]):
               AND (actual_values_computed_at IS NULL 
                    OR (actual_values_computation_error IS NOT NULL 
                        AND actual_values_computed_at < NOW() - INTERVAL '1 hour'))
+              AND (is_obsolete IS NULL OR is_obsolete = FALSE)
             ORDER BY target_timestamp ASC
         """
         if limit:
@@ -282,4 +297,105 @@ class PredictionTargetRepository(BaseRepository[Dict[str, Any]]):
 
         records = await self._fetch(query, *params)
         return self._records_to_dicts(records)
+
+    async def mark_obsolete(
+        self,
+        age_days: int,
+        limit: Optional[int] = None,
+    ) -> int:
+        """
+        Mark very old prediction targets as obsolete.
+
+        Args:
+            age_days: Age in days to consider targets as obsolete
+            limit: Maximum number of targets to mark (optional)
+
+        Returns:
+            Number of targets marked as obsolete
+        """
+        if limit:
+            # Use subquery to limit results
+            query = f"""
+                UPDATE {self.table_name}
+                SET is_obsolete = TRUE,
+                    updated_at = NOW()
+                WHERE id IN (
+                    SELECT id FROM {self.table_name}
+                    WHERE target_timestamp < NOW() - INTERVAL '{age_days} days'
+                      AND (is_obsolete IS NULL OR is_obsolete = FALSE)
+                      AND (actual_values IS NULL OR actual_values = '{{}}'::jsonb)
+                    LIMIT {limit}
+                )
+                RETURNING id
+            """
+        else:
+            query = f"""
+                UPDATE {self.table_name}
+                SET is_obsolete = TRUE,
+                    updated_at = NOW()
+                WHERE target_timestamp < NOW() - INTERVAL '{age_days} days'
+                  AND (is_obsolete IS NULL OR is_obsolete = FALSE)
+                  AND (actual_values IS NULL OR actual_values = '{{}}'::jsonb)
+                RETURNING id
+            """
+        
+        try:
+            records = await self._fetch(query)
+            count = len(records) if records else 0
+            if count > 0:
+                logger.info(
+                    "Prediction targets marked as obsolete",
+                    count=count,
+                    age_days=age_days,
+                )
+            return count
+        except Exception as e:
+            logger.error(
+                "Failed to mark prediction targets as obsolete",
+                age_days=age_days,
+                error=str(e),
+                exc_info=True,
+            )
+            raise
+
+    async def mark_target_obsolete(
+        self,
+        prediction_target_id: UUID,
+        reason: Optional[str] = None,
+    ) -> bool:
+        """
+        Mark a specific prediction target as obsolete.
+
+        Args:
+            prediction_target_id: Prediction target UUID
+            reason: Optional reason for marking as obsolete
+
+        Returns:
+            True if target was marked, False if not found
+        """
+        query = f"""
+            UPDATE {self.table_name}
+            SET is_obsolete = TRUE,
+                updated_at = NOW()
+            WHERE id = $1
+            RETURNING id
+        """
+        try:
+            record = await self._fetchrow(query, prediction_target_id)
+            if record:
+                logger.info(
+                    "Prediction target marked as obsolete",
+                    prediction_target_id=str(prediction_target_id),
+                    reason=reason,
+                )
+                return True
+            return False
+        except Exception as e:
+            logger.error(
+                "Failed to mark prediction target as obsolete",
+                prediction_target_id=str(prediction_target_id),
+                error=str(e),
+                exc_info=True,
+            )
+            raise
 

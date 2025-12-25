@@ -9,6 +9,7 @@ from ..config.logging import get_logger
 from ..config.settings import settings
 from ..models.trading_signal import TradingSignal
 from ..models.order import Order
+from ..models.position import Position
 from ..models.signal_order_rel import SignalOrderRelationship
 from ..services.order_type_selector import OrderTypeSelector
 from ..services.quantity_calculator import QuantityCalculator
@@ -124,6 +125,10 @@ class SignalProcessor:
         order_type = None
         quantity = None
         limit_price = None
+        
+        # Ensure settings is accessible (import at module level should handle this,
+        # but this explicit reference ensures it's available in exception handlers)
+        _ = settings
 
         # Use Redis distributed lock to prevent race condition when processing the same signal concurrently
         # Generate lock key from signal_id
@@ -214,6 +219,15 @@ class SignalProcessor:
 
                 # Step 4: Get current position from Position Manager service
                 current_position = await self.position_manager_client.get_position(asset, mode="one-way", trace_id=trace_id)
+
+                # Step 4.5: Close position if opposite signal and feature enabled
+                if settings.order_manager_close_position_before_opposite_signal:
+                    current_position = await self._handle_opposite_signal_position_closure(
+                        signal=signal,
+                        current_position=current_position,
+                        asset=asset,
+                        trace_id=trace_id,
+                    )
 
                 # Step 5: Risk checks
                 # 5a: Balance check (skip in dry-run mode or if disabled)
@@ -417,15 +431,32 @@ class SignalProcessor:
                     exc_info=True,
                 )
                 # Mark signal as failed in tracking
-                await self._mark_signal_processing_status(signal_id, "failed", error_msg, trace_id)
+                try:
+                    await self._mark_signal_processing_status(signal_id, "failed", error_msg, trace_id)
+                except Exception as tracking_error:
+                    logger.error(
+                        "signal_tracking_failed",
+                        signal_id=str(signal_id),
+                        error=str(tracking_error),
+                        trace_id=trace_id,
+                        exc_info=True,
+                    )
                 # Publish rejection event
-                await self._publish_signal_rejection_event(
-                    signal=signal,
-                    rejection_reason=error_msg,
-                    trace_id=trace_id,
-                )
+                try:
+                    await self._publish_signal_rejection_event(
+                        signal=signal,
+                        rejection_reason=error_msg,
+                        trace_id=trace_id,
+                    )
+                except Exception as publish_error:
+                    logger.error(
+                        "signal_rejection_event_publish_failed_in_exception",
+                        signal_id=str(signal_id),
+                        error=str(publish_error),
+                        trace_id=trace_id,
+                        exc_info=True,
+                    )
                 raise OrderExecutionError(error_msg) from e
-                raise OrderExecutionError(f"Failed to process signal: {e}") from e
 
     async def _process_asset_queue(self, asset: str) -> None:
         """Process signals from queue for a specific asset (FIFO).
@@ -1006,6 +1037,408 @@ class SignalProcessor:
                 trace_id=trace_id,
             )
             # On error, allow processing to continue (fail open)
+            return None
+
+    async def _handle_opposite_signal_position_closure(
+        self,
+        signal: TradingSignal,
+        current_position: Optional[Position],
+        asset: str,
+        trace_id: Optional[str],
+    ) -> Optional[Position]:
+        """Handle position closure when opposite signal arrives.
+
+        Args:
+            signal: Trading signal
+            current_position: Current position for asset
+            asset: Trading pair symbol
+            trace_id: Trace ID for logging
+
+        Returns:
+            Updated position (may be None if closed)
+        """
+        # Check if position exists and is significant
+        if not current_position:
+            return None
+
+        # Check position data freshness
+        current_position = await self._check_and_refresh_position_if_stale(
+            current_position=current_position,
+            asset=asset,
+            trace_id=trace_id,
+        )
+
+        if not current_position:
+            return None
+
+        position_size = abs(current_position.size)
+        min_size_threshold = Decimal(str(settings.order_manager_position_close_min_size_threshold))
+
+        if position_size < min_size_threshold:
+            logger.debug(
+                "position_too_small_to_close",
+                asset=asset,
+                position_size=float(position_size),
+                min_threshold=float(min_size_threshold),
+                trace_id=trace_id,
+            )
+            return current_position
+
+        # Check if signal is opposite to position
+        signal_type = signal.signal_type.lower()
+        is_opposite = False
+
+        if current_position.size > 0 and signal_type == "sell":
+            # Long position + SELL signal = opposite
+            is_opposite = True
+        elif current_position.size < 0 and signal_type == "buy":
+            # Short position + BUY signal = opposite
+            is_opposite = True
+
+        if not is_opposite:
+            return current_position
+
+        logger.info(
+            "opposite_signal_detected_closing_position",
+            asset=asset,
+            signal_type=signal_type,
+            position_size=float(current_position.size),
+            trace_id=trace_id,
+        )
+
+        # Close position
+        try:
+            await self._close_position_before_new_order(
+                asset=asset,
+                position=current_position,
+                signal=signal,
+                trace_id=trace_id,
+            )
+
+            # Wait for closure if configured
+            if settings.order_manager_position_close_wait_mode == "polling":
+                current_position = await self._wait_for_position_closure(
+                    asset=asset,
+                    trace_id=trace_id,
+                )
+            else:
+                # Re-fetch position to get updated state (best effort)
+                try:
+                    current_position = await self.position_manager_client.get_position(
+                        asset, mode="one-way", trace_id=trace_id
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "position_refetch_after_close_failed",
+                        asset=asset,
+                        error=str(e),
+                        trace_id=trace_id,
+                        reason="Failed to refetch position after close order, continuing",
+                    )
+                    # Assume position is closed or will be closed
+                    current_position = None
+
+        except Exception as e:
+            logger.error(
+                "position_closure_failed",
+                asset=asset,
+                error=str(e),
+                trace_id=trace_id,
+                exc_info=True,
+                reason="Failed to close position before opposite signal, continuing with new order",
+            )
+            # Continue with original position - new order will handle it with reduceOnly
+
+        return current_position
+
+    async def _check_and_refresh_position_if_stale(
+        self,
+        current_position: Position,
+        asset: str,
+        trace_id: Optional[str],
+    ) -> Optional[Position]:
+        """Check position data freshness and refresh from Bybit if stale.
+
+        Args:
+            current_position: Current position from Position Manager
+            asset: Trading pair symbol
+            trace_id: Trace ID for logging
+
+        Returns:
+            Fresh position (from Bybit if stale, or original if fresh)
+        """
+        from datetime import datetime, timezone
+
+        if not settings.order_manager_enable_bybit_position_fallback:
+            return current_position
+
+        # Check position age
+        now = datetime.now(timezone.utc)
+        position_updated = current_position.last_updated
+        if position_updated.tzinfo is None:
+            # Assume UTC if timezone-naive
+            position_updated = position_updated.replace(tzinfo=timezone.utc)
+
+        age_seconds = (now - position_updated).total_seconds()
+        max_age = settings.order_manager_position_max_age_seconds
+
+        if age_seconds <= max_age:
+            logger.debug(
+                "position_data_fresh",
+                asset=asset,
+                age_seconds=age_seconds,
+                max_age=max_age,
+                trace_id=trace_id,
+            )
+            return current_position
+
+        logger.warning(
+            "position_data_stale_refreshing_from_bybit",
+            asset=asset,
+            age_seconds=age_seconds,
+            max_age=max_age,
+            last_updated=position_updated.isoformat(),
+            trace_id=trace_id,
+        )
+
+        # Fetch fresh position from Bybit
+        try:
+            fresh_position = await self.position_manager_client.get_position_from_bybit(
+                asset=asset,
+                trace_id=trace_id,
+            )
+
+            if fresh_position is None:
+                logger.info(
+                    "position_closed_on_bybit",
+                    asset=asset,
+                    trace_id=trace_id,
+                    reason="Position not found on Bybit, likely closed",
+                )
+                return None
+
+            # Log discrepancy if sizes differ significantly
+            size_diff = abs(abs(fresh_position.size) - abs(current_position.size))
+            size_diff_pct = (
+                (size_diff / abs(current_position.size) * 100)
+                if current_position.size != 0
+                else 100.0
+            )
+
+            if size_diff > Decimal("0.0001"):  # Significant difference threshold
+                logger.warning(
+                    "position_size_discrepancy_detected",
+                    asset=asset,
+                    position_manager_size=float(current_position.size),
+                    bybit_size=float(fresh_position.size),
+                    size_diff=float(size_diff),
+                    size_diff_pct=float(size_diff_pct),
+                    age_seconds=age_seconds,
+                    trace_id=trace_id,
+                    reason="Position Manager data differs from Bybit, using fresh Bybit data",
+                )
+
+            logger.info(
+                "position_refreshed_from_bybit",
+                asset=asset,
+                old_size=float(current_position.size),
+                new_size=float(fresh_position.size),
+                age_seconds=age_seconds,
+                trace_id=trace_id,
+            )
+
+            # Trigger async sync to update Position Manager database
+            if settings.order_manager_auto_sync_position_after_bybit_fetch:
+                await self.position_manager_client.trigger_bybit_sync_async(
+                    asset=asset,
+                    force=True,
+                    trace_id=trace_id,
+                )
+
+            return fresh_position
+
+        except Exception as e:
+            logger.error(
+                "position_refresh_from_bybit_failed",
+                asset=asset,
+                error=str(e),
+                trace_id=trace_id,
+                exc_info=True,
+                reason="Failed to refresh position from Bybit, using stale Position Manager data",
+            )
+            # Fallback to stale data rather than failing
+            return current_position
+
+    async def _close_position_before_new_order(
+        self,
+        asset: str,
+        position: Position,
+        signal: TradingSignal,
+        trace_id: Optional[str],
+    ) -> None:
+        """Close position by creating reduce-only order.
+
+        Args:
+            asset: Trading pair symbol
+            position: Current position to close
+            signal: Trading signal (for context)
+            trace_id: Trace ID for logging
+        """
+        from ..services.order_executor import OrderExecutor
+
+        # Determine opposite side for closing
+        if position.size > 0:
+            # Long position - need SELL order to close
+            close_side = "sell"
+        else:
+            # Short position - need BUY order to close
+            close_side = "buy"
+
+        close_quantity = abs(position.size)
+
+        logger.info(
+            "closing_position_before_opposite_signal",
+            asset=asset,
+            position_size=float(position.size),
+            close_side=close_side,
+            close_quantity=float(close_quantity),
+            trace_id=trace_id,
+        )
+
+        # Create a minimal signal for closing order (reuse signal's market data)
+        close_signal = TradingSignal(
+            signal_id=signal.signal_id,  # Reuse same signal ID for tracking
+            asset=asset,
+            signal_type=close_side,
+            amount=signal.amount,  # Not used for close order, but required
+            confidence=signal.confidence,  # Not used, but required
+            strategy_id=signal.strategy_id,
+            timestamp=signal.timestamp,
+            market_data_snapshot=signal.market_data_snapshot,
+            trace_id=trace_id,
+            model_version=signal.model_version,
+            is_warmup=signal.is_warmup,
+            metadata=signal.metadata,
+        )
+
+        # Create close order with reduceOnly=True
+        if self._order_executor is None:
+            self._order_executor = OrderExecutor()
+
+        try:
+            close_order = await self._order_executor.create_order(
+                signal=close_signal,
+                order_type="Market",  # Use Market order for immediate execution
+                quantity=close_quantity,
+                price=None,  # Market order doesn't need price
+                trace_id=trace_id,
+                force_reduce_only=True,  # Force reduceOnly flag
+            )
+
+            logger.info(
+                "position_close_order_created",
+                asset=asset,
+                close_order_id=str(close_order.id) if close_order else None,
+                close_quantity=float(close_quantity),
+                trace_id=trace_id,
+            )
+
+        except Exception as e:
+            logger.error(
+                "position_close_order_creation_failed",
+                asset=asset,
+                error=str(e),
+                trace_id=trace_id,
+                exc_info=True,
+            )
+            raise
+
+    async def _wait_for_position_closure(
+        self,
+        asset: str,
+        trace_id: Optional[str],
+    ) -> Optional[Position]:
+        """Wait for position closure using polling.
+
+        Args:
+            asset: Trading pair symbol
+            trace_id: Trace ID for logging
+
+        Returns:
+            Updated position (None if closed, Position if still open)
+        """
+        import asyncio
+
+        timeout_seconds = settings.order_manager_position_close_timeout_seconds
+        poll_interval = 1.0  # Check every second
+        max_iterations = int(timeout_seconds / poll_interval)
+
+        logger.info(
+            "waiting_for_position_closure",
+            asset=asset,
+            timeout_seconds=timeout_seconds,
+            poll_interval=poll_interval,
+            trace_id=trace_id,
+        )
+
+        for iteration in range(max_iterations):
+            await asyncio.sleep(poll_interval)
+
+            try:
+                position = await self.position_manager_client.get_position(
+                    asset, mode="one-way", trace_id=trace_id
+                )
+
+                if position is None:
+                    logger.info(
+                        "position_closed_confirmed",
+                        asset=asset,
+                        iterations=iteration + 1,
+                        trace_id=trace_id,
+                    )
+                    return None
+
+                position_size = abs(position.size)
+                min_size_threshold = Decimal(
+                    str(settings.order_manager_position_close_min_size_threshold)
+                )
+
+                if position_size < min_size_threshold:
+                    logger.info(
+                        "position_effectively_closed",
+                        asset=asset,
+                        position_size=float(position_size),
+                        min_threshold=float(min_size_threshold),
+                        iterations=iteration + 1,
+                        trace_id=trace_id,
+                    )
+                    return None
+
+            except Exception as e:
+                logger.warning(
+                    "position_closure_poll_error",
+                    asset=asset,
+                    iteration=iteration + 1,
+                    error=str(e),
+                    trace_id=trace_id,
+                )
+                # Continue polling
+
+        # Timeout reached
+        logger.warning(
+            "position_closure_timeout",
+            asset=asset,
+            timeout_seconds=timeout_seconds,
+            trace_id=trace_id,
+            reason="Position closure timeout reached, proceeding with new order",
+        )
+
+        # Return current position (may still be open)
+        try:
+            return await self.position_manager_client.get_position(
+                asset, mode="one-way", trace_id=trace_id
+            )
+        except Exception:
             return None
 
     async def _mark_signal_processing_status(

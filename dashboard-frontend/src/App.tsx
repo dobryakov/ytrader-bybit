@@ -4,6 +4,7 @@ import Positions from './pages/Positions'
 import Orders from './pages/Orders'
 import Signals from './pages/Signals'
 import Models from './pages/Models'
+import Datasets from './pages/Datasets'
 import { cn } from './lib/utils'
 
 function App() {
@@ -21,6 +22,7 @@ function App() {
                   <NavLink to="/orders">Ордера</NavLink>
                   <NavLink to="/signals">Сигналы</NavLink>
                   <NavLink to="/models">Модели</NavLink>
+                  <NavLink to="/datasets">Датасеты</NavLink>
                 </div>
               </div>
             </div>
@@ -34,6 +36,7 @@ function App() {
             <Route path="/orders" element={<Orders />} />
             <Route path="/signals" element={<Signals />} />
             <Route path="/models" element={<Models />} />
+            <Route path="/datasets" element={<Datasets />} />
           </Routes>
         </main>
       </div>

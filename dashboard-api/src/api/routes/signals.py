@@ -38,6 +38,9 @@ async def list_signals(
                 pt.actual_values->>'candle_close' as price_to,
                 pt.actual_values->>'direction' as actual_direction,
                 pt.actual_values->>'return_value' as actual_return,
+                pt.is_obsolete,
+                pt.actual_values_computed_at,
+                pt.target_timestamp,
                 COALESCE(SUM((ee.performance->>'realized_pnl')::numeric) FILTER (WHERE ee.performance->>'realized_pnl' IS NOT NULL), 0) as total_pnl
             FROM trading_signals ts
             LEFT JOIN prediction_targets pt ON ts.signal_id = pt.signal_id
@@ -49,7 +52,10 @@ async def list_signals(
                      ts.market_data_snapshot->>'price',
                      pt.actual_values->>'candle_close',
                      pt.actual_values->>'direction',
-                     pt.actual_values->>'return_value'
+                     pt.actual_values->>'return_value',
+                     pt.is_obsolete,
+                     pt.actual_values_computed_at,
+                     pt.target_timestamp
         """
         params = []
         param_idx = 1
@@ -202,6 +208,37 @@ async def list_signals(
                 except (ValueError, TypeError):
                     pass
             
+            # Determine actual_movement status
+            actual_movement_status = None
+            is_obsolete = row.get("is_obsolete", False) if row.get("is_obsolete") is not None else False
+            actual_values_computed_at = row.get("actual_values_computed_at")
+            target_timestamp = row.get("target_timestamp")
+            
+            # Check if target exists
+            if target_timestamp is not None:
+                from datetime import datetime, timezone
+                now = datetime.now(timezone.utc)
+                target_ts = target_timestamp
+                if isinstance(target_ts, str):
+                    target_ts = datetime.fromisoformat(target_ts.replace("Z", "+00:00"))
+                elif hasattr(target_ts, 'tzinfo'):
+                    if target_ts.tzinfo is None:
+                        target_ts = target_ts.replace(tzinfo=timezone.utc)
+                    else:
+                        target_ts = target_ts.astimezone(timezone.utc)
+                
+                if is_obsolete:
+                    actual_movement_status = "obsolete"  # Попытки прекращены
+                elif actual_values_computed_at is not None:
+                    actual_movement_status = "computed"  # Вычислено
+                elif target_ts <= now:
+                    actual_movement_status = "pending"  # Ожидается вычисление
+                else:
+                    actual_movement_status = "waiting"  # Ожидается target_timestamp
+            elif price_from is not None or price_to is not None:
+                # If we have prices but no target_timestamp, assume computed
+                actual_movement_status = "computed"
+            
             signal_dict = {
                 "signal_id": str(row["signal_id"]),
                 "signal_type": row["side"],  # Map 'side' to 'signal_type' for API compatibility
@@ -219,7 +256,8 @@ async def list_signals(
                     "price_to": price_to,
                     "direction": actual_direction,  # "UP", "DOWN", or None
                     "return_value": actual_return,  # Decimal value (e.g., 0.00002 for 0.002%)
-                } if price_from is not None or price_to is not None else None,
+                    "status": actual_movement_status,  # "computed", "pending", "waiting", "obsolete", or None
+                } if price_from is not None or price_to is not None or actual_movement_status else None,
                 "total_pnl": str(total_pnl) if total_pnl is not None else None,  # Total PnL from execution events
             }
             signals_data.append(signal_dict)

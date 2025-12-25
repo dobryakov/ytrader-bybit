@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
 
 from ...config.logging import get_logger
-from ...models import Position, PositionSnapshot
+from ...models import ClosedPosition, Position, PositionSnapshot
 from ...services.position_manager import PositionManager
 from ...utils.tracing import get_or_create_trace_id
 from ..middleware.auth import api_key_auth
@@ -283,6 +283,113 @@ async def list_snapshots(
         raise HTTPException(status_code=500, detail="Failed to retrieve position snapshots") from e
 
 
+@router.get(
+    "/positions/closed",
+    dependencies=[Depends(api_key_auth)],
+)
+async def list_closed_positions(
+    asset: Optional[str] = Query(None, description="Filter by trading pair"),
+    limit: int = Query(100, ge=1, le=1000, description="Maximum number of records to return"),
+    offset: int = Query(0, ge=0, description="Number of records to skip"),
+    position_manager: PositionManager = Depends(get_position_manager),
+):
+    """List closed positions history."""
+    trace_id = get_or_create_trace_id()
+    logger.info(
+        "closed_positions_list_request",
+        asset=asset,
+        limit=limit,
+        offset=offset,
+        trace_id=trace_id,
+    )
+
+    try:
+        closed_positions = await position_manager.get_closed_positions(
+            asset=asset,
+            limit=limit,
+            offset=offset,
+            trace_id=trace_id,
+        )
+
+        closed_positions_data = [serialize_closed_position(cp) for cp in closed_positions]
+
+        logger.info(
+            "closed_positions_list_completed",
+            count=len(closed_positions_data),
+            trace_id=trace_id,
+        )
+        return JSONResponse(
+            status_code=200,
+            content={
+                "closed_positions": closed_positions_data,
+                "count": len(closed_positions_data),
+            },
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            "closed_positions_list_failed",
+            error=str(e),
+            trace_id=trace_id,
+            exc_info=True,
+        )
+        raise HTTPException(status_code=500, detail="Failed to retrieve closed positions") from e
+
+
+@router.get(
+    "/positions/closed/{closed_position_id}",
+    dependencies=[Depends(api_key_auth)],
+)
+async def get_closed_position_by_id(
+    closed_position_id: str,
+    position_manager: PositionManager = Depends(get_position_manager),
+):
+    """Get a specific closed position by ID."""
+    trace_id = get_or_create_trace_id()
+    logger.info(
+        "closed_position_get_request",
+        closed_position_id=closed_position_id,
+        trace_id=trace_id,
+    )
+
+    try:
+        from uuid import UUID
+        cp_id = UUID(closed_position_id)
+        closed_position = await position_manager.get_closed_position_by_id(
+            cp_id,
+            trace_id=trace_id,
+        )
+        if closed_position is None:
+            logger.warning(
+                "closed_position_not_found",
+                closed_position_id=closed_position_id,
+                trace_id=trace_id,
+            )
+            raise HTTPException(status_code=404, detail="Closed position not found")
+
+        closed_position_data = serialize_closed_position(closed_position)
+        logger.info(
+            "closed_position_get_completed",
+            closed_position_id=closed_position_id,
+            trace_id=trace_id,
+        )
+        return JSONResponse(status_code=200, content=closed_position_data)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid closed position ID format")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            "closed_position_get_failed",
+            closed_position_id=closed_position_id,
+            error=str(e),
+            trace_id=trace_id,
+            exc_info=True,
+        )
+        raise HTTPException(status_code=500, detail="Failed to retrieve closed position") from e
+
+
 def serialize_position_with_features(
     position: Position,
     manager: PositionManager,
@@ -318,6 +425,34 @@ def serialize_position_with_features(
     return data
 
 
+def serialize_closed_position(closed_position: ClosedPosition) -> dict:
+    """Serialize closed position with all fields."""
+    return {
+        "id": str(closed_position.id),
+        "original_position_id": str(closed_position.original_position_id),
+        "asset": closed_position.asset,
+        "mode": closed_position.mode,
+        "final_size": str(closed_position.final_size),
+        "average_entry_price": str(closed_position.average_entry_price)
+        if closed_position.average_entry_price is not None
+        else None,
+        "exit_price": str(closed_position.exit_price) if closed_position.exit_price is not None else None,
+        "current_price": str(closed_position.current_price) if closed_position.current_price is not None else None,
+        "realized_pnl": str(closed_position.realized_pnl),
+        "unrealized_pnl_at_close": str(closed_position.unrealized_pnl_at_close),
+        "total_pnl": str(closed_position.total_pnl),
+        "long_size": str(closed_position.long_size) if closed_position.long_size is not None else None,
+        "short_size": str(closed_position.short_size) if closed_position.short_size is not None else None,
+        "long_avg_price": str(closed_position.long_avg_price) if closed_position.long_avg_price is not None else None,
+        "short_avg_price": str(closed_position.short_avg_price) if closed_position.short_avg_price is not None else None,
+        "total_fees": str(closed_position.total_fees) if closed_position.total_fees is not None else None,
+        "opened_at": closed_position.opened_at.isoformat() + "Z",
+        "closed_at": closed_position.closed_at.isoformat() + "Z",
+        "holding_time_minutes": closed_position.holding_time_minutes,
+        "version": closed_position.version,
+    }
+
+
 def _normalize_snapshot_value(value: Any) -> Any:
     """Normalize snapshot payload values for JSON serialization."""
     if isinstance(value, datetime):
@@ -348,12 +483,14 @@ def serialize_snapshot(snapshot: PositionSnapshot) -> dict:
 )
 async def sync_positions_with_bybit(
     force: bool = Query(False, description="Force sync: update local positions to match Bybit"),
+    asset: Optional[str] = Query(None, description="Optional asset filter: sync only this asset (e.g., BTCUSDT)"),
     position_manager: PositionManager = Depends(get_position_manager),
 ):
     """Synchronize local positions with Bybit API and return comparison report.
 
     Args:
         force: If True, force update local positions to match Bybit data
+        asset: Optional asset filter to sync only specific asset
 
     Returns:
         JSON response with sync report including:
@@ -365,10 +502,10 @@ async def sync_positions_with_bybit(
         - errors: List of errors encountered during sync
     """
     trace_id = get_or_create_trace_id()
-    logger.info("position_sync_bybit_request", force=force, trace_id=trace_id)
+    logger.info("position_sync_bybit_request", force=force, asset=asset, trace_id=trace_id)
 
     try:
-        report = await position_manager.sync_positions_with_bybit(force=force, trace_id=trace_id)
+        report = await position_manager.sync_positions_with_bybit(force=force, asset=asset, trace_id=trace_id)
 
         logger.info(
             "position_sync_bybit_completed",

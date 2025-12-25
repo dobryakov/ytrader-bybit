@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from ..config.logging import get_logger
+from ..config.settings import settings
 from ..database.repositories.prediction_target_repo import PredictionTargetRepository
 from ..database.repositories.trading_signal_repo import TradingSignalRepository
 from ..services.feature_service_client import feature_service_client
@@ -105,6 +106,27 @@ class TargetEvaluator:
         Returns:
             Number of successfully evaluated targets.
         """
+        # First, mark very old targets as obsolete
+        obsolete_age_days = settings.target_evaluation_obsolete_age_days
+        try:
+            obsolete_count = await self.prediction_repo.mark_obsolete(
+                age_days=obsolete_age_days,
+                limit=100,  # Mark in batches to avoid long transactions
+            )
+            if obsolete_count > 0:
+                logger.info(
+                    "Marked old prediction targets as obsolete",
+                    count=obsolete_count,
+                    age_days=obsolete_age_days,
+                )
+        except Exception as e:
+            logger.warning(
+                "Failed to mark obsolete targets",
+                error=str(e),
+                exc_info=True,
+            )
+            # Continue with evaluation even if marking obsolete failed
+
         pending: List[Dict[str, Any]] = await self.prediction_repo.get_pending_computations(
             limit=limit
         )
@@ -137,19 +159,52 @@ class TargetEvaluator:
                 await self._publish_target_evaluated_event(target, actual_values)
 
             except Exception as e:
+                error_str = str(e)
+                error_lower = error_str.lower()
+                
+                # Check if this is a permanent error (data unavailable, 404, etc.)
+                is_permanent_error = (
+                    "data unavailable" in error_lower or
+                    "404" in error_str or
+                    "could not find" in error_lower or
+                    "no data available" in error_lower
+                )
+                
+                # Check if this target already had an error (retry failed)
+                has_previous_error = target.get("actual_values_computation_error") is not None
+                
+                # Mark as obsolete if permanent error or retry failed
+                should_mark_obsolete = is_permanent_error or has_previous_error
+                
                 logger.error(
                     "Failed to evaluate prediction target",
                     prediction_target_id=str(target.get("id")),
-                    error=str(e),
+                    error=error_str,
+                    is_permanent_error=is_permanent_error,
+                    has_previous_error=has_previous_error,
+                    will_mark_obsolete=should_mark_obsolete,
                     exc_info=True,
                 )
+                
                 # Пишем ошибку, но не падаем
                 try:
                     await self.prediction_repo.update_actual_values(
                         prediction_target_id=target["id"],
                         actual_values=target.get("actual_values") or {},
-                        computation_error=str(e),
+                        computation_error=error_str,
                     )
+                    
+                    # Mark as obsolete if permanent error or retry failed
+                    if should_mark_obsolete:
+                        await self.prediction_repo.mark_target_obsolete(
+                            prediction_target_id=target["id"],
+                            reason=f"Permanent error: {error_str[:200]}" if is_permanent_error else "Retry failed after previous error",
+                        )
+                        logger.info(
+                            "Prediction target marked as obsolete due to permanent error",
+                            prediction_target_id=str(target.get("id")),
+                            error_type="permanent" if is_permanent_error else "retry_failed",
+                        )
                 except Exception:
                     # Вторая ошибка – только лог
                     logger.warning(

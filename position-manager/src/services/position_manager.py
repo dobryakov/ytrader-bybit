@@ -17,7 +17,7 @@ from ..config.database import DatabaseConnection
 from ..config.logging import get_logger
 from ..config.settings import settings
 from ..exceptions import DatabaseError
-from ..models import Position, PositionSnapshot
+from ..models import ClosedPosition, Position, PositionSnapshot
 from ..publishers import PositionEventPublisher
 
 logger = get_logger(__name__)
@@ -216,8 +216,24 @@ class PositionManager:
                 ORDER BY asset, mode
             """
             rows = await pool.fetch(query)
-            positions = [Position.from_db_dict(dict(row)) for row in rows]
-            logger.debug("all_positions_retrieved", count=len(positions))
+            positions = []
+            for row in rows:
+                try:
+                    position = Position.from_db_dict(dict(row))
+                    positions.append(position)
+                except Exception as e:
+                    # Skip positions with validation errors (e.g., non-zero size without average_entry_price)
+                    # Log warning but don't fail the entire operation
+                    row_dict = dict(row)
+                    logger.warning(
+                        "position_validation_error_skipped",
+                        asset=row_dict.get("asset"),
+                        mode=row_dict.get("mode"),
+                        size=str(row_dict.get("size")),
+                        average_entry_price=str(row_dict.get("average_entry_price")) if row_dict.get("average_entry_price") else None,
+                        error=str(e),
+                    )
+            logger.debug("all_positions_retrieved", count=len(positions), skipped=len(rows) - len(positions))
             return positions
         except Exception as e:  # pragma: no cover
             logger.error("get_all_positions_failed", error=str(e))
@@ -559,7 +575,10 @@ class PositionManager:
                                 # Value is reasonable, use it
                                 new_realized = realized_pnl
                         else:
-                            # Position is closed (size == 0), use realized_pnl from WebSocket
+                            # Position is closed (size == 0)
+                            # Note: This new_realized is used for updating positions table.
+                            # For closed_positions table, we use unrealized_pnl_at_close instead
+                            # (see logic below when saving to closed_positions)
                             new_realized = realized_pnl
                     else:
                         # No realized_pnl from WebSocket, keep existing value
@@ -568,6 +587,40 @@ class PositionManager:
                     # Final validation: ensure new_avg_price is None if size is 0 or if it's <= 0
                     if resolved_size == 0 or (new_avg_price is not None and new_avg_price <= 0):
                         new_avg_price = None
+
+                    # If position is being closed (size becomes 0, but wasn't 0 before), save to closed_positions
+                    if resolved_size == 0 and position.size != 0:
+                        # Get exit_price: use mark_price if available, otherwise current_price from position
+                        exit_price = mark_price if mark_price is not None else position.current_price
+                        # Get average_entry_price before it's cleared (use existing position value)
+                        entry_price = position.average_entry_price
+                        # Use unrealized_pnl from current position (before closing), not the new one (which will be 0)
+                        unrealized_at_close = position.unrealized_pnl or Decimal("0")
+                        
+                        # For a fully closed position, realized_pnl should be the unrealized_pnl_at_close
+                        # because all unrealized PnL becomes realized when position is closed.
+                        # We don't use cumulative realized_pnl from Bybit (new_realized) as it's cumulative
+                        # across all positions for the asset, not specific to this position.
+                        position_realized_pnl = unrealized_at_close
+                        
+                        # Get total_fees if available
+                        total_fees_row = await pool.fetchrow(
+                            "SELECT total_fees FROM positions WHERE asset = $1 AND mode = $2",
+                            asset.upper(),
+                            mode.lower(),
+                        )
+                        total_fees = Decimal(str(total_fees_row["total_fees"])) if total_fees_row and total_fees_row.get("total_fees") is not None else None
+                        
+                        # Save closed position before updating
+                        await self._save_closed_position(
+                            position=position,
+                            exit_price=exit_price,
+                            entry_price=entry_price,
+                            realized_pnl=position_realized_pnl,
+                            unrealized_pnl_at_close=unrealized_at_close,
+                            total_fees=total_fees,
+                            trace_id=trace_id,
+                        )
 
                     update_query = """
                         UPDATE positions
@@ -765,11 +818,21 @@ class PositionManager:
                         computed_size=float(computed_size),
                         trace_id=trace_id,
                     )
-                    # Don't update average_price - let it be set by next order execution
-                    updated_position = await self._update_position_from_computed(
-                        asset, computed_size, None, mode, trace_id
+                    # Cannot create position with non-zero size without average_entry_price
+                    # Skip creation and return error - position will be created on next order execution
+                    logger.warning(
+                        "cannot_create_position_without_avg_price",
+                        asset=asset,
+                        mode=mode,
+                        computed_size=float(computed_size),
+                        reason="average_entry_price required for non-zero position",
+                        trace_id=trace_id,
                     )
-                    return (True, f"Created missing position: {error_msg}", updated_position)
+                    return (
+                        False,
+                        f"Cannot create position: {error_msg}. Average entry price is required for non-zero positions.",
+                        None,
+                    )
 
                 return (False, error_msg, None)
 
@@ -795,6 +858,21 @@ class PositionManager:
                 # Note: We preserve the existing average_entry_price as it's correctly
                 # maintained by the position update logic during order execution
                 if fix_discrepancies:
+                    # Validate: cannot update position with non-zero size without average_entry_price
+                    if computed_size != 0 and stored_position.average_entry_price is None:
+                        error_msg_with_avg = (
+                            f"{error_msg}. Cannot fix: position has non-zero size but average_entry_price is None."
+                        )
+                        logger.warning(
+                            "cannot_fix_position_discrepancy_missing_avg_price",
+                            asset=asset,
+                            mode=mode,
+                            stored_size=float(stored_position.size),
+                            computed_size=float(computed_size),
+                            trace_id=trace_id,
+                        )
+                        return (False, error_msg_with_avg, None)
+                    
                     logger.info(
                         "fixing_position_discrepancy",
                         asset=asset,
@@ -806,8 +884,10 @@ class PositionManager:
                         trace_id=trace_id,
                     )
                     # Preserve existing average_price - only update size
+                    # Use existing average_entry_price, or None if position is being closed (computed_size == 0)
+                    avg_price_to_use = stored_position.average_entry_price if computed_size != 0 else None
                     updated_position = await self._update_position_from_computed(
-                        asset, computed_size, stored_position.average_entry_price, mode, trace_id
+                        asset, computed_size, avg_price_to_use, mode, trace_id
                     )
                     return (True, f"Fixed discrepancy: {error_msg}", updated_position)
 
@@ -980,6 +1060,234 @@ class PositionManager:
             )
             raise DatabaseError(f"Failed to cleanup old position snapshots: {e}") from e
 
+    # === Closed positions history ==========================================
+
+    async def _save_closed_position(
+        self,
+        position: Position,
+        exit_price: Optional[Decimal],
+        entry_price: Optional[Decimal],
+        realized_pnl: Decimal,
+        unrealized_pnl_at_close: Decimal,
+        total_fees: Optional[Decimal],
+        trace_id: Optional[str] = None,
+    ) -> Optional[ClosedPosition]:
+        """Save closed position to closed_positions table before clearing it in positions table.
+        
+        Args:
+            position: Position being closed
+            exit_price: Price at closure (current_price before clearing)
+            entry_price: Average entry price (before clearing)
+            realized_pnl: Realized PnL at closure
+            unrealized_pnl_at_close: Unrealized PnL at closure
+            total_fees: Total fees if available
+            trace_id: Optional trace ID for logging
+            
+        Returns:
+            ClosedPosition object
+        """
+        try:
+            pool = await DatabaseConnection.get_pool()
+            closed_at = datetime.utcnow()
+            
+            closed_position = ClosedPosition(
+                original_position_id=position.id,
+                asset=position.asset,
+                mode=position.mode,
+                final_size=Decimal("0"),
+                average_entry_price=entry_price,
+                exit_price=exit_price,
+                current_price=exit_price,  # Same as exit_price
+                realized_pnl=realized_pnl,
+                unrealized_pnl_at_close=unrealized_pnl_at_close,
+                long_size=position.long_size,
+                short_size=position.short_size,
+                long_avg_price=None,  # Not stored in positions table currently
+                short_avg_price=None,  # Not stored in positions table currently
+                total_fees=total_fees,
+                opened_at=position.created_at,
+                closed_at=closed_at,
+                version=position.version,
+            )
+            
+            insert_query = """
+                INSERT INTO closed_positions (
+                    id, original_position_id, asset, mode,
+                    final_size, average_entry_price, exit_price, current_price,
+                    realized_pnl, unrealized_pnl_at_close,
+                    long_size, short_size, long_avg_price, short_avg_price,
+                    total_fees, opened_at, closed_at, version
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+                RETURNING id, original_position_id, asset, mode,
+                          final_size, average_entry_price, exit_price, current_price,
+                          realized_pnl, unrealized_pnl_at_close,
+                          long_size, short_size, long_avg_price, short_avg_price,
+                          total_fees, opened_at, closed_at, version
+            """
+            row = await pool.fetchrow(
+                insert_query,
+                str(closed_position.id),
+                str(closed_position.original_position_id),
+                closed_position.asset,
+                closed_position.mode,
+                str(closed_position.final_size),
+                str(closed_position.average_entry_price) if closed_position.average_entry_price is not None else None,
+                str(closed_position.exit_price) if closed_position.exit_price is not None else None,
+                str(closed_position.current_price) if closed_position.current_price is not None else None,
+                str(closed_position.realized_pnl),
+                str(closed_position.unrealized_pnl_at_close),
+                str(closed_position.long_size) if closed_position.long_size is not None else None,
+                str(closed_position.short_size) if closed_position.short_size is not None else None,
+                str(closed_position.long_avg_price) if closed_position.long_avg_price is not None else None,
+                str(closed_position.short_avg_price) if closed_position.short_avg_price is not None else None,
+                str(closed_position.total_fees) if closed_position.total_fees is not None else None,
+                closed_position.opened_at,
+                closed_position.closed_at,
+                closed_position.version,
+            )
+            
+            saved = ClosedPosition.from_db_dict(dict(row))
+            logger.info(
+                "closed_position_saved",
+                closed_position_id=str(saved.id),
+                original_position_id=str(saved.original_position_id),
+                asset=saved.asset,
+                mode=saved.mode,
+                realized_pnl=str(saved.realized_pnl),
+                exit_price=str(saved.exit_price) if saved.exit_price else None,
+                trace_id=trace_id,
+            )
+            return saved
+        except Exception as e:
+            logger.error(
+                "closed_position_save_failed",
+                original_position_id=str(position.id),
+                asset=position.asset,
+                mode=position.mode,
+                error=str(e),
+                trace_id=trace_id,
+                exc_info=True,
+            )
+            # Don't raise - we don't want to fail position closure if history save fails
+            # Log error but continue with position update
+            # Return None to indicate save failed, but don't block position closure
+            return None
+
+    async def get_closed_positions(
+        self,
+        asset: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+        trace_id: Optional[str] = None,
+    ) -> List[ClosedPosition]:
+        """Get closed positions history.
+        
+        Args:
+            asset: Optional asset filter
+            limit: Maximum number of records to return
+            offset: Number of records to skip
+            trace_id: Optional trace ID for logging
+            
+        Returns:
+            List of ClosedPosition objects ordered by closed_at DESC
+        """
+        try:
+            pool = await DatabaseConnection.get_pool()
+            
+            if asset:
+                query = """
+                    SELECT id, original_position_id, asset, mode,
+                           final_size, average_entry_price, exit_price, current_price,
+                           realized_pnl, unrealized_pnl_at_close,
+                           long_size, short_size, long_avg_price, short_avg_price,
+                           total_fees, opened_at, closed_at, version
+                    FROM closed_positions
+                    WHERE asset = $1
+                    ORDER BY closed_at DESC
+                    LIMIT $2 OFFSET $3
+                """
+                rows = await pool.fetch(query, asset.upper(), limit, offset)
+            else:
+                query = """
+                    SELECT id, original_position_id, asset, mode,
+                           final_size, average_entry_price, exit_price, current_price,
+                           realized_pnl, unrealized_pnl_at_close,
+                           long_size, short_size, long_avg_price, short_avg_price,
+                           total_fees, opened_at, closed_at, version
+                    FROM closed_positions
+                    ORDER BY closed_at DESC
+                    LIMIT $1 OFFSET $2
+                """
+                rows = await pool.fetch(query, limit, offset)
+            
+            closed_positions = [ClosedPosition.from_db_dict(dict(row)) for row in rows]
+            logger.debug(
+                "closed_positions_retrieved",
+                asset=asset,
+                count=len(closed_positions),
+                trace_id=trace_id,
+            )
+            return closed_positions
+        except Exception as e:
+            logger.error(
+                "closed_positions_query_failed",
+                asset=asset,
+                error=str(e),
+                trace_id=trace_id,
+            )
+            raise DatabaseError(f"Failed to query closed positions: {e}") from e
+
+    async def get_closed_position_by_id(
+        self,
+        closed_position_id: UUID,
+        trace_id: Optional[str] = None,
+    ) -> Optional[ClosedPosition]:
+        """Get a specific closed position by ID.
+        
+        Args:
+            closed_position_id: ID of closed position
+            trace_id: Optional trace ID for logging
+            
+        Returns:
+            ClosedPosition object or None if not found
+        """
+        try:
+            pool = await DatabaseConnection.get_pool()
+            query = """
+                SELECT id, original_position_id, asset, mode,
+                       final_size, average_entry_price, exit_price, current_price,
+                       realized_pnl, unrealized_pnl_at_close,
+                       long_size, short_size, long_avg_price, short_avg_price,
+                       total_fees, opened_at, closed_at, version
+                FROM closed_positions
+                WHERE id = $1
+            """
+            row = await pool.fetchrow(query, str(closed_position_id))
+            if row is None:
+                logger.debug(
+                    "closed_position_not_found",
+                    closed_position_id=str(closed_position_id),
+                    trace_id=trace_id,
+                )
+                return None
+            
+            closed_position = ClosedPosition.from_db_dict(dict(row))
+            logger.debug(
+                "closed_position_retrieved",
+                closed_position_id=str(closed_position_id),
+                trace_id=trace_id,
+            )
+            return closed_position
+        except Exception as e:
+            logger.error(
+                "closed_position_query_failed",
+                closed_position_id=str(closed_position_id),
+                error=str(e),
+                trace_id=trace_id,
+            )
+            raise DatabaseError(f"Failed to query closed position: {e}") from e
+
     # === Validation helpers (Phase 7) ======================================
 
     async def _update_position_from_computed(
@@ -1008,12 +1316,34 @@ class PositionManager:
             # Get existing position to preserve current_price and other fields
             existing = await self.get_position(asset, mode)
 
+            # Validate: if size is non-zero, average_entry_price must be set
+            if computed_size != 0 and computed_avg_price is None:
+                # Try to preserve existing average_entry_price if available
+                if existing and existing.average_entry_price is not None:
+                    computed_avg_price = existing.average_entry_price
+                    logger.warning(
+                        "computed_avg_price is None for non-zero size, using existing value",
+                        asset=asset,
+                        mode=mode,
+                        computed_size=float(computed_size),
+                        existing_avg_price=float(existing.average_entry_price),
+                        trace_id=trace_id,
+                    )
+                else:
+                    # Cannot create/update position with non-zero size without average_entry_price
+                    raise ValueError(
+                        f"Cannot update position: size={computed_size} is non-zero but average_entry_price is None"
+                    )
+
             # Upsert position with computed values, preserving version for optimistic locking
             if existing:
+                # SQL logic: if avg_price_param is empty string and size != 0, preserve existing value
+                # Otherwise, use new value or set NULL if size == 0
                 upsert_query = """
                     UPDATE positions
                     SET size = $1,
                         average_entry_price = CASE 
+                            WHEN $2::text = '' AND CAST($1 AS numeric) != 0 THEN average_entry_price
                             WHEN $2::text = '' THEN NULL
                             ELSE CAST($2::text AS numeric)
                         END,
@@ -1038,6 +1368,12 @@ class PositionManager:
                 )
             else:
                 # Create new position if it doesn't exist
+                # Validate: cannot create position with non-zero size without average_entry_price
+                if computed_size != 0 and computed_avg_price is None:
+                    raise ValueError(
+                        f"Cannot create position: size={computed_size} is non-zero but average_entry_price is None"
+                    )
+                
                 upsert_query = """
                     INSERT INTO positions (
                         asset, mode, size, average_entry_price, version, last_updated, created_at
@@ -1437,6 +1773,7 @@ class PositionManager:
     async def sync_positions_with_bybit(
         self,
         force: bool = False,
+        asset: Optional[str] = None,
         trace_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Synchronize local positions with Bybit API positions.
@@ -1453,6 +1790,7 @@ class PositionManager:
 
         Args:
             force: If True, force update local positions to match Bybit
+            asset: Optional asset filter to sync only specific asset (e.g., "BTCUSDT")
             trace_id: Optional trace ID for logging
 
         Returns:
@@ -1470,12 +1808,42 @@ class PositionManager:
             # Get positions from Bybit
             bybit_positions = await self.get_bybit_positions(trace_id=trace_id)
 
+            # Filter by asset if specified
+            if asset:
+                bybit_positions = [p for p in bybit_positions if p.get("symbol", "").upper() == asset.upper()]
+                logger.debug(
+                    "position_sync_bybit_asset_filtered",
+                    asset=asset,
+                    filtered_count=len(bybit_positions),
+                    trace_id=trace_id,
+                )
+
             # Get local positions
             local_positions = await self.get_all_positions()
+            
+            # Filter local positions by asset if specified
+            if asset:
+                local_positions = [p for p in local_positions if p.asset.upper() == asset.upper()]
 
             # Build comparison report
             bybit_dict = {p["symbol"]: p for p in bybit_positions}
             local_dict = {p.asset: p for p in local_positions if p.size != 0}
+            
+            # If asset filter is specified and no positions found, return early
+            if asset and not bybit_dict and not local_dict:
+                logger.info(
+                    "position_sync_bybit_no_positions_for_asset",
+                    asset=asset,
+                    trace_id=trace_id,
+                )
+                return {
+                    "bybit_positions_count": 0,
+                    "local_positions_count": 0,
+                    "comparisons": [],
+                    "updated": [],
+                    "created": [],
+                    "errors": [],
+                }
 
             comparisons = []
             updated = []
@@ -1484,10 +1852,14 @@ class PositionManager:
 
             # Compare positions
             all_assets = set(bybit_dict.keys()) | set(local_dict.keys())
+            
+            # If asset filter is specified, only process that asset
+            if asset:
+                all_assets = {asset.upper()} & all_assets
 
-            for asset in all_assets:
-                bybit_pos = bybit_dict.get(asset)
-                local_pos = local_dict.get(asset)
+            for asset_symbol in all_assets:
+                bybit_pos = bybit_dict.get(asset_symbol)
+                local_pos = local_dict.get(asset_symbol)
 
                 # Normalize Bybit position
                 bybit_size = Decimal(str(bybit_pos.get("size", "0"))) if bybit_pos else Decimal("0")
@@ -1527,7 +1899,7 @@ class PositionManager:
                 )
 
                 comparison = {
-                    "asset": asset,
+                    "asset": asset_symbol,
                     "bybit_exists": bybit_pos is not None,
                     "local_exists": local_pos is not None,
                     "bybit_size": str(bybit_size),
@@ -1555,14 +1927,39 @@ class PositionManager:
                         
                         # Case 1: Position exists on Bybit but not locally, or sizes differ, or PnL differs
                         if bybit_pos and (not local_pos or size_diff > Decimal("0.0001") or (avg_price_diff and avg_price_diff_pct and avg_price_diff_pct > 1.0) or has_pnl_discrepancy):
+                            # Validate: if size is non-zero, average_entry_price must be set
+                            # Use existing local average_entry_price if Bybit doesn't provide it
+                            avg_price_to_use = bybit_avg_price
+                            if bybit_size != 0 and avg_price_to_use is None:
+                                if local_pos and local_pos.average_entry_price is not None:
+                                    avg_price_to_use = local_pos.average_entry_price
+                                    logger.warning(
+                                        "bybit_avg_price_missing_using_local",
+                                        asset=asset_symbol,
+                                        bybit_size=str(bybit_size),
+                                        local_avg_price=str(avg_price_to_use),
+                                        trace_id=trace_id,
+                                    )
+                                else:
+                                    errors.append(
+                                        f"Cannot sync {asset_symbol}: size={bybit_size} is non-zero but average_entry_price is missing from Bybit and local position"
+                                    )
+                                    logger.error(
+                                        "bybit_sync_skipped_missing_avg_price",
+                                        asset=asset_symbol,
+                                        bybit_size=str(bybit_size),
+                                        trace_id=trace_id,
+                                    )
+                                    continue
+                            
                             # Update or create position
                             if local_pos:
                                 # Update existing - only update size/price if they differ
                                 if size_diff > Decimal("0.0001") or (avg_price_diff and avg_price_diff_pct and avg_price_diff_pct > 1.0):
                                     updated_pos = await self._update_position_from_computed(
-                                        asset=asset,
+                                        asset=asset_symbol,
                                         computed_size=bybit_size,
-                                        computed_avg_price=bybit_avg_price,
+                                        computed_avg_price=avg_price_to_use,
                                         mode="one-way",
                                         trace_id=trace_id,
                                     )
@@ -1583,17 +1980,17 @@ class PositionManager:
                                     """,
                                     str(bybit_unrealised_pnl),
                                     str(bybit_realised_pnl),
-                                    asset.upper(),
+                                    asset_symbol.upper(),
                                     "one-way",
                                 )
                                 reason = "size/price" if (size_diff > Decimal("0.0001") or (avg_price_diff and avg_price_diff_pct and avg_price_diff_pct > 1.0)) else "pnl"
-                                updated.append({"asset": asset, "action": "updated", "position_id": str(updated_pos.id), "reason": reason})
+                                updated.append({"asset": asset_symbol, "action": "updated", "position_id": str(updated_pos.id), "reason": reason})
                             else:
-                                # Create new
+                                # Create new - avg_price_to_use already validated above
                                 created_pos = await self._update_position_from_computed(
-                                    asset=asset,
+                                    asset=asset_symbol,
                                     computed_size=bybit_size,
-                                    computed_avg_price=bybit_avg_price,
+                                    computed_avg_price=avg_price_to_use,
                                     mode="one-way",
                                     trace_id=trace_id,
                                 )
@@ -1610,14 +2007,14 @@ class PositionManager:
                                     """,
                                     str(bybit_unrealised_pnl),
                                     str(bybit_realised_pnl),
-                                    asset.upper(),
+                                    asset_symbol.upper(),
                                     "one-way",
                                 )
-                                created.append({"asset": asset, "action": "created", "position_id": str(created_pos.id)})
+                                created.append({"asset": asset_symbol, "action": "created", "position_id": str(created_pos.id)})
 
                             logger.info(
                                 "position_synced_with_bybit",
-                                asset=asset,
+                                asset=asset_symbol,
                                 bybit_size=str(bybit_size),
                                 local_size=str(local_size),
                                 force=force,
@@ -1626,12 +2023,13 @@ class PositionManager:
                         # Case 2: Position exists locally but not on Bybit (should be closed)
                         elif local_pos and not bybit_pos:
                             # Close position by setting size to 0
+                            # Use asset_symbol instead of asset parameter
                             pool = await DatabaseConnection.get_pool()
                             
                             # Get position_id before closing
                             position_row = await pool.fetchrow(
                                 "SELECT id, realized_pnl, current_price FROM positions WHERE asset = $1 AND mode = $2",
-                                asset.upper(),
+                                asset_symbol.upper(),
                                 "one-way",
                             )
                             position_id = position_row["id"] if position_row else None
@@ -1650,7 +2048,7 @@ class PositionManager:
                                     closed_at = NOW()
                                 WHERE asset = $1 AND mode = $2
                                 """,
-                                asset.upper(),
+                                asset_symbol.upper(),
                                 "one-way",
                             )
                             
@@ -1713,7 +2111,7 @@ class PositionManager:
                                             result_id=str(result_id),
                                             signal_id=str(result["signal_id"]),
                                             position_id=str(position_id),
-                                            asset=asset,
+                                            asset=asset_symbol,
                                             final_realized_pnl=str(final_realized),
                                             trace_id=trace_id,
                                         )
@@ -1721,7 +2119,7 @@ class PositionManager:
                                     logger.warning(
                                         "failed_to_update_prediction_trading_results_on_sync_close",
                                         position_id=str(position_id),
-                                        asset=asset,
+                                        asset=asset_symbol,
                                         error=str(e),
                                         trace_id=trace_id,
                                         exc_info=True,
@@ -1737,7 +2135,7 @@ class PositionManager:
                                     FROM positions
                                     WHERE asset = $1 AND mode = $2
                                     """,
-                                    asset.upper(),
+                                    asset_symbol.upper(),
                                     "one-way",
                                 )
                                 if updated_position_row:
@@ -1750,34 +2148,34 @@ class PositionManager:
                                     )
                                     logger.info(
                                         "position_update_event_published_on_sync_close",
-                                        asset=asset,
+                                        asset=asset_symbol,
                                         position_id=str(updated_position.id),
                                         trace_id=trace_id,
                                     )
                             except Exception as e:
                                 logger.warning(
                                     "failed_to_publish_position_event_on_sync_close",
-                                    asset=asset,
+                                    asset=asset_symbol,
                                     error=str(e),
                                     trace_id=trace_id,
                                     exc_info=True,
                                 )
                             
-                            updated.append({"asset": asset, "action": "closed", "reason": "position_not_on_bybit"})
+                            updated.append({"asset": asset_symbol, "action": "closed", "reason": "position_not_on_bybit"})
                             logger.info(
                                 "position_closed_not_on_bybit",
-                                asset=asset,
+                                asset=asset_symbol,
                                 local_size=str(local_size),
                                 position_id=str(position_id) if position_id else None,
                                 force=force,
                                 trace_id=trace_id,
                             )
                     except Exception as e:
-                        error_msg = f"Failed to sync {asset}: {e}"
-                        errors.append({"asset": asset, "error": error_msg})
+                        error_msg = f"Failed to sync {asset_symbol}: {e}"
+                        errors.append({"asset": asset_symbol, "error": error_msg})
                         logger.error(
                             "position_sync_error",
-                            asset=asset,
+                            asset=asset_symbol,
                             error=str(e),
                             trace_id=trace_id,
                             exc_info=True,

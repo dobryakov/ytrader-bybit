@@ -168,10 +168,34 @@ class SignalPublisher:
                             from ..tasks.target_evaluation_task import target_evaluation_task
 
                             target_ts = prediction_target["target_timestamp"]
-                            if target_ts.tzinfo is not None:
-                                target_ts = target_ts.astimezone(timezone.utc).replace(tzinfo=None)
+                            
+                            # Handle case where target_ts is a string (from _record_to_dict conversion)
+                            if isinstance(target_ts, str):
+                                try:
+                                    # Parse ISO format string, handling both with and without timezone
+                                    if target_ts.endswith("Z"):
+                                        target_ts = datetime.fromisoformat(target_ts.replace("Z", "+00:00"))
+                                    else:
+                                        target_ts = datetime.fromisoformat(target_ts)
+                                except (ValueError, AttributeError) as e:
+                                    logger.warning(
+                                        "Failed to parse target_timestamp string",
+                                        signal_id=signal.signal_id,
+                                        target_timestamp=target_ts,
+                                        error=str(e),
+                                    )
+                                    # Skip further processing if parsing failed
+                                    target_ts = None
+                            
+                            # Normalize to UTC timezone-aware, then to naive for comparison
+                            if target_ts and isinstance(target_ts, datetime):
+                                if target_ts.tzinfo is None:
+                                    target_ts = target_ts.replace(tzinfo=timezone.utc)
+                                else:
+                                    target_ts = target_ts.astimezone(timezone.utc)
+                                target_ts = target_ts.replace(tzinfo=None)  # Convert to naive for comparison
 
-                            if target_ts <= _dt_utc.utcnow():
+                            if target_ts and target_ts <= _dt_utc.utcnow():
                                 await target_evaluation_task.trigger_immediate_check(
                                     prediction_target_id=str(prediction_target["id"])
                                 )

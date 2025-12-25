@@ -274,6 +274,11 @@ class Settings(BaseSettings):
         alias="TARGET_EVALUATION_MAX_INTERVAL_SECONDS",
         description="Maximum interval when no pending targets (seconds). Default: 60",
     )
+    target_evaluation_obsolete_age_days: int = Field(
+        default=3,
+        alias="TARGET_EVALUATION_OBSOLETE_AGE_DAYS",
+        description="Age in days to mark targets as obsolete (stop processing). Default: 3",
+    )
 
     # Position Cache Configuration (for optimization)
     position_cache_enabled: bool = Field(default=True, alias="POSITION_CACHE_ENABLED")

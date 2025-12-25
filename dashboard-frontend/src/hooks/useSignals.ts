@@ -18,6 +18,7 @@ export interface Signal {
     price_to: number | null
     direction: string | null  // "UP", "DOWN", or null
     return_value: number | null
+    status: string | null  // "computed", "pending", "waiting", "obsolete", or null
   } | null
   total_pnl: string | null // Total PnL from execution events
 }

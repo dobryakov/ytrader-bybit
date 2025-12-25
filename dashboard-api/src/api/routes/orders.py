@@ -58,7 +58,7 @@ async def list_orders(
             SELECT 
                 o.id, o.order_id, o.signal_id, o.asset, o.side, o.order_type,
                 o.quantity, o.price, o.status, o.filled_quantity, o.average_price,
-                o.fees, o.created_at, o.updated_at,
+                o.fees, o.created_at, o.updated_at, o.rejection_reason,
                 po.position_id
             FROM orders o
             {join_type} position_orders po ON o.id = po.order_id
@@ -188,6 +188,7 @@ async def list_orders(
                 "fees": str(row["fees"]) if row["fees"] else None,
                 "created_at": row["created_at"].isoformat() + "Z",
                 "updated_at": row["updated_at"].isoformat() + "Z",
+                "rejection_reason": row["rejection_reason"] if row.get("rejection_reason") else None,
                 "position_id": str(row["position_id"]) if row["position_id"] else None,
             }
             orders_data.append(order_dict)

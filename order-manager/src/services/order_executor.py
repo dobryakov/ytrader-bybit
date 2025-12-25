@@ -145,6 +145,7 @@ class OrderExecutor:
         quantity: Decimal,
         price: Optional[Decimal],
         trace_id: Optional[str] = None,
+        force_reduce_only: bool = False,
     ) -> Optional[Order]:
         """Create an order on Bybit exchange.
 
@@ -154,6 +155,7 @@ class OrderExecutor:
             quantity: Order quantity in base currency
             price: Limit order price (None for market orders)
             trace_id: Trace ID for request tracking
+            force_reduce_only: Force reduceOnly flag to True (for position closing)
 
         Returns:
             Created Order object if successful, None if dry-run mode
@@ -848,7 +850,7 @@ class OrderExecutor:
                 
                 # Error 110017: "current position is zero, cannot fix reduce-only order qty"
                 # This happens when reduceOnly=True but position was closed between check and order creation
-                # Solution: retry without reduceOnly flag
+                # Solution: fetch fresh position from Bybit, then retry without reduceOnly if needed
                 if ret_code == 110017:
                     logger.warning(
                         "order_creation_reduce_only_position_zero",
@@ -856,9 +858,54 @@ class OrderExecutor:
                         asset=asset,
                         ret_code=ret_code,
                         ret_msg=ret_msg,
-                        reason="Position became zero after reduceOnly was set, retrying without reduceOnly",
+                        reason="Position became zero after reduceOnly was set, fetching fresh position from Bybit",
                         trace_id=trace_id,
                     )
+                    
+                    # Fetch fresh position from Bybit to verify actual state
+                    from ..services.position_manager_client import PositionManagerClient
+                    position_client = PositionManagerClient()
+                    try:
+                        fresh_position = await position_client.get_position_from_bybit(
+                            asset=asset,
+                            trace_id=trace_id,
+                        )
+                        
+                        if fresh_position is None:
+                            logger.info(
+                                "order_creation_position_confirmed_closed",
+                                signal_id=str(signal_id),
+                                asset=asset,
+                                trace_id=trace_id,
+                                reason="Bybit confirms position is closed, retrying without reduceOnly",
+                            )
+                        else:
+                            logger.warning(
+                                "order_creation_position_discrepancy",
+                                signal_id=str(signal_id),
+                                asset=asset,
+                                bybit_position_size=float(fresh_position.size),
+                                trace_id=trace_id,
+                                reason="Bybit shows position exists but reduceOnly failed, possible data inconsistency",
+                            )
+                        
+                        # Trigger async sync to update Position Manager database
+                        if settings.order_manager_auto_sync_position_after_bybit_fetch:
+                            await position_client.trigger_bybit_sync_async(
+                                asset=asset,
+                                force=True,
+                                trace_id=trace_id,
+                            )
+                    except Exception as e:
+                        logger.warning(
+                            "order_creation_bybit_position_fetch_failed",
+                            signal_id=str(signal_id),
+                            asset=asset,
+                            error=str(e),
+                            trace_id=trace_id,
+                            reason="Failed to fetch position from Bybit, proceeding with retry",
+                        )
+                    
                     # Remove reduceOnly from params and retry
                     if "reduceOnly" in bybit_params:
                         del bybit_params["reduceOnly"]
@@ -1285,6 +1332,7 @@ class OrderExecutor:
         order_type: str,
         quantity: Decimal,
         price: Optional[Decimal],
+        force_reduce_only: bool = False,
     ) -> dict:
         """Prepare order parameters for Bybit API and optionally configure exchange TP/SL/trailing.
 
@@ -1293,6 +1341,7 @@ class OrderExecutor:
             order_type: Order type ('Market' or 'Limit')
             quantity: Order quantity
             price: Limit order price
+            force_reduce_only: Force reduceOnly flag to True (for position closing)
 
         Returns:
             Dictionary with Bybit API parameters
@@ -1387,51 +1436,61 @@ class OrderExecutor:
         if selector.should_use_post_only(order_type):
             params["postOnly"] = True
 
-        # Set reduce_only flag based on current position
+        # Set reduce_only flag based on current position or force flag
         # IMPORTANT: reduce_only should only be set when order would reduce existing position
         # - Sell order + Long position (positive size) = close/reduce long
         # - Buy order + Short position (negative size) = close/reduce short
-        try:
-            position = await self.position_manager.get_position(asset)
-            if position and abs(position.size) > Decimal("0.00000001"):  # Position exists and is significant
-                is_reducing_long = side_api == "Sell" and position.size > 0
-                is_reducing_short = side_api == "Buy" and position.size < 0
-                
-                if is_reducing_long or is_reducing_short:
-                    params["reduceOnly"] = True
-                    logger.info(
-                        "reduce_only_set",
-                        asset=asset,
-                        side=side_api,
-                        order_type=order_type,
-                        position_size=float(position.size),
-                        reason=f"{'Reducing long' if is_reducing_long else 'Reducing short'} position, setting reduce_only",
-                    )
-                else:
-                    logger.debug(
-                        "reduce_only_not_set",
-                        asset=asset,
-                        side=side_api,
-                        position_size=float(position.size),
-                        reason="Order side does not reduce position, not setting reduce_only",
-                    )
-            else:
-                logger.debug(
-                    "reduce_only_not_set_no_position",
-                    asset=asset,
-                    side=side_api,
-                    position_size=float(position.size) if position else 0.0,
-                    reason="No significant position exists, not setting reduce_only",
-                )
-        except Exception as e:
-            logger.warning(
-                "reduce_only_check_failed",
+        if force_reduce_only:
+            params["reduceOnly"] = True
+            logger.info(
+                "reduce_only_forced",
                 asset=asset,
                 side=side_api,
-                error=str(e),
-                reason="Failed to check position for reduce_only, continuing without it",
+                order_type=order_type,
+                reason="Force reduceOnly flag set for position closing",
             )
-            # Continue without reduce_only if position check fails
+        else:
+            try:
+                position = await self.position_manager.get_position(asset)
+                if position and abs(position.size) > Decimal("0.00000001"):  # Position exists and is significant
+                    is_reducing_long = side_api == "Sell" and position.size > 0
+                    is_reducing_short = side_api == "Buy" and position.size < 0
+                    
+                    if is_reducing_long or is_reducing_short:
+                        params["reduceOnly"] = True
+                        logger.info(
+                            "reduce_only_set",
+                            asset=asset,
+                            side=side_api,
+                            order_type=order_type,
+                            position_size=float(position.size),
+                            reason=f"{'Reducing long' if is_reducing_long else 'Reducing short'} position, setting reduce_only",
+                        )
+                    else:
+                        logger.debug(
+                            "reduce_only_not_set",
+                            asset=asset,
+                            side=side_api,
+                            position_size=float(position.size),
+                            reason="Order side does not reduce position, not setting reduce_only",
+                        )
+                else:
+                    logger.debug(
+                        "reduce_only_not_set_no_position",
+                        asset=asset,
+                        side=side_api,
+                        position_size=float(position.size) if position else 0.0,
+                        reason="No significant position exists, not setting reduce_only",
+                    )
+            except Exception as e:
+                logger.warning(
+                    "reduce_only_check_failed",
+                    asset=asset,
+                    side=side_api,
+                    error=str(e),
+                    reason="Failed to check position for reduce_only, continuing without it",
+                )
+                # Continue without reduce_only if position check fails
 
         # Add TP/SL orders if enabled
         if settings.order_manager_tp_sl_enabled:

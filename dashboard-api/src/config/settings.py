@@ -37,6 +37,11 @@ class Settings(BaseSettings):
     redis_port: int = Field(default=6379, alias="REDIS_PORT")
     redis_password: Optional[str] = Field(default=None, alias="REDIS_PASSWORD")
 
+    # Model Service Configuration (for proxying training requests)
+    model_service_host: str = Field(default="model-service", alias="MODEL_SERVICE_HOST")
+    model_service_port: int = Field(default=4500, alias="MODEL_SERVICE_PORT")
+    model_service_api_key: str = Field(..., alias="MODEL_SERVICE_API_KEY")
+
     @field_validator("dashboard_api_log_level")
     @classmethod
     def validate_log_level(cls, v: str) -> str:

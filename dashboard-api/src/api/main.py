@@ -10,7 +10,7 @@ from ..config.settings import settings
 from ..config.logging import configure_logging, get_logger
 from ..config.database import DatabaseConnection
 from ..exceptions import DashboardAPIError, DatabaseError
-from .routes import positions, orders, signals, models, metrics, charts
+from .routes import positions, orders, signals, models, metrics, charts, datasets
 
 # Configure logging
 configure_logging()
@@ -112,6 +112,7 @@ def create_app() -> FastAPI:
     app.include_router(models.router, prefix="/api/v1", tags=["models"])
     app.include_router(metrics.router, prefix="/api/v1", tags=["metrics"])
     app.include_router(charts.router, prefix="/api/v1", tags=["charts"])
+    app.include_router(datasets.router, prefix="/api/v1", tags=["datasets"])
 
     # Health check endpoints
     @app.get("/health")

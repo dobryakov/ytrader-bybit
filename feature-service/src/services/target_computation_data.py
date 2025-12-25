@@ -186,35 +186,6 @@ async def find_available_data_range(
             total_rows=len(combined_df),
         )
         
-        # Check if data is too old (beyond expected delay)
-        now_utc = datetime.now(timezone.utc)
-        data_age_seconds = (now_utc - latest_available_timestamp).total_seconds()
-        max_allowed_age = max_expected_delay_seconds + max_lookback_seconds
-        
-        logger.debug(
-            "find_available_data_range_age_check",
-            symbol=symbol,
-            now_utc=now_utc.isoformat(),
-            latest_available=latest_available_timestamp.isoformat(),
-            data_age_seconds=data_age_seconds,
-            max_expected_delay_seconds=max_expected_delay_seconds,
-            max_lookback_seconds=max_lookback_seconds,
-            max_allowed_age=max_allowed_age,
-        )
-        
-        if data_age_seconds > max_allowed_age:
-            logger.warning(
-                "data_too_old_for_target_computation",
-                symbol=symbol,
-                target_timestamp=target_timestamp.isoformat(),
-                latest_available=latest_available_timestamp.isoformat(),
-                data_age_seconds=data_age_seconds,
-                max_allowed_age=max_allowed_age,
-                max_lookback=max_lookback_seconds,
-                max_expected_delay=max_expected_delay_seconds,
-            )
-            return None
-        
         # Check if target_timestamp is available or needs adjustment
         target_vs_latest_diff = (target_timestamp - latest_available_timestamp).total_seconds()
         
@@ -226,6 +197,10 @@ async def find_available_data_range(
             target_vs_latest_diff_seconds=target_vs_latest_diff,
             target_is_before_latest=target_timestamp <= latest_available_timestamp,
         )
+        
+        # Check if target_timestamp is in the past (historical evaluation)
+        now_utc = datetime.now(timezone.utc)
+        target_is_historical = target_timestamp < now_utc
         
         if target_timestamp <= latest_available_timestamp:
             # Data is available, use as-is
@@ -251,19 +226,43 @@ async def find_available_data_range(
                 gap_seconds=gap_seconds,
                 max_lookback_seconds=max_lookback_seconds,
                 gap_exceeds_max=gap_seconds > max_lookback_seconds,
+                target_is_historical=target_is_historical,
             )
             
-            if gap_seconds > max_lookback_seconds:
-                logger.warning(
-                    "target_timestamp_too_far_ahead",
-                    symbol=symbol,
-                    target_timestamp=target_timestamp.isoformat(),
-                    latest_available=latest_available_timestamp.isoformat(),
-                    gap_seconds=gap_seconds,
-                    max_lookback=max_lookback_seconds,
-                    gap_exceeds_max_by=gap_seconds - max_lookback_seconds,
-                )
-                return None
+            # For historical targets (in the past), allow larger gaps
+            # For future targets, enforce max_lookback_seconds limit
+            if not target_is_historical:
+                # Future target: check if gap exceeds max_lookback
+                if gap_seconds > max_lookback_seconds:
+                    logger.warning(
+                        "target_timestamp_too_far_ahead",
+                        symbol=symbol,
+                        target_timestamp=target_timestamp.isoformat(),
+                        latest_available=latest_available_timestamp.isoformat(),
+                        gap_seconds=gap_seconds,
+                        max_lookback=max_lookback_seconds,
+                        gap_exceeds_max_by=gap_seconds - max_lookback_seconds,
+                    )
+                    return None
+            else:
+                # Historical target: check if data is too old relative to current time
+                # This prevents using very stale data for recent historical evaluations
+                data_age_seconds = (now_utc - latest_available_timestamp).total_seconds()
+                max_allowed_age = max_expected_delay_seconds + max_lookback_seconds
+                
+                # Only reject if data is very old AND target is also old
+                # If target is historical but data is recent enough, allow it
+                if data_age_seconds > max_allowed_age * 10:  # 10x tolerance for historical data
+                    logger.warning(
+                        "data_too_old_for_historical_target_computation",
+                        symbol=symbol,
+                        target_timestamp=target_timestamp.isoformat(),
+                        latest_available=latest_available_timestamp.isoformat(),
+                        data_age_seconds=data_age_seconds,
+                        max_allowed_age=max_allowed_age,
+                        target_is_historical=target_is_historical,
+                    )
+                    return None
             
             # Adjust target_timestamp to latest available
             timestamp_adjusted = True

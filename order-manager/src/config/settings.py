@@ -199,6 +199,43 @@ class Settings(BaseSettings):
         description="Which side to apply trailing stop to: 'LONG', 'SHORT', or 'BOTH'. Default: 'LONG'."
     )
 
+    # Position Closing Before Opposite Signal Configuration
+    order_manager_close_position_before_opposite_signal: bool = Field(
+        default=True,
+        alias="ORDERMANAGER_CLOSE_POSITION_BEFORE_OPPOSITE_SIGNAL",
+        description="Enable closing position before processing opposite signal. If True, when opposite signal arrives (e.g., SELL when long position exists), position will be closed first, then new order will be created. Default: True"
+    )
+    order_manager_position_close_timeout_seconds: int = Field(
+        default=30,
+        alias="ORDERMANAGER_POSITION_CLOSE_TIMEOUT_SECONDS",
+        description="Timeout in seconds for waiting position closure before proceeding with new order. Used only if ORDERMANAGER_POSITION_CLOSE_WAIT_MODE is 'polling'. Default: 30"
+    )
+    order_manager_position_close_wait_mode: str = Field(
+        default="none",
+        alias="ORDERMANAGER_POSITION_CLOSE_WAIT_MODE",
+        description="Mode for waiting position closure: 'polling' (check position status with timeout), 'websocket' (wait for WebSocket events, not implemented yet), 'none' (create close order and immediately proceed with new order). Default: 'none'"
+    )
+    order_manager_position_close_min_size_threshold: float = Field(
+        default=0.00000001,
+        alias="ORDERMANAGER_POSITION_CLOSE_MIN_SIZE_THRESHOLD",
+        description="Minimum position size to consider for closing. Positions smaller than this threshold will be ignored. Default: 0.00000001"
+    )
+    order_manager_position_max_age_seconds: int = Field(
+        default=60,
+        alias="ORDERMANAGER_POSITION_MAX_AGE_SECONDS",
+        description="Maximum age of position data in seconds before considering it stale. If position.last_updated is older than this, system will fetch fresh data from Bybit. Default: 60"
+    )
+    order_manager_enable_bybit_position_fallback: bool = Field(
+        default=True,
+        alias="ORDERMANAGER_ENABLE_BYBIT_POSITION_FALLBACK",
+        description="Enable fallback to direct Bybit API for position data when Position Manager data is stale or unavailable. Default: True"
+    )
+    order_manager_auto_sync_position_after_bybit_fetch: bool = Field(
+        default=True,
+        alias="ORDERMANAGER_AUTO_SYNC_POSITION_AFTER_BYBIT_FETCH",
+        description="Automatically trigger Position Manager sync-bybit API (fire-and-forget) after fetching position directly from Bybit. This updates Position Manager database with fresh data. Default: True"
+    )
+
     @field_validator("order_manager_log_level")
     @classmethod
     def validate_log_level(cls, v: str) -> str:
@@ -325,6 +362,16 @@ class Settings(BaseSettings):
         if v not in valid_triggers:
             raise ValueError(f"TP/SL trigger method must be one of {valid_triggers}")
         return v
+
+    @field_validator("order_manager_position_close_wait_mode")
+    @classmethod
+    def validate_position_close_wait_mode(cls, v: str) -> str:
+        """Validate position close wait mode is one of valid options."""
+        valid_modes = {"polling", "websocket", "none"}
+        v_lower = v.lower()
+        if v_lower not in valid_modes:
+            raise ValueError(f"Position close wait mode must be one of {valid_modes}")
+        return v_lower
 
     @property
     def database_url(self) -> str:

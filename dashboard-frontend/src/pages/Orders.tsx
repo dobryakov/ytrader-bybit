@@ -174,9 +174,16 @@ export default function Orders() {
                     <TableCell>{parseFloat(order.quantity).toFixed(8)}</TableCell>
                     <TableCell>{formatCurrency(order.price)}</TableCell>
                     <TableCell>
-                      <Badge variant={getStatusBadgeVariant(order.status)}>
-                        {order.status}
-                      </Badge>
+                      <div className="flex flex-col gap-1">
+                        <Badge variant={getStatusBadgeVariant(order.status)}>
+                          {order.status}
+                        </Badge>
+                        {(order.status === 'rejected' || order.status === 'cancelled') && order.rejection_reason && (
+                          <span className="text-xs text-muted-foreground">
+                            {order.rejection_reason}
+                          </span>
+                        )}
+                      </div>
                     </TableCell>
                     <TableCell>{parseFloat(order.filled_quantity).toFixed(8)}</TableCell>
                     <TableCell>{formatCurrency(order.average_price)}</TableCell>
