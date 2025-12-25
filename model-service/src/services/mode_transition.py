@@ -47,10 +47,11 @@ class ModeTransition:
         logger.debug("Checking mode transition", strategy_id=strategy_id)
 
         # Check if we're currently in warm-up mode
-        active_model = await self.model_version_repo.get_active_by_strategy(strategy_id)
-        if active_model:
+        # Use has_active_models_for_strategy to check for any active models (with or without symbol)
+        has_active_models = await self.model_version_repo.has_active_models_for_strategy(strategy_id)
+        if has_active_models:
             # Already have an active model, not in warm-up mode
-            logger.debug("Active model exists, no transition needed", strategy_id=strategy_id, model_version=active_model["version"])
+            logger.debug("Active model exists, no transition needed", strategy_id=strategy_id)
             return False
 
         # Find the best model version for this strategy that meets quality threshold
