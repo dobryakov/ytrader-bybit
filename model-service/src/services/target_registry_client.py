@@ -11,6 +11,8 @@ import httpx
 
 from ..config.settings import settings
 from ..config.logging import get_logger
+from ..config.retry import retry_async
+from .target_registry_cache import target_registry_cache
 
 logger = get_logger(__name__)
 
@@ -28,19 +30,29 @@ class TargetRegistryClient:
         """
         Get target registry configuration by version via Feature Service API.
 
+        Uses cache first, then falls back to API with retry logic.
+        Updates cache after successful API response.
+
         Args:
             version: Target registry version identifier
 
         Returns:
             Target registry configuration dict or None if not found
         """
-        url = f"{self.base_url}/target-registry/versions/{version}"
-        headers = {
-            "X-API-Key": self.api_key,
-            "Content-Type": "application/json",
-        }
+        # Check cache first
+        cached_config = await target_registry_cache.get(version)
+        if cached_config is not None:
+            logger.debug("Using cached target registry config", version=version)
+            return cached_config
 
-        try:
+        # Cache miss - fetch from API with retry
+        async def _fetch_config():
+            url = f"{self.base_url}/target-registry/versions/{version}"
+            headers = {
+                "X-API-Key": self.api_key,
+                "Content-Type": "application/json",
+            }
+
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.get(url, headers=headers)
                 
@@ -68,17 +80,34 @@ class TargetRegistryClient:
                     )
                     return None
                 
+                # Update cache after successful API response
+                await target_registry_cache.set(version, config)
                 logger.debug(
-                    "Target registry config loaded from Feature Service API",
+                    "Target registry config loaded from Feature Service API and cached",
                     version=version,
                 )
                 return config
 
-        except httpx.TimeoutException:
+        try:
+            # Retry with exponential backoff for timeout and network errors
+            # Include OSError for network-related errors (ConnectionRefusedError, etc.)
+            config = await retry_async(
+                _fetch_config,
+                max_retries=2,  # 2 retries = 3 total attempts
+                initial_delay=1.0,
+                max_delay=5.0,
+                backoff_multiplier=2.0,
+                retryable_exceptions=(httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError, ConnectionError, TimeoutError),
+                operation_name="get_target_config",
+            )
+            return config
+        except (httpx.TimeoutException, TimeoutError, ConnectionError) as e:
             logger.error(
-                "Timeout requesting target registry config from Feature Service",
+                "Timeout or connection error requesting target registry config from Feature Service (after retries)",
                 version=version,
                 timeout=self.timeout,
+                error_type=type(e).__name__,
+                error=str(e),
             )
             return None
         except httpx.HTTPStatusError as e:

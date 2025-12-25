@@ -18,7 +18,19 @@ logger = get_logger(__name__)
 # Monitoring thresholds
 STALE_SUBSCRIPTION_WARNING_MINUTES = 5  # Warn if last_event_at is older than 5 minutes
 STALE_SUBSCRIPTION_CRITICAL_MINUTES = 30  # Critical if older than 30 minutes
+STALE_SUBSCRIPTION_AUTO_DEACTIVATE_MINUTES = 60  # Auto-deactivate if older than 60 minutes
 MONITORING_CHECK_INTERVAL_SECONDS = 60  # Check every minute
+
+# Event-driven channels that may not receive events frequently
+# For these channels, we check WebSocket connection state in addition to last_event_at
+EVENT_DRIVEN_CHANNELS = {"position", "balance", "order"}
+# Frequent channels that should receive events regularly
+FREQUENT_CHANNELS = {"ticker", "trades", "orderbook", "kline"}
+# Periodic channels with scheduled updates
+PERIODIC_CHANNELS = {"funding"}
+
+# Threshold for considering WebSocket connection as active (last_message_at age)
+CONNECTION_ACTIVE_THRESHOLD_MINUTES = 5  # Connection is active if last_message_at is within 5 minutes
 
 
 class SubscriptionMonitor:
@@ -29,6 +41,7 @@ class SubscriptionMonitor:
         check_interval_seconds: int = MONITORING_CHECK_INTERVAL_SECONDS,
         warning_threshold_minutes: int = STALE_SUBSCRIPTION_WARNING_MINUTES,
         critical_threshold_minutes: int = STALE_SUBSCRIPTION_CRITICAL_MINUTES,
+        auto_deactivate_threshold_minutes: int = STALE_SUBSCRIPTION_AUTO_DEACTIVATE_MINUTES,
     ):
         """
         Initialize subscription monitor.
@@ -37,10 +50,12 @@ class SubscriptionMonitor:
             check_interval_seconds: How often to check subscriptions (default: 60 seconds)
             warning_threshold_minutes: Warn if last_event_at is older than this (default: 5 minutes)
             critical_threshold_minutes: Critical alert if older than this (default: 30 minutes)
+            auto_deactivate_threshold_minutes: Auto-deactivate if older than this (default: 60 minutes)
         """
         self._check_interval = check_interval_seconds
         self._warning_threshold = timedelta(minutes=warning_threshold_minutes)
         self._critical_threshold = timedelta(minutes=critical_threshold_minutes)
+        self._auto_deactivate_threshold = timedelta(minutes=auto_deactivate_threshold_minutes)
         self._monitoring_task: Optional[asyncio.Task] = None
         self._is_running = False
         # Cached connection manager for resubscribe operations
@@ -62,6 +77,7 @@ class SubscriptionMonitor:
             check_interval_seconds=self._check_interval,
             warning_threshold_minutes=self._warning_threshold.total_seconds() / 60,
             critical_threshold_minutes=self._critical_threshold.total_seconds() / 60,
+            auto_deactivate_threshold_minutes=self._auto_deactivate_threshold.total_seconds() / 60,
         )
 
     async def stop(self) -> None:
@@ -97,7 +113,11 @@ class SubscriptionMonitor:
 
         stale_warning: List[Tuple[object, timedelta]] = []
         stale_critical: List[Tuple[object, timedelta]] = []
+        stale_auto_deactivate: List[Tuple[object, timedelta]] = []
         never_received: List[object] = []
+
+        # Get connection states for event-driven channels
+        connection_states = await self._get_connection_states()
 
         for subscription in all_subscriptions:
             if not subscription.last_event_at:
@@ -113,7 +133,35 @@ class SubscriptionMonitor:
                 last_event_at = last_event_at.astimezone(timezone.utc)
 
             age = now - last_event_at
-            if age > self._critical_threshold:
+            
+            # For event-driven channels, check WebSocket connection state
+            # If connection is alive and receiving messages, don't deactivate even if last_event_at is stale
+            is_event_driven = subscription.channel_type in EVENT_DRIVEN_CHANNELS
+            connection_active = False
+            
+            if is_event_driven:
+                connection_active = self._is_connection_active_for_subscription(
+                    subscription, connection_states, now
+                )
+                
+                # If connection is active, skip deactivation even if last_event_at is stale
+                # This handles the case where position/balance/order don't change but connection is alive
+                if connection_active and age > self._auto_deactivate_threshold:
+                    logger.debug(
+                        "subscription_stale_but_connection_active",
+                        subscription_id=str(subscription.id),
+                        channel_type=subscription.channel_type,
+                        topic=subscription.topic,
+                        age_minutes=age.total_seconds() / 60,
+                        reason="WebSocket connection is active, skipping deactivation",
+                    )
+                    # Still log as critical for monitoring, but don't deactivate
+                    stale_critical.append((subscription, age))
+                    continue
+
+            if age > self._auto_deactivate_threshold:
+                stale_auto_deactivate.append((subscription, age))
+            elif age > self._critical_threshold:
                 stale_critical.append((subscription, age))
             elif age > self._warning_threshold:
                 stale_warning.append((subscription, age))
@@ -226,13 +274,56 @@ class SubscriptionMonitor:
                             age_since_creation_minutes=age_since_creation.total_seconds() / 60,
                         )
 
+        # Auto-deactivate very stale subscriptions (older than auto_deactivate_threshold)
+        if stale_auto_deactivate:
+            for subscription, age in stale_auto_deactivate:
+                # Normalize last_event_at for logging
+                last_event_at = subscription.last_event_at
+                if last_event_at:
+                    if last_event_at.tzinfo is None:
+                        last_event_at = last_event_at.replace(tzinfo=timezone.utc)
+                    else:
+                        last_event_at = last_event_at.astimezone(timezone.utc)
+                
+                logger.warning(
+                    "subscription_auto_deactivating_stale",
+                    subscription_id=str(subscription.id),
+                    topic=subscription.topic,
+                    requesting_service=subscription.requesting_service,
+                    channel_type=subscription.channel_type,
+                    last_event_at=last_event_at.isoformat() if last_event_at else None,
+                    age_minutes=age.total_seconds() / 60,
+                    threshold_minutes=self._auto_deactivate_threshold.total_seconds() / 60,
+                )
+                
+                # Deactivate the subscription
+                try:
+                    await SubscriptionService.deactivate_subscription(subscription.id)
+                    logger.info(
+                        "subscription_auto_deactivated",
+                        subscription_id=str(subscription.id),
+                        topic=subscription.topic,
+                        requesting_service=subscription.requesting_service,
+                        channel_type=subscription.channel_type,
+                        age_minutes=age.total_seconds() / 60,
+                    )
+                except Exception as e:
+                    logger.error(
+                        "subscription_auto_deactivate_failed",
+                        subscription_id=str(subscription.id),
+                        error=str(e),
+                        error_type=type(e).__name__,
+                        exc_info=True,
+                    )
+
         # Log summary
-        if stale_warning or stale_critical or never_received:
+        if stale_warning or stale_critical or stale_auto_deactivate or never_received:
             logger.info(
                 "subscription_monitor_summary",
                 total_subscriptions=len(all_subscriptions),
                 stale_warning_count=len(stale_warning),
                 stale_critical_count=len(stale_critical),
+                stale_auto_deactivated_count=len(stale_auto_deactivate),
                 never_received_count=len(never_received),
             )
 
@@ -292,4 +383,105 @@ class SubscriptionMonitor:
                 error_type=type(e).__name__,
                 exc_info=True,
             )
+
+    async def _get_connection_states(self) -> Dict[str, Dict]:
+        """Get connection states for public and private connections.
+        
+        Returns:
+            Dictionary with 'public' and 'private' keys, each containing connection state info
+        """
+        states = {}
+        
+        try:
+            # Get public connection state
+            public_conn = self._connection_manager.get_public_connection_sync()
+            if public_conn:
+                state = public_conn.state
+                states["public"] = {
+                    "is_connected": public_conn.is_connected,
+                    "last_message_at": state.last_message_at,
+                    "last_heartbeat_at": state.last_heartbeat_at,
+                }
+            
+            # Get private connection state
+            private_conn = self._connection_manager.get_private_connection_sync()
+            if private_conn:
+                state = private_conn.state
+                states["private"] = {
+                    "is_connected": private_conn.is_connected,
+                    "last_message_at": state.last_message_at,
+                    "last_heartbeat_at": state.last_heartbeat_at,
+                }
+        except Exception as e:
+            logger.warning(
+                "subscription_monitor_connection_state_error",
+                error=str(e),
+                error_type=type(e).__name__,
+            )
+        
+        return states
+
+    def _is_connection_active_for_subscription(
+        self,
+        subscription: object,
+        connection_states: Dict[str, Dict],
+        now: datetime,
+    ) -> bool:
+        """Check if WebSocket connection is active for an event-driven subscription.
+        
+        Args:
+            subscription: Subscription object
+            connection_states: Connection states dictionary from _get_connection_states()
+            now: Current datetime (timezone-aware UTC)
+            
+        Returns:
+            True if connection is active and receiving messages, False otherwise
+        """
+        from ..websocket.channel_types import get_endpoint_type_for_channel
+        
+        try:
+            endpoint_type = get_endpoint_type_for_channel(subscription.channel_type)
+            state = connection_states.get(endpoint_type)
+            
+            if not state:
+                return False
+            
+            # Check if connection is connected
+            if not state.get("is_connected", False):
+                return False
+            
+            # Check last_message_at (any message, including ping/pong)
+            last_message_at = state.get("last_message_at")
+            if last_message_at:
+                if last_message_at.tzinfo is None:
+                    last_message_at = last_message_at.replace(tzinfo=timezone.utc)
+                else:
+                    last_message_at = last_message_at.astimezone(timezone.utc)
+                
+                message_age = now - last_message_at
+                if message_age.total_seconds() / 60 <= CONNECTION_ACTIVE_THRESHOLD_MINUTES:
+                    return True
+            
+            # Fallback: check last_heartbeat_at
+            last_heartbeat_at = state.get("last_heartbeat_at")
+            if last_heartbeat_at:
+                if last_heartbeat_at.tzinfo is None:
+                    last_heartbeat_at = last_heartbeat_at.replace(tzinfo=timezone.utc)
+                else:
+                    last_heartbeat_at = last_heartbeat_at.astimezone(timezone.utc)
+                
+                heartbeat_age = now - last_heartbeat_at
+                if heartbeat_age.total_seconds() / 60 <= CONNECTION_ACTIVE_THRESHOLD_MINUTES:
+                    return True
+            
+            return False
+        except Exception as e:
+            logger.warning(
+                "subscription_monitor_connection_check_error",
+                subscription_id=str(subscription.id),
+                channel_type=subscription.channel_type,
+                error=str(e),
+                error_type=type(e).__name__,
+            )
+            return False
 

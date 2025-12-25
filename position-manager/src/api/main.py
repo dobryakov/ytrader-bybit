@@ -79,44 +79,90 @@ def create_app() -> FastAPI:
 
         # Initialize RabbitMQ connection, but do not fail startup if it's temporarily unavailable.
         # Health and consumers will reflect queue connectivity separately.
-        global _ws_consumer, _order_consumer, _snapshot_task, _validation_task
+        global _ws_consumer, _order_consumer, _snapshot_task, _validation_task, _bybit_sync_task
+        
+        # Try to connect to RabbitMQ
         try:
             await RabbitMQConnection.create_connection()
-
-            # Subscribe to position updates from ws-gateway
-            # Service must have event subscription to operate correctly
-            ws_gateway_client = WSGatewayClient()
-            await ws_gateway_client.subscribe_to_position()
-            logger.info("ws_gateway_position_subscription_completed")
-
-            # Start background consumers for WS and order events.
-            _ws_consumer = WebSocketPositionConsumer()
-            _order_consumer = PositionOrderLinkerConsumer()
-            _ws_consumer.spawn()
-            _order_consumer.spawn()
-            logger.info("position_manager_consumers_started")
-
-            # Run one-off snapshot cleanup on startup (US4 T081).
-            cleanup_task = PositionSnapshotCleanupTask()
-            await cleanup_task.run_once()
-
-            # Start periodic snapshot task (US4 T077/T077a/T083).
-            _snapshot_task = PositionSnapshotTask()
-            await _snapshot_task.start()
-
-            # Start periodic validation task (US5 T087/T087a/T091).
-            _validation_task = PositionValidationTask()
-            await _validation_task.start()
-
-            # Start periodic Bybit sync task
-            _bybit_sync_task = PositionBybitSyncTask()
-            await _bybit_sync_task.start()
         except QueueError as e:
             logger.error(
                 "rabbitmq_startup_connection_failed_non_fatal",
                 error=str(e),
                 host=settings.rabbitmq_host,
                 port=settings.rabbitmq_port,
+            )
+
+        # Subscribe to position updates from ws-gateway (non-fatal if fails)
+        try:
+            ws_gateway_client = WSGatewayClient()
+            await ws_gateway_client.subscribe_to_position()
+            logger.info("ws_gateway_position_subscription_completed")
+        except QueueError as e:
+            logger.warning(
+                "ws_gateway_subscription_failed_non_fatal",
+                error=str(e),
+                url=settings.ws_gateway_url,
+            )
+
+        # Start background consumers for WS and order events (if RabbitMQ is available)
+        try:
+            _ws_consumer = WebSocketPositionConsumer()
+            _order_consumer = PositionOrderLinkerConsumer()
+            _ws_consumer.spawn()
+            _order_consumer.spawn()
+            logger.info("position_manager_consumers_started")
+        except Exception as e:
+            logger.warning(
+                "position_manager_consumers_start_failed_non_fatal",
+                error=str(e),
+                error_type=type(e).__name__,
+            )
+
+        # Run one-off snapshot cleanup on startup (US4 T081).
+        try:
+            cleanup_task = PositionSnapshotCleanupTask()
+            await cleanup_task.run_once()
+        except Exception as e:
+            logger.warning(
+                "position_snapshot_cleanup_failed_non_fatal",
+                error=str(e),
+                error_type=type(e).__name__,
+            )
+
+        # Start periodic snapshot task (US4 T077/T077a/T083).
+        try:
+            _snapshot_task = PositionSnapshotTask()
+            await _snapshot_task.start()
+        except Exception as e:
+            logger.error(
+                "position_snapshot_task_start_failed",
+                error=str(e),
+                error_type=type(e).__name__,
+                exc_info=True,
+            )
+
+        # Start periodic validation task (US5 T087/T087a/T091).
+        try:
+            _validation_task = PositionValidationTask()
+            await _validation_task.start()
+        except Exception as e:
+            logger.error(
+                "position_validation_task_start_failed",
+                error=str(e),
+                error_type=type(e).__name__,
+                exc_info=True,
+            )
+
+        # Start periodic Bybit sync task (critical - must start even if other components fail)
+        try:
+            _bybit_sync_task = PositionBybitSyncTask()
+            await _bybit_sync_task.start()
+        except Exception as e:
+            logger.error(
+                "position_bybit_sync_task_start_failed",
+                error=str(e),
+                error_type=type(e).__name__,
+                exc_info=True,
             )
         logger.info("app_startup_completed", service=settings.position_manager_service_name)
 

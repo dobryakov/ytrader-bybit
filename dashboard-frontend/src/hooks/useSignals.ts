@@ -21,6 +21,7 @@ export interface Signal {
     status: string | null  // "computed", "pending", "waiting", "obsolete", or null
   } | null
   total_pnl: string | null // Total PnL from execution events
+  is_model_active: boolean // Whether the model is currently active
 }
 
 export interface SignalsResponse {

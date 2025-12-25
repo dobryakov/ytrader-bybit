@@ -1,5 +1,12 @@
-import { useState, useMemo } from 'react'
-import { useModels, useModelTrainingHistory } from '@/hooks/useModels'
+import { useState, useMemo, useEffect } from 'react'
+import { 
+  useModels, 
+  useModelTrainingHistory, 
+  useSignalSuccessRate, 
+  useAvailableAssets, 
+  useAvailableStrategies,
+  useActiveModelVersion
+} from '@/hooks/useModels'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Badge } from '@/components/ui/badge'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -26,6 +33,38 @@ export default function Models() {
     'pr_auc',
     'balanced_accuracy',
   ])
+
+  // Filters for signal success rate chart
+  const [successRateModelVersion, setSuccessRateModelVersion] = useState<string>('')
+  const [successRateAsset, setSuccessRateAsset] = useState<string>('')
+  const [successRateStrategy, setSuccessRateStrategy] = useState<string>('')
+  
+  // Fetch available assets and strategies
+  const { data: availableAssets = [], isLoading: isLoadingAssets } = useAvailableAssets()
+  const { data: availableStrategies = [], isLoading: isLoadingStrategies } = useAvailableStrategies()
+  
+  // Fetch active model version when asset and strategy are selected
+  const { data: activeModelVersion } = useActiveModelVersion({
+    asset: successRateAsset || undefined,
+    strategy_id: successRateStrategy || undefined,
+  })
+
+  // Auto-fill model version when asset or strategy changes
+  useEffect(() => {
+    if (activeModelVersion && successRateAsset && successRateStrategy) {
+      setSuccessRateModelVersion(activeModelVersion)
+    } else if ((!successRateAsset || !successRateStrategy) && successRateModelVersion) {
+      // Clear version if asset or strategy is cleared
+      setSuccessRateModelVersion('')
+    }
+  }, [activeModelVersion, successRateAsset, successRateStrategy])
+
+  // Fetch signal success rate data
+  const { data: successRateData, isLoading: isLoadingSuccessRate } = useSignalSuccessRate({
+    model_version: successRateModelVersion || undefined,
+    asset: successRateAsset || undefined,
+    strategy_id: successRateStrategy || undefined,
+  })
 
   // Get unique symbols and strategies from history
   const uniqueSymbols = useMemo(() => {
@@ -447,6 +486,217 @@ export default function Models() {
                 })}
               </LineChart>
             </ResponsiveContainer>
+          </div>
+        )}
+      </div>
+
+      {/* Signal Success Rate Chart */}
+      <div className="mt-12">
+        <div className="mb-4">
+          <h3 className="text-2xl font-bold tracking-tight">Статистика успешности сигналов</h3>
+          <p className="text-muted-foreground">Процент успешности сигналов по часам с группировкой</p>
+        </div>
+
+        {/* Filters */}
+        <div className="mb-6 space-y-4">
+          <div className="flex gap-4 items-end">
+            <div className="flex-1 max-w-xs">
+              <label htmlFor="success-rate-model-version" className="block text-sm font-medium mb-1">
+                Версия модели
+              </label>
+              <input
+                id="success-rate-model-version"
+                type="text"
+                value={successRateModelVersion}
+                onChange={(e) => setSuccessRateModelVersion(e.target.value)}
+                placeholder="Например: v1.0"
+                className="w-full px-3 py-2 border border-input bg-background rounded-md text-sm"
+              />
+            </div>
+            <div className="flex-1 max-w-xs">
+              <label htmlFor="success-rate-asset" className="block text-sm font-medium mb-1">
+                Ассет
+              </label>
+              <select
+                id="success-rate-asset"
+                value={successRateAsset}
+                onChange={(e) => setSuccessRateAsset(e.target.value)}
+                className="w-full px-3 py-2 border border-input bg-background rounded-md text-sm"
+                disabled={isLoadingAssets}
+              >
+                <option value="">Выберите ассет</option>
+                {availableAssets.map((asset) => (
+                  <option key={asset} value={asset}>
+                    {asset}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="flex-1 max-w-xs">
+              <label htmlFor="success-rate-strategy" className="block text-sm font-medium mb-1">
+                Стратегия
+              </label>
+              <select
+                id="success-rate-strategy"
+                value={successRateStrategy}
+                onChange={(e) => setSuccessRateStrategy(e.target.value)}
+                className="w-full px-3 py-2 border border-input bg-background rounded-md text-sm"
+                disabled={isLoadingStrategies}
+              >
+                <option value="">Выберите стратегию</option>
+                {availableStrategies.map((strategy) => (
+                  <option key={strategy} value={strategy}>
+                    {strategy}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+        </div>
+
+        {/* Chart */}
+        {isLoadingSuccessRate ? (
+          <Skeleton className="h-96 w-full" />
+        ) : !successRateModelVersion || !successRateAsset || !successRateStrategy ? (
+          <div className="text-center text-muted-foreground py-8 border rounded-md">
+            Заполните все поля фильтров для отображения статистики успешности сигналов
+          </div>
+        ) : !successRateData || successRateData.data.length === 0 ? (
+          <div className="text-center text-muted-foreground py-8 border rounded-md">
+            Нет данных для отображения. Проверьте выбранные фильтры.
+          </div>
+        ) : (
+          <div className="space-y-6">
+            {/* Success Rate by Direction Chart */}
+            <div className="border rounded-md p-4">
+              <h4 className="text-lg font-semibold mb-4">Процент успешности по направлению</h4>
+              <ResponsiveContainer width="100%" height={400}>
+                <LineChart data={successRateData.data.map((item) => ({
+                  hour: format(parseISO(item.hour), 'dd.MM.yyyy HH:mm'),
+                  successRate: item.success_rate_direction_percent,
+                  totalSignals: item.total_signals,
+                  successfulSignals: item.successful_by_direction,
+                }))}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="hour" angle={-45} textAnchor="end" height={100} />
+                  <YAxis label={{ value: 'Процент успешности (%)', angle: -90, position: 'insideLeft' }} />
+                  <Tooltip 
+                    formatter={(value: any, name: string) => {
+                      if (name === 'successRate') return [`${value?.toFixed(2) || 0}%`, 'Процент успешности']
+                      if (name === 'totalSignals') return [value, 'Всего сигналов']
+                      if (name === 'successfulSignals') return [value, 'Успешных сигналов']
+                      return [value, name]
+                    }}
+                  />
+                  <Legend />
+                  <Line
+                    type="monotone"
+                    dataKey="successRate"
+                    stroke="#8884d8"
+                    name="Процент успешности (%)"
+                    strokeWidth={2}
+                    dot={{ r: 4 }}
+                    connectNulls
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+
+            {/* Success Rate by PnL Chart */}
+            <div className="border rounded-md p-4">
+              <h4 className="text-lg font-semibold mb-4">Процент успешности по финансовому результату (PnL)</h4>
+              <ResponsiveContainer width="100%" height={400}>
+                <LineChart data={successRateData.data.map((item) => ({
+                  hour: format(parseISO(item.hour), 'dd.MM.yyyy HH:mm'),
+                  successRate: item.success_rate_pnl_percent,
+                  totalSignals: item.total_signals,
+                  successfulSignals: item.successful_by_pnl,
+                  totalPnl: item.total_pnl_sum,
+                }))}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="hour" angle={-45} textAnchor="end" height={100} />
+                  <YAxis label={{ value: 'Процент успешности (%)', angle: -90, position: 'insideLeft' }} />
+                  <Tooltip 
+                    formatter={(value: any, name: string) => {
+                      if (name === 'successRate') return [`${value?.toFixed(2) || 0}%`, 'Процент успешности']
+                      if (name === 'totalSignals') return [value, 'Всего сигналов']
+                      if (name === 'successfulSignals') return [value, 'Успешных сигналов']
+                      if (name === 'totalPnl') return [`${value?.toFixed(2) || 0}`, 'Суммарный PnL']
+                      return [value, name]
+                    }}
+                  />
+                  <Legend />
+                  <Line
+                    type="monotone"
+                    dataKey="successRate"
+                    stroke="#82ca9d"
+                    name="Процент успешности (%)"
+                    strokeWidth={2}
+                    dot={{ r: 4 }}
+                    connectNulls
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+
+            {/* Summary Statistics Table */}
+            <div className="border rounded-md p-4">
+              <h4 className="text-lg font-semibold mb-4">Сводная статистика</h4>
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Час</TableHead>
+                      <TableHead>Всего сигналов</TableHead>
+                      <TableHead>Оценено</TableHead>
+                      <TableHead>Успешных (направление)</TableHead>
+                      <TableHead>Успешных (PnL)</TableHead>
+                      <TableHead>% успешности (направление)</TableHead>
+                      <TableHead>% успешности (PnL)</TableHead>
+                      <TableHead>Средняя уверенность</TableHead>
+                      <TableHead>Buy/Sell</TableHead>
+                      <TableHead>Суммарный PnL</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {successRateData.data.map((item, index) => (
+                      <TableRow key={index}>
+                        <TableCell className="text-xs">
+                          {format(parseISO(item.hour), 'dd.MM.yyyy HH:mm')}
+                        </TableCell>
+                        <TableCell>{item.total_signals}</TableCell>
+                        <TableCell>{item.evaluated_signals}</TableCell>
+                        <TableCell>{item.successful_by_direction}</TableCell>
+                        <TableCell>{item.successful_by_pnl}</TableCell>
+                        <TableCell>
+                          {item.success_rate_direction_percent !== null 
+                            ? `${item.success_rate_direction_percent.toFixed(2)}%` 
+                            : 'N/A'}
+                        </TableCell>
+                        <TableCell>
+                          {item.success_rate_pnl_percent !== null 
+                            ? `${item.success_rate_pnl_percent.toFixed(2)}%` 
+                            : 'N/A'}
+                        </TableCell>
+                        <TableCell>
+                          {item.avg_confidence !== null 
+                            ? `${(item.avg_confidence * 100).toFixed(2)}%` 
+                            : 'N/A'}
+                        </TableCell>
+                        <TableCell>
+                          {item.buy_signals}/{item.sell_signals}
+                        </TableCell>
+                        <TableCell>
+                          {item.total_pnl_sum !== null 
+                            ? item.total_pnl_sum.toFixed(2) 
+                            : 'N/A'}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </div>
           </div>
         )}
       </div>

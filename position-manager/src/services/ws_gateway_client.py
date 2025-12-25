@@ -80,3 +80,54 @@ class WSGatewayClient:
             )
             raise QueueError(f"Failed to subscribe to position events: {e}") from e
 
+    async def refresh_position_subscription(self) -> None:
+        """
+        Refresh position subscription last_event_at to indicate active processing.
+        
+        This is called periodically by position-manager to prevent subscription
+        from being deactivated when no position events are received from Bybit
+        (e.g., when position doesn't change).
+        
+        Raises:
+            QueueError: If refresh fails (non-fatal, logged but doesn't raise)
+        """
+        url = f"{self.base_url}/api/v1/subscriptions/refresh/position"
+        headers = {
+            "X-API-Key": self.api_key,
+            "Content-Type": "application/json",
+        }
+        params = {
+            "requesting_service": settings.position_manager_service_name,
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.post(url, headers=headers, params=params)
+                response.raise_for_status()
+                result = response.json()
+                logger.debug(
+                    "ws_gateway_position_subscription_refreshed",
+                    updated_count=result.get("updated_count", 0),
+                )
+        except httpx.HTTPStatusError as e:
+            # Non-fatal: log but don't raise
+            logger.warning(
+                "ws_gateway_position_subscription_refresh_failed",
+                status_code=e.response.status_code,
+                error=e.response.text,
+            )
+        except httpx.RequestError as e:
+            # Non-fatal: log but don't raise
+            logger.warning(
+                "ws_gateway_position_subscription_refresh_request_failed",
+                error=str(e),
+                error_type=type(e).__name__,
+            )
+        except Exception as e:
+            # Non-fatal: log but don't raise
+            logger.warning(
+                "ws_gateway_position_subscription_refresh_unexpected_error",
+                error=str(e),
+                error_type=type(e).__name__,
+            )
+

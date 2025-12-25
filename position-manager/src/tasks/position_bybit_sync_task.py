@@ -8,6 +8,7 @@ from typing import Optional
 from ..config.logging import get_logger
 from ..config.settings import settings
 from ..services.position_manager import PositionManager
+from ..services.ws_gateway_client import WSGatewayClient
 from ..utils.tracing import generate_trace_id, set_trace_id
 
 
@@ -29,6 +30,7 @@ class PositionBybitSyncTask:
         self._task: Optional[asyncio.Task] = None
         self._should_run = False
         self._position_manager = PositionManager()
+        self._ws_gateway_client = WSGatewayClient()
 
     async def start(self) -> None:
         """Start the sync loop."""
@@ -163,6 +165,20 @@ class PositionBybitSyncTask:
                         "position_bybit_sync_no_discrepancies",
                         bybit_count=report.get("bybit_positions_count", 0),
                         local_count=report.get("local_positions_count", 0),
+                        trace_id=trace_id,
+                    )
+
+                # Refresh position subscription to prevent deactivation
+                # This indicates that position-manager is actively syncing with Bybit
+                # and confirms that the system is working even if no WebSocket events are received
+                try:
+                    await self._ws_gateway_client.refresh_position_subscription()
+                except Exception as e:
+                    # Non-fatal: log but continue
+                    logger.warning(
+                        "position_subscription_refresh_failed",
+                        error=str(e),
+                        error_type=type(e).__name__,
                         trace_id=trace_id,
                     )
 

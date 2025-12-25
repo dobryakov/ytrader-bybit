@@ -87,13 +87,7 @@ class Settings(BaseSettings):
         default=0.5, alias="ORDERMANAGER_LIMIT_ORDER_PRICE_OFFSET_RATIO"
     )
 
-    # Position Management Configuration
-    order_manager_position_snapshot_interval: int = Field(
-        default=300, alias="ORDERMANAGER_POSITION_SNAPSHOT_INTERVAL"
-    )
-    order_manager_position_validation_interval: int = Field(
-        default=3600, alias="ORDERMANAGER_POSITION_VALIDATION_INTERVAL"
-    )
+    # Position Management is now handled by position-manager service
 
     # Instruments-info refresh configuration
     order_manager_instrument_info_refresh_interval: int = Field(
@@ -317,21 +311,6 @@ class Settings(BaseSettings):
             raise ValueError("Retry max attempts must be positive")
         return v
 
-    @field_validator("order_manager_position_snapshot_interval")
-    @classmethod
-    def validate_snapshot_interval(cls, v: int) -> int:
-        """Validate snapshot interval is positive."""
-        if v <= 0:
-            raise ValueError("Snapshot interval must be positive")
-        return v
-
-    @field_validator("order_manager_position_validation_interval")
-    @classmethod
-    def validate_validation_interval(cls, v: int) -> int:
-        """Validate validation interval is positive."""
-        if v <= 0:
-            raise ValueError("Validation interval must be positive")
-        return v
 
     @field_validator("order_manager_instrument_info_refresh_interval")
     @classmethod

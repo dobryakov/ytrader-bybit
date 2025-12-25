@@ -16,6 +16,9 @@ class RollingWindows(BaseModel):
     window_intervals: Optional[set] = Field(default=None, description="Set of window intervals (e.g., {'1s', '3s', '15s', '1m'})")
     max_lookback_minutes_1m: Optional[int] = Field(default=None, description="Maximum lookback in minutes for 1m window")
     
+    # Internal field for performance optimization (not serialized)
+    _last_trim_time: Optional[datetime] = None
+    
     def add_trade(self, trade: Dict) -> None:
         """Add trade to all relevant rolling windows.
 
@@ -232,7 +235,23 @@ class RollingWindows(BaseModel):
         klines_count_before_trim = len(self.windows.get("1m", pd.DataFrame()))
         # IMPORTANT: trim_old_data() uses self.last_update, so we must update it BEFORE trimming
         # This ensures that new klines are not immediately trimmed
-        self.trim_old_data()
+        # Performance optimization: only trim if we have significantly more data than expected
+        # AND if enough time has passed since last trim (to avoid excessive CPU usage)
+        # Expected max is ~35 minutes * klines per second (klines come as updates, not just once per minute)
+        # Use a higher threshold and time-based throttling to reduce CPU load
+        expected_max_klines = (self.max_lookback_minutes_1m + 5) * 60 if self.max_lookback_minutes_1m else 2100  # 35 min * 60 sec
+        now = datetime.now(timezone.utc)
+        # Use instance attribute for tracking last trim time (not part of Pydantic model)
+        if not hasattr(self, '_last_trim_time'):
+            self._last_trim_time = None
+        time_since_last_trim = (now - self._last_trim_time).total_seconds() if self._last_trim_time else float('inf')
+        should_trim = (
+            klines_count_before_trim > max(expected_max_klines * 1.2, 300) and  # At least 300 or 1.2x expected
+            time_since_last_trim > 10  # Don't trim more often than every 10 seconds
+        )
+        if should_trim:
+            self.trim_old_data()
+            self._last_trim_time = now
         klines_count_after_trim = len(self.windows.get("1m", pd.DataFrame()))
         
         import structlog
@@ -349,10 +368,10 @@ class RollingWindows(BaseModel):
             "1m": window_size_1m_seconds,
         }
         
-        # Log window sizes for debugging
+        # Log window sizes for debugging (changed to DEBUG to reduce logging overhead)
         import structlog
         logger = structlog.get_logger(__name__)
-        logger.info(
+        logger.debug(
             "trim_old_data_window_sizes",
             symbol=self.symbol,
             max_lookback_minutes_1m=self.max_lookback_minutes_1m,
@@ -372,9 +391,9 @@ class RollingWindows(BaseModel):
             
             cutoff_time = now - timedelta(seconds=window_size)
             
-            # Log cutoff time for debugging (especially for 1m window)
+            # Log cutoff time for debugging (changed to DEBUG to reduce logging overhead)
             if interval == "1m":
-                logger.info(
+                logger.debug(
                     "trim_old_data_cutoff",
                     symbol=self.symbol,
                     interval=interval,
@@ -386,17 +405,29 @@ class RollingWindows(BaseModel):
             
             # Keep only data within window
             if "timestamp" in df.columns:
-                # Normalize timestamp column to timezone-aware datetime if needed
-                df = df.copy()
-                if df["timestamp"].dtype in ['int64', 'float64', 'int32', 'float32']:
-                    df["timestamp"] = pd.to_datetime(df["timestamp"], unit='ms', utc=True)
-                elif df["timestamp"].dtype == 'object':
-                    df["timestamp"] = pd.to_datetime(df["timestamp"], errors='coerce', utc=True)
-                # Ensure all timestamps are timezone-aware
-                if df["timestamp"].dtype.name.startswith('datetime'):
-                    df["timestamp"] = df["timestamp"].dt.tz_localize(None).dt.tz_localize(timezone.utc) if df["timestamp"].dt.tz is None else df["timestamp"]
+                # Performance optimization: avoid double copying
+                # Only copy if we need to normalize timestamps
                 before_count = len(df)
-                filtered_df = df[df["timestamp"] >= cutoff_time].copy()
+                needs_normalization = (
+                    df["timestamp"].dtype in ['int64', 'float64', 'int32', 'float32'] or
+                    df["timestamp"].dtype == 'object' or
+                    (df["timestamp"].dtype.name.startswith('datetime') and df["timestamp"].dt.tz is None)
+                )
+                
+                if needs_normalization:
+                    # Copy and normalize timestamp column
+                    df = df.copy()
+                    if df["timestamp"].dtype in ['int64', 'float64', 'int32', 'float32']:
+                        df["timestamp"] = pd.to_datetime(df["timestamp"], unit='ms', utc=True)
+                    elif df["timestamp"].dtype == 'object':
+                        df["timestamp"] = pd.to_datetime(df["timestamp"], errors='coerce', utc=True)
+                    # Ensure all timestamps are timezone-aware
+                    if df["timestamp"].dtype.name.startswith('datetime'):
+                        if df["timestamp"].dt.tz is None:
+                            df["timestamp"] = df["timestamp"].dt.tz_localize(timezone.utc)
+                
+                # Filter creates a new DataFrame (boolean indexing always returns a copy)
+                filtered_df = df[df["timestamp"] >= cutoff_time]
                 after_count = len(filtered_df)
                 self.windows[interval] = filtered_df
                 if before_count != after_count and interval == "1m":

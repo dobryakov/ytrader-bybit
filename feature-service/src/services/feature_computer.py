@@ -340,6 +340,17 @@ class FeatureComputer:
             timestamp = datetime.now(timezone.utc)
         
         try:
+            # Apply buffered orderbook updates (snapshots and deltas) before computing features (batching optimization)
+            if self._orderbook_manager.has_pending_updates(symbol):
+                pending_delta_count = self._orderbook_manager.get_pending_delta_count(symbol)
+                applied_count = self._orderbook_manager.apply_buffered_updates(symbol)
+                logger.debug(
+                    "orderbook_updates_applied_before_compute",
+                    symbol=symbol,
+                    pending_delta_count=pending_delta_count,
+                    applied_count=applied_count,
+                )
+            
             # Get orderbook state
             orderbook = self._orderbook_manager.get_orderbook(symbol)
             
@@ -627,15 +638,16 @@ class FeatureComputer:
             if not isinstance(data, dict):
                 data = payload if isinstance(payload, dict) else {}
             
-            # Determine type: check payload.data.type, payload.type, or infer from structure
+            # Determine type: check payload.data.type, payload.type
             orderbook_type = data.get("type") or payload.get("type")
             
-            # If no type field, check if it's a snapshot by structure (has bids/asks)
+            # If no type field, assume it's a delta/update (Bybit format)
+            # Bybit sends orderbook updates with "b" (bids) and "a" (asks) arrays
+            # True snapshots would have a "type": "snapshot" field
             if orderbook_type is None:
-                if "b" in data or "a" in data or "bids" in data or "asks" in data:
-                    orderbook_type = "snapshot"
-                else:
-                    orderbook_type = "delta"
+                # By default, treat as delta/update (not snapshot)
+                # Snapshots are explicitly marked with type="snapshot"
+                orderbook_type = "delta"
             
             logger.debug(
                 "processing_orderbook_event",
@@ -679,7 +691,8 @@ class FeatureComputer:
                     sequence=snapshot_data["sequence"],
                 )
                 try:
-                    self._orderbook_manager.apply_snapshot(snapshot_data)
+                    # Buffer snapshot instead of applying immediately (performance optimization)
+                    self._orderbook_manager.apply_snapshot(snapshot_data, buffered=True)
                 except Exception as e:
                     logger.error(
                         "orderbook_snapshot_apply_failed",
@@ -688,28 +701,69 @@ class FeatureComputer:
                         exc_info=True,
                     )
             elif orderbook_type == "delta" or orderbook_type == "update":
-                # Convert ws-gateway format to feature-service format
-                delta_data = {
-                    "symbol": data.get("s") or symbol,
-                    "sequence": data.get("seq", data.get("u", 0)),
-                    "delta_type": "update",  # Bybit uses update for all changes
-                    "side": "bid",  # Will be determined from data
-                    "price": None,  # Will be extracted from data
-                    "quantity": None,  # Will be extracted from data
-                }
-                # Bybit delta format: data.b and data.a contain updates
-                # For now, we'll mark as needing snapshot if delta format is complex
-                # TODO: Implement proper delta parsing from Bybit format
-                if self._orderbook_manager.is_desynchronized(symbol):
+                # Convert ws-gateway format (Bybit: data.b and data.a arrays) to individual deltas
+                # Bybit delta format contains arrays of [price, quantity] updates
+                bids = data.get("b", [])
+                asks = data.get("a", [])
+                sequence = data.get("seq", data.get("u", 0))
+                
+                # Extract timestamp
+                timestamp = event.get("timestamp") or event.get("exchange_timestamp")
+                if isinstance(timestamp, str):
+                    from dateutil.parser import parse
+                    timestamp = parse(timestamp)
+                elif timestamp is None:
+                    from datetime import datetime, timezone
+                    timestamp = datetime.now(timezone.utc)
+                elif not isinstance(timestamp, datetime):
+                    if isinstance(timestamp, (int, float)):
+                        timestamp = datetime.fromtimestamp(
+                            timestamp / 1000 if timestamp > 1e10 else timestamp,
+                            tz=timezone.utc
+                        )
+                    else:
+                        timestamp = datetime.now(timezone.utc)
+                
+                # Normalize timestamp to timezone-aware UTC
+                if isinstance(timestamp, datetime) and timestamp.tzinfo is None:
+                    timestamp = timestamp.replace(tzinfo=timezone.utc)
+                
+                # Convert each bid update to a delta and add to buffer
+                for bid_update in bids:
+                    if isinstance(bid_update, list) and len(bid_update) >= 2:
+                        delta_data = {
+                            "symbol": data.get("s") or symbol,
+                            "sequence": sequence,
+                            "delta_type": "update",
+                            "side": "bid",
+                            "price": float(bid_update[0]) if isinstance(bid_update[0], str) else bid_update[0],
+                            "quantity": float(bid_update[1]) if isinstance(bid_update[1], str) else bid_update[1],
+                            "timestamp": timestamp,
+                        }
+                        self._orderbook_manager.apply_delta_buffered(delta_data)
+                
+                # Convert each ask update to a delta and add to buffer
+                for ask_update in asks:
+                    if isinstance(ask_update, list) and len(ask_update) >= 2:
+                        delta_data = {
+                            "symbol": data.get("s") or symbol,
+                            "sequence": sequence,
+                            "delta_type": "update",
+                            "side": "ask",
+                            "price": float(ask_update[0]) if isinstance(ask_update[0], str) else ask_update[0],
+                            "quantity": float(ask_update[1]) if isinstance(ask_update[1], str) else ask_update[1],
+                            "timestamp": timestamp,
+                        }
+                        self._orderbook_manager.apply_delta_buffered(delta_data)
+                
+                # If no valid updates, check if desynchronized
+                if not bids and not asks and self._orderbook_manager.is_desynchronized(symbol):
                     self._orderbook_manager.request_snapshot(symbol)
         elif event_type == "orderbook_snapshot":
             self._orderbook_manager.apply_snapshot(event)
         elif event_type == "orderbook_delta":
-            success = self._orderbook_manager.apply_delta(event)
-            if not success:
-                # Request snapshot if desynchronized
-                if self._orderbook_manager.is_desynchronized(symbol):
-                    self._orderbook_manager.request_snapshot(symbol)
+            # Use buffered delta application for performance (batching)
+            self._orderbook_manager.apply_delta_buffered(event)
         
         # Update rolling windows
         rolling_windows = self.get_rolling_windows(symbol)

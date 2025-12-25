@@ -34,14 +34,25 @@ async def list_signals(
                 ts.signal_id, ts.side, ts.asset, ts.price, ts.confidence,
                 ts.strategy_id, ts.model_version, ts.timestamp, ts.is_warmup, ts.prediction_horizon_seconds,
                 pt.predicted_values->>'direction' as model_prediction,
-                ts.market_data_snapshot->>'price' as price_from,
+                COALESCE(pt.actual_values->>'candle_open', ts.market_data_snapshot->>'price') as price_from,
                 pt.actual_values->>'candle_close' as price_to,
                 pt.actual_values->>'direction' as actual_direction,
                 pt.actual_values->>'return_value' as actual_return,
                 pt.is_obsolete,
                 pt.actual_values_computed_at,
                 pt.target_timestamp,
-                COALESCE(SUM((ee.performance->>'realized_pnl')::numeric) FILTER (WHERE ee.performance->>'realized_pnl' IS NOT NULL), 0) as total_pnl
+                COALESCE(SUM((ee.performance->>'realized_pnl')::numeric) FILTER (WHERE ee.performance->>'realized_pnl' IS NOT NULL), 0) as total_pnl,
+                CASE 
+                    WHEN ts.model_version IS NULL THEN false
+                    ELSE EXISTS (
+                        SELECT 1 
+                        FROM model_versions mv
+                        WHERE mv.version = ts.model_version
+                            AND mv.is_active = true
+                            AND (mv.strategy_id = ts.strategy_id OR (mv.strategy_id IS NULL AND ts.strategy_id IS NULL))
+                            AND (mv.symbol = ts.asset OR mv.symbol IS NULL)
+                    )
+                END as is_model_active
             FROM trading_signals ts
             LEFT JOIN prediction_targets pt ON ts.signal_id = pt.signal_id
             LEFT JOIN execution_events ee ON ts.signal_id = ee.signal_id
@@ -49,6 +60,7 @@ async def list_signals(
             GROUP BY ts.signal_id, ts.side, ts.asset, ts.price, ts.confidence,
                      ts.strategy_id, ts.model_version, ts.timestamp, ts.is_warmup, ts.prediction_horizon_seconds,
                      pt.predicted_values->>'direction',
+                     pt.actual_values->>'candle_open',
                      ts.market_data_snapshot->>'price',
                      pt.actual_values->>'candle_close',
                      pt.actual_values->>'direction',
@@ -158,7 +170,8 @@ async def list_signals(
             actual_direction = None
             actual_return = None
             
-            # Try to get price_from from market_data_snapshot first, fallback to signal price
+            # Get price_from: priority is candle_open from actual_values (used for direction calculation),
+            # fallback to market_data_snapshot->>'price' (from feature_vector at signal creation)
             if row.get("price_from"):
                 try:
                     price_from = float(row["price_from"])
@@ -197,6 +210,38 @@ async def list_signals(
                     # Only use calculated return if it's significantly different from 0 (more than 0.0001%)
                     if abs(calculated_return) > 0.000001:
                         actual_return = calculated_return
+                except (ValueError, TypeError, ZeroDivisionError):
+                    pass
+            
+            # Validate and correct direction if it doesn't match actual price movement
+            # This handles cases where direction was computed based on different prices than displayed
+            if price_from is not None and price_to is not None and price_from != 0:
+                try:
+                    calculated_return = (price_to - price_from) / price_from
+                    calculated_direction = "UP" if calculated_return > 0 else "DOWN" if calculated_return < 0 else None
+                    
+                    # If direction exists but doesn't match calculated direction, use calculated one
+                    # This ensures consistency between displayed prices and direction
+                    if actual_direction is not None and calculated_direction is not None:
+                        if actual_direction != calculated_direction:
+                            logger.debug(
+                                "Direction mismatch corrected",
+                                signal_id=str(row.get("signal_id")),
+                                stored_direction=actual_direction,
+                                calculated_direction=calculated_direction,
+                                price_from=price_from,
+                                price_to=price_to,
+                                calculated_return=calculated_return,
+                            )
+                            actual_direction = calculated_direction
+                            # Also update return_value if it was inconsistent
+                            if actual_return is None or abs(actual_return - calculated_return) > 0.0001:
+                                actual_return = calculated_return
+                    elif calculated_direction is not None and actual_direction is None:
+                        # If direction is missing but we can calculate it, use calculated one
+                        actual_direction = calculated_direction
+                        if actual_return is None:
+                            actual_return = calculated_return
                 except (ValueError, TypeError, ZeroDivisionError):
                     pass
             
@@ -259,6 +304,7 @@ async def list_signals(
                     "status": actual_movement_status,  # "computed", "pending", "waiting", "obsolete", or None
                 } if price_from is not None or price_to is not None or actual_movement_status else None,
                 "total_pnl": str(total_pnl) if total_pnl is not None else None,  # Total PnL from execution events
+                "is_model_active": bool(row.get("is_model_active", False)),  # Whether the model is currently active
             }
             signals_data.append(signal_dict)
 

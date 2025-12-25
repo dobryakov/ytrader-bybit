@@ -125,13 +125,13 @@ class QuantityCalculator:
             logger.debug("symbol_info_cache_hit", asset=asset, trace_id=trace_id)
             return self._symbol_info_cache[asset]
 
-            # Fetch from Bybit API
-            try:
-                from ..config.settings import settings
-                bybit_client = get_bybit_client()
-                # Bybit v5 API endpoint for instrument info
-                endpoint = "/v5/market/instruments-info"
-                params = {"category": settings.bybit_market_category, "symbol": asset}
+        # Fetch from Bybit API
+        try:
+            from ..config.settings import settings
+            bybit_client = get_bybit_client()
+            # Bybit v5 API endpoint for instrument info
+            endpoint = "/v5/market/instruments-info"
+            params = {"category": settings.bybit_market_category, "symbol": asset}
 
             response = await bybit_client.get(endpoint, params=params, authenticated=False)
             result = response.get("result", {})

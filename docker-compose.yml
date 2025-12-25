@@ -74,6 +74,17 @@ services:
     environment:
       - RABBITMQ_DEFAULT_USER=${RABBITMQ_USER:-guest}
       - RABBITMQ_DEFAULT_PASS=${RABBITMQ_PASSWORD:-guest}
+      # Настройки для уменьшения персистентности на диск
+      # Минимальный свободный диск
+      - RABBITMQ_DISK_FREE_LIMIT=50MB
+      # Увеличиваем размер журнала перед синхронизацией на диск
+      - RABBITMQ_QUEUE_INDEX_MAX_JOURNAL_ENTRIES=32768
+      # Размер сообщений, встраиваемых в индекс (в байтах)
+      - RABBITMQ_QUEUE_INDEX_EMBED_MSGS_BELOW=4096
+      # Heartbeat для соединений (в секундах)
+      - RABBITMQ_HEARTBEAT=60
+      # Уровень логирования (warning вместо info для уменьшения записи)
+      - RABBITMQ_LOG_LEVEL=warning
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
     networks:
@@ -600,39 +611,39 @@ services:
       retries: 3
       start_period: 60s
 
-  trading-events-forwarder:
-    build:
-      context: ./trading-events-forwarder
-      dockerfile: Dockerfile
-    container_name: trading-events-forwarder
-    volumes:
-      - ./trading-events-forwarder/src:/app/src
-    environment:
-      - RABBITMQ_HOST=${RABBITMQ_HOST:-rabbitmq}
-      - RABBITMQ_PORT=${RABBITMQ_PORT:-5672}
-      - RABBITMQ_USER=${RABBITMQ_USER:-guest}
-      - RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD:-guest}
-      - RABBITMQ_TRADING_EVENTS_EXCHANGE=${RABBITMQ_TRADING_EVENTS_EXCHANGE:-trading_events}
-      - RABBITMQ_TRADING_EVENTS_QUEUE=${RABBITMQ_TRADING_EVENTS_QUEUE:-trading_events_forwarder}
-      - GRAYLOG_HOST=${GRAYLOG_HOST:-graylog}
-      - GRAYLOG_CUSTOM_EVENTS_GELF_PORT=${GRAYLOG_CUSTOM_EVENTS_GELF_PORT:-4712}
-      - TRADING_EVENTS_FORWARDER_SERVICE_NAME=${TRADING_EVENTS_FORWARDER_SERVICE_NAME:-trading-events-forwarder}
-      - TRADING_EVENTS_FORWARDER_LOG_LEVEL=${TRADING_EVENTS_FORWARDER_LOG_LEVEL:-INFO}
-      - ENVIRONMENT=${ENVIRONMENT:-production}
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-      graylog:
-        condition: service_started
-    networks:
-      - ytrader-network
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "python", "-m", "src.healthcheck"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
+#  trading-events-forwarder:
+#    build:
+#      context: ./trading-events-forwarder
+#      dockerfile: Dockerfile
+#    container_name: trading-events-forwarder
+#    volumes:
+#      - ./trading-events-forwarder/src:/app/src
+#    environment:
+#      - RABBITMQ_HOST=${RABBITMQ_HOST:-rabbitmq}
+#      - RABBITMQ_PORT=${RABBITMQ_PORT:-5672}
+#      - RABBITMQ_USER=${RABBITMQ_USER:-guest}
+#      - RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD:-guest}
+#      - RABBITMQ_TRADING_EVENTS_EXCHANGE=${RABBITMQ_TRADING_EVENTS_EXCHANGE:-trading_events}
+#      - RABBITMQ_TRADING_EVENTS_QUEUE=${RABBITMQ_TRADING_EVENTS_QUEUE:-trading_events_forwarder}
+#      - GRAYLOG_HOST=${GRAYLOG_HOST:-graylog}
+#      - GRAYLOG_CUSTOM_EVENTS_GELF_PORT=${GRAYLOG_CUSTOM_EVENTS_GELF_PORT:-4712}
+#      - TRADING_EVENTS_FORWARDER_SERVICE_NAME=${TRADING_EVENTS_FORWARDER_SERVICE_NAME:-trading-events-forwarder}
+#      - TRADING_EVENTS_FORWARDER_LOG_LEVEL=${TRADING_EVENTS_FORWARDER_LOG_LEVEL:-INFO}
+#      - ENVIRONMENT=${ENVIRONMENT:-production}
+#    depends_on:
+#      rabbitmq:
+#        condition: service_healthy
+#      graylog:
+#        condition: service_started
+#    networks:
+#      - ytrader-network
+#    restart: unless-stopped
+#    healthcheck:
+#      test: ["CMD", "python", "-m", "src.healthcheck"]
+#      interval: 30s
+#      timeout: 10s
+#      retries: 3
+#      start_period: 30s
 
   dashboard-api:
     build:
@@ -644,6 +655,7 @@ services:
     volumes:
       - ./dashboard-api/src:/app/src
       - ./dashboard-api/tests:/app/tests
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
       - POSTGRES_HOST=${POSTGRES_HOST:-postgres}
       - POSTGRES_PORT=${POSTGRES_PORT:-5432}
@@ -704,7 +716,7 @@ services:
       - ytrader-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:4051"]
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "--timeout=5", "http://127.0.0.1:4051"]
       interval: 30s
       timeout: 10s
       retries: 3

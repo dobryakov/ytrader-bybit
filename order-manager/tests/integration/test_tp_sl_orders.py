@@ -27,8 +27,8 @@ def order_executor():
     executor = OrderExecutor()
     executor.instrument_info_manager = MagicMock()
     executor.instrument_info_manager.get_instrument = AsyncMock()
-    executor.position_manager = MagicMock()
-    executor.position_manager.get_position = AsyncMock(return_value=None)
+    executor.position_manager_client = MagicMock()
+    executor.position_manager_client.get_position = AsyncMock(return_value=None)
     return executor
 
 
@@ -103,22 +103,28 @@ async def test_prepare_bybit_params_with_tp_sl_from_metadata(
             with patch.object(settings, "order_manager_sl_enabled", True):
                 with patch.object(settings, "order_manager_tp_sl_priority", "metadata"):
                     with patch.object(settings, "order_manager_tp_sl_trigger_by", "LastPrice"):
-                        params = await order_executor._prepare_bybit_order_params(
-                            signal=sample_signal_with_metadata,
-                            order_type="Market",
-                            quantity=Decimal("0.02"),
-                            price=None,
-                        )
-                        
-                        # Verify TP/SL are in params
-                        assert "takeProfit" in params
-                        assert "stopLoss" in params
-                        assert params["tpTriggerBy"] == "LastPrice"
-                        assert params["slTriggerBy"] == "LastPrice"
-                        
-                        # Verify values from metadata
-                        assert Decimal(params["takeProfit"]) == Decimal("52000.0")
-                        assert Decimal(params["stopLoss"]) == Decimal("48000.0")
+                        # Mock market price to match metadata TP/SL expectations
+                        # Use snapshot price to ensure TP (52000) > entry_price
+                        with patch(
+                            "src.services.order_type_selector.OrderTypeSelector._get_current_market_price",
+                            new=AsyncMock(return_value=sample_signal_with_metadata.market_data_snapshot.price),
+                        ):
+                            params = await order_executor._prepare_bybit_order_params(
+                                signal=sample_signal_with_metadata,
+                                order_type="Market",
+                                quantity=Decimal("0.02"),
+                                price=None,
+                            )
+                            
+                            # Verify TP/SL are in params
+                            assert "takeProfit" in params
+                            assert "stopLoss" in params
+                            assert params["tpTriggerBy"] == "LastPrice"
+                            assert params["slTriggerBy"] == "LastPrice"
+                            
+                            # Verify values from metadata
+                            assert Decimal(params["takeProfit"]) == Decimal("52000.0")
+                            assert Decimal(params["stopLoss"]) == Decimal("48000.0")
 
 
 @pytest.mark.asyncio

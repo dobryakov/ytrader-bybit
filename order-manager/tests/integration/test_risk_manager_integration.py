@@ -159,9 +159,12 @@ async def test_balance_check_with_position_from_position_manager(sample_signal):
     # For this integration-style test we don't hit external APIs:
     # - skip real sync
     # - simulate that USDT balance is available and sufficient
+    # - mock position manager client to avoid real API calls
     risk_manager._trigger_balance_sync = AsyncMock(return_value=False)
     # Provide sufficiently large USDT balance so check passes
     risk_manager._get_latest_usdt_balance_from_db = AsyncMock(return_value=Decimal("50000.0"))
+    # Mock position manager client to return None (no position) to avoid real API calls
+    risk_manager.position_manager_client.get_position = AsyncMock(return_value=None)
 
     from datetime import datetime
     from uuid import uuid4

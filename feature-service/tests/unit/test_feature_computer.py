@@ -97,8 +97,38 @@ class TestFeatureComputer:
         """Test updating market data with orderbook snapshot."""
         feature_computer.update_market_data(sample_orderbook_snapshot)
         
+        # Snapshot is buffered, so need to apply buffered updates or compute features to apply it
+        feature_computer.compute_features("BTCUSDT")
         orderbook = feature_computer._orderbook_manager.get_orderbook("BTCUSDT")
         assert orderbook is not None
+    
+    def test_update_market_data_orderbook_delta_buffered(self, feature_computer, sample_orderbook_snapshot, sample_orderbook_deltas):
+        """Test that orderbook deltas are buffered and applied during feature computation."""
+        # Setup orderbook with snapshot
+        feature_computer.update_market_data(sample_orderbook_snapshot)
+        
+        # Add delta (should be buffered, not applied immediately)
+        delta = {
+            "event_type": "orderbook_delta",
+            **sample_orderbook_deltas[0]
+        }
+        feature_computer.update_market_data(delta)
+        
+        # Delta should be in buffer
+        assert feature_computer._orderbook_manager.has_pending_deltas("BTCUSDT") is True
+        
+        # Orderbook sequence should not be updated yet
+        orderbook = feature_computer._orderbook_manager.get_orderbook("BTCUSDT")
+        assert orderbook.sequence == 1000
+        
+        # Compute features - should apply buffered deltas
+        fv = feature_computer.compute_features("BTCUSDT")
+        
+        # Now delta should be applied
+        assert feature_computer._orderbook_manager.has_pending_deltas("BTCUSDT") is False
+        orderbook = feature_computer._orderbook_manager.get_orderbook("BTCUSDT")
+        assert orderbook.sequence == 1001
+        assert fv is not None
     
     def test_update_market_data_funding_rate(self, feature_computer):
         """Test updating market data with funding rate."""

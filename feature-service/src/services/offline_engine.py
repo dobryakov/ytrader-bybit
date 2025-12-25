@@ -512,8 +512,9 @@ class OfflineEngine:
                 (deltas["timestamp"] <= timestamp)
             ].sort_values("timestamp")
         
-        # Create orderbook manager and apply snapshot
-        orderbook_manager = OrderbookManager()
+        # Create orderbook manager with batching disabled for offline processing
+        # (data is already ordered, no need for batching optimization)
+        orderbook_manager = OrderbookManager(enable_delta_batching=False)
         
         # Convert snapshot to dict format
         snapshot_dict = {
@@ -527,7 +528,8 @@ class OfflineEngine:
         if has_sequence:
             snapshot_dict["sequence"] = int(snapshot_sequence)
         
-        orderbook_manager.apply_snapshot(snapshot_dict)
+        # Apply snapshot immediately (not buffered) for offline processing
+        orderbook_manager.apply_snapshot(snapshot_dict, buffered=False)
         
         # Apply deltas in sequence order (or timestamp order if no sequence)
         # For historical data, we apply deltas directly to orderbook state

@@ -13,7 +13,7 @@ from ..config.logging import get_logger
 from ..models.trading_signal import TradingSignal
 from ..models.order import Order
 from ..publishers.order_event_publisher import OrderEventPublisher
-from ..services.position_manager import PositionManager
+from ..services.position_manager_client import PositionManagerClient
 from ..services.instrument_info_manager import InstrumentInfoManager
 from ..services.fee_rate_manager import FeeRateManager
 from ..utils.bybit_client import get_bybit_client
@@ -28,7 +28,7 @@ class OrderExecutor:
     def __init__(self):
         """Initialize order executor."""
         self.event_publisher = OrderEventPublisher()
-        self.position_manager = PositionManager()
+        self.position_manager_client = PositionManagerClient()
         self.instrument_info_manager = InstrumentInfoManager()
         self.fee_rate_manager = FeeRateManager()
 
@@ -1349,6 +1349,7 @@ class OrderExecutor:
 
         selector = OrderTypeSelector()
         asset = signal.asset
+        trace_id = signal.trace_id
         # Side for Bybit API: "Buy" or "Sell" (not "SELL")
         side_api = "Buy" if signal.signal_type.lower() == "buy" else "Sell"
         # Side for database: "Buy" or "SELL" (uppercase for SELL per constraint)
@@ -1450,7 +1451,7 @@ class OrderExecutor:
             )
         else:
             try:
-                position = await self.position_manager.get_position(asset)
+                position = await self.position_manager_client.get_position(asset, mode="one-way", trace_id=trace_id)
                 if position and abs(position.size) > Decimal("0.00000001"):  # Position exists and is significant
                     is_reducing_long = side_api == "Sell" and position.size > 0
                     is_reducing_short = side_api == "Buy" and position.size < 0
@@ -2924,8 +2925,8 @@ class OrderExecutor:
         asset = signal.asset
         signal_type = signal.signal_type.lower()
         
-        # Get current position from database
-        position = await self.position_manager.get_position(asset)
+        # Get current position from position-manager service
+        position = await self.position_manager_client.get_position(asset, mode="one-way", trace_id=trace_id)
         has_position = position is not None
         position_size = position.size if position else Decimal("0")
         has_long_position = has_position and position_size > 0

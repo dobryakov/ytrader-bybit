@@ -167,7 +167,11 @@ export default function Signals() {
                       )}
                     </TableCell>
                     <TableCell>{signal.strategy_id || 'N/A'}</TableCell>
-                    <TableCell>{signal.model_version || 'N/A'}</TableCell>
+                    <TableCell>
+                      {signal.model_version 
+                        ? `${signal.model_version}${signal.is_model_active ? ' [active]' : ''}`
+                        : 'N/A'}
+                    </TableCell>
                     <TableCell>{format(parseISO(signal.timestamp), 'dd.MM.yyyy HH:mm:ss')}</TableCell>
                     <TableCell>
                       <Button

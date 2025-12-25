@@ -47,7 +47,8 @@ class IncrementalOrderbookManager:
         self.last_processed_timestamp: Optional[datetime] = None
         
         # Orderbook manager for snapshot application
-        self._orderbook_manager = OrderbookManager()
+        # Disable batching for incremental orderbook (data is processed sequentially from files)
+        self._orderbook_manager = OrderbookManager(enable_delta_batching=False)
         
         logger.info(
             "incremental_orderbook_manager_initialized",
@@ -195,7 +196,8 @@ class IncrementalOrderbookManager:
             "asks": asks_val,
         }
         
-        self._orderbook_manager.apply_snapshot(snapshot_dict)
+        # Apply snapshot immediately (not buffered) for incremental processing
+        self._orderbook_manager.apply_snapshot(snapshot_dict, buffered=False)
         orderbook_state = self._orderbook_manager.get_orderbook(self.symbol)
         
         if orderbook_state is None:

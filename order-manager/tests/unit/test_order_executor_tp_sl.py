@@ -86,16 +86,18 @@ class TestCalculateTpSlFromSettings:
         """Test TP/SL calculation for buy order with default settings."""
         order_executor.instrument_info_manager.get_instrument.return_value = mock_instrument_info
         
-        entry_price = Decimal("50000.0")
-        tp_price, sl_price = await order_executor._calculate_tp_sl_from_settings(
-            signal=sample_signal_buy,
-            entry_price=entry_price,
-        )
-        
-        # TP = 50000 * (1 + 0.03) = 51500.0
-        assert tp_price == Decimal("51500.00")
-        # SL = 50000 * (1 - 0.02) = 49000.0
-        assert sl_price == Decimal("49000.00")
+        # Explicitly set SL threshold to -2.0% for test consistency
+        with patch.object(settings, "order_manager_sl_threshold_pct", -2.0):
+            entry_price = Decimal("50000.0")
+            tp_price, sl_price = await order_executor._calculate_tp_sl_from_settings(
+                signal=sample_signal_buy,
+                entry_price=entry_price,
+            )
+            
+            # TP = 50000 * (1 + 0.03) = 51500.0
+            assert tp_price == Decimal("51500.00")
+            # SL = 50000 * (1 - 0.02) = 49000.0
+            assert sl_price == Decimal("49000.00")
 
     @pytest.mark.asyncio
     async def test_calculate_tp_sl_sell_order_with_defaults(
@@ -104,16 +106,18 @@ class TestCalculateTpSlFromSettings:
         """Test TP/SL calculation for sell order with default settings."""
         order_executor.instrument_info_manager.get_instrument.return_value = mock_instrument_info
         
-        entry_price = Decimal("3000.0")
-        tp_price, sl_price = await order_executor._calculate_tp_sl_from_settings(
-            signal=sample_signal_sell,
-            entry_price=entry_price,
-        )
-        
-        # TP = 3000 * (1 - 0.03) = 2910.0
-        assert tp_price == Decimal("2910.00")
-        # SL = 3000 * (1 + 0.02) = 3060.0
-        assert sl_price == Decimal("3060.00")
+        # Explicitly set SL threshold to -2.0% for test consistency
+        with patch.object(settings, "order_manager_sl_threshold_pct", -2.0):
+            entry_price = Decimal("3000.0")
+            tp_price, sl_price = await order_executor._calculate_tp_sl_from_settings(
+                signal=sample_signal_sell,
+                entry_price=entry_price,
+            )
+            
+            # TP = 3000 * (1 - 0.03) = 2910.0
+            assert tp_price == Decimal("2910.00")
+            # SL = 3000 * (1 + 0.02) = 3060.0
+            assert sl_price == Decimal("3060.00")
 
     @pytest.mark.asyncio
     async def test_calculate_tp_sl_with_custom_thresholds(
@@ -143,14 +147,15 @@ class TestCalculateTpSlFromSettings:
         order_executor.instrument_info_manager.get_instrument.return_value = mock_instrument_info
         
         with patch.object(settings, "order_manager_tp_enabled", False):
-            entry_price = Decimal("50000.0")
-            tp_price, sl_price = await order_executor._calculate_tp_sl_from_settings(
-                signal=sample_signal_buy,
-                entry_price=entry_price,
-            )
-            
-            assert tp_price is None
-            assert sl_price == Decimal("49000.00")  # SL still calculated
+            with patch.object(settings, "order_manager_sl_threshold_pct", -2.0):
+                entry_price = Decimal("50000.0")
+                tp_price, sl_price = await order_executor._calculate_tp_sl_from_settings(
+                    signal=sample_signal_buy,
+                    entry_price=entry_price,
+                )
+                
+                assert tp_price is None
+                assert sl_price == Decimal("49000.00")  # SL still calculated
 
     @pytest.mark.asyncio
     async def test_calculate_tp_sl_sl_disabled(
@@ -178,16 +183,17 @@ class TestCalculateTpSlFromSettings:
         mock_info.price_tick_size = Decimal("0.1")  # Different tick size
         order_executor.instrument_info_manager.get_instrument.return_value = mock_info
         
-        entry_price = Decimal("50000.0")
-        tp_price, sl_price = await order_executor._calculate_tp_sl_from_settings(
-            signal=sample_signal_buy,
-            entry_price=entry_price,
-        )
-        
-        # TP = 51500.0, rounded to 0.1 tick size = 51500.0
-        assert tp_price == Decimal("51500.0")
-        # SL = 49000.0, rounded to 0.1 tick size = 49000.0
-        assert sl_price == Decimal("49000.0")
+        with patch.object(settings, "order_manager_sl_threshold_pct", -2.0):
+            entry_price = Decimal("50000.0")
+            tp_price, sl_price = await order_executor._calculate_tp_sl_from_settings(
+                signal=sample_signal_buy,
+                entry_price=entry_price,
+            )
+            
+            # TP = 51500.0, rounded to 0.1 tick size = 51500.0
+            assert tp_price == Decimal("51500.0")
+            # SL = 49000.0, rounded to 0.1 tick size = 49000.0
+            assert sl_price == Decimal("49000.0")
 
     @pytest.mark.asyncio
     async def test_calculate_tp_sl_instrument_info_not_found(
@@ -196,15 +202,16 @@ class TestCalculateTpSlFromSettings:
         """Test TP/SL calculation when instrument info is not found."""
         order_executor.instrument_info_manager.get_instrument.return_value = None
         
-        entry_price = Decimal("50000.0")
-        tp_price, sl_price = await order_executor._calculate_tp_sl_from_settings(
-            signal=sample_signal_buy,
-            entry_price=entry_price,
-        )
-        
-        # Should use default tick size (0.01)
-        assert tp_price == Decimal("51500.00")
-        assert sl_price == Decimal("49000.00")
+        with patch.object(settings, "order_manager_sl_threshold_pct", -2.0):
+            entry_price = Decimal("50000.0")
+            tp_price, sl_price = await order_executor._calculate_tp_sl_from_settings(
+                signal=sample_signal_buy,
+                entry_price=entry_price,
+            )
+            
+            # Should use default tick size (0.01)
+            assert tp_price == Decimal("51500.00")
+            assert sl_price == Decimal("49000.00")
 
 
 class TestCalculateTpSlHybrid:
@@ -269,15 +276,16 @@ class TestCalculateTpSlHybrid:
         sample_signal_buy.metadata = None
         
         with patch.object(settings, "order_manager_tp_sl_priority", "both"):
-            entry_price = Decimal("50000.0")
-            tp_price, sl_price = await order_executor._calculate_tp_sl(
-                signal=sample_signal_buy,
-                entry_price=entry_price,
-            )
-            
-            # Should use settings values
-            assert tp_price == Decimal("51500.00")
-            assert sl_price == Decimal("49000.00")
+            with patch.object(settings, "order_manager_sl_threshold_pct", -2.0):
+                entry_price = Decimal("50000.0")
+                tp_price, sl_price = await order_executor._calculate_tp_sl(
+                    signal=sample_signal_buy,
+                    entry_price=entry_price,
+                )
+                
+                # Should use settings values
+                assert tp_price == Decimal("51500.00")
+                assert sl_price == Decimal("49000.00")
 
     @pytest.mark.asyncio
     async def test_calculate_tp_sl_partial_metadata(
@@ -292,15 +300,16 @@ class TestCalculateTpSlHybrid:
         }
         
         with patch.object(settings, "order_manager_tp_sl_priority", "both"):
-            entry_price = Decimal("50000.0")
-            tp_price, sl_price = await order_executor._calculate_tp_sl(
-                signal=sample_signal_buy,
-                entry_price=entry_price,
-            )
-            
-            # TP from metadata, SL from settings
-            assert tp_price == Decimal("52000.0")
-            assert sl_price == Decimal("49000.00")
+            with patch.object(settings, "order_manager_sl_threshold_pct", -2.0):
+                entry_price = Decimal("50000.0")
+                tp_price, sl_price = await order_executor._calculate_tp_sl(
+                    signal=sample_signal_buy,
+                    entry_price=entry_price,
+                )
+                
+                # TP from metadata, SL from settings
+                assert tp_price == Decimal("52000.0")
+                assert sl_price == Decimal("49000.00")
 
     @pytest.mark.asyncio
     async def test_calculate_tp_sl_priority_settings(
@@ -316,15 +325,16 @@ class TestCalculateTpSlHybrid:
         }
         
         with patch.object(settings, "order_manager_tp_sl_priority", "settings"):
-            entry_price = Decimal("50000.0")
-            tp_price, sl_price = await order_executor._calculate_tp_sl(
-                signal=sample_signal_buy,
-                entry_price=entry_price,
-            )
-            
-            # Should use settings values (ignore metadata)
-            assert tp_price == Decimal("51500.00")
-            assert sl_price == Decimal("49000.00")
+            with patch.object(settings, "order_manager_sl_threshold_pct", -2.0):
+                entry_price = Decimal("50000.0")
+                tp_price, sl_price = await order_executor._calculate_tp_sl(
+                    signal=sample_signal_buy,
+                    entry_price=entry_price,
+                )
+                
+                # Should use settings values (ignore metadata)
+                assert tp_price == Decimal("51500.00")
+                assert sl_price == Decimal("49000.00")
 
     @pytest.mark.asyncio
     async def test_calculate_tp_sl_priority_metadata_no_metadata_fallback(
@@ -340,15 +350,16 @@ class TestCalculateTpSlHybrid:
         }
         
         with patch.object(settings, "order_manager_tp_sl_priority", "metadata"):
-            entry_price = Decimal("50000.0")
-            tp_price, sl_price = await order_executor._calculate_tp_sl(
-                signal=sample_signal_buy,
-                entry_price=entry_price,
-            )
-            
-            # Should fallback to settings values
-            assert tp_price == Decimal("51500.00")
-            assert sl_price == Decimal("49000.00")
+            with patch.object(settings, "order_manager_sl_threshold_pct", -2.0):
+                entry_price = Decimal("50000.0")
+                tp_price, sl_price = await order_executor._calculate_tp_sl(
+                    signal=sample_signal_buy,
+                    entry_price=entry_price,
+                )
+                
+                # Should fallback to settings values
+                assert tp_price == Decimal("51500.00")
+                assert sl_price == Decimal("49000.00")
 
     @pytest.mark.asyncio
     async def test_calculate_tp_sl_priority_metadata_none_metadata_fallback(
@@ -361,15 +372,16 @@ class TestCalculateTpSlHybrid:
         sample_signal_buy.metadata = None
         
         with patch.object(settings, "order_manager_tp_sl_priority", "metadata"):
-            entry_price = Decimal("50000.0")
-            tp_price, sl_price = await order_executor._calculate_tp_sl(
-                signal=sample_signal_buy,
-                entry_price=entry_price,
-            )
-            
-            # Should fallback to settings values
-            assert tp_price == Decimal("51500.00")
-            assert sl_price == Decimal("49000.00")
+            with patch.object(settings, "order_manager_sl_threshold_pct", -2.0):
+                entry_price = Decimal("50000.0")
+                tp_price, sl_price = await order_executor._calculate_tp_sl(
+                    signal=sample_signal_buy,
+                    entry_price=entry_price,
+                )
+                
+                # Should fallback to settings values
+                assert tp_price == Decimal("51500.00")
+                assert sl_price == Decimal("49000.00")
 
 
 class TestPrepareBybitOrderParamsWithTpSl:
@@ -381,39 +393,40 @@ class TestPrepareBybitOrderParamsWithTpSl:
     ):
         """Test Bybit params preparation with TP/SL enabled."""
         order_executor.instrument_info_manager.get_instrument.return_value = mock_instrument_info
-        order_executor.position_manager = MagicMock()
-        order_executor.position_manager.get_position = AsyncMock(return_value=None)
+        order_executor.position_manager_client = MagicMock()
+        order_executor.position_manager_client.get_position = AsyncMock(return_value=None)
         
         with patch.object(settings, "order_manager_tp_sl_enabled", True):
             with patch.object(settings, "order_manager_tp_enabled", True):
                 with patch.object(settings, "order_manager_sl_enabled", True):
                     with patch.object(settings, "order_manager_tp_sl_priority", "settings"):
-                        with patch.object(settings, "order_manager_tp_sl_trigger_by", "LastPrice"):
-                            # Ensure exchange trailing stop is disabled so that
-                            # TP/SL calculations use the expected entry_price from test.
-                            with patch.object(
-                                settings,
-                                "order_manager_exchange_trailing_stop_enabled",
-                                False,
-                            ):
-                                # Avoid real market price fetch in unit test: use snapshot price (50000.0)
-                                with patch(
-                                    "src.services.order_type_selector.OrderTypeSelector._get_current_market_price",
-                                    new=AsyncMock(return_value=sample_signal_buy.market_data_snapshot.price),
+                        with patch.object(settings, "order_manager_sl_threshold_pct", -2.0):
+                            with patch.object(settings, "order_manager_tp_sl_trigger_by", "LastPrice"):
+                                # Ensure exchange trailing stop is disabled so that
+                                # TP/SL calculations use the expected entry_price from test.
+                                with patch.object(
+                                    settings,
+                                    "order_manager_exchange_trailing_stop_enabled",
+                                    False,
                                 ):
-                                    params = await order_executor._prepare_bybit_order_params(
-                                        signal=sample_signal_buy,
-                                        order_type="Market",
-                                        quantity=Decimal("0.02"),
-                                        price=None,
-                                    )
-                            
-                            assert "takeProfit" in params
-                            assert "stopLoss" in params
-                            assert params["tpTriggerBy"] == "LastPrice"
-                            assert params["slTriggerBy"] == "LastPrice"
-                            assert Decimal(params["takeProfit"]) == Decimal("51500.00")
-                            assert Decimal(params["stopLoss"]) == Decimal("49000.00")
+                                    # Avoid real market price fetch in unit test: use snapshot price (50000.0)
+                                    with patch(
+                                        "src.services.order_type_selector.OrderTypeSelector._get_current_market_price",
+                                        new=AsyncMock(return_value=sample_signal_buy.market_data_snapshot.price),
+                                    ):
+                                        params = await order_executor._prepare_bybit_order_params(
+                                            signal=sample_signal_buy,
+                                            order_type="Market",
+                                            quantity=Decimal("0.02"),
+                                            price=None,
+                                        )
+                                
+                                assert "takeProfit" in params
+                                assert "stopLoss" in params
+                                assert params["tpTriggerBy"] == "LastPrice"
+                                assert params["slTriggerBy"] == "LastPrice"
+                                assert Decimal(params["takeProfit"]) == Decimal("51500.00")
+                                assert Decimal(params["stopLoss"]) == Decimal("49000.00")
 
     @pytest.mark.asyncio
     async def test_prepare_bybit_params_with_tp_sl_disabled(
@@ -421,8 +434,8 @@ class TestPrepareBybitOrderParamsWithTpSl:
     ):
         """Test Bybit params preparation with TP/SL disabled."""
         order_executor.instrument_info_manager.get_instrument.return_value = mock_instrument_info
-        order_executor.position_manager = MagicMock()
-        order_executor.position_manager.get_position = AsyncMock(return_value=None)
+        order_executor.position_manager_client = MagicMock()
+        order_executor.position_manager_client.get_position = AsyncMock(return_value=None)
         
         with patch.object(settings, "order_manager_tp_sl_enabled", False):
             params = await order_executor._prepare_bybit_order_params(
@@ -441,8 +454,8 @@ class TestPrepareBybitOrderParamsWithTpSl:
     ):
         """Test Bybit params preparation with TP/SL from metadata."""
         order_executor.instrument_info_manager.get_instrument.return_value = mock_instrument_info
-        order_executor.position_manager = MagicMock()
-        order_executor.position_manager.get_position = AsyncMock(return_value=None)
+        order_executor.position_manager_client = MagicMock()
+        order_executor.position_manager_client.get_position = AsyncMock(return_value=None)
         
         # Add metadata to signal
         sample_signal_buy.metadata = {

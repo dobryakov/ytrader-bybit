@@ -101,3 +101,93 @@ export function useModelTrainingHistory(filters?: {
   })
 }
 
+export interface SignalSuccessRateItem {
+  hour: string
+  total_signals: number
+  evaluated_signals: number
+  successful_by_direction: number
+  successful_by_pnl: number
+  success_rate_direction_percent: number | null
+  success_rate_pnl_percent: number | null
+  avg_confidence: number | null
+  buy_signals: number
+  sell_signals: number
+  total_pnl_sum: number | null
+  avg_pnl: number | null
+}
+
+export interface SignalSuccessRateResponse {
+  data: SignalSuccessRateItem[]
+  count: number
+}
+
+export function useSignalSuccessRate(filters?: {
+  model_version?: string
+  asset?: string
+  strategy_id?: string
+  start_date?: string
+  end_date?: string
+}) {
+  return useQuery<SignalSuccessRateResponse>({
+    queryKey: ['signalSuccessRate', filters],
+    queryFn: async () => {
+      if (!filters?.model_version || !filters?.asset || !filters?.strategy_id) {
+        return { data: [], count: 0 }
+      }
+
+      const params = new URLSearchParams()
+      params.append('model_version', filters.model_version)
+      params.append('asset', filters.asset)
+      params.append('strategy_id', filters.strategy_id)
+      if (filters?.start_date) params.append('start_date', filters.start_date)
+      if (filters?.end_date) params.append('end_date', filters.end_date)
+
+      const response = await api.get(`/v1/models/signal-success-rate?${params.toString()}`)
+      return response.data
+    },
+    enabled: !!(filters?.model_version && filters?.asset && filters?.strategy_id),
+  })
+}
+
+export function useAvailableAssets() {
+  return useQuery<string[]>({
+    queryKey: ['availableAssets'],
+    queryFn: async () => {
+      const response = await api.get('/v1/models/available-assets')
+      return response.data.assets
+    },
+  })
+}
+
+export function useAvailableStrategies() {
+  return useQuery<string[]>({
+    queryKey: ['availableStrategies'],
+    queryFn: async () => {
+      const response = await api.get('/v1/models/available-strategies')
+      return response.data.strategies
+    },
+  })
+}
+
+export function useActiveModelVersion(filters?: {
+  asset?: string
+  strategy_id?: string
+}) {
+  return useQuery<string | null>({
+    queryKey: ['activeModelVersion', filters],
+    queryFn: async () => {
+      if (!filters?.asset || !filters?.strategy_id) {
+        return null
+      }
+
+      const params = new URLSearchParams()
+      params.append('asset', filters.asset)
+      params.append('strategy_id', filters.strategy_id)
+
+      const response = await api.get(`/v1/models/active-version?${params.toString()}`)
+      return response.data.version || null
+    },
+    enabled: !!(filters?.asset && filters?.strategy_id),
+  })
+}
+

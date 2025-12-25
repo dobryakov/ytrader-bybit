@@ -8,6 +8,7 @@ from typing import Optional
 from ..config.logging import get_logger
 from ..config.settings import settings
 from ..services.position_manager import PositionManager
+from ..services.ws_gateway_client import WSGatewayClient
 from ..utils.tracing import generate_trace_id, set_trace_id
 
 
@@ -26,6 +27,7 @@ class PositionValidationTask:
         self._task: Optional[asyncio.Task] = None
         self._should_run = False
         self._position_manager = PositionManager()
+        self._ws_gateway_client = WSGatewayClient()
 
     async def start(self) -> None:
         """Start the validation loop."""
@@ -126,6 +128,20 @@ class PositionValidationTask:
                     error_count=error_count,
                     total_positions=len(positions),
                 )
+
+                # Refresh position subscription to prevent deactivation
+                # This indicates that position-manager is actively processing positions
+                # even if no new WebSocket events are received
+                try:
+                    await self._ws_gateway_client.refresh_position_subscription()
+                except Exception as e:
+                    # Non-fatal: log but continue
+                    logger.warning(
+                        "position_subscription_refresh_failed",
+                        error=str(e),
+                        error_type=type(e).__name__,
+                        trace_id=trace_id,
+                    )
 
             except asyncio.CancelledError:
                 break

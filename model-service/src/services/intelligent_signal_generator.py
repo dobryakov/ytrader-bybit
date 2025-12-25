@@ -803,35 +803,51 @@ class IntelligentSignalGenerator:
                     target_registry_version=target_registry_version,
                 )
             
-            if not target_registry_version:
-                logger.warning(
-                    "No target registry version found, skipping prediction target save",
-                    signal_id=signal.signal_id,
-                    trace_id=trace_id,
-                )
-                return
-
-            # Get target config
-            target_config = await target_registry_client.get_target_config(target_registry_version)
+            # Get target config (with retry and caching)
+            target_config = None
+            if target_registry_version:
+                target_config = await target_registry_client.get_target_config(target_registry_version)
+            
+            # Fallback to settings if target_config is unavailable (e.g., Feature Service timeout)
+            # This ensures prediction_target is saved even during temporary service issues
             if not target_config:
                 logger.warning(
-                    "Target registry config not found, skipping prediction target save",
+                    "Target registry config not available, using fallback from settings",
                     signal_id=signal.signal_id,
                     target_registry_version=target_registry_version,
                     trace_id=trace_id,
                 )
-                return
+                # Use fallback config from settings
+                target_config = {
+                    "type": "classification",  # Default type
+                    "horizon": settings.model_prediction_horizon_seconds,
+                    "computation": {
+                        "preset": "returns",
+                        "threshold": settings.model_classification_threshold,
+                    },
+                }
+                # Use default target_registry_version if not available
+                if not target_registry_version:
+                    target_registry_version = "fallback"
+                    logger.info(
+                        "Using fallback target registry version",
+                        signal_id=signal.signal_id,
+                        trace_id=trace_id,
+                    )
 
-            # Extract horizon from target_config
+            # Extract horizon from target_config (should always be available now)
             horizon_seconds = target_config.get("horizon", 0)
             if horizon_seconds <= 0:
+                # Fallback to settings if horizon is invalid
+                horizon_seconds = settings.model_prediction_horizon_seconds
                 logger.warning(
-                    "Invalid horizon in target config, skipping prediction target save",
+                    "Invalid horizon in target config, using fallback from settings",
                     signal_id=signal.signal_id,
-                    horizon=horizon_seconds,
+                    original_horizon=target_config.get("horizon"),
+                    fallback_horizon=horizon_seconds,
                     trace_id=trace_id,
                 )
-                return
+                target_config["horizon"] = horizon_seconds
 
             # Calculate timestamps
             prediction_timestamp = signal.timestamp

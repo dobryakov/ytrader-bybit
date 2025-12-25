@@ -336,3 +336,233 @@ async def request_dataset_build(request: Request):
         logger.error("dataset_build_failed", error=str(e), trace_id=trace_id, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to request dataset build: {str(e)}")
 
+
+@router.get("/models/signal-success-rate")
+async def get_signal_success_rate(
+    model_version: str = Query(..., description="Model version (e.g., 'v1.0')"),
+    asset: str = Query(..., description="Trading asset (e.g., 'BTCUSDT')"),
+    strategy_id: str = Query(..., description="Strategy ID"),
+    start_date: Optional[str] = Query(None, description="Start date (ISO format, optional)"),
+    end_date: Optional[str] = Query(None, description="End date (ISO format, optional)"),
+):
+    """Get signal success rate statistics grouped by hour."""
+    trace_id = get_or_create_trace_id()
+    logger.info(
+        "signal_success_rate_request",
+        model_version=model_version,
+        asset=asset,
+        strategy_id=strategy_id,
+        trace_id=trace_id
+    )
+
+    try:
+        query = """
+            SELECT 
+                DATE_TRUNC('hour', ts.timestamp) as hour,
+                COUNT(*) as total_signals,
+                COUNT(CASE WHEN pt.actual_values IS NOT NULL AND pt.actual_values != '{}'::jsonb THEN 1 END) as evaluated_signals,
+                COUNT(CASE 
+                    WHEN pt.predicted_values->>'direction' IS NOT NULL 
+                     AND pt.actual_values->>'direction' IS NOT NULL
+                     AND pt.predicted_values->>'direction' = pt.actual_values->>'direction'
+                    THEN 1 
+                END) as successful_by_direction,
+                COUNT(CASE 
+                    WHEN ptr.total_pnl IS NOT NULL AND ptr.total_pnl > 0 
+                    THEN 1 
+                END) as successful_by_pnl,
+                ROUND(
+                    100.0 * COUNT(CASE 
+                        WHEN pt.predicted_values->>'direction' IS NOT NULL 
+                         AND pt.actual_values->>'direction' IS NOT NULL
+                         AND pt.predicted_values->>'direction' = pt.actual_values->>'direction'
+                        THEN 1 
+                    END)::numeric / 
+                    NULLIF(COUNT(CASE 
+                        WHEN pt.predicted_values->>'direction' IS NOT NULL 
+                         AND pt.actual_values->>'direction' IS NOT NULL
+                        THEN 1 
+                    END), 0),
+                    2
+                ) as success_rate_direction_percent,
+                ROUND(
+                    100.0 * COUNT(CASE 
+                        WHEN ptr.total_pnl IS NOT NULL AND ptr.total_pnl > 0 
+                        THEN 1 
+                    END)::numeric / 
+                    NULLIF(COUNT(CASE WHEN ptr.total_pnl IS NOT NULL THEN 1 END), 0),
+                    2
+                ) as success_rate_pnl_percent,
+                AVG(ts.confidence) as avg_confidence,
+                COUNT(CASE WHEN ts.side = 'buy' THEN 1 END) as buy_signals,
+                COUNT(CASE WHEN ts.side = 'sell' THEN 1 END) as sell_signals,
+                SUM(COALESCE(ptr.total_pnl, 0)) as total_pnl_sum,
+                AVG(ptr.total_pnl) FILTER (WHERE ptr.total_pnl IS NOT NULL) as avg_pnl
+            FROM trading_signals ts
+            INNER JOIN prediction_targets pt ON ts.signal_id = pt.signal_id
+            LEFT JOIN prediction_trading_results ptr ON pt.id = ptr.prediction_target_id
+            WHERE 
+                ts.model_version = $1
+                AND ts.asset = $2
+                AND ts.strategy_id = $3
+                AND pt.actual_values IS NOT NULL
+                AND pt.actual_values != '{}'::jsonb
+                AND pt.actual_values_computed_at IS NOT NULL
+                AND (pt.is_obsolete IS NULL OR pt.is_obsolete = false)
+        """
+        params = [model_version, asset, strategy_id]
+        param_idx = 4
+
+        if start_date:
+            query += f" AND ts.timestamp >= ${param_idx}::timestamptz"
+            params.append(start_date)
+            param_idx += 1
+
+        if end_date:
+            query += f" AND ts.timestamp <= ${param_idx}::timestamptz"
+            params.append(end_date)
+            param_idx += 1
+
+        query += """
+            GROUP BY 
+                DATE_TRUNC('hour', ts.timestamp),
+                ts.model_version,
+                ts.asset,
+                ts.strategy_id
+            ORDER BY 
+                hour DESC
+        """
+
+        rows = await DatabaseConnection.fetch(query, *params)
+
+        result_data = []
+        for row in rows:
+            result_data.append({
+                "hour": row["hour"].isoformat() + "Z" if row["hour"] else None,
+                "total_signals": row["total_signals"],
+                "evaluated_signals": row["evaluated_signals"],
+                "successful_by_direction": row["successful_by_direction"],
+                "successful_by_pnl": row["successful_by_pnl"],
+                "success_rate_direction_percent": float(row["success_rate_direction_percent"]) if row["success_rate_direction_percent"] is not None else None,
+                "success_rate_pnl_percent": float(row["success_rate_pnl_percent"]) if row["success_rate_pnl_percent"] is not None else None,
+                "avg_confidence": float(row["avg_confidence"]) if row["avg_confidence"] is not None else None,
+                "buy_signals": row["buy_signals"],
+                "sell_signals": row["sell_signals"],
+                "total_pnl_sum": float(row["total_pnl_sum"]) if row["total_pnl_sum"] is not None else None,
+                "avg_pnl": float(row["avg_pnl"]) if row["avg_pnl"] is not None else None,
+            })
+
+        logger.info("signal_success_rate_completed", count=len(result_data), trace_id=trace_id)
+
+        return JSONResponse(
+            status_code=200,
+            content={
+                "data": result_data,
+                "count": len(result_data),
+            },
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("signal_success_rate_failed", error=str(e), trace_id=trace_id, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve signal success rate: {str(e)}")
+
+
+@router.get("/models/available-assets")
+async def get_available_assets():
+    """Get list of unique assets from trading signals."""
+    trace_id = get_or_create_trace_id()
+    logger.info("available_assets_request", trace_id=trace_id)
+
+    try:
+        query = """
+            SELECT DISTINCT asset
+            FROM trading_signals
+            WHERE asset IS NOT NULL
+            ORDER BY asset
+        """
+        rows = await DatabaseConnection.fetch(query)
+        assets = [row["asset"] for row in rows]
+
+        logger.info("available_assets_completed", count=len(assets), trace_id=trace_id)
+        return JSONResponse(status_code=200, content={"assets": assets})
+
+    except Exception as e:
+        logger.error("available_assets_failed", error=str(e), trace_id=trace_id, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve available assets: {str(e)}")
+
+
+@router.get("/models/available-strategies")
+async def get_available_strategies():
+    """Get list of unique strategy IDs from trading signals."""
+    trace_id = get_or_create_trace_id()
+    logger.info("available_strategies_request", trace_id=trace_id)
+
+    try:
+        query = """
+            SELECT DISTINCT strategy_id
+            FROM trading_signals
+            WHERE strategy_id IS NOT NULL
+            ORDER BY strategy_id
+        """
+        rows = await DatabaseConnection.fetch(query)
+        strategies = [row["strategy_id"] for row in rows]
+
+        logger.info("available_strategies_completed", count=len(strategies), trace_id=trace_id)
+        return JSONResponse(status_code=200, content={"strategies": strategies})
+
+    except Exception as e:
+        logger.error("available_strategies_failed", error=str(e), trace_id=trace_id, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve available strategies: {str(e)}")
+
+
+@router.get("/models/active-version")
+async def get_active_model_version(
+    asset: str = Query(..., description="Trading asset (e.g., 'BTCUSDT')"),
+    strategy_id: str = Query(..., description="Strategy ID"),
+):
+    """Get active model version for a specific asset and strategy."""
+    trace_id = get_or_create_trace_id()
+    logger.info(
+        "active_model_version_request",
+        asset=asset,
+        strategy_id=strategy_id,
+        trace_id=trace_id
+    )
+
+    try:
+        query = """
+            SELECT version
+            FROM model_versions
+            WHERE symbol = $1
+              AND strategy_id = $2
+              AND is_active = true
+            ORDER BY trained_at DESC
+            LIMIT 1
+        """
+        row = await DatabaseConnection.fetchrow(query, asset, strategy_id)
+
+        if row:
+            version = row["version"]
+            logger.info(
+                "active_model_version_found",
+                asset=asset,
+                strategy_id=strategy_id,
+                version=version,
+                trace_id=trace_id
+            )
+            return JSONResponse(status_code=200, content={"version": version})
+        else:
+            logger.info(
+                "active_model_version_not_found",
+                asset=asset,
+                strategy_id=strategy_id,
+                trace_id=trace_id
+            )
+            return JSONResponse(status_code=200, content={"version": None})
+
+    except Exception as e:
+        logger.error("active_model_version_failed", error=str(e), trace_id=trace_id, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve active model version: {str(e)}")
+

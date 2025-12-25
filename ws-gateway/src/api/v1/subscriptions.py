@@ -176,3 +176,82 @@ async def cancel_service_subscriptions(service_name: str):
     }
 
 
+@router.post(
+    "/refresh/{channel_type}",
+    responses={200: {"model": dict}, 404: {"model": ErrorResponse}},
+    summary="Refresh subscription last_event_at for a channel type",
+)
+async def refresh_subscription(
+    channel_type: str,
+    requesting_service: Optional[str] = Query(
+        default=None, description="Service name (optional, defaults to all services for this channel)"
+    ),
+):
+    """Refresh (update last_event_at) for active subscriptions of a given channel type.
+    
+    This is used by services to indicate that they are actively processing events
+    even when no new events are received from Bybit (e.g., during validation or sync).
+    """
+    from datetime import datetime, timezone
+    
+    try:
+        subscriptions = await SubscriptionService.list_subscriptions(
+            requesting_service=requesting_service,
+            is_active=True,
+            channel_type=channel_type,
+        )
+        
+        if not subscriptions:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorResponse(
+                    error=f"No active subscriptions found for channel_type '{channel_type}'" + 
+                          (f" and service '{requesting_service}'" if requesting_service else ""),
+                    code="SUBSCRIPTION_NOT_FOUND"
+                ).model_dump(),
+            )
+        
+        # Use UTC timezone-aware datetime
+        now = datetime.now(timezone.utc)
+        updated_count = 0
+        
+        for subscription in subscriptions:
+            # Ensure timezone-aware datetime for database
+            await SubscriptionService.update_last_event_at(subscription.id, now)
+            updated_count += 1
+        
+        logger.info(
+            "subscription_refreshed",
+            channel_type=channel_type,
+            requesting_service=requesting_service,
+            updated_count=updated_count,
+        )
+        
+        return {
+            "message": f"Refreshed {updated_count} subscription(s)",
+            "channel_type": channel_type,
+            "requesting_service": requesting_service,
+            "updated_count": updated_count,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        trace_id = get_or_create_trace_id()
+        logger.error(
+            "subscription_refresh_error",
+            channel_type=channel_type,
+            requesting_service=requesting_service,
+            error=str(e),
+            error_type=type(e).__name__,
+            trace_id=trace_id,
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=ErrorResponse(
+                error=f"Failed to refresh subscription: {str(e)}",
+                code="INTERNAL_ERROR"
+            ).model_dump(),
+        )
+
+

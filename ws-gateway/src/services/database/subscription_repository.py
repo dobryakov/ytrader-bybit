@@ -88,9 +88,17 @@ class SubscriptionRepository:
     @staticmethod
     async def update_last_event_at(subscription_id: UUID, ts: datetime) -> None:
         """Update last_event_at for a subscription."""
+        # Normalize datetime to timezone-aware UTC to avoid asyncpg comparison issues
+        from datetime import timezone
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        else:
+            ts = ts.astimezone(timezone.utc)
+        
+        # Use explicit cast to timestamptz to avoid asyncpg datetime comparison issues
         query = """
             UPDATE subscriptions
-            SET last_event_at = $1,
+            SET last_event_at = $1::timestamptz,
                 updated_at = NOW()
             WHERE id = $2
         """
