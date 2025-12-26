@@ -1,4 +1,4 @@
-import { useParams, useNavigate } from 'react-router-dom'
+import { useParams, useNavigate, Link } from 'react-router-dom'
 import { useModelAnalysis } from '@/hooks/useModels'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -89,6 +89,71 @@ export default function ModelDetail() {
         </div>
       </div>
 
+      {/* Optimal Top-K Percentage Info */}
+      {data.optimal_top_k_percentage !== null && data.optimal_top_k_percentage !== undefined && (
+        <Card className="border-green-500">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              Оптимальный Top-K процент
+              <Badge variant="default" className="bg-green-600">Автоматически подобран</Badge>
+            </CardTitle>
+            <CardDescription>
+              Процент, автоматически выбранный для этой модели на основе метрик качества
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-4">
+              <div className="flex items-center gap-4">
+                <div className="text-4xl font-bold text-green-600">
+                  Top-{data.optimal_top_k_percentage}%
+                </div>
+                <div className="space-y-1">
+                  <div className="text-sm text-muted-foreground">
+                    Этот процент был автоматически выбран при обучении модели
+                  </div>
+                  <div className="text-sm text-muted-foreground">
+                    Используется для определения порога confidence при генерации сигналов
+                  </div>
+                </div>
+              </div>
+              {data.top_k_metrics.find(tk => tk.k === data.optimal_top_k_percentage) && (
+                <div className="border-t pt-4">
+                  <h4 className="font-semibold mb-2 text-sm">Метрики для Top-{data.optimal_top_k_percentage}%:</h4>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    <div>
+                      <div className="text-xs text-muted-foreground">Accuracy</div>
+                      <div className="font-semibold">
+                        {formatPercent(data.top_k_metrics.find(tk => tk.k === data.optimal_top_k_percentage)?.accuracy)}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-muted-foreground">Lift</div>
+                      <div className="font-semibold">
+                        {data.top_k_metrics.find(tk => tk.k === data.optimal_top_k_percentage)?.lift 
+                          ? `${data.top_k_metrics.find(tk => tk.k === data.optimal_top_k_percentage)!.lift!.toFixed(2)}x`
+                          : 'N/A'}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-muted-foreground">PR AUC</div>
+                      <div className="font-semibold">
+                        {formatDecimal(data.top_k_metrics.find(tk => tk.k === data.optimal_top_k_percentage)?.pr_auc)}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-muted-foreground">Coverage</div>
+                      <div className="font-semibold">
+                        {formatPercent(data.top_k_metrics.find(tk => tk.k === data.optimal_top_k_percentage)?.coverage)}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Confidence Threshold Info */}
       {data.confidence_threshold_info && (
         <Card>
@@ -115,9 +180,28 @@ export default function ModelDetail() {
                   {data.confidence_threshold_info.threshold_source === 'top_k' && (
                     <>
                       <div className="flex justify-between items-center">
-                        <span className="text-sm text-muted-foreground">Top-K процент:</span>
-                        <span className="font-medium">Top-{data.confidence_threshold_info.top_k_percentage}%</span>
+                        <span className="text-sm text-muted-foreground">Используемый Top-K процент:</span>
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium">Top-{data.confidence_threshold_info.top_k_percentage}%</span>
+                          {data.optimal_top_k_percentage === data.confidence_threshold_info.top_k_percentage ? (
+                            <Badge variant="outline" className="border-green-500 text-green-600">
+                              Оптимальный
+                            </Badge>
+                          ) : data.optimal_top_k_percentage !== null && data.optimal_top_k_percentage !== undefined ? (
+                            <Badge variant="outline" className="border-yellow-500 text-yellow-600">
+                              Из настроек
+                            </Badge>
+                          ) : null}
+                        </div>
                       </div>
+                      {data.optimal_top_k_percentage !== null && 
+                       data.optimal_top_k_percentage !== undefined && 
+                       data.optimal_top_k_percentage !== data.confidence_threshold_info.top_k_percentage && (
+                        <div className="flex justify-between items-center text-xs text-muted-foreground">
+                          <span>Оптимальный для модели:</span>
+                          <span className="font-medium">Top-{data.optimal_top_k_percentage}%</span>
+                        </div>
+                      )}
                       {data.confidence_threshold_info.metric_name && (
                         <div className="flex justify-between items-center">
                           <span className="text-sm text-muted-foreground">Метрика в БД:</span>
@@ -138,16 +222,28 @@ export default function ModelDetail() {
                 <h4 className="font-semibold mb-2 text-sm">Как это работает:</h4>
                 <ul className="list-disc list-inside space-y-1 text-sm text-muted-foreground">
                   <li>При генерации сигнала система получает активную модель из БД</li>
-                  <li>
-                    {data.confidence_threshold_info.threshold_source === 'top_k' 
-                      ? `Использует метрику ${data.confidence_threshold_info.metric_name} из model_quality_metrics`
-                      : 'Ищет метрику top_k_{percentage}_confidence_threshold в model_quality_metrics'}
-                  </li>
-                  <li>
-                    {data.confidence_threshold_info.threshold_source === 'top_k'
-                      ? 'Порог найден и используется для фильтрации сигналов'
-                      : 'Метрика не найдена, используется статический порог из настроек'}
-                  </li>
+                  {data.confidence_threshold_info.threshold_source === 'top_k' ? (
+                    <>
+                      <li>
+                        Система определяет, какой Top-K процент использовать:
+                        {data.optimal_top_k_percentage !== null && data.optimal_top_k_percentage !== undefined
+                          ? ` сначала проверяет optimal_top_k_percentage из training_config модели (${data.optimal_top_k_percentage}%),`
+                          : ''}
+                        {' '}если не найден — использует значение из настроек ({data.confidence_threshold_info.top_k_percentage}%)
+                      </li>
+                      <li>
+                        Использует метрику {data.confidence_threshold_info.metric_name} из model_quality_metrics для получения порога confidence
+                      </li>
+                      <li>Порог найден и используется для фильтрации сигналов (confidence должен быть ≥ порога)</li>
+                    </>
+                  ) : (
+                    <>
+                      <li>
+                        Ищет метрику top_k_{data.optimal_top_k_percentage || 'X'}_confidence_threshold в model_quality_metrics
+                      </li>
+                      <li>Метрика не найдена, используется статический порог из настроек</li>
+                    </>
+                  )}
                   <li>В логах видно: какой порог используется (top_k или static), значение порога, источник порога</li>
                 </ul>
               </div>
@@ -187,7 +283,14 @@ export default function ModelDetail() {
                     </TableCell>
                     <TableCell className="font-medium">{pred.count.toLocaleString()}</TableCell>
                     <TableCell className="font-mono text-xs">
-                      {pred.dataset_id ? `${pred.dataset_id.slice(0, 8)}...` : 'N/A'}
+                      {pred.dataset_id ? (
+                        <Link 
+                          to={`/datasets/${pred.dataset_id}`}
+                          className="text-primary hover:underline"
+                        >
+                          {pred.dataset_id.slice(0, 8)}...
+                        </Link>
+                      ) : 'N/A'}
                     </TableCell>
                     <TableCell>
                       {pred.created_at ? format(parseISO(pred.created_at), 'dd.MM.yyyy HH:mm:ss') : 'N/A'}

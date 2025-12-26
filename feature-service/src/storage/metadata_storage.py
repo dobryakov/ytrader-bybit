@@ -352,6 +352,7 @@ class MetadataStorage:
         
         async with self.transaction() as conn:
             # Prepare query parameters - ensure all datetime are new objects
+            target_config = dataset_data.get("target_config")
             query_params = [
                 dataset_data["symbol"],
                 dataset_data["status"],
@@ -364,6 +365,7 @@ class MetadataStorage:
                 datetime_params[5],  # test_period_end
                 walk_forward_config,
                 target_registry_version,
+                target_config,  # target_config (dict or None)
                 dataset_data["feature_registry_version"],
                 dataset_data.get("output_format", "parquet"),
                 dataset_data.get("strategy_id"),  # strategy_id (optional)
@@ -443,6 +445,17 @@ class MetadataStorage:
             
             target_registry_version_final = query_params[10]
             
+            # Convert target_config to JSON string if it's a dict
+            target_config_final = dataset_data.get("target_config")
+            if isinstance(target_config_final, dict):
+                # Convert datetime objects to ISO strings before JSON serialization
+                target_config_final = self._convert_datetime_to_iso_string(target_config_final)
+                target_config_final = json.dumps(target_config_final)
+            elif target_config_final is not None and not isinstance(target_config_final, str):
+                # Convert datetime objects to ISO strings before JSON serialization
+                target_config_final = self._convert_datetime_to_iso_string(target_config_final)
+                target_config_final = json.dumps(target_config_final)
+            
             final_params = [
                 query_params[0],  # symbol
                 query_params[1],  # status
@@ -455,6 +468,7 @@ class MetadataStorage:
                 final_datetime_params[5],  # test_period_end
                 walk_forward_config_final,  # walk_forward_config (JSON string or None)
                 target_registry_version_final,  # target_registry_version (string)
+                target_config_final,  # target_config (JSON string)
                 query_params[11],  # feature_registry_version
                 query_params[12],  # output_format
                 query_params[13],  # strategy_id (optional)
@@ -492,9 +506,9 @@ class MetadataStorage:
                         train_period_start, train_period_end,
                         validation_period_start, validation_period_end,
                         test_period_start, test_period_end,
-                        walk_forward_config, target_registry_version,
+                        walk_forward_config, target_registry_version, target_config,
                         feature_registry_version, output_format, strategy_id
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
                     RETURNING id
                     """,
                     *final_params
@@ -516,14 +530,14 @@ class MetadataStorage:
                             train_period_start, train_period_end,
                             validation_period_start, validation_period_end,
                             test_period_start, test_period_end,
-                            walk_forward_config, target_registry_version,
+                            walk_forward_config, target_registry_version, target_config,
                             feature_registry_version, output_format, strategy_id
                         ) VALUES (
                             $1, $2, $3,
                             $4::timestamptz, $5::timestamptz,
                             $6::timestamptz, $7::timestamptz,
                             $8::timestamptz, $9::timestamptz,
-                            $10, $11, $12, $13, $14
+                            $10, $11, $12, $13, $14, $15, $16
                         )
                         """,
                         *final_params
@@ -554,6 +568,7 @@ class MetadataStorage:
                     
                     # Convert JSONB fields to JSON strings
                     final_params_jsonb = final_params.copy()
+                    # walk_forward_config (index 9)
                     if isinstance(final_params_jsonb[9], dict):
                         final_params_jsonb[9] = json.dumps(final_params_jsonb[9])
                     elif final_params_jsonb[9] is None:
@@ -561,12 +576,13 @@ class MetadataStorage:
                     else:
                         final_params_jsonb[9] = json.dumps(final_params_jsonb[9]) if final_params_jsonb[9] else None
                     
-                    if isinstance(final_params_jsonb[10], dict):
-                        final_params_jsonb[10] = json.dumps(final_params_jsonb[10])
-                    elif final_params_jsonb[10] is None:
-                        final_params_jsonb[10] = None
-                    else:
-                        final_params_jsonb[10] = json.dumps(final_params_jsonb[10]) if final_params_jsonb[10] else None
+                    # target_registry_version (index 10) - string, no conversion needed
+                    
+                    # target_config (index 11)
+                    if isinstance(final_params_jsonb[11], dict):
+                        final_params_jsonb[11] = json.dumps(final_params_jsonb[11])
+                    elif final_params_jsonb[11] is not None and not isinstance(final_params_jsonb[11], str):
+                        final_params_jsonb[11] = json.dumps(final_params_jsonb[11])
                     
                     # Retry with JSON strings
                     result = await conn.fetchrow(
@@ -576,9 +592,9 @@ class MetadataStorage:
                             train_period_start, train_period_end,
                             validation_period_start, validation_period_end,
                             test_period_start, test_period_end,
-                            walk_forward_config, target_registry_version,
-                            feature_registry_version, output_format
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                            walk_forward_config, target_registry_version, target_config,
+                            feature_registry_version, output_format, strategy_id
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
                         RETURNING id
                         """,
                         *final_params_jsonb

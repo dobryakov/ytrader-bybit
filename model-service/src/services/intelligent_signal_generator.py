@@ -208,41 +208,82 @@ class IntelligentSignalGenerator:
 
             # Check confidence threshold
             confidence = prediction_result.get("confidence", 0.0)
+            threshold_source = "top_k" if effective_threshold != self.min_confidence_threshold else "static"
             logger.info(
                 "Checking confidence threshold",
                 asset=asset,
                 strategy_id=strategy_id,
                 confidence=confidence,
                 threshold=effective_threshold,
-                threshold_source="top_k" if effective_threshold != self.min_confidence_threshold else "static",
+                threshold_source=threshold_source,
                 trace_id=trace_id,
             )
+            
+            # Determine signal type from prediction (before threshold check to have signal_type for rejected signals)
+            signal_type = self._determine_signal_type(prediction_result)
+            
+            # Prepare raw prediction data for metadata (for all signals - valid and rejected)
+            raw_prediction_metadata = {
+                "prediction_result": {
+                    "prediction": prediction_result.get("prediction"),
+                    "buy_probability": prediction_result.get("buy_probability"),
+                    "sell_probability": prediction_result.get("sell_probability"),
+                    "confidence": confidence,
+                    "probabilities": prediction_result.get("probabilities"),  # Raw probabilities array if available
+                },
+                "effective_threshold": effective_threshold,
+                "threshold_source": threshold_source,
+            }
+            
+            # Check if confidence is below threshold
             if confidence < effective_threshold:
                 logger.info(
-                    "Signal confidence below threshold",
+                    "Signal confidence below threshold - creating rejected signal",
                     asset=asset,
                     strategy_id=strategy_id,
                     confidence=confidence,
                     threshold=effective_threshold,
-                    threshold_source="top_k" if effective_threshold != self.min_confidence_threshold else "static",
+                    threshold_source=threshold_source,
                     trace_id=trace_id,
                 )
-                return None
-
-            # Determine signal type from prediction
-            signal_type = self._determine_signal_type(prediction_result)
+                # Create rejected signal instead of returning None
+                return await self._create_rejected_signal(
+                    asset=asset,
+                    strategy_id=strategy_id,
+                    model_version=model_version,
+                    confidence=confidence,
+                    effective_threshold=effective_threshold,
+                    rejection_reason="confidence_below_threshold",
+                    prediction_result=prediction_result,
+                    feature_vector=feature_vector,
+                    active_model=active_model,
+                    raw_prediction_metadata=raw_prediction_metadata,
+                    trace_id=trace_id,
+                )
             
-            # If regression model returned None (HOLD), skip signal generation
+            # If regression model returned None (HOLD), create rejected signal
             if signal_type is None:
                 logger.debug(
-                    "Regression model predicted HOLD (return within threshold range)",
+                    "Regression model predicted HOLD (return within threshold range) - creating rejected signal",
                     asset=asset,
                     strategy_id=strategy_id,
                     predicted_return=prediction_result.get("prediction"),
                     threshold=settings.model_regression_threshold,
                     trace_id=trace_id,
                 )
-                return None
+                return await self._create_rejected_signal(
+                    asset=asset,
+                    strategy_id=strategy_id,
+                    model_version=model_version,
+                    confidence=confidence,
+                    effective_threshold=effective_threshold,
+                    rejection_reason="regression_hold_prediction",
+                    prediction_result=prediction_result,
+                    feature_vector=feature_vector,
+                    active_model=active_model,
+                    raw_prediction_metadata=raw_prediction_metadata,
+                    trace_id=trace_id,
+                )
             
             # Log prediction details for debugging
             prediction = prediction_result.get("prediction")
@@ -423,7 +464,7 @@ class IntelligentSignalGenerator:
                     )
                 )
 
-            # Create signal
+            # Create signal with raw prediction data in metadata
             signal = TradingSignal(
                 signal_type=signal_type,
                 asset=asset,
@@ -435,11 +476,8 @@ class IntelligentSignalGenerator:
                 market_data_snapshot=market_data_snapshot,
                 metadata={
                     "reasoning": f"Model prediction: {prediction_result.get('prediction')}",
-                    "prediction_result": {
-                        "prediction": prediction_result.get("prediction"),
-                        "buy_probability": prediction_result.get("buy_probability"),
-                        "sell_probability": prediction_result.get("sell_probability"),
-                    },
+                    # Include full raw prediction data in metadata
+                    **raw_prediction_metadata,
                     "model_version": model_version,
                     "feature_registry_version": feature_vector.feature_registry_version,
                     "target_registry_version": target_registry_version,
@@ -1048,8 +1086,42 @@ class IntelligentSignalGenerator:
             )
             return self.min_confidence_threshold
         
-        # Get top-k percentage from settings (default: 10%)
-        top_k_percentage = getattr(settings, "model_signal_top_k_percentage", 10)
+        # Get top-k percentage: first try from model's training_config (optimal for this model),
+        # then fallback to settings (global default)
+        top_k_percentage = None
+        
+        # Check if model has optimal_top_k_percentage in training_config
+        if active_model.get("training_config"):
+            training_config = active_model["training_config"]
+            if isinstance(training_config, str):
+                try:
+                    import json
+                    training_config = json.loads(training_config)
+                except (json.JSONDecodeError, TypeError):
+                    training_config = None
+            
+            if training_config and isinstance(training_config, dict):
+                optimal_k = training_config.get("optimal_top_k_percentage")
+                if optimal_k is not None and isinstance(optimal_k, (int, float)):
+                    top_k_percentage = int(optimal_k)
+                    logger.debug(
+                        "Using optimal top-k percentage from model training_config",
+                        asset=asset,
+                        strategy_id=strategy_id,
+                        optimal_top_k_percentage=top_k_percentage,
+                        trace_id=trace_id,
+                    )
+        
+        # Fallback to settings if not found in training_config
+        if top_k_percentage is None:
+            top_k_percentage = getattr(settings, "model_signal_top_k_percentage", 10)
+            logger.debug(
+                "Using top-k percentage from settings (not found in model training_config)",
+                asset=asset,
+                strategy_id=strategy_id,
+                top_k_percentage=top_k_percentage,
+                trace_id=trace_id,
+            )
         
         # Try to get top-k confidence threshold from quality metrics
         try:
@@ -1119,6 +1191,128 @@ class IntelligentSignalGenerator:
         
         # Fallback to static threshold
         return self.min_confidence_threshold
+
+    async def _create_rejected_signal(
+        self,
+        asset: str,
+        strategy_id: str,
+        model_version: Optional[str],
+        confidence: float,
+        effective_threshold: float,
+        rejection_reason: str,
+        prediction_result: Dict[str, Any],
+        feature_vector: FeatureVector,
+        active_model: Optional[Dict[str, Any]],
+        raw_prediction_metadata: Dict[str, Any],
+        trace_id: Optional[str] = None,
+    ) -> TradingSignal:
+        """
+        Create a rejected signal (low confidence or HOLD prediction).
+        
+        Args:
+            asset: Trading pair symbol
+            strategy_id: Trading strategy identifier
+            model_version: Model version used
+            confidence: Actual confidence score
+            effective_threshold: Threshold that was not exceeded
+            rejection_reason: Reason for rejection
+            prediction_result: Full prediction result from model inference
+            feature_vector: Feature vector used for prediction
+            active_model: Active model version record
+            raw_prediction_metadata: Raw prediction metadata to include
+            trace_id: Trace ID for request flow tracking
+            
+        Returns:
+            TradingSignal with is_rejected=True
+        """
+        # Determine signal type from prediction (even if rejected)
+        signal_type = self._determine_signal_type(prediction_result)
+        # If signal_type is None (HOLD), use 'buy' as default for rejected signal structure
+        if signal_type is None:
+            signal_type = "buy"  # Default, won't be used for trading
+        
+        # Extract price from feature vector
+        current_price = float(feature_vector.features.get("mid_price", feature_vector.features.get("price", 0.0)))
+        if current_price <= 0:
+            logger.warning("Invalid price in feature vector for rejected signal", asset=asset, strategy_id=strategy_id, price=current_price)
+            current_price = 0.0
+        
+        # Use minimum amount for rejected signals (won't be traded anyway)
+        amount = self.min_amount
+        
+        # Create market data snapshot from feature vector
+        market_data_snapshot = self._create_market_data_snapshot_from_features(feature_vector)
+        
+        # Get target registry info for metadata
+        target_registry_version = None
+        target_config = None
+        prediction_horizon_seconds = None
+        target_timestamp = None
+        
+        if active_model and active_model.get("training_config"):
+            training_config = active_model["training_config"]
+            if isinstance(training_config, str):
+                training_config = json.loads(training_config)
+            target_registry_version = training_config.get("target_registry_version")
+        
+        if not target_registry_version:
+            active_target_registry_version = await target_registry_client.get_target_registry_version()
+            if active_target_registry_version:
+                target_registry_version = active_target_registry_version
+        
+        if target_registry_version:
+            target_config = await target_registry_client.get_target_config(target_registry_version)
+            if target_config:
+                prediction_horizon_seconds = target_config.get("horizon", 0)
+                if prediction_horizon_seconds > 0:
+                    target_timestamp = datetime.utcnow() + timedelta(seconds=prediction_horizon_seconds)
+        
+        # Create rejected signal
+        signal = TradingSignal(
+            signal_type=signal_type,
+            asset=asset,
+            amount=amount,
+            confidence=confidence,
+            strategy_id=strategy_id,
+            model_version=model_version,
+            is_warmup=False,
+            market_data_snapshot=market_data_snapshot,
+            metadata={
+                "reasoning": f"Rejected signal: {rejection_reason}",
+                # Include full raw prediction data in metadata
+                **raw_prediction_metadata,
+                "model_version": model_version,
+                "feature_registry_version": feature_vector.feature_registry_version,
+                "target_registry_version": target_registry_version,
+                "prediction_horizon_seconds": prediction_horizon_seconds,
+                "target_timestamp": target_timestamp.isoformat() + "Z" if target_timestamp else None,
+                "inference_timestamp": datetime.utcnow().isoformat() + "Z",
+            },
+            trace_id=trace_id,
+            is_rejected=True,
+            rejection_reason=rejection_reason,
+            effective_threshold=effective_threshold,
+        )
+        
+        # Store prediction data for potential prediction_targets saving
+        signal._prediction_data = {
+            'prediction_result': prediction_result,
+            'feature_vector': feature_vector,
+            'model_version': model_version,
+            'trace_id': trace_id,
+        }
+        
+        logger.info(
+            "Created rejected signal",
+            asset=asset,
+            strategy_id=strategy_id,
+            rejection_reason=rejection_reason,
+            confidence=confidence,
+            threshold=effective_threshold,
+            trace_id=trace_id,
+        )
+        
+        return signal
 
 
 # Initialize intelligent signal generator with settings

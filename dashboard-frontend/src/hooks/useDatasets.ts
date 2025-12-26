@@ -19,6 +19,50 @@ export interface Dataset {
   test_period_end: string | null
   walk_forward_config: any | null
   target_config: any
+  split_statistics?: {
+    train?: {
+      class_distribution?: Record<string, number>
+      class_balance_ratio?: number
+      minority_class_size?: number
+      total_classes?: number
+      target_statistics?: {
+        mean: number
+        median: number
+        std: number
+        min: number
+        max: number
+        count: number
+      }
+    }
+    validation?: {
+      class_distribution?: Record<string, number>
+      class_balance_ratio?: number
+      minority_class_size?: number
+      total_classes?: number
+      target_statistics?: {
+        mean: number
+        median: number
+        std: number
+        min: number
+        max: number
+        count: number
+      }
+    }
+    test?: {
+      class_distribution?: Record<string, number>
+      class_balance_ratio?: number
+      minority_class_size?: number
+      total_classes?: number
+      target_statistics?: {
+        mean: number
+        median: number
+        std: number
+        min: number
+        max: number
+        count: number
+      }
+    }
+  }
   feature_registry_version: string
   target_registry_version?: string
   train_records: number

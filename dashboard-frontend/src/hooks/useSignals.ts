@@ -13,6 +13,19 @@ export interface Signal {
   is_warmup: boolean
   horizon: number | null
   model_prediction: string | null  // "UP", "DOWN", or null
+  raw_prediction_data: {
+    prediction_result?: {
+      prediction?: number | string
+      buy_probability?: number
+      sell_probability?: number
+      confidence?: number
+      probabilities?: number[]
+    }
+    effective_threshold?: number | null
+    threshold_source?: string
+  } | null
+  is_rejected: boolean
+  rejection_reason: string | null
   actual_movement: {
     price_from: number | null
     price_to: number | null

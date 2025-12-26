@@ -229,7 +229,7 @@ class ModelVersionRepository(BaseRepository[Dict[str, Any]]):
             model_version_id: Model version UUID
             is_active: Whether this version is currently active
             is_warmup_mode: Whether system is in warm-up mode
-            **kwargs: Additional fields to update
+            **kwargs: Additional fields to update (training_config should be dict or JSON string)
 
         Returns:
             Updated model version record or None if not found
@@ -249,6 +249,11 @@ class ModelVersionRepository(BaseRepository[Dict[str, Any]]):
             param_index += 1
 
         for key, value in kwargs.items():
+            # Special handling for training_config: serialize dict to JSON string for JSONB column
+            if key == "training_config" and isinstance(value, dict):
+                import json
+                value = json.dumps(value)
+            
             updates.append(f"{key} = ${param_index}")
             values.append(value)
             param_index += 1

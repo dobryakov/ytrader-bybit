@@ -149,6 +149,10 @@ class ModelAnalysisResponse(BaseModel):
     top_k_metrics: List[TopKMetrics]
     comparison: Dict[str, Any]
     confidence_threshold_info: Optional[ConfidenceThresholdInfo] = None
+    optimal_top_k_percentage: Optional[int] = Field(
+        default=None,
+        description="Optimal top-k percentage selected for this model (from training_config)"
+    )
 
 
 @router.get("/models", response_model=ModelVersionListResponse)
@@ -289,8 +293,44 @@ async def _get_confidence_threshold_info(
         ConfidenceThresholdInfo or None if model is not active
     """
     try:
-        # Get top-k percentage from settings (default: 10%)
-        top_k_percentage = getattr(settings, "model_signal_top_k_percentage", 10)
+        # Get model version to check for optimal_top_k_percentage in training_config
+        version_repo = ModelVersionRepository()
+        model_version = await version_repo.get_by_id(model_version_id)
+        
+        # Get top-k percentage: first try from model's training_config (optimal for this model),
+        # then fallback to settings (global default)
+        top_k_percentage = None
+        
+        if model_version and model_version.get("training_config"):
+            training_config = model_version["training_config"]
+            if isinstance(training_config, str):
+                try:
+                    training_config = json.loads(training_config)
+                except (json.JSONDecodeError, TypeError):
+                    training_config = None
+            
+            if training_config and isinstance(training_config, dict):
+                optimal_k = training_config.get("optimal_top_k_percentage")
+                if optimal_k is not None:
+                    try:
+                        top_k_percentage = int(optimal_k)
+                        logger.debug(
+                            "Using optimal top-k percentage from model training_config",
+                            version=version,
+                            optimal_top_k_percentage=top_k_percentage,
+                        )
+                    except (ValueError, TypeError):
+                        top_k_percentage = None
+        
+        # Fallback to settings if not found in training_config
+        if top_k_percentage is None:
+            top_k_percentage = getattr(settings, "model_signal_top_k_percentage", 10)
+            logger.debug(
+                "Using top-k percentage from settings (not found in model training_config)",
+                version=version,
+                top_k_percentage=top_k_percentage,
+            )
+        
         static_threshold = getattr(settings, "model_activation_threshold", 0.75)
         
         # Try to get top-k confidence threshold from quality metrics
@@ -663,11 +703,30 @@ async def get_model_analysis(version: str) -> ModelAnalysisResponse:
             version=version,
         )
 
+        # Extract optimal_top_k_percentage from training_config
+        optimal_top_k_percentage = None
+        training_config = model_version.get("training_config")
+        if training_config:
+            if isinstance(training_config, str):
+                try:
+                    training_config = json.loads(training_config)
+                except (json.JSONDecodeError, TypeError):
+                    training_config = None
+            
+            if isinstance(training_config, dict):
+                optimal_k = training_config.get("optimal_top_k_percentage")
+                if optimal_k is not None:
+                    try:
+                        optimal_top_k_percentage = int(optimal_k)
+                    except (ValueError, TypeError):
+                        optimal_top_k_percentage = None
+
         logger.info(
             "Retrieved model analysis",
             version=version,
             predictions_count=len(predictions_info),
             top_k_count=len(top_k_list),
+            optimal_top_k_percentage=optimal_top_k_percentage,
         )
 
         return ModelAnalysisResponse(
@@ -679,6 +738,7 @@ async def get_model_analysis(version: str) -> ModelAnalysisResponse:
             top_k_metrics=top_k_list,
             comparison=comparison,
             confidence_threshold_info=confidence_threshold_info,
+            optimal_top_k_percentage=optimal_top_k_percentage,
         )
     except HTTPException:
         raise

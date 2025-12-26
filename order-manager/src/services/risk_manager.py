@@ -520,10 +520,7 @@ class RiskManager:
             reason="Order size exceeds limit, reducing quantity to fit within max_order_size",
         )
 
-        # Calculate maximum allowed quantity based on max_order_size
-        max_allowed_quantity = max_order_size / order_price
-
-        # Get instrument info to round to lot_size
+        # Get instrument info first to check minimum requirements
         try:
             instrument_info = await self.instrument_info_manager.get_instrument(signal.asset)
             if not instrument_info:
@@ -533,20 +530,91 @@ class RiskManager:
                     trace_id=trace_id,
                     reason="Cannot get lot_size for rounding, using direct calculation",
                 )
-                # Fallback: use original quantity (will fail validation later)
+                # Fallback: calculate without instrument info
+                max_allowed_quantity = max_order_size / order_price
                 adapted_quantity = max_allowed_quantity
-            else:
-                # Round down to lot_size to ensure valid quantity
-                lot_size = instrument_info.lot_size
-                if lot_size > 0:
-                    adapted_quantity = (
-                        (max_allowed_quantity / lot_size).quantize(Decimal("1"), rounding=ROUND_DOWN) * lot_size
+                
+                # Basic check: ensure quantity is positive
+                if adapted_quantity <= 0:
+                    logger.error(
+                        "order_size_adaptation_resulted_in_zero_no_instrument_info",
+                        signal_id=str(signal.signal_id),
+                        asset=signal.asset,
+                        max_allowed_quantity=float(max_allowed_quantity),
+                        max_order_size=float(max_order_size),
+                        order_price=float(order_price),
+                        trace_id=trace_id,
+                        reason="Adapted quantity would be zero or negative (no instrument info available)",
                     )
+                    raise RiskLimitError(
+                        f"Cannot adapt order size: adapted quantity would be {adapted_quantity} "
+                        f"(max_order_size {max_order_size} USDT / price {order_price}) for {signal.asset}. "
+                        f"max_order_size is too small for current price"
+                    )
+            else:
+                min_order_qty = instrument_info.min_order_qty
+                lot_size = instrument_info.lot_size
+                
+                # Check if max_order_size can even support a minimum order
+                min_order_value = min_order_qty * order_price
+                if max_order_size < min_order_value:
+                    # Calculate required max_order_size to support minimum order
+                    required_max_order_size = min_order_value * Decimal("1.1")  # Add 10% buffer
+                    required_max_exposure = required_max_order_size / self.max_order_size_ratio
+                    
+                    logger.error(
+                        "order_size_adaptation_impossible",
+                        signal_id=str(signal.signal_id),
+                        asset=signal.asset,
+                        max_order_size=float(max_order_size),
+                        min_order_value=float(min_order_value),
+                        min_order_qty=float(min_order_qty),
+                        order_price=float(order_price),
+                        required_max_order_size=float(required_max_order_size),
+                        required_max_exposure=float(required_max_exposure),
+                        current_max_exposure=float(self.max_exposure),
+                        current_max_order_size_ratio=float(self.max_order_size_ratio),
+                        trace_id=trace_id,
+                        reason="max_order_size is too small to create even a minimum order",
+                    )
+                    raise RiskLimitError(
+                        f"Cannot adapt order size: max_order_size {max_order_size} USDT is too small. "
+                        f"Minimum order value is {min_order_value} USDT (min_order_qty {min_order_qty} * price {order_price}) for {signal.asset}. "
+                        f"To trade this asset, increase ORDERMANAGER_MAX_EXPOSURE to at least {required_max_exposure:.2f} USDT "
+                        f"(or increase ORDERMANAGER_MAX_ORDER_SIZE_RATIO) to support minimum order size. "
+                        f"Alternatively, exclude {signal.asset} from trading if it's not suitable for current risk limits."
+                    )
+                
+                # Calculate maximum allowed quantity based on max_order_size
+                max_allowed_quantity = max_order_size / order_price
+                
+                # Round down to lot_size to ensure valid quantity
+                if lot_size > 0:
+                    # Calculate how many lot_size steps fit
+                    lot_steps = (max_allowed_quantity / lot_size).quantize(Decimal("1"), rounding=ROUND_DOWN)
+                    adapted_quantity = lot_steps * lot_size
+                    
+                    # Ensure we don't get zero or negative quantity
+                    if adapted_quantity <= 0:
+                        logger.error(
+                            "order_size_adaptation_resulted_in_zero",
+                            signal_id=str(signal.signal_id),
+                            asset=signal.asset,
+                            max_allowed_quantity=float(max_allowed_quantity),
+                            lot_size=float(lot_size),
+                            lot_steps=float(lot_steps),
+                            trace_id=trace_id,
+                            reason="Adapted quantity rounded down to zero or negative",
+                        )
+                        raise RiskLimitError(
+                            f"Cannot adapt order size: adapted quantity would be {adapted_quantity} (rounded from {max_allowed_quantity}) "
+                            f"which is below minimum {min_order_qty} for {signal.asset}. "
+                            f"max_order_size {max_order_size} USDT is too small for current price {order_price}"
+                        )
                 else:
                     adapted_quantity = max_allowed_quantity
 
-                # Ensure adapted quantity is not below minimum
-                min_order_qty = instrument_info.min_order_qty
+                # Ensure adapted quantity is not below minimum (double check after rounding)
                 if adapted_quantity < min_order_qty:
                     logger.error(
                         "order_size_adaptation_below_minimum",
@@ -554,21 +622,55 @@ class RiskManager:
                         asset=signal.asset,
                         adapted_quantity=float(adapted_quantity),
                         min_order_qty=float(min_order_qty),
+                        max_allowed_quantity=float(max_allowed_quantity),
+                        lot_size=float(lot_size),
                         trace_id=trace_id,
-                        reason="Adapted quantity would be below minimum order quantity",
+                        reason="Adapted quantity would be below minimum order quantity after rounding",
                     )
                     raise RiskLimitError(
-                        f"Cannot adapt order size: adapted quantity {adapted_quantity} would be below minimum {min_order_qty} for {signal.asset}"
+                        f"Cannot adapt order size: adapted quantity {adapted_quantity} would be below minimum {min_order_qty} for {signal.asset}. "
+                        f"max_order_size {max_order_size} USDT is too small for current price {order_price}"
                     )
 
                 # Verify adapted order value is within limits
                 adapted_order_value = adapted_quantity * order_price
                 if adapted_order_value > max_order_size:
-                    # Round down one more step if still exceeds
-                    adapted_quantity = adapted_quantity - lot_size
-                    if adapted_quantity < min_order_qty:
+                    # Round down one more step if still exceeds (only if we have lot_size)
+                    if lot_size > 0 and adapted_quantity > lot_size:
+                        adapted_quantity = adapted_quantity - lot_size
+                        if adapted_quantity < min_order_qty:
+                            logger.error(
+                                "order_size_adaptation_final_below_minimum",
+                                signal_id=str(signal.signal_id),
+                                asset=signal.asset,
+                                adapted_quantity=float(adapted_quantity),
+                                min_order_qty=float(min_order_qty),
+                                adapted_order_value=float(adapted_order_value),
+                                max_order_size=float(max_order_size),
+                                trace_id=trace_id,
+                                reason="After final reduction, adapted quantity would be below minimum",
+                            )
+                            raise RiskLimitError(
+                                f"Cannot adapt order size: quantity {order_quantity} too large for max_order_size {max_order_size} USDT. "
+                                f"After adaptation, quantity {adapted_quantity} would be below minimum {min_order_qty} for {signal.asset}"
+                            )
+                    else:
+                        # Cannot reduce further without going below minimum
+                        logger.error(
+                            "order_size_adaptation_cannot_reduce_further",
+                            signal_id=str(signal.signal_id),
+                            asset=signal.asset,
+                            adapted_quantity=float(adapted_quantity),
+                            adapted_order_value=float(adapted_order_value),
+                            max_order_size=float(max_order_size),
+                            min_order_qty=float(min_order_qty),
+                            lot_size=float(lot_size),
+                            trace_id=trace_id,
+                            reason="Cannot reduce further without going below minimum order quantity",
+                        )
                         raise RiskLimitError(
-                            f"Cannot adapt order size: quantity {order_quantity} too large for max_order_size {max_order_size} USDT"
+                            f"Cannot adapt order size: quantity {order_quantity} too large for max_order_size {max_order_size} USDT. "
+                            f"Minimum adapted quantity {min_order_qty} would still exceed max_order_size for {signal.asset}"
                         )
 
         except Exception as e:

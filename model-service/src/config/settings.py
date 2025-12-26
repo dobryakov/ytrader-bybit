@@ -55,6 +55,11 @@ class Settings(BaseSettings):
         alias="MODEL_SIGNAL_TOP_K_PERCENTAGE",
         description="Top-K percentage to use for dynamic confidence threshold from model quality metrics. Default: 10 (top-10%). If top-k threshold is available, it will be used instead of static min_confidence_threshold. Valid values: 10, 20, 30, 50."
     )
+    model_optimal_top_k_selection_strategy: str = Field(
+        default="lift_then_accuracy",
+        alias="MODEL_OPTIMAL_TOP_K_SELECTION_STRATEGY",
+        description="Strategy for selecting optimal top-k percentage for each model. Options: 'lift_then_accuracy' (default - requires lift > 1.0, then maximizes accuracy), 'accuracy_only' (maximizes accuracy), 'lift_only' (maximizes lift), 'balanced' (maximizes accuracy * lift)."
+    )
     
     model_activation_threshold: float = Field(
         default=0.75, 

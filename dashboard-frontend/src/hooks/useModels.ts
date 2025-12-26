@@ -262,6 +262,7 @@ export interface ModelAnalysisResponse {
     roc_auc: MetricComparison
   }
   confidence_threshold_info?: ConfidenceThresholdInfo | null
+  optimal_top_k_percentage?: number | null
 }
 
 export function useModelAnalysis(version: string) {
@@ -272,6 +273,17 @@ export function useModelAnalysis(version: string) {
       return response.data
     },
     enabled: !!version,
+  })
+}
+
+export function useModelsByDataset(datasetId: string) {
+  return useQuery<ModelsResponse>({
+    queryKey: ['modelsByDataset', datasetId],
+    queryFn: async () => {
+      const response = await api.get(`/v1/models/by-dataset/${datasetId}`)
+      return response.data
+    },
+    enabled: !!datasetId,
   })
 }
 

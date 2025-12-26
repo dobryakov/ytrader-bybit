@@ -6,6 +6,7 @@ import Signals from './pages/Signals'
 import Models from './pages/Models'
 import ModelDetail from './pages/ModelDetail'
 import Datasets from './pages/Datasets'
+import DatasetDetail from './pages/DatasetDetail'
 import Containers from './pages/Containers'
 import { cn } from './lib/utils'
 
@@ -41,6 +42,7 @@ function App() {
             <Route path="/models" element={<Models />} />
             <Route path="/models/:version" element={<ModelDetail />} />
             <Route path="/datasets" element={<Datasets />} />
+            <Route path="/datasets/:id" element={<DatasetDetail />} />
             <Route path="/containers" element={<Containers />} />
           </Routes>
         </main>

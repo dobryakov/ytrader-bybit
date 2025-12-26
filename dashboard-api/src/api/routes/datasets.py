@@ -32,7 +32,7 @@ async def list_datasets(
                 train_period_start, train_period_end,
                 validation_period_start, validation_period_end,
                 test_period_start, test_period_end,
-                walk_forward_config, target_config,
+                walk_forward_config, target_config, split_statistics,
                 feature_registry_version, target_registry_version,
                 train_records, validation_records, test_records,
                 output_format, storage_path,
@@ -73,11 +73,22 @@ async def list_datasets(
                     walk_forward_config = None
 
             target_config = row["target_config"]
-            if isinstance(target_config, str):
+            if target_config is None:
+                target_config = None
+            elif isinstance(target_config, str):
                 try:
                     target_config = json.loads(target_config)
                 except (json.JSONDecodeError, TypeError):
-                    target_config = {}
+                    target_config = None
+            # If it's already a dict/list, keep it as is
+
+            split_statistics = row.get("split_statistics")
+            if isinstance(split_statistics, str):
+                try:
+                    split_statistics = json.loads(split_statistics)
+                except (json.JSONDecodeError, TypeError):
+                    split_statistics = None
+            # If it's already a dict, keep it as is
 
             dataset_dict = {
                 "id": str(row["id"]),
@@ -93,6 +104,7 @@ async def list_datasets(
                 "test_period_end": row["test_period_end"].isoformat() + "Z" if row["test_period_end"] else None,
                 "walk_forward_config": walk_forward_config,
                 "target_config": target_config,
+                "split_statistics": split_statistics,
                 "feature_registry_version": row["feature_registry_version"],
                 "target_registry_version": row.get("target_registry_version"),
                 "train_records": row["train_records"] or 0,
@@ -136,7 +148,7 @@ async def get_dataset(
                 train_period_start, train_period_end,
                 validation_period_start, validation_period_end,
                 test_period_start, test_period_end,
-                walk_forward_config, target_config,
+                walk_forward_config, target_config, split_statistics,
                 feature_registry_version, target_registry_version,
                 train_records, validation_records, test_records,
                 output_format, storage_path,
@@ -161,11 +173,22 @@ async def get_dataset(
                 walk_forward_config = None
 
         target_config = row["target_config"]
-        if isinstance(target_config, str):
+        if target_config is None:
+            target_config = None
+        elif isinstance(target_config, str):
             try:
                 target_config = json.loads(target_config)
             except (json.JSONDecodeError, TypeError):
-                target_config = {}
+                target_config = None
+        # If it's already a dict/list, keep it as is
+
+        split_statistics = row.get("split_statistics")
+        if isinstance(split_statistics, str):
+            try:
+                split_statistics = json.loads(split_statistics)
+            except (json.JSONDecodeError, TypeError):
+                split_statistics = None
+        # If it's already a dict, keep it as is
 
         dataset_dict = {
             "id": str(row["id"]),
@@ -181,6 +204,7 @@ async def get_dataset(
             "test_period_end": row["test_period_end"].isoformat() + "Z" if row["test_period_end"] else None,
             "walk_forward_config": walk_forward_config,
             "target_config": target_config,
+            "split_statistics": split_statistics,
             "feature_registry_version": row["feature_registry_version"],
             "target_registry_version": row.get("target_registry_version"),
             "train_records": row["train_records"] or 0,

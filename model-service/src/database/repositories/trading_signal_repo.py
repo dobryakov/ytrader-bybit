@@ -41,6 +41,9 @@ class TradingSignalRepository(BaseRepository[Dict[str, Any]]):
         trace_id: Optional[str] = None,
         prediction_horizon_seconds: Optional[int] = None,
         target_timestamp: Optional[datetime] = None,
+        is_rejected: bool = False,
+        rejection_reason: Optional[str] = None,
+        effective_threshold: Optional[float] = None,
     ) -> Dict[str, Any]:
         """
         Create a new trading signal.
@@ -69,9 +72,10 @@ class TradingSignalRepository(BaseRepository[Dict[str, Any]]):
             INSERT INTO {self.table_name} (
                 signal_id, strategy_id, asset, side, price, confidence,
                 timestamp, model_version, is_warmup, market_data_snapshot,
-                metadata, trace_id, prediction_horizon_seconds, target_timestamp
+                metadata, trace_id, prediction_horizon_seconds, target_timestamp,
+                is_rejected, rejection_reason, effective_threshold
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
             RETURNING *
         """
         try:
@@ -110,12 +114,15 @@ class TradingSignalRepository(BaseRepository[Dict[str, Any]]):
                 trace_id,
                 prediction_horizon_seconds,
                 target_timestamp,
+                is_rejected,
+                rejection_reason,
+                Decimal(str(effective_threshold)) if effective_threshold is not None else None,
             )
             if not record:
                 raise ValueError("Failed to create trading signal")
             result = self._record_to_dict(record)
             # Convert Decimal to float for JSON serialization
-            for key in ["price", "confidence"]:
+            for key in ["price", "confidence", "effective_threshold"]:
                 if isinstance(result.get(key), Decimal):
                     result[key] = float(result[key])
             logger.debug("Trading signal created", signal_id=signal_id, strategy_id=strategy_id, asset=asset)
@@ -165,7 +172,7 @@ class TradingSignalRepository(BaseRepository[Dict[str, Any]]):
         if record:
             result = self._record_to_dict(record)
             # Convert Decimal to float
-            for key in ["price", "confidence"]:
+            for key in ["price", "confidence", "effective_threshold"]:
                 if isinstance(result.get(key), Decimal):
                     result[key] = float(result[key])
             return result
@@ -222,7 +229,7 @@ class TradingSignalRepository(BaseRepository[Dict[str, Any]]):
         results = self._records_to_dicts(records)
         # Convert Decimal to float
         for result in results:
-            for key in ["price", "confidence"]:
+            for key in ["price", "confidence", "effective_threshold"]:
                 if isinstance(result.get(key), Decimal):
                     result[key] = float(result[key])
         return results
@@ -278,7 +285,7 @@ class TradingSignalRepository(BaseRepository[Dict[str, Any]]):
         results = self._records_to_dicts(records)
         # Convert Decimal to float
         for result in results:
-            for key in ["price", "confidence"]:
+            for key in ["price", "confidence", "effective_threshold"]:
                 if isinstance(result.get(key), Decimal):
                     result[key] = float(result[key])
         return results

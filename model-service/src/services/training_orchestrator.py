@@ -1418,6 +1418,48 @@ class TrainingOrchestrator:
                         trace_id=trace_id,
                         note="Top-k% analysis: metrics calculated for top-k% predictions sorted by confidence, without applying confidence threshold or hysteresis filters. Used to evaluate ranking performance.",
                     )
+                    
+                    # Select optimal top-k percentage for this model
+                    optimal_k = self._select_optimal_top_k_percentage(
+                        top_k_results=top_k_results,
+                        strategy=settings.model_optimal_top_k_selection_strategy,
+                        trace_id=trace_id,
+                    )
+                    
+                    if optimal_k is not None:
+                        logger.info(
+                            "Optimal top-k percentage selected for model",
+                            training_id=training_id,
+                            model_version_id=str(model_version["id"]),
+                            optimal_top_k_percentage=optimal_k,
+                            selection_strategy=settings.model_optimal_top_k_selection_strategy,
+                            trace_id=trace_id,
+                        )
+                        # Update training_config and save to model_version in database
+                        training_config["optimal_top_k_percentage"] = optimal_k
+                        try:
+                            # Update model_version with new training_config
+                            # model_version_repo.update will serialize dict to JSON automatically
+                            from ..database.repositories.model_version_repo import ModelVersionRepository
+                            model_version_repo = ModelVersionRepository()
+                            await model_version_repo.update(
+                                model_version_id=model_version["id"],
+                                training_config=training_config,
+                            )
+                            logger.info(
+                                "Updated model_version with optimal top-k percentage",
+                                model_version_id=str(model_version["id"]),
+                                optimal_top_k_percentage=optimal_k,
+                                trace_id=trace_id,
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                "Failed to update model_version with optimal top-k percentage",
+                                model_version_id=str(model_version["id"]),
+                                error=str(e),
+                                trace_id=trace_id,
+                                exc_info=True,
+                            )
                 except Exception as e:
                     logger.warning(
                         "Failed to save top-k analysis metrics",
@@ -2044,6 +2086,134 @@ class TrainingOrchestrator:
         )
 
         return issues
+
+    def _select_optimal_top_k_percentage(
+        self,
+        top_k_results: Dict[str, Any],
+        strategy: str = "lift_then_accuracy",
+        trace_id: Optional[str] = None,
+    ) -> Optional[int]:
+        """
+        Select optimal top-k percentage based on metrics and selection strategy.
+        
+        Args:
+            top_k_results: Dictionary with top-k metrics (keys like 'top_k_10_accuracy', 'top_k_10_lift', etc.)
+            strategy: Selection strategy ('lift_then_accuracy', 'accuracy_only', 'lift_only', 'balanced')
+            trace_id: Trace ID for logging
+            
+        Returns:
+            Optimal k value (10, 20, 30, or 50) or None if no valid option found
+        """
+        k_values = [10, 20, 30, 50]
+        candidates = []
+        
+        # Collect metrics for each k
+        for k in k_values:
+            accuracy_key = f"top_k_{k}_accuracy"
+            lift_key = f"top_k_{k}_lift"
+            
+            accuracy = top_k_results.get(accuracy_key)
+            lift = top_k_results.get(lift_key)
+            
+            if accuracy is None:
+                continue
+            
+            candidates.append({
+                'k': k,
+                'accuracy': float(accuracy) if accuracy is not None else 0.0,
+                'lift': float(lift) if lift is not None else 0.0,
+            })
+        
+        if not candidates:
+            logger.warning(
+                "No top-k metrics available for optimal selection",
+                strategy=strategy,
+                trace_id=trace_id,
+            )
+            return None
+        
+        # Apply selection strategy
+        strategy = strategy.lower()
+        
+        if strategy == "lift_then_accuracy":
+            # First filter: only candidates with lift > 1.0
+            valid_candidates = [c for c in candidates if c['lift'] > 1.0]
+            
+            if valid_candidates:
+                # Among valid candidates, maximize accuracy
+                optimal = max(valid_candidates, key=lambda x: x['accuracy'])
+                logger.info(
+                    "Optimal top-k selected (lift_then_accuracy strategy)",
+                    optimal_k=optimal['k'],
+                    accuracy=optimal['accuracy'],
+                    lift=optimal['lift'],
+                    valid_candidates_count=len(valid_candidates),
+                    trace_id=trace_id,
+                )
+                return optimal['k']
+            else:
+                # Fallback: no candidate has lift > 1.0, use maximum accuracy
+                optimal = max(candidates, key=lambda x: x['accuracy'])
+                logger.warning(
+                    "No top-k candidate has lift > 1.0, using maximum accuracy as fallback",
+                    optimal_k=optimal['k'],
+                    accuracy=optimal['accuracy'],
+                    lift=optimal['lift'],
+                    trace_id=trace_id,
+                )
+                return optimal['k']
+        
+        elif strategy == "accuracy_only":
+            # Simply maximize accuracy
+            optimal = max(candidates, key=lambda x: x['accuracy'])
+            logger.info(
+                "Optimal top-k selected (accuracy_only strategy)",
+                optimal_k=optimal['k'],
+                accuracy=optimal['accuracy'],
+                lift=optimal['lift'],
+                trace_id=trace_id,
+            )
+            return optimal['k']
+        
+        elif strategy == "lift_only":
+            # Maximize lift
+            optimal = max(candidates, key=lambda x: x['lift'])
+            logger.info(
+                "Optimal top-k selected (lift_only strategy)",
+                optimal_k=optimal['k'],
+                accuracy=optimal['accuracy'],
+                lift=optimal['lift'],
+                trace_id=trace_id,
+            )
+            return optimal['k']
+        
+        elif strategy == "balanced":
+            # Maximize accuracy * lift
+            for candidate in candidates:
+                candidate['score'] = candidate['accuracy'] * candidate['lift']
+            optimal = max(candidates, key=lambda x: x['score'])
+            logger.info(
+                "Optimal top-k selected (balanced strategy)",
+                optimal_k=optimal['k'],
+                accuracy=optimal['accuracy'],
+                lift=optimal['lift'],
+                score=optimal['score'],
+                trace_id=trace_id,
+            )
+            return optimal['k']
+        
+        else:
+            # Unknown strategy, fallback to lift_then_accuracy
+            logger.warning(
+                "Unknown selection strategy, using lift_then_accuracy as fallback",
+                strategy=strategy,
+                trace_id=trace_id,
+            )
+            return self._select_optimal_top_k_percentage(
+                top_k_results=top_k_results,
+                strategy="lift_then_accuracy",
+                trace_id=trace_id,
+            )
 
     def get_status(self) -> Dict[str, Any]:
         """

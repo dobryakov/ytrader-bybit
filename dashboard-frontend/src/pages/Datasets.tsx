@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useDatasets, type Dataset, type DatasetStatus } from '@/hooks/useDatasets'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Badge } from '@/components/ui/badge'
@@ -144,7 +145,14 @@ export default function Datasets() {
               ) : (
                 datasets.map((dataset) => (
                   <TableRow key={dataset.id}>
-                    <TableCell className="font-mono text-xs">{dataset.id.slice(0, 8)}...</TableCell>
+                    <TableCell className="font-mono text-xs">
+                      <Link 
+                        to={`/datasets/${dataset.id}`}
+                        className="text-primary hover:underline"
+                      >
+                        {dataset.id.slice(0, 8)}...
+                      </Link>
+                    </TableCell>
                     <TableCell className="font-medium">{dataset.symbol}</TableCell>
                     <TableCell>
                       <Badge variant={getStatusBadgeVariant(dataset.status)}>

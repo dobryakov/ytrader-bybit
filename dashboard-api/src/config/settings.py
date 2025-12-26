@@ -42,6 +42,12 @@ class Settings(BaseSettings):
     model_service_port: int = Field(default=4500, alias="MODEL_SERVICE_PORT")
     model_service_api_key: str = Field(..., alias="MODEL_SERVICE_API_KEY")
 
+    # RabbitMQ Configuration
+    rabbitmq_host: str = Field(default="rabbitmq", alias="RABBITMQ_HOST")
+    rabbitmq_port: int = Field(default=5672, alias="RABBITMQ_PORT")
+    rabbitmq_user: str = Field(default="guest", alias="RABBITMQ_USER")
+    rabbitmq_password: str = Field(default="guest", alias="RABBITMQ_PASSWORD")
+
     @field_validator("dashboard_api_log_level")
     @classmethod
     def validate_log_level(cls, v: str) -> str:

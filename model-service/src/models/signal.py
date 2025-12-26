@@ -49,6 +49,11 @@ class TradingSignal(BaseModel):
         default=None, description="Additional signal metadata (reasoning, risk_score, etc.)"
     )
     trace_id: Optional[str] = Field(default=None, description="Trace ID for request flow tracking")
+    is_rejected: bool = Field(default=False, description="Whether signal was rejected (e.g., low confidence)")
+    rejection_reason: Optional[str] = Field(default=None, description="Reason for rejection if is_rejected=True")
+    effective_threshold: Optional[float] = Field(
+        default=None, description="Effective confidence threshold used for validation (0-1)"
+    )
 
     @field_validator("signal_type")
     @classmethod
@@ -101,5 +106,8 @@ class TradingSignal(BaseModel):
             },
             "metadata": self.metadata,
             "trace_id": self.trace_id,
+            "is_rejected": self.is_rejected,
+            "rejection_reason": self.rejection_reason,
+            "effective_threshold": self.effective_threshold,
         }
 

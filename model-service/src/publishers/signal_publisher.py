@@ -104,127 +104,136 @@ class SignalPublisher:
                 error=str(e),
             )
 
-        async def _publish_attempt():
-            # Convert signal to dictionary
-            signal_dict = signal.to_dict()
-
-            # Serialize to JSON
-            message_body = json.dumps(signal_dict).encode("utf-8")
-
-            # Publish message
-            channel = await rabbitmq_manager.get_channel()
-            await channel.default_exchange.publish(
-                aio_pika.Message(
-                    message_body,
-                    delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
-                ),
-                routing_key=self.queue_name,
-            )
-
-        try:
-            await retry_async(
-                _publish_attempt,
-                max_retries=3,
-                initial_delay=0.5,
-                max_delay=5.0,
-                operation_name="publish_signal",
-            )
-
+        # Skip RabbitMQ publishing for rejected signals
+        if signal.is_rejected:
             logger.info(
-                "Published trading signal",
+                "Skipping RabbitMQ publish for rejected signal",
                 signal_id=signal.signal_id,
-                signal_type=signal.signal_type,
-                asset=signal.asset,
-                amount=signal.amount,
-                strategy_id=signal.strategy_id,
-                model_version=signal.model_version,
-                is_warmup=signal.is_warmup,
+                rejection_reason=signal.rejection_reason,
                 confidence=signal.confidence,
-                queue=self.queue_name,
+                threshold=signal.effective_threshold,
             )
+        else:
+            async def _publish_attempt():
+                # Convert signal to dictionary
+                signal_dict = signal.to_dict()
 
-            # Persist trading signal to database after successful RabbitMQ publish
+                # Serialize to JSON
+                message_body = json.dumps(signal_dict).encode("utf-8")
+
+                # Publish message
+                channel = await rabbitmq_manager.get_channel()
+                await channel.default_exchange.publish(
+                    aio_pika.Message(
+                        message_body,
+                        delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+                    ),
+                    routing_key=self.queue_name,
+                )
+
             try:
-                logger.info("Attempting to persist trading signal to database", signal_id=signal.signal_id)
-                await self._persist_signal(signal)
-                logger.info("Successfully persisted trading signal to database", signal_id=signal.signal_id)
-                
-                # Save prediction target AFTER signal is persisted (avoids foreign key race condition)
-                # This ensures trading_signals record exists before prediction_targets references it
-                if hasattr(signal, '_prediction_data'):
-                    try:
-                        from ..services.intelligent_signal_generator import intelligent_signal_generator
-                        prediction_target = await intelligent_signal_generator._save_prediction_target(
-                            signal=signal,
-                            prediction_result=signal._prediction_data['prediction_result'],
-                            feature_vector=signal._prediction_data['feature_vector'],
-                            model_version=signal._prediction_data['model_version'],
-                            trace_id=signal._prediction_data.get('trace_id'),
-                        )
-                        
-                        # Trigger immediate check if target timestamp has already passed
-                        if prediction_target and prediction_target.get("target_timestamp"):
-                            from datetime import datetime as _dt_utc, timezone
-                            from ..tasks.target_evaluation_task import target_evaluation_task
+                await retry_async(
+                    _publish_attempt,
+                    max_retries=3,
+                    initial_delay=0.5,
+                    max_delay=5.0,
+                    operation_name="publish_signal",
+                )
 
-                            target_ts = prediction_target["target_timestamp"]
-                            
-                            # Handle case where target_ts is a string (from _record_to_dict conversion)
-                            if isinstance(target_ts, str):
-                                try:
-                                    # Parse ISO format string, handling both with and without timezone
-                                    if target_ts.endswith("Z"):
-                                        target_ts = datetime.fromisoformat(target_ts.replace("Z", "+00:00"))
-                                    else:
-                                        target_ts = datetime.fromisoformat(target_ts)
-                                except (ValueError, AttributeError) as e:
-                                    logger.warning(
-                                        "Failed to parse target_timestamp string",
-                                        signal_id=signal.signal_id,
-                                        target_timestamp=target_ts,
-                                        error=str(e),
-                                    )
-                                    # Skip further processing if parsing failed
-                                    target_ts = None
-                            
-                            # Normalize to UTC timezone-aware, then to naive for comparison
-                            if target_ts and isinstance(target_ts, datetime):
-                                if target_ts.tzinfo is None:
-                                    target_ts = target_ts.replace(tzinfo=timezone.utc)
-                                else:
-                                    target_ts = target_ts.astimezone(timezone.utc)
-                                target_ts = target_ts.replace(tzinfo=None)  # Convert to naive for comparison
-
-                            if target_ts and target_ts <= _dt_utc.utcnow():
-                                await target_evaluation_task.trigger_immediate_check(
-                                    prediction_target_id=str(prediction_target["id"])
-                                )
-                    except Exception as e:
-                        # Log error but don't fail signal publishing
-                        logger.warning(
-                            "Failed to save prediction target after signal persistence (continuing)",
-                            signal_id=signal.signal_id,
-                            error=str(e),
-                            exc_info=True,
-                        )
+                logger.info(
+                    "Published trading signal",
+                    signal_id=signal.signal_id,
+                    signal_type=signal.signal_type,
+                    asset=signal.asset,
+                    amount=signal.amount,
+                    strategy_id=signal.strategy_id,
+                    model_version=signal.model_version,
+                    is_warmup=signal.is_warmup,
+                    confidence=signal.confidence,
+                    queue=self.queue_name,
+                )
             except Exception as e:
-                # Log error but don't raise - continue processing on persistence failures
-                # This ensures signals are still published to RabbitMQ even if database persistence fails
-                logger.warning(
-                    "Failed to persist trading signal to database (continuing)",
+                logger.error(
+                    "Failed to publish trading signal after retries",
                     signal_id=signal.signal_id,
                     error=str(e),
                     exc_info=True,
                 )
+                raise MessageQueueError(f"Failed to publish signal {signal.signal_id}: {e}") from e
 
+        # Persist trading signal to database (for both valid and rejected signals)
+        try:
+            logger.info("Attempting to persist trading signal to database", signal_id=signal.signal_id)
+            await self._persist_signal(signal)
+            logger.info("Successfully persisted trading signal to database", signal_id=signal.signal_id)
+            
+            # Save prediction target AFTER signal is persisted (avoids foreign key race condition)
+            # This ensures trading_signals record exists before prediction_targets references it
+            if hasattr(signal, '_prediction_data'):
+                try:
+                    from ..services.intelligent_signal_generator import intelligent_signal_generator
+                    prediction_target = await intelligent_signal_generator._save_prediction_target(
+                        signal=signal,
+                        prediction_result=signal._prediction_data['prediction_result'],
+                        feature_vector=signal._prediction_data['feature_vector'],
+                        model_version=signal._prediction_data['model_version'],
+                        trace_id=signal._prediction_data.get('trace_id'),
+                    )
+                    
+                    # Trigger immediate check if target timestamp has already passed
+                    if prediction_target and prediction_target.get("target_timestamp"):
+                        from datetime import datetime as _dt_utc, timezone
+                        from ..tasks.target_evaluation_task import target_evaluation_task
+
+                        target_ts = prediction_target["target_timestamp"]
+                        
+                        # Handle case where target_ts is a string (from _record_to_dict conversion)
+                        if isinstance(target_ts, str):
+                            try:
+                                # Parse ISO format string, handling both with and without timezone
+                                if target_ts.endswith("Z"):
+                                    target_ts = datetime.fromisoformat(target_ts.replace("Z", "+00:00"))
+                                else:
+                                    target_ts = datetime.fromisoformat(target_ts)
+                            except (ValueError, AttributeError) as e:
+                                logger.warning(
+                                    "Failed to parse target_timestamp string",
+                                    signal_id=signal.signal_id,
+                                    target_timestamp=target_ts,
+                                    error=str(e),
+                                )
+                                # Skip further processing if parsing failed
+                                target_ts = None
+                        
+                        # Normalize to UTC timezone-aware, then to naive for comparison
+                        if target_ts and isinstance(target_ts, datetime):
+                            if target_ts.tzinfo is None:
+                                target_ts = target_ts.replace(tzinfo=timezone.utc)
+                            else:
+                                target_ts = target_ts.astimezone(timezone.utc)
+                            target_ts = target_ts.replace(tzinfo=None)  # Convert to naive for comparison
+
+                        if target_ts and target_ts <= _dt_utc.utcnow():
+                            await target_evaluation_task.trigger_immediate_check(
+                                prediction_target_id=str(prediction_target["id"])
+                            )
+                except Exception as e:
+                    # Log error but don't fail signal publishing
+                    logger.warning(
+                        "Failed to save prediction target after signal persistence (continuing)",
+                        signal_id=signal.signal_id,
+                        error=str(e),
+                        exc_info=True,
+                    )
         except Exception as e:
-            logger.error(
-                "Failed to publish trading signal after retries",
+            # Log error but don't raise - continue processing on persistence failures
+            # This ensures signals are still published to RabbitMQ even if database persistence fails
+            logger.warning(
+                "Failed to persist trading signal to database (continuing)",
                 signal_id=signal.signal_id,
                 error=str(e),
                 exc_info=True,
             )
-            raise MessageQueueError(f"Failed to publish signal {signal.signal_id}: {e}") from e
 
     async def publish_batch(self, signals: list[TradingSignal]) -> int:
         """
@@ -360,6 +369,9 @@ class SignalPublisher:
                 trace_id=signal.trace_id,
                 prediction_horizon_seconds=prediction_horizon_seconds,
                 target_timestamp=target_timestamp,
+                is_rejected=signal.is_rejected,
+                rejection_reason=signal.rejection_reason,
+                effective_threshold=signal.effective_threshold,
             )
             logger.info(
                 "Trading signal persisted to database",

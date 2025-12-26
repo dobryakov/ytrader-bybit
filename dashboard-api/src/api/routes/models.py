@@ -2,10 +2,12 @@
 
 from typing import Optional
 import json
+import uuid
 
-from fastapi import APIRouter, Query, HTTPException, Request
+from fastapi import APIRouter, Query, HTTPException, Request, Body
 from fastapi.responses import JSONResponse
 import httpx
+import aio_pika
 
 from ...config.logging import get_logger
 from ...config.database import DatabaseConnection
@@ -517,6 +519,114 @@ async def get_available_strategies():
         raise HTTPException(status_code=500, detail=f"Failed to retrieve available strategies: {str(e)}")
 
 
+@router.get("/models/by-dataset/{dataset_id}")
+async def get_models_by_dataset(dataset_id: str):
+    """Get models trained on a specific dataset."""
+    trace_id = get_or_create_trace_id()
+    logger.info("models_by_dataset_request", dataset_id=dataset_id, trace_id=trace_id)
+    
+    try:
+        query = """
+            SELECT 
+                mv.id, mv.version, mv.file_path, mv.model_type, mv.strategy_id,
+                mv.symbol, mv.trained_at, mv.training_duration_seconds,
+                mv.training_dataset_size, mv.training_config, mv.is_active
+            FROM model_versions mv
+            WHERE mv.training_config->>'dataset_id' = $1
+            ORDER BY mv.trained_at DESC
+        """
+        rows = await DatabaseConnection.fetch(query, dataset_id)
+        
+        models_data = []
+        for row in rows:
+            # Parse training_config to verify dataset_id matches
+            training_config = row["training_config"]
+            if isinstance(training_config, str):
+                try:
+                    training_config = json.loads(training_config)
+                except (json.JSONDecodeError, TypeError):
+                    training_config = None
+            
+            # Verify dataset_id matches
+            if isinstance(training_config, dict):
+                config_dataset_id = training_config.get("dataset_id")
+                if config_dataset_id != dataset_id:
+                    continue
+            
+            # Get quality metrics for this model
+            metrics_query = """
+                SELECT 
+                    metric_name, metric_value
+                FROM model_quality_metrics
+                WHERE model_version_id = $1
+                ORDER BY evaluated_at DESC
+            """
+            metrics_rows = await DatabaseConnection.fetch(metrics_query, row["id"])
+            
+            # Build metrics dictionary
+            metrics_dict = {}
+            if metrics_rows:
+                seen_metrics = set()
+                for metric_row in metrics_rows:
+                    metric_name = metric_row["metric_name"]
+                    if metric_name not in seen_metrics:
+                        seen_metrics.add(metric_name)
+                        metrics_dict[metric_name] = float(metric_row["metric_value"])
+            
+            # Unified metrics structure
+            unified_metrics = {
+                "accuracy": metrics_dict.get("accuracy"),
+                "balanced_accuracy": metrics_dict.get("balanced_accuracy"),
+                "f1_score": metrics_dict.get("f1_score"),
+                "pr_auc": metrics_dict.get("pr_auc"),
+                "precision": metrics_dict.get("precision"),
+                "recall": metrics_dict.get("recall"),
+                "roc_auc": metrics_dict.get("roc_auc"),
+                "mae": metrics_dict.get("mae"),
+                "mse": metrics_dict.get("mse"),
+                "r2_score": metrics_dict.get("r2_score"),
+                "rmse": metrics_dict.get("rmse"),
+                "avg_pnl": metrics_dict.get("avg_pnl"),
+                "max_drawdown": metrics_dict.get("max_drawdown"),
+                "profit_factor": metrics_dict.get("profit_factor"),
+                "sharpe_ratio": metrics_dict.get("sharpe_ratio"),
+                "total_pnl": metrics_dict.get("total_pnl"),
+                "win_rate": metrics_dict.get("win_rate"),
+            } if metrics_dict else None
+            
+            model_dict = {
+                "id": str(row["id"]),
+                "version": row["version"],
+                "file_path": row["file_path"],
+                "model_type": row["model_type"],
+                "strategy_id": row["strategy_id"],
+                "symbol": row["symbol"],
+                "trained_at": row["trained_at"].isoformat() + "Z",
+                "training_duration_seconds": row["training_duration_seconds"],
+                "training_dataset_size": row["training_dataset_size"],
+                "training_config": training_config,
+                "is_active": row["is_active"],
+                "metrics": unified_metrics,
+            }
+            models_data.append(model_dict)
+        
+        logger.info("models_by_dataset_completed", dataset_id=dataset_id, count=len(models_data), trace_id=trace_id)
+        
+        return JSONResponse(
+            status_code=200,
+            content={
+                "models": models_data,
+                "count": len(models_data),
+            },
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("models_by_dataset_failed", dataset_id=dataset_id, error=str(e), trace_id=trace_id, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve models: {str(e)}")
+
+
 @router.get("/models/active-version")
 async def get_active_model_version(
     asset: str = Query(..., description="Trading asset (e.g., 'BTCUSDT')"),
@@ -609,4 +719,100 @@ async def get_model_analysis(version: str):
     except Exception as e:
         logger.error("model_analysis_failed", version=version, error=str(e), trace_id=trace_id, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to retrieve model analysis: {str(e)}")
+
+
+@router.post("/models/relearn")
+async def relearn_model(
+    dataset_id: str = Body(..., description="Dataset ID"),
+    symbol: str = Body(..., description="Trading symbol (e.g., BTCUSDT)"),
+    strategy_id: Optional[str] = Body(None, description="Strategy ID (optional)"),
+):
+    """
+    Publish a dataset.ready message to RabbitMQ to trigger model retraining on the same dataset.
+    
+    This mimics the behavior of publish_dataset_ready.py script.
+    """
+    trace_id = get_or_create_trace_id()
+    logger.info(
+        "relearn_model_request",
+        dataset_id=dataset_id,
+        symbol=symbol,
+        strategy_id=strategy_id,
+        trace_id=trace_id
+    )
+    
+    try:
+        # Create RabbitMQ connection
+        connection = await aio_pika.connect_robust(
+            f"amqp://{settings.rabbitmq_user}:{settings.rabbitmq_password}@{settings.rabbitmq_host}:{settings.rabbitmq_port}/"
+        )
+        
+        try:
+            channel = await connection.channel()
+            
+            # Prepare message (same format as publish_dataset_ready.py)
+            message_data = {
+                "dataset_id": dataset_id,
+                "symbol": symbol,
+                "status": "ready",
+                "train_records": 0,
+                "validation_records": 0,
+                "test_records": 0,
+                "trace_id": trace_id or f"dashboard-relearn-{uuid.uuid4().hex[:8]}",
+            }
+            
+            # Add strategy_id if provided
+            if strategy_id is not None:
+                message_data["strategy_id"] = strategy_id
+            
+            message_body = json.dumps(message_data).encode()
+            
+            # Publish message to features.dataset.ready queue
+            await channel.default_exchange.publish(
+                aio_pika.Message(
+                    body=message_body,
+                    content_type="application/json",
+                    delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+                ),
+                routing_key="features.dataset.ready",
+            )
+            
+            logger.info(
+                "relearn_model_published",
+                dataset_id=dataset_id,
+                symbol=symbol,
+                strategy_id=strategy_id,
+                trace_id=trace_id,
+                queue="features.dataset.ready",
+            )
+            
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "success": True,
+                    "message": "Dataset ready signal published to RabbitMQ",
+                    "dataset_id": dataset_id,
+                    "symbol": symbol,
+                    "strategy_id": strategy_id,
+                    "trace_id": message_data["trace_id"],
+                }
+            )
+            
+        finally:
+            await connection.close()
+            
+    except Exception as e:
+        logger.error(
+            "relearn_model_failed",
+            dataset_id=dataset_id,
+            symbol=symbol,
+            strategy_id=strategy_id,
+            error=str(e),
+            trace_id=trace_id,
+            exc_info=True
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to publish dataset ready signal: {str(e)}"
+        )
 

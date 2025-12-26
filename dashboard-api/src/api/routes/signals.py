@@ -33,6 +33,10 @@ async def list_signals(
             SELECT 
                 ts.signal_id, ts.side, ts.asset, ts.price, ts.confidence,
                 ts.strategy_id, ts.model_version, ts.timestamp, ts.is_warmup, ts.prediction_horizon_seconds,
+                ts.metadata,
+                ts.is_rejected,
+                ts.rejection_reason,
+                ts.effective_threshold,
                 pt.predicted_values->>'direction' as model_prediction,
                 COALESCE(pt.actual_values->>'candle_open', ts.market_data_snapshot->>'price') as price_from,
                 pt.actual_values->>'candle_close' as price_to,
@@ -59,6 +63,7 @@ async def list_signals(
             WHERE 1=1
             GROUP BY ts.signal_id, ts.side, ts.asset, ts.price, ts.confidence,
                      ts.strategy_id, ts.model_version, ts.timestamp, ts.is_warmup, ts.prediction_horizon_seconds,
+                     ts.metadata, ts.is_rejected, ts.rejection_reason, ts.effective_threshold,
                      pt.predicted_values->>'direction',
                      pt.actual_values->>'candle_open',
                      ts.market_data_snapshot->>'price',
@@ -284,6 +289,46 @@ async def list_signals(
                 # If we have prices but no target_timestamp, assume computed
                 actual_movement_status = "computed"
             
+            # Extract raw prediction data from metadata
+            raw_prediction_data = None
+            metadata = row.get("metadata")
+            
+            # Handle JSONB: asyncpg returns JSONB as string, need to parse it
+            if metadata:
+                # asyncpg returns JSONB as string, parse it
+                if isinstance(metadata, str):
+                    try:
+                        import json
+                        metadata = json.loads(metadata)
+                    except (json.JSONDecodeError, TypeError) as e:
+                        logger.warning("Failed to parse metadata as JSON", signal_id=str(row.get("signal_id")), error=str(e))
+                        metadata = None
+                
+                # Now metadata should be a dict (or None if parsing failed)
+                if metadata and isinstance(metadata, dict):
+                    prediction_result = metadata.get("prediction_result")
+                    effective_threshold = metadata.get("effective_threshold")
+                    threshold_source = metadata.get("threshold_source")
+                    
+                    if prediction_result or effective_threshold is not None:
+                        raw_prediction_data = {
+                            "prediction_result": prediction_result,
+                            "effective_threshold": float(effective_threshold) if effective_threshold is not None else None,
+                            "threshold_source": threshold_source,
+                        }
+                elif metadata:
+                    logger.debug("Metadata is not a dict after parsing", signal_id=str(row.get("signal_id")), metadata_type=type(metadata).__name__)
+            
+            # Fallback: if metadata doesn't have prediction_result, try to get from effective_threshold column
+            if raw_prediction_data is None or raw_prediction_data.get("prediction_result") is None:
+                effective_threshold_col = row.get("effective_threshold")
+                if effective_threshold_col is not None:
+                    if raw_prediction_data is None:
+                        raw_prediction_data = {}
+                    raw_prediction_data["effective_threshold"] = float(effective_threshold_col)
+                    if not raw_prediction_data.get("threshold_source"):
+                        raw_prediction_data["threshold_source"] = "static"  # Default if not in metadata
+            
             signal_dict = {
                 "signal_id": str(row["signal_id"]),
                 "signal_type": row["side"],  # Map 'side' to 'signal_type' for API compatibility
@@ -296,6 +341,9 @@ async def list_signals(
                 "is_warmup": row["is_warmup"],
                 "horizon": row.get("prediction_horizon_seconds"),  # May be None
                 "model_prediction": model_prediction,  # "UP", "DOWN", or None
+                "raw_prediction_data": raw_prediction_data,  # Raw prediction data from metadata
+                "is_rejected": bool(row.get("is_rejected", False)),
+                "rejection_reason": row.get("rejection_reason"),
                 "actual_movement": {
                     "price_from": price_from,
                     "price_to": price_to,

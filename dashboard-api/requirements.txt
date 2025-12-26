@@ -15,6 +15,9 @@ structlog>=23.2.0
 # HTTP Client
 httpx>=0.25.0
 
+# RabbitMQ
+aio-pika>=9.3.0
+
 # Docker SDK (optional, for containers status endpoint)
 docker>=6.1.0
 

@@ -211,6 +211,9 @@ class OptimizedDatasetBuilder:
             raise ValueError("Start date and end date must be provided")
         
         # Create dataset record
+        # Convert target_config to dict for JSONB storage
+        target_config_dict = target_config.model_dump() if hasattr(target_config, 'model_dump') else target_config.dict() if hasattr(target_config, 'dict') else target_config
+        
         dataset_data = {
             "symbol": symbol,
             "status": DatasetStatus.BUILDING.value,
@@ -225,6 +228,7 @@ class OptimizedDatasetBuilder:
             # Persist the resolved concrete Target Registry version (e.g. "1.6.0"),
             # not the alias like "latest", so that dataset semantics are stable.
             "target_registry_version": resolved_target_version,
+            "target_config": target_config_dict,  # Save target_config for reference
             "feature_registry_version": registry_version,
             "output_format": output_format,
             "strategy_id": strategy_id,  # Save strategy_id for model training
@@ -427,6 +431,9 @@ class OptimizedDatasetBuilder:
             total_val = len(splits["validation"])
             total_test = len(splits["test"])
             
+            # Compute statistics for each split
+            split_statistics = self._compute_split_statistics(splits, target_config)
+            
             await self._metadata_storage.update_dataset(
                 dataset_id,
                 {
@@ -437,6 +444,7 @@ class OptimizedDatasetBuilder:
                     "storage_path": str(storage_path),
                     "completed_at": datetime.now(timezone.utc),
                     "estimated_completion": None,
+                    "split_statistics": split_statistics,
                 },
             )
             
@@ -1088,6 +1096,77 @@ class OptimizedDatasetBuilder:
         test = pd.concat(all_test, ignore_index=True) if all_test else pd.DataFrame()
         
         return {"train": train, "validation": validation, "test": test}
+    
+    def _compute_split_statistics(
+        self,
+        splits: Dict[str, pd.DataFrame],
+        target_config: TargetConfig,
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        Compute statistics for each split.
+        
+        Args:
+            splits: Dictionary with train/validation/test splits
+            target_config: Target configuration
+            
+        Returns:
+            Dictionary with statistics for each split
+        """
+        statistics = {}
+        
+        for split_name, split_df in splits.items():
+            if split_df.empty or "target" not in split_df.columns:
+                statistics[split_name] = {}
+                continue
+            
+            target_series = split_df["target"]
+            
+            # Initialize statistics dict
+            split_stats = {}
+            
+            # Determine task type from target_config
+            is_classification = target_config.type in ["classification", "risk_adjusted"]
+            
+            if is_classification:
+                # Class distribution
+                class_dist = target_series.value_counts(dropna=False).to_dict()
+                # Convert keys to strings for JSON serialization
+                class_distribution = {str(k): int(v) for k, v in class_dist.items()}
+                split_stats["class_distribution"] = class_distribution
+                
+                # Class balance ratio (ratio of minority to majority class)
+                if len(class_dist) > 1:
+                    counts = list(class_dist.values())
+                    minority_count = min(counts)
+                    majority_count = max(counts)
+                    class_balance_ratio = minority_count / majority_count if majority_count > 0 else 0.0
+                    split_stats["class_balance_ratio"] = float(class_balance_ratio)
+                    split_stats["minority_class_size"] = int(minority_count)
+                else:
+                    split_stats["class_balance_ratio"] = 1.0
+                    split_stats["minority_class_size"] = int(list(class_dist.values())[0]) if class_dist else 0
+                
+                # Total classes count
+                split_stats["total_classes"] = len(class_dist)
+            
+            # Target statistics (for both classification and regression)
+            # Convert to numeric, handling any non-numeric values
+            numeric_targets = pd.to_numeric(target_series, errors='coerce').dropna()
+            
+            if len(numeric_targets) > 0:
+                target_stats = {
+                    "mean": float(numeric_targets.mean()),
+                    "median": float(numeric_targets.median()),
+                    "std": float(numeric_targets.std()) if len(numeric_targets) > 1 else 0.0,
+                    "min": float(numeric_targets.min()),
+                    "max": float(numeric_targets.max()),
+                    "count": int(len(numeric_targets)),
+                }
+                split_stats["target_statistics"] = target_stats
+            
+            statistics[split_name] = split_stats
+        
+        return statistics
     
     async def _write_dataset_splits(
         self, dataset_id: str, splits: Dict[str, pd.DataFrame], output_format: str

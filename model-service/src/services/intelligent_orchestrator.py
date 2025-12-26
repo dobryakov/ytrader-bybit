@@ -139,11 +139,17 @@ class IntelligentOrchestrator:
             signals: List of signals to process
         """
         valid_signals = []
+        rejected_signals = []
         invalid_count = 0
 
         for signal in signals:
+            # Skip validation for rejected signals (they are already marked as rejected)
+            if signal.is_rejected:
+                rejected_signals.append(signal)
+                continue
+            
             try:
-                # Validate signal
+                # Validate only non-rejected signals
                 signal_validator.validate_and_raise(signal)
                 valid_signals.append(signal)
 
@@ -156,21 +162,23 @@ class IntelligentOrchestrator:
                 )
                 # Continue with other signals
 
-        # Publish valid signals
-        if valid_signals:
+        # Publish all signals (valid and rejected) - publisher will handle rejected signals appropriately
+        all_signals_to_publish = valid_signals + rejected_signals
+        if all_signals_to_publish:
             try:
-                published_count = await signal_publisher.publish_batch(valid_signals)
+                published_count = await signal_publisher.publish_batch(all_signals_to_publish)
                 logger.info(
                     "Published intelligent signals",
                     total=len(signals),
                     valid=len(valid_signals),
+                    rejected=len(rejected_signals),
                     published=published_count,
                     invalid=invalid_count,
                 )
             except Exception as e:
                 logger.error(
                     "Failed to publish signals",
-                    count=len(valid_signals),
+                    count=len(all_signals_to_publish),
                     error=str(e),
                     exc_info=True,
                 )
@@ -203,13 +211,18 @@ class IntelligentOrchestrator:
             if not signal:
                 return None
 
-            # Validate signal
-            signal_validator.validate_and_raise(signal)
+            # Skip validation for rejected signals (they are already marked as rejected)
+            if not signal.is_rejected:
+                # Validate only non-rejected signals
+                signal_validator.validate_and_raise(signal)
 
-            # Publish signal
+            # Publish signal (publisher will handle rejected signals appropriately)
             await signal_publisher.publish(signal)
 
-            logger.info("Generated and published single intelligent signal", signal_id=signal.signal_id)
+            if signal.is_rejected:
+                logger.info("Generated and saved rejected intelligent signal", signal_id=signal.signal_id, rejection_reason=signal.rejection_reason)
+            else:
+                logger.info("Generated and published single intelligent signal", signal_id=signal.signal_id)
 
             return signal
 

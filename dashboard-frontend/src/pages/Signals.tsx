@@ -82,12 +82,22 @@ export default function Signals() {
                 </TableRow>
               ) : (
                 data?.signals.map((signal) => (
-                  <TableRow key={signal.signal_id}>
+                  <TableRow 
+                    key={signal.signal_id}
+                    className={signal.is_rejected ? 'bg-red-50 dark:bg-red-950/20' : ''}
+                  >
                     <TableCell className="font-mono text-xs">{signal.signal_id.slice(0, 8)}...</TableCell>
                     <TableCell>
-                      <Badge variant={signal.signal_type === 'buy' ? 'default' : 'destructive'}>
-                        {signal.signal_type.toUpperCase()}
-                      </Badge>
+                      <div className="flex items-center gap-2">
+                        <Badge variant={signal.signal_type === 'buy' ? 'default' : 'destructive'}>
+                          {signal.signal_type.toUpperCase()}
+                        </Badge>
+                        {signal.is_rejected && (
+                          <Badge variant="outline" className="border-red-500 text-red-600 dark:border-red-400 dark:text-red-400">
+                            REJECTED
+                          </Badge>
+                        )}
+                      </div>
                     </TableCell>
                     <TableCell>{signal.asset}</TableCell>
                     <TableCell>{parseFloat(signal.amount).toFixed(2)} USDT</TableCell>
@@ -95,13 +105,51 @@ export default function Signals() {
                       {signal.confidence ? (signal.confidence * 100).toFixed(2) + '%' : 'N/A'}
                     </TableCell>
                     <TableCell>
-                      {signal.model_prediction ? (
-                        <Badge variant={signal.model_prediction === 'UP' ? 'default' : 'destructive'}>
-                          {signal.model_prediction}
-                        </Badge>
-                      ) : (
-                        <span className="text-muted-foreground">N/A</span>
-                      )}
+                      <div className="flex flex-col gap-1">
+                        {signal.model_prediction ? (
+                          <Badge variant={signal.model_prediction === 'UP' ? 'default' : 'destructive'}>
+                            {signal.model_prediction}
+                          </Badge>
+                        ) : (
+                          <span className="text-muted-foreground">N/A</span>
+                        )}
+                        {signal.raw_prediction_data && (
+                          <div className="text-xs text-muted-foreground space-y-0.5">
+                            {signal.raw_prediction_data.prediction_result && (
+                              <>
+                                {signal.raw_prediction_data.prediction_result.buy_probability !== undefined && (
+                                  <div>
+                                    Buy: {(signal.raw_prediction_data.prediction_result.buy_probability * 100).toFixed(2)}%
+                                  </div>
+                                )}
+                                {signal.raw_prediction_data.prediction_result.sell_probability !== undefined && (
+                                  <div>
+                                    Sell: {(signal.raw_prediction_data.prediction_result.sell_probability * 100).toFixed(2)}%
+                                  </div>
+                                )}
+                                {signal.raw_prediction_data.prediction_result.probabilities && (
+                                  <div className="font-mono text-[10px]">
+                                    Probs: [{signal.raw_prediction_data.prediction_result.probabilities.map(p => (p * 100).toFixed(1)).join(', ')}%]
+                                  </div>
+                                )}
+                              </>
+                            )}
+                            {signal.raw_prediction_data.effective_threshold !== null && signal.raw_prediction_data.effective_threshold !== undefined && (
+                              <div>
+                                Threshold: {(signal.raw_prediction_data.effective_threshold * 100).toFixed(2)}%
+                                {signal.raw_prediction_data.threshold_source && (
+                                  <span className="ml-1 text-[10px]">({signal.raw_prediction_data.threshold_source})</span>
+                                )}
+                              </div>
+                            )}
+                            {signal.is_rejected && (
+                              <div className="text-red-600 font-semibold">
+                                Rejected: {signal.rejection_reason || 'Unknown'}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
                     </TableCell>
                     <TableCell>
                       {signal.actual_movement ? (

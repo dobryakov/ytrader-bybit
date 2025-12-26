@@ -21,6 +21,7 @@ export default function Models() {
   const { data, isLoading } = useModels({ is_active: true })
   const { data: trainingHistory, isLoading: isHistoryLoading } = useModelTrainingHistory({ limit: 100 })
   const [retrainingModelId, setRetrainingModelId] = useState<string | null>(null)
+  const [relearningModelId, setRelearningModelId] = useState<string | null>(null)
   
   // Filters for metrics chart
   const [chartSymbolFilter, setChartSymbolFilter] = useState<string>('')
@@ -178,6 +179,48 @@ export default function Models() {
     }
   }
 
+  const handleRelearn = async (model: { id: string; symbol: string | null; strategy_id: string | null; training_config: any }) => {
+    if (!model.symbol) {
+      alert('Модель должна иметь symbol для Re-Learn')
+      return
+    }
+
+    // Extract dataset_id from training_config
+    let datasetId: string | null = null
+    if (model.training_config) {
+      if (typeof model.training_config === 'string') {
+        try {
+          const config = JSON.parse(model.training_config)
+          datasetId = config.dataset_id || null
+        } catch {
+          // Ignore parse errors
+        }
+      } else if (typeof model.training_config === 'object' && model.training_config !== null) {
+        datasetId = model.training_config.dataset_id || null
+      }
+    }
+
+    if (!datasetId) {
+      alert('Не удалось найти dataset_id в конфигурации модели. Re-Learn доступен только для моделей, обученных на датасете.')
+      return
+    }
+
+    setRelearningModelId(model.id)
+    try {
+      const response = await api.post('/v1/models/relearn', {
+        dataset_id: datasetId,
+        symbol: model.symbol,
+        strategy_id: model.strategy_id || null,
+      })
+      alert(`Re-Learn запущен. Dataset ID: ${datasetId}, Trace ID: ${response.data.trace_id}`)
+    } catch (error: any) {
+      const errorMessage = error.response?.data?.detail || error.message || 'Ошибка при запуске Re-Learn'
+      alert(`Ошибка: ${errorMessage}`)
+    } finally {
+      setRelearningModelId(null)
+    }
+  }
+
   return (
     <div className="space-y-6">
       <div>
@@ -266,6 +309,15 @@ export default function Models() {
                         {retrainingModelId === model.id ? 'Запуск...' : 'Retrain'}
                       </Button>
                       <Button
+                        onClick={() => handleRelearn(model)}
+                        disabled={relearningModelId === model.id || !model.symbol || !model.training_config}
+                        size="sm"
+                        variant="outline"
+                        title="Перезапустить обучение на том же датасете"
+                      >
+                        {relearningModelId === model.id ? 'Запуск...' : 'Re-Learn'}
+                      </Button>
+                      <Button
                         asChild
                         size="sm"
                         variant="default"
@@ -346,7 +398,14 @@ export default function Models() {
                       <TableCell className="text-xs">{item.feature_registry_version || 'N/A'}</TableCell>
                       <TableCell className="text-xs">{item.target_registry_version || 'N/A'}</TableCell>
                       <TableCell className="font-mono text-xs">
-                        {item.dataset_id ? `${item.dataset_id.slice(0, 8)}...` : 'N/A'}
+                        {item.dataset_id ? (
+                          <Link 
+                            to={`/datasets/${item.dataset_id}`}
+                            className="text-primary hover:underline"
+                          >
+                            {item.dataset_id.slice(0, 8)}...
+                          </Link>
+                        ) : 'N/A'}
                       </TableCell>
                       <TableCell>
                         {item.metrics?.accuracy ? (item.metrics.accuracy * 100).toFixed(2) + '%' : 'N/A'}
