@@ -447,6 +447,11 @@ class HybridFeatureComputer:
         # Get feature names from first computation (will be set on first successful computation)
         first_patterns = None
         
+        # Track daily statistics for summary logging
+        current_day = None
+        daily_stats = {}  # {date: {feature_name: {computed: 0, none_count: 0}}}
+        daily_stats = {}  # {date: {feature_name: {computed: 0, none_count: 0}}}
+        
         for idx, ts in enumerate(timestamps):
             # Normalize timestamp
             if isinstance(ts, pd.Timestamp):
@@ -655,7 +660,7 @@ class HybridFeatureComputer:
                     if missing_cols:
                         # Initialize any missing columns (should not happen, but safety check)
                         for feature_name in missing_cols:
-                            result[feature_name] = None
+                        result[feature_name] = None
                 
                 # Check if patterns contains fewer keys than initialized columns
                 # This can happen if compute_all_candle_patterns_* returns incomplete dict
@@ -783,7 +788,7 @@ class HybridFeatureComputer:
                         # Set value in result DataFrame using .at[] for direct assignment
                         # Use .loc[] as fallback if .at[] doesn't work (shouldn't happen, but safety)
                         try:
-                            result.at[idx, feature_name] = value
+                        result.at[idx, feature_name] = value
                         except Exception as e:
                             # Fallback to .loc[] if .at[] fails
                             logger.warning(
@@ -808,8 +813,35 @@ class HybridFeatureComputer:
                                 actual_type=type(written_value).__name__,
                             )
                         
-                        # Log feature-specific details (every 100th row or if value is None)
-                        if idx == 0 or idx % 100 == 0 or value is None:
+                        # Track daily statistics instead of logging every row
+                        ts_date = ts_dt.date() if hasattr(ts_dt, 'date') else pd.Timestamp(ts_dt).date()
+                        
+                        # Initialize daily stats for new day and log summary for previous day
+                        if current_day is None or ts_date != current_day:
+                            # Log summary for previous day (if exists)
+                            if current_day is not None and daily_stats.get(current_day):
+                                for day_feature, stats in daily_stats[current_day].items():
+                                    logger.info(
+                                        "feature_computation_daily_summary",
+                                        date=str(current_day),
+                                        feature_name=day_feature,
+                                        total_computed=stats.get("computed", 0),
+                                        none_count=stats.get("none_count", 0),
+                                        success_rate=1.0 - (stats.get("none_count", 0) / max(stats.get("computed", 1), 1)),
+                                    )
+                            current_day = ts_date
+                            if current_day not in daily_stats:
+                                daily_stats[current_day] = {}
+                        
+                        # Update daily statistics
+                        if feature_name not in daily_stats[current_day]:
+                            daily_stats[current_day][feature_name] = {"computed": 0, "none_count": 0}
+                        daily_stats[current_day][feature_name]["computed"] += 1
+                        if value is None:
+                            daily_stats[current_day][feature_name]["none_count"] += 1
+                        
+                        # Log only first row (errors are already logged separately above at line 761)
+                        if idx == 0:
                             logger.info(
                                 "feature_computation_feature_details",
                                 row_index=idx,
@@ -831,6 +863,18 @@ class HybridFeatureComputer:
                     current_timestamp=ts_dt.isoformat(),
                     window_start=window_start.isoformat(),
                     window_end=window_end.isoformat(),
+                )
+        
+        # Log final daily summary
+        if current_day is not None and daily_stats.get(current_day):
+            for day_feature, stats in daily_stats[current_day].items():
+                logger.info(
+                    "feature_computation_daily_summary",
+                    date=str(current_day),
+                    feature_name=day_feature,
+                    total_computed=stats.get("computed", 0),
+                    none_count=stats.get("none_count", 0),
+                    success_rate=1.0 - (stats.get("none_count", 0) / max(stats.get("computed", 1), 1)),
                 )
         
         return result

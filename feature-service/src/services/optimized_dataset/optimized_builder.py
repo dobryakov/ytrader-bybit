@@ -1263,32 +1263,32 @@ class OptimizedDatasetBuilder:
                 
                 feature_series = features_df_copy[feature_name]
                 timestamp_series = features_df_copy["timestamp"]
-                
+                    
                 # ИСПРАВЛЕННАЯ ЛОГИКА: Правильная маска для пропусков
                 # Используем isna() для всех типов - он правильно обрабатывает и NaN и None
-                missing_mask = feature_series.isna()
-                
-                missing_timestamps = timestamp_series[missing_mask]
-                
-                if len(missing_timestamps) > 0:
-                    missing_timestamps_by_feature[feature_name] = missing_timestamps
+                    missing_mask = feature_series.isna()
                     
-                    # Calculate time ranges
-                    min_ts = missing_timestamps.min()
-                    max_ts = missing_timestamps.max()
+                    missing_timestamps = timestamp_series[missing_mask]
                     
-                    # Group by date to identify which days have missing data
-                    if pd.api.types.is_datetime64_any_dtype(missing_timestamps):
-                        missing_dates = missing_timestamps.dt.date.unique()
-                        missing_dates_sorted = sorted(missing_dates)
+                    if len(missing_timestamps) > 0:
+                        missing_timestamps_by_feature[feature_name] = missing_timestamps
                         
-                        missing_time_ranges[feature_name] = {
-                            "first_missing_timestamp": min_ts.isoformat() if isinstance(min_ts, pd.Timestamp) else str(min_ts),
-                            "last_missing_timestamp": max_ts.isoformat() if isinstance(max_ts, pd.Timestamp) else str(max_ts),
-                            "missing_dates": [d.isoformat() for d in missing_dates_sorted],
-                            "date_range": f"{missing_dates_sorted[0].isoformat()} to {missing_dates_sorted[-1].isoformat()}" if len(missing_dates_sorted) > 1 else missing_dates_sorted[0].isoformat(),
-                            "missing_timestamps_count": len(missing_timestamps),
-                        }
+                        # Calculate time ranges
+                        min_ts = missing_timestamps.min()
+                        max_ts = missing_timestamps.max()
+                        
+                        # Group by date to identify which days have missing data
+                        if pd.api.types.is_datetime64_any_dtype(missing_timestamps):
+                            missing_dates = missing_timestamps.dt.date.unique()
+                            missing_dates_sorted = sorted(missing_dates)
+                            
+                            missing_time_ranges[feature_name] = {
+                                "first_missing_timestamp": min_ts.isoformat() if isinstance(min_ts, pd.Timestamp) else str(min_ts),
+                                "last_missing_timestamp": max_ts.isoformat() if isinstance(max_ts, pd.Timestamp) else str(max_ts),
+                                "missing_dates": [d.isoformat() for d in missing_dates_sorted],
+                                "date_range": f"{missing_dates_sorted[0].isoformat()} to {missing_dates_sorted[-1].isoformat()}" if len(missing_dates_sorted) > 1 else missing_dates_sorted[0].isoformat(),
+                                "missing_timestamps_count": len(missing_timestamps),
+                            }
         
         # Build detailed error message
         error_parts = [
@@ -1438,7 +1438,7 @@ class OptimizedDatasetBuilder:
                 symbol=symbol,
                 features_with_high_nan_count=len(non_lookback_high_nan),
                 message="High NaN ratio detected in non-lookback features but build continues (fail_on_high_nan_ratio=False)",
-            )
+        )
     
     async def _split_time_based(
         self,

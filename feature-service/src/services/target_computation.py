@@ -10,6 +10,40 @@ from src.logging import get_logger
 logger = get_logger(__name__)
 
 
+def _get_series_summary(series: pd.Series, max_sample: int = 5) -> Dict[str, Any]:
+    """
+    Generate compact summary statistics for a pandas Series to reduce log volume.
+    
+    Args:
+        series: pandas Series to summarize
+        max_sample: Maximum number of values to include in head/tail samples
+        
+    Returns:
+        Dictionary with summary statistics and samples
+    """
+    if series is None or len(series) == 0:
+        return {}
+    
+    summary = {
+        "count": len(series),
+        "notna_count": int(series.notna().sum()),
+        "na_count": int(series.isna().sum()),
+    }
+    
+    notna_series = series.dropna()
+    if len(notna_series) > 0:
+        summary.update({
+            "min": float(notna_series.min()),
+            "max": float(notna_series.max()),
+            "mean": float(notna_series.mean()),
+            "std": float(notna_series.std()),
+            "sample_first": notna_series.head(max_sample).tolist(),
+            "sample_last": notna_series.tail(max_sample).tolist(),
+        })
+    
+    return summary
+
+
 class TargetComputationPresets:
     """Preset configurations for target computation."""
     
@@ -404,19 +438,26 @@ class TargetComputationEngine:
         result = result.copy()
         result["target"] = target
         
+        target_summary_before = {}
+        if "target" in result.columns:
+            target_summary_before = _get_series_summary(result["target"])
+        
         logger.info(
             "_postprocess_target_before_dropna",
             rows_before=len(result),
-            target_values=result["target"].tolist() if "target" in result.columns else [],
-            target_notna=result["target"].notna().sum() if "target" in result.columns else 0,
+            target_summary=target_summary_before,
         )
         
         result = result.dropna(subset=["target"])
         
+        target_summary_after = {}
+        if "target" in result.columns and len(result) > 0:
+            target_summary_after = _get_series_summary(result["target"])
+        
         logger.info(
             "_postprocess_target_after_dropna",
             rows_after=len(result),
-            final_target_values=result["target"].tolist() if "target" in result.columns and len(result) > 0 else [],
+            target_summary=target_summary_after,
         )
 
         return result
@@ -574,12 +615,16 @@ class TargetComputationEngine:
             raise
         
         # Log after merge for debugging
+        future_price_summary = {}
+        if not data_merged.empty and "future_price" in data_merged.columns:
+            future_price_summary = _get_series_summary(data_merged["future_price"])
+        
         logger.info(
             "_compute_base_target_after_merge",
             data_merged_rows=len(data_merged),
             data_merged_columns=list(data_merged.columns) if not data_merged.empty else [],
             has_future_price="future_price" in data_merged.columns if not data_merged.empty else False,
-            future_price_values=data_merged["future_price"].tolist() if not data_merged.empty and "future_price" in data_merged.columns else [],
+            future_price_summary=future_price_summary,
         )
         
         # Apply tolerance if specified
@@ -615,13 +660,20 @@ class TargetComputationEngine:
         )
         
         # Log after price restoration
+        future_price_summary = {}
+        price_summary = {}
+        if "future_price" in data_merged.columns:
+            future_price_summary = _get_series_summary(data_merged["future_price"])
+        if "price" in data_merged.columns:
+            price_summary = _get_series_summary(data_merged["price"])
+        
         logger.info(
             "_compute_base_target_after_price_restore",
             data_merged_rows=len(data_merged),
             has_future_price="future_price" in data_merged.columns,
             has_price="price" in data_merged.columns,
-            future_price_values=data_merged["future_price"].tolist() if "future_price" in data_merged.columns else [],
-            price_values=data_merged["price"].tolist() if "price" in data_merged.columns else [],
+            future_price_summary=future_price_summary,
+            price_summary=price_summary,
         )
         
         # Check for valid prices
@@ -640,13 +692,20 @@ class TargetComputationEngine:
         )
         
         if valid_rows.sum() == 0:
+            future_price_summary = {}
+            price_summary = {}
+            if "future_price" in data_merged.columns:
+                future_price_summary = _get_series_summary(data_merged["future_price"])
+            if "price" in data_merged.columns:
+                price_summary = _get_series_summary(data_merged["price"])
+            
             logger.warning(
                 "_compute_base_target: no rows with both prices valid",
                 data_merged_rows=len(data_merged),
-                future_price_notna=data_merged["future_price"].notna().sum(),
-                price_notna=data_merged["price"].notna().sum(),
-                future_price_values=data_merged["future_price"].tolist() if "future_price" in data_merged.columns else [],
-                price_values=data_merged["price"].tolist() if "price" in data_merged.columns else [],
+                future_price_notna=data_merged["future_price"].notna().sum() if "future_price" in data_merged.columns else 0,
+                price_notna=data_merged["price"].notna().sum() if "price" in data_merged.columns else 0,
+                future_price_summary=future_price_summary,
+                price_summary=price_summary,
                 data_timestamp_min=data["timestamp"].min() if not data.empty else None,
                 data_timestamp_max=data["timestamp"].max() if not data.empty else None,
                 future_timestamp_min=data["future_timestamp"].min() if "future_timestamp" in data.columns and not data.empty else None,
@@ -671,10 +730,13 @@ class TargetComputationEngine:
             raise ValueError(f"Unknown formula: {formula}")
         
         # Log after target computation
+        target_summary_after_computation = {}
+        if "target" in data_merged.columns:
+            target_summary_after_computation = _get_series_summary(data_merged["target"])
+        
         logger.info(
             "_compute_base_target_after_computation",
-            target_values=data_merged["target"].tolist() if "target" in data_merged.columns else [],
-            target_notna=data_merged["target"].notna().sum() if "target" in data_merged.columns else 0,
+            target_summary=target_summary_after_computation,
             rows_before_dropna=len(data_merged),
         )
         
@@ -684,10 +746,15 @@ class TargetComputationEngine:
             ~data_merged["target"].isin([float("inf"), float("-inf")])
         ]
         
+        # Prepare summary statistics instead of full list to reduce log volume
+        target_summary = {}
+        if "target" in data_merged.columns and len(data_merged) > 0:
+            target_summary = _get_series_summary(data_merged["target"])
+        
         logger.info(
             "_compute_base_target_final",
             rows_after_dropna=len(data_merged),
-            final_target_values=data_merged["target"].tolist() if "target" in data_merged.columns and len(data_merged) > 0 else [],
+            target_summary=target_summary,
         )
         
         return data_merged[["timestamp", "target"]]

@@ -737,8 +737,8 @@ def compute_all_candle_patterns_15m(
     klines = rolling_windows.get_klines_for_window("5m", start_time, end_time)
     
     # Log 5m klines availability for debugging (before fallback check)
-    import structlog
-    logger = structlog.get_logger(__name__)
+        import structlog
+        logger = structlog.get_logger(__name__)
     if len(klines) < 3:
         logger.debug(
             "compute_all_candle_patterns_15m_5m_klines_check",

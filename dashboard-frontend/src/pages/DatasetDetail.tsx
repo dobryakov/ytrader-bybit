@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { format } from 'date-fns'
 import { parseISO } from 'date-fns'
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts'
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line } from 'recharts'
 import { ArrowLeft, Calendar, Database, FileText, Settings, TrendingUp } from 'lucide-react'
 import { MetricCard } from '@/components/metrics/MetricCard'
 
@@ -192,6 +192,126 @@ export default function DatasetDetail() {
         </Card>
       </div>
 
+      {/* Target Distribution Statistics (for regression) */}
+      {data.target_config?.type === 'regression' && data.split_statistics && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Статистика распределения таргета по сплитам</CardTitle>
+            <CardDescription>
+              Детальная статистика распределения целевой переменной для каждого сплита (для регрессии)
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+              {(['train', 'validation', 'test'] as const).map((splitName) => {
+                const splitStats = data.split_statistics?.[splitName]
+                const targetStats = splitStats?.target_statistics
+                const recordsKey = `${splitName}_records` as 'train_records' | 'validation_records' | 'test_records'
+                const records = data[recordsKey] || 0
+                
+                if (!targetStats) return null
+                
+                // Calculate additional statistics
+                const cv = targetStats.std !== 0 && targetStats.mean !== 0 
+                  ? (targetStats.std / Math.abs(targetStats.mean)) * 100 
+                  : 0
+                const range = targetStats.max - targetStats.min
+                const iqr_approx = targetStats.std * 1.35 // Approximate IQR from std (for normal distribution)
+                
+                return (
+                  <Card key={splitName} className="border-2">
+                    <CardHeader className="pb-3">
+                      <CardTitle className="text-lg capitalize">
+                        {splitName === 'train' ? 'Train' : splitName === 'validation' ? 'Validation' : 'Test'}
+                      </CardTitle>
+                      <CardDescription>
+                        {records.toLocaleString()} записей
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-3">
+                      <div className="grid grid-cols-2 gap-2 text-sm">
+                        <div>
+                          <span className="text-muted-foreground">Среднее (μ):</span>
+                          <div className="font-mono font-semibold">{targetStats.mean.toFixed(6)}</div>
+                        </div>
+                        <div>
+                          <span className="text-muted-foreground">Медиана:</span>
+                          <div className="font-mono font-semibold">{targetStats.median.toFixed(6)}</div>
+                        </div>
+                        <div>
+                          <span className="text-muted-foreground">Стд. откл. (σ):</span>
+                          <div className="font-mono font-semibold">{targetStats.std.toFixed(6)}</div>
+                        </div>
+                        <div>
+                          <span className="text-muted-foreground">CV (%):</span>
+                          <div className="font-mono font-semibold">{cv.toFixed(2)}%</div>
+                        </div>
+                        <div>
+                          <span className="text-muted-foreground">Минимум:</span>
+                          <div className="font-mono text-xs">{targetStats.min.toFixed(6)}</div>
+                        </div>
+                        <div>
+                          <span className="text-muted-foreground">Максимум:</span>
+                          <div className="font-mono text-xs">{targetStats.max.toFixed(6)}</div>
+                        </div>
+                        <div>
+                          <span className="text-muted-foreground">Размах:</span>
+                          <div className="font-mono text-xs">{range.toFixed(6)}</div>
+                        </div>
+                        <div>
+                          <span className="text-muted-foreground">Количество:</span>
+                          <div className="font-mono">{targetStats.count.toLocaleString()}</div>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                )
+              })}
+            </div>
+
+            {/* Comparison Chart */}
+            {(['train', 'validation', 'test'] as const).some(splitName => 
+              data.split_statistics?.[splitName]?.target_statistics
+            ) && (
+              <div className="mt-6">
+                <h4 className="text-lg font-semibold mb-4">Сравнение статистики между сплитами</h4>
+                <ResponsiveContainer width="100%" height={300}>
+                  <BarChart 
+                    data={(['train', 'validation', 'test'] as const)
+                      .map(splitName => {
+                        const stats = data.split_statistics?.[splitName]?.target_statistics
+                        if (!stats) return null
+                        return {
+                          split: splitName === 'train' ? 'Train' : splitName === 'validation' ? 'Validation' : 'Test',
+                          mean: stats.mean,
+                          median: stats.median,
+                          std: stats.std,
+                          min: stats.min,
+                          max: stats.max,
+                        }
+                      })
+                      .filter(Boolean)
+                    }
+                  >
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="split" />
+                    <YAxis />
+                    <Tooltip 
+                      formatter={(value: number) => value.toFixed(6)}
+                      labelFormatter={(label) => `Сплит: ${label}`}
+                    />
+                    <Legend />
+                    <Bar dataKey="mean" fill="#8884d8" name="Среднее (μ)" />
+                    <Bar dataKey="median" fill="#82ca9d" name="Медиана" />
+                    <Bar dataKey="std" fill="#ffc658" name="Стд. откл. (σ)" />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
       {/* Split Distribution */}
       <Card>
         <CardHeader>
@@ -256,9 +376,19 @@ export default function DatasetDetail() {
                   <TableHead>Сплит</TableHead>
                   <TableHead>Количество записей</TableHead>
                   <TableHead>Процент от общего</TableHead>
+                  {data.target_config?.type === 'classification' || data.target_config?.type === 'risk_adjusted' ? (
+                    <>
                   <TableHead>Распределение классов</TableHead>
                   <TableHead>Баланс классов</TableHead>
-                  <TableHead>Статистика таргета</TableHead>
+                    </>
+                  ) : (
+                    <>
+                      <TableHead>Среднее (μ)</TableHead>
+                      <TableHead>Медиана</TableHead>
+                      <TableHead>Стд. откл. (σ)</TableHead>
+                      <TableHead>Размах</TableHead>
+                    </>
+                  )}
                   <TableHead>Период начала</TableHead>
                   <TableHead>Период окончания</TableHead>
                 </TableRow>
@@ -271,26 +401,7 @@ export default function DatasetDetail() {
                   const periodEndKey = `${splitName}_period_end` as 'train_period_end' | 'validation_period_end' | 'test_period_end'
                   const records = data[recordsKey] || 0
                   const isClassification = data.target_config?.type === 'classification' || data.target_config?.type === 'risk_adjusted'
-                  
-                  // Format class distribution
-                  const classDist = splitStats?.class_distribution
-                  const classDistText = classDist 
-                    ? Object.entries(classDist)
-                        .map(([cls, count]) => `${cls}: ${count.toLocaleString()}`)
-                        .join(', ')
-                    : 'N/A'
-                  
-                  // Class balance ratio
-                  const balanceRatio = splitStats?.class_balance_ratio
-                  const balanceText = balanceRatio !== undefined 
-                    ? `${(balanceRatio * 100).toFixed(1)}%`
-                    : 'N/A'
-                  
-                  // Target statistics
                   const targetStats = splitStats?.target_statistics
-                  const targetStatsText = targetStats
-                    ? `μ=${targetStats.mean.toFixed(4)}, σ=${targetStats.std.toFixed(4)}`
-                    : 'N/A'
                   
                   return (
                     <TableRow key={splitName}>
@@ -301,24 +412,42 @@ export default function DatasetDetail() {
                           ? `${(records / totalRecords * 100).toFixed(2)}%`
                           : '0%'}
                       </TableCell>
-                      <TableCell className="text-xs" title={classDistText}>
-                        {isClassification && classDist 
-                          ? (Object.keys(classDist).length <= 3 
-                              ? classDistText 
-                              : `${Object.keys(classDist).length} классов`)
+                      {isClassification ? (
+                        <>
+                          {/* Classification columns */}
+                          <TableCell className="text-xs" title={splitStats?.class_distribution ? Object.entries(splitStats.class_distribution).map(([cls, count]) => `${cls}: ${count.toLocaleString()}`).join(', ') : ''}>
+                            {splitStats?.class_distribution 
+                              ? (Object.keys(splitStats.class_distribution).length <= 3 
+                                  ? Object.entries(splitStats.class_distribution).map(([cls, count]) => `${cls}: ${count.toLocaleString()}`).join(', ')
+                                  : `${Object.keys(splitStats.class_distribution).length} классов`)
                           : 'N/A'}
                       </TableCell>
                       <TableCell className="text-xs">
-                        {isClassification && balanceRatio !== undefined ? (
-                          <span className={balanceRatio < 0.3 ? 'text-yellow-600 font-medium' : balanceRatio < 0.5 ? 'text-orange-600 font-medium' : ''}>
-                            {balanceText}
-                            {balanceRatio < 0.3 && ' ⚠️'}
+                            {splitStats?.class_balance_ratio !== undefined ? (
+                              <span className={splitStats.class_balance_ratio < 0.3 ? 'text-yellow-600 font-medium' : splitStats.class_balance_ratio < 0.5 ? 'text-orange-600 font-medium' : ''}>
+                                {(splitStats.class_balance_ratio * 100).toFixed(1)}%
+                                {splitStats.class_balance_ratio < 0.3 && ' ⚠️'}
                           </span>
                         ) : 'N/A'}
                       </TableCell>
-                      <TableCell className="text-xs font-mono" title={targetStats ? `Mean: ${targetStats.mean.toFixed(6)}, Median: ${targetStats.median.toFixed(6)}, Std: ${targetStats.std.toFixed(6)}, Min: ${targetStats.min.toFixed(6)}, Max: ${targetStats.max.toFixed(6)}` : ''}>
-                        {targetStatsText}
+                        </>
+                      ) : (
+                        <>
+                          {/* Regression columns */}
+                          <TableCell className="text-xs font-mono" title={targetStats ? `Mean: ${targetStats.mean.toFixed(6)}` : ''}>
+                            {targetStats ? targetStats.mean.toFixed(6) : 'N/A'}
+                          </TableCell>
+                          <TableCell className="text-xs font-mono" title={targetStats ? `Median: ${targetStats.median.toFixed(6)}` : ''}>
+                            {targetStats ? targetStats.median.toFixed(6) : 'N/A'}
+                          </TableCell>
+                          <TableCell className="text-xs font-mono" title={targetStats ? `Std: ${targetStats.std.toFixed(6)}` : ''}>
+                            {targetStats ? targetStats.std.toFixed(6) : 'N/A'}
+                          </TableCell>
+                          <TableCell className="text-xs font-mono" title={targetStats ? `Range: ${(targetStats.max - targetStats.min).toFixed(6)}` : ''}>
+                            {targetStats ? (targetStats.max - targetStats.min).toFixed(6) : 'N/A'}
                       </TableCell>
+                        </>
+                      )}
                       <TableCell className="text-xs">{formatDateShort(data[periodStartKey])}</TableCell>
                       <TableCell className="text-xs">{formatDateShort(data[periodEndKey])}</TableCell>
                     </TableRow>
