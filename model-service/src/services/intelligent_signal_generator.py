@@ -24,6 +24,7 @@ from ..services.feature_cache import feature_cache
 from ..consumers.feature_consumer import feature_consumer
 from ..database.repositories.position_state_repo import PositionStateRepository
 from ..database.repositories.model_version_repo import ModelVersionRepository
+from ..database.repositories.quality_metrics_repo import ModelQualityMetricsRepository
 from ..config.settings import settings
 from ..config.logging import get_logger, bind_context
 from ..config.exceptions import ModelInferenceError, SignalValidationError
@@ -31,6 +32,7 @@ from ..services.signal_skip_metrics import signal_skip_metrics
 from ..services.target_registry_client import target_registry_client
 from ..database.repositories.prediction_target_repo import PredictionTargetRepository
 from ..services.version_mismatch_handler import version_mismatch_handler
+from uuid import UUID
 
 logger = get_logger(__name__)
 
@@ -56,6 +58,7 @@ class IntelligentSignalGenerator:
         self.min_amount = min_amount
         self.max_amount = max_amount
         self.position_state_repo = PositionStateRepository()
+        self.quality_metrics_repo = ModelQualityMetricsRepository()
 
     async def generate_signal(
         self,
@@ -195,16 +198,33 @@ class IntelligentSignalGenerator:
             prediction_result = model_inference.predict(model, features_df)
             logger.info("Model prediction completed", asset=asset, strategy_id=strategy_id, prediction_result_keys=list(prediction_result.keys()) if prediction_result else None, trace_id=trace_id)
 
+            # Get effective confidence threshold (from top-k analysis or fallback to static)
+            effective_threshold = await self._get_effective_confidence_threshold(
+                active_model=active_model,
+                asset=asset,
+                strategy_id=strategy_id,
+                trace_id=trace_id,
+            )
+
             # Check confidence threshold
             confidence = prediction_result.get("confidence", 0.0)
-            logger.info("Checking confidence threshold", asset=asset, strategy_id=strategy_id, confidence=confidence, threshold=self.min_confidence_threshold, trace_id=trace_id)
-            if confidence < self.min_confidence_threshold:
+            logger.info(
+                "Checking confidence threshold",
+                asset=asset,
+                strategy_id=strategy_id,
+                confidence=confidence,
+                threshold=effective_threshold,
+                threshold_source="top_k" if effective_threshold != self.min_confidence_threshold else "static",
+                trace_id=trace_id,
+            )
+            if confidence < effective_threshold:
                 logger.info(
                     "Signal confidence below threshold",
                     asset=asset,
                     strategy_id=strategy_id,
                     confidence=confidence,
-                    threshold=self.min_confidence_threshold,
+                    threshold=effective_threshold,
+                    threshold_source="top_k" if effective_threshold != self.min_confidence_threshold else "static",
                     trace_id=trace_id,
                 )
                 return None
@@ -994,6 +1014,111 @@ class IntelligentSignalGenerator:
                 if signal:
                     signals.append(signal)
         return signals
+
+    async def _get_effective_confidence_threshold(
+        self,
+        active_model: Optional[Dict[str, Any]],
+        asset: str,
+        strategy_id: str,
+        trace_id: Optional[str] = None,
+    ) -> float:
+        """
+        Get effective confidence threshold from top-k analysis or fallback to static threshold.
+        
+        Tries to get top-k confidence threshold from model quality metrics.
+        Falls back to static min_confidence_threshold if top-k threshold is not available.
+        
+        Args:
+            active_model: Active model version record from database
+            asset: Trading pair symbol
+            strategy_id: Trading strategy identifier
+            trace_id: Trace ID for request flow tracking
+            
+        Returns:
+            Effective confidence threshold to use (0-1)
+        """
+        # If no active model, use static threshold
+        if not active_model or not active_model.get("id"):
+            logger.debug(
+                "No active model available, using static threshold",
+                asset=asset,
+                strategy_id=strategy_id,
+                static_threshold=self.min_confidence_threshold,
+                trace_id=trace_id,
+            )
+            return self.min_confidence_threshold
+        
+        # Get top-k percentage from settings (default: 10%)
+        top_k_percentage = getattr(settings, "model_signal_top_k_percentage", 10)
+        
+        # Try to get top-k confidence threshold from quality metrics
+        try:
+            model_version_id = UUID(active_model["id"]) if isinstance(active_model["id"], str) else active_model["id"]
+            metric_name = f"top_k_{top_k_percentage}_confidence_threshold"
+            
+            metrics = await self.quality_metrics_repo.get_by_model_version(
+                model_version_id=model_version_id,
+                metric_name=metric_name,
+                dataset_split="test",
+            )
+            
+            if metrics and len(metrics) > 0:
+                # Get the latest metric (first in list, sorted by evaluated_at DESC)
+                threshold_value = metrics[0].get("metric_value")
+                if threshold_value is not None and isinstance(threshold_value, (int, float)):
+                    threshold = float(threshold_value)
+                    if 0.0 <= threshold <= 1.0:
+                        logger.info(
+                            "Using top-k confidence threshold from model quality metrics",
+                            asset=asset,
+                            strategy_id=strategy_id,
+                            model_version_id=str(model_version_id),
+                            top_k_percentage=top_k_percentage,
+                            threshold=threshold,
+                            trace_id=trace_id,
+                        )
+                        return threshold
+                    else:
+                        logger.warning(
+                            "Top-k threshold value out of range, using static threshold",
+                            asset=asset,
+                            strategy_id=strategy_id,
+                            threshold_value=threshold_value,
+                            static_threshold=self.min_confidence_threshold,
+                            trace_id=trace_id,
+                        )
+                else:
+                    logger.debug(
+                        "Top-k threshold value is None or invalid type, using static threshold",
+                        asset=asset,
+                        strategy_id=strategy_id,
+                        threshold_value=threshold_value,
+                        static_threshold=self.min_confidence_threshold,
+                        trace_id=trace_id,
+                    )
+            else:
+                logger.debug(
+                    "Top-k confidence threshold not found in quality metrics, using static threshold",
+                    asset=asset,
+                    strategy_id=strategy_id,
+                    model_version_id=str(model_version_id),
+                    metric_name=metric_name,
+                    static_threshold=self.min_confidence_threshold,
+                    trace_id=trace_id,
+                )
+        except Exception as e:
+            logger.warning(
+                "Failed to get top-k confidence threshold, using static threshold",
+                asset=asset,
+                strategy_id=strategy_id,
+                error=str(e),
+                static_threshold=self.min_confidence_threshold,
+                trace_id=trace_id,
+                exc_info=True,
+            )
+        
+        # Fallback to static threshold
+        return self.min_confidence_threshold
 
 
 # Initialize intelligent signal generator with settings

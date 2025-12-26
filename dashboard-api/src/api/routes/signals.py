@@ -75,24 +75,24 @@ async def list_signals(
         if signal_type:
             if signal_type.lower() not in {"buy", "sell"}:
                 raise HTTPException(status_code=400, detail="Invalid signal_type. Must be 'buy' or 'sell'")
-            query += f" AND side = ${param_idx}"
+            query += f" AND ts.side = ${param_idx}"
             params.append(signal_type.lower())
             param_idx += 1
 
         if asset:
-            query += f" AND asset = ${param_idx}"
+            query += f" AND ts.asset = ${param_idx}"
             params.append(asset)
             param_idx += 1
 
         if strategy_id:
-            query += f" AND strategy_id = ${param_idx}"
+            query += f" AND ts.strategy_id = ${param_idx}"
             params.append(strategy_id)
             param_idx += 1
 
         if date_from:
             try:
                 date_from_dt = datetime.fromisoformat(date_from.replace("Z", "+00:00"))
-                query += f" AND timestamp >= ${param_idx}::timestamptz"
+                query += f" AND ts.timestamp >= ${param_idx}::timestamptz"
                 params.append(date_from_dt)
                 param_idx += 1
             except ValueError:
@@ -101,13 +101,13 @@ async def list_signals(
         if date_to:
             try:
                 date_to_dt = datetime.fromisoformat(date_to.replace("Z", "+00:00"))
-                query += f" AND timestamp <= ${param_idx}::timestamptz"
+                query += f" AND ts.timestamp <= ${param_idx}::timestamptz"
                 params.append(date_to_dt)
                 param_idx += 1
             except ValueError:
                 raise HTTPException(status_code=400, detail="Invalid date_to format. Use ISO 8601 format.")
 
-        query += " ORDER BY timestamp DESC"
+        query += " ORDER BY ts.timestamp DESC"
 
         # Add pagination
         offset = (page - 1) * page_size
@@ -119,36 +119,36 @@ async def list_signals(
         # Get total count
         count_query = """
             SELECT COUNT(*) as count
-            FROM trading_signals
+            FROM trading_signals ts
             WHERE 1=1
         """
         count_params = []
         count_param_idx = 1
 
         if signal_type:
-            count_query += f" AND side = ${count_param_idx}"
+            count_query += f" AND ts.side = ${count_param_idx}"
             count_params.append(signal_type.lower())
             count_param_idx += 1
 
         if asset:
-            count_query += f" AND asset = ${count_param_idx}"
+            count_query += f" AND ts.asset = ${count_param_idx}"
             count_params.append(asset)
             count_param_idx += 1
 
         if strategy_id:
-            count_query += f" AND strategy_id = ${count_param_idx}"
+            count_query += f" AND ts.strategy_id = ${count_param_idx}"
             count_params.append(strategy_id)
             count_param_idx += 1
 
         if date_from:
             date_from_dt = datetime.fromisoformat(date_from.replace("Z", "+00:00"))
-            count_query += f" AND timestamp >= ${count_param_idx}::timestamptz"
+            count_query += f" AND ts.timestamp >= ${count_param_idx}::timestamptz"
             count_params.append(date_from_dt)
             count_param_idx += 1
 
         if date_to:
             date_to_dt = datetime.fromisoformat(date_to.replace("Z", "+00:00"))
-            count_query += f" AND timestamp <= ${count_param_idx}::timestamptz"
+            count_query += f" AND ts.timestamp <= ${count_param_idx}::timestamptz"
             count_params.append(date_to_dt)
             count_param_idx += 1
 

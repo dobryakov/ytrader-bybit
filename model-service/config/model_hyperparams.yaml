@@ -20,6 +20,11 @@ xgboost:
         # For binary candle color we обычно не хотим обучаться на строго flat-движениях (target == 0),
         # поэтому по умолчанию обучающий pipeline может отфильтровать такие объекты перед fit().
         drop_zero_class: true
+        # Data cleaning options
+        # Remove duplicate samples before training (recommended for time-series data with many duplicates)
+        drop_duplicates: true
+        # Missing value imputation method: "median" (robust, default), "mean", or "forward_fill" (for time-series)
+        missing_value_imputation: median
         n_estimators: 500
         max_depth: 4
         learning_rate: 0.05
@@ -34,6 +39,9 @@ xgboost:
       # Three-class classification (-1/0/+1) for directional move with flat zone
       common:
         objective: multi:softprob
+        # Data cleaning options
+        drop_duplicates: true
+        missing_value_imputation: median
         n_estimators: 500
         max_depth: 4
         learning_rate: 0.05
@@ -49,6 +57,9 @@ xgboost:
   regression:
     common:
       objective: reg:pseudohubererror
+      # Data cleaning options
+      drop_duplicates: true
+      missing_value_imputation: median
       n_estimators: 500
       max_depth: 4
       learning_rate: 0.03

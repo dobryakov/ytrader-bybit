@@ -136,28 +136,120 @@ class ModelTrainer:
             raise ValueError(f"Model type {model_type} does not support {task_type}")
 
         # Prepare data
-        X = dataset.features
-        y = dataset.labels
+        X = dataset.features.copy()
+        y = dataset.labels.copy()
+
+        # Derive task_variant from dataset metadata (if present) - needed for hyperparameters
+        task_variant = None
+        if hasattr(dataset, "metadata") and isinstance(dataset.metadata, dict):
+            task_variant = dataset.metadata.get("task_variant")
+
+        # Get hyperparameters to check for data cleaning options
+        # Use task_variant if available, otherwise will default to binary_classification
+        base_hparams = self._get_default_hyperparameters(
+            model_type=model_type,
+            task_type=task_type,
+            task_variant=task_variant,
+        )
+        if hyperparameters is not None:
+            # Merge user hyperparameters with defaults
+            merged_hparams = {**base_hparams, **hyperparameters}
+        else:
+            merged_hparams = base_hparams
 
         # Handle missing values - only for numeric columns
         # Exclude non-numeric columns (like 'symbol', 'timestamp') from mean calculation
         numeric_cols = X.select_dtypes(include=[np.number]).columns
+        missing_before = X[numeric_cols].isnull().sum().sum()
+        
         if len(numeric_cols) > 0:
-            X[numeric_cols] = X[numeric_cols].fillna(X[numeric_cols].mean())
+            # Use median for imputation (more robust to outliers than mean)
+            # For time-series features, median is often better
+            imputation_method = merged_hparams.get("missing_value_imputation", "median")
+            if imputation_method == "median":
+                # Calculate median per column, fill missing with 0 if all values are missing
+                medians = X[numeric_cols].median()
+                medians = medians.fillna(0.0)  # If all values missing, use 0
+                X[numeric_cols] = X[numeric_cols].fillna(medians)
+            elif imputation_method == "mean":
+                # Calculate mean per column, fill missing with 0 if all values are missing
+                means = X[numeric_cols].mean()
+                means = means.fillna(0.0)  # If all values missing, use 0
+                X[numeric_cols] = X[numeric_cols].fillna(means)
+            elif imputation_method == "forward_fill":
+                # Forward fill for time-series data (preserves temporal patterns)
+                # Fallback to median (or 0 if all missing) for leading NaNs
+                medians = X[numeric_cols].median().fillna(0.0)
+                X[numeric_cols] = X[numeric_cols].ffill().fillna(medians)
+            else:
+                # Default to median
+                medians = X[numeric_cols].median().fillna(0.0)
+                X[numeric_cols] = X[numeric_cols].fillna(medians)
+        
+        missing_after = X[numeric_cols].isnull().sum().sum()
+        if missing_after > 0:
+            logger.warning(
+                "Some missing values remain after imputation",
+                dataset_id=getattr(dataset, "dataset_id", None),
+                remaining_missing=missing_after,
+            )
+        
         # For non-numeric columns, fill with forward fill or drop if needed
         non_numeric_cols = X.select_dtypes(exclude=[np.number]).columns
         if len(non_numeric_cols) > 0:
             # Drop non-numeric columns that are not needed for training (like 'symbol', 'timestamp')
             # These should be excluded from features before training
             X = X.drop(columns=non_numeric_cols, errors='ignore')
+        
+        # Handle duplicate samples
+        # Create combined DataFrame to detect duplicates
+        combined_df = X.copy()
+        combined_df["_label"] = y.values
+        duplicate_count_before = combined_df.duplicated().sum()
+        
+        drop_duplicates = merged_hparams.get("drop_duplicates", True)
+        if drop_duplicates and duplicate_count_before > 0:
+            # Remove duplicates, keeping first occurrence
+            # This preserves the original order and class distribution as much as possible
+            duplicate_mask = combined_df.duplicated(keep='first')
+            X = X[~duplicate_mask].reset_index(drop=True)
+            y = y[~duplicate_mask].reset_index(drop=True)
+            duplicate_count_after = 0
+            duplicate_pct_before = (duplicate_count_before / len(combined_df)) * 100
+            
+            logger.info(
+                "Removed duplicate samples from training data",
+                dataset_id=getattr(dataset, "dataset_id", None),
+                duplicates_removed=duplicate_count_before,
+                duplicate_percentage_before=round(duplicate_pct_before, 2),
+                samples_before=len(combined_df),
+                samples_after=len(X),
+                samples_removed=duplicate_count_before,
+            )
+        else:
+            duplicate_count_after = duplicate_count_before
+            if duplicate_count_before > 0:
+                duplicate_pct = (duplicate_count_before / len(combined_df)) * 100
+                logger.warning(
+                    "Duplicate samples found but not removed (drop_duplicates=False)",
+                    dataset_id=getattr(dataset, "dataset_id", None),
+                    duplicate_count=duplicate_count_before,
+                    duplicate_percentage=round(duplicate_pct, 2),
+                )
+        
+        # Log data cleaning summary
+        if missing_before > 0 or duplicate_count_before > 0:
+            logger.info(
+                "Data cleaning completed",
+                dataset_id=getattr(dataset, "dataset_id", None),
+                missing_values_filled=missing_before,
+                duplicates_removed=duplicate_count_before if drop_duplicates else 0,
+                final_sample_count=len(X),
+                imputation_method=merged_hparams.get("missing_value_imputation", "median"),
+            )
 
         # Check for label diversity (critical for XGBoost with logistic loss)
         unique_labels = y.unique()
-        
-        # Derive task_variant from dataset metadata (if present)
-        task_variant = None
-        if hasattr(dataset, "metadata") and isinstance(dataset.metadata, dict):
-            task_variant = dataset.metadata.get("task_variant")
 
         # Log original distribution for train split BEFORE drop_zero_class
         if task_type == "classification":

@@ -105,9 +105,15 @@ class QualityEvaluator:
         )
 
         # Compute confusion matrix
-        unique_classes = sorted(list(set(y_true.unique().tolist() + pd.Series(y_pred).unique().tolist())))
+        # Get all unique classes from both true and predicted labels
+        true_unique = y_true.unique().tolist()
+        pred_unique = pd.Series(y_pred).unique().tolist()
+        unique_classes = sorted(list(set(true_unique + pred_unique)))
+        
         try:
-            cm = confusion_matrix(y_true, y_pred, labels=unique_classes)
+            # Always pass labels parameter to prevent sklearn warnings
+            # This ensures confusion matrix has correct shape even when some classes are missing
+            cm = confusion_matrix(y_true, y_pred, labels=unique_classes if len(unique_classes) > 0 else None)
             
             # Convert confusion matrix to dictionary format for logging
             # Format: {f"{true_class}_{pred_class}": count}
@@ -788,6 +794,187 @@ class QualityEvaluator:
                 )
         
         return thresholds
+
+    def calculate_baseline_metrics(self, y_true: pd.Series) -> Dict[str, float]:
+        """
+        Calculate baseline metrics for majority class strategy.
+        
+        Baseline strategy: always predict the majority class.
+        
+        Args:
+            y_true: True labels
+            
+        Returns:
+            Dictionary of baseline metrics with 'baseline_' prefix
+        """
+        if len(y_true) == 0:
+            logger.warning("Cannot calculate baseline metrics: empty y_true")
+            return {}
+        
+        # Find majority class
+        majority_class = y_true.value_counts().idxmax()
+        majority_count = int(y_true.value_counts().max())
+        total_count = len(y_true)
+        majority_pct = (majority_count / total_count * 100) if total_count > 0 else 0.0
+        
+        logger.info(
+            "Calculating baseline metrics (majority class strategy)",
+            majority_class=int(majority_class) if isinstance(majority_class, (int, np.integer)) else majority_class,
+            majority_count=majority_count,
+            total_count=total_count,
+            majority_percentage=round(majority_pct, 2),
+        )
+        
+        # Create baseline predictions (always predict majority class)
+        y_pred_baseline = pd.Series([majority_class] * len(y_true))
+        
+        # Calculate metrics using existing evaluation method
+        baseline_metrics = self._evaluate_classification(y_true, y_pred_baseline, y_pred_proba=None)
+        
+        # Add 'baseline_' prefix to all metric names
+        prefixed_metrics = {f"baseline_{k}": v for k, v in baseline_metrics.items()}
+        
+        logger.info(
+            "Baseline metrics calculated",
+            baseline_accuracy=prefixed_metrics.get("baseline_accuracy"),
+            baseline_f1_score=prefixed_metrics.get("baseline_f1_score"),
+            baseline_balanced_accuracy=prefixed_metrics.get("baseline_balanced_accuracy"),
+        )
+        
+        return prefixed_metrics
+
+    def analyze_top_k_performance(
+        self,
+        y_true: pd.Series,
+        y_pred_proba: np.ndarray,
+        k_values: List[int] = [10, 20, 30, 50],
+    ) -> Dict[str, Any]:
+        """
+        Analyze model performance for top-k% predictions without filters.
+        
+        Sorts predictions by confidence (max probability) and calculates metrics
+        for top-k% samples without applying confidence threshold or hysteresis.
+        Also calculates and returns the confidence threshold for each k value,
+        which can be used in production to filter predictions.
+        
+        Args:
+            y_true: True labels
+            y_pred_proba: Predicted probabilities (2D array: n_samples, n_classes)
+            k_values: List of k percentages to analyze (default: [10, 20, 30, 50])
+            
+        Returns:
+            Dictionary with metrics for each k value, keys like:
+            - 'top_k_{k}_accuracy': Accuracy for top-k% predictions
+            - 'top_k_{k}_confidence_threshold': Minimum confidence threshold for top-k%
+            - Other metrics: f1_score, precision, recall, coverage, etc.
+        """
+        if len(y_true) == 0:
+            logger.warning("Cannot analyze top-k performance: empty y_true")
+            return {}
+        
+        if y_pred_proba is None or y_pred_proba.ndim != 2:
+            logger.warning(
+                "Cannot analyze top-k performance: invalid y_pred_proba",
+                shape=y_pred_proba.shape if y_pred_proba is not None else None,
+            )
+            return {}
+        
+        results = {}
+        
+        # Calculate confidence for each sample (max probability)
+        confidence = np.max(y_pred_proba, axis=1)
+        
+        # Get predicted class (argmax)
+        y_pred = pd.Series(np.argmax(y_pred_proba, axis=1))
+        
+        # Get unique classes for per-class metrics
+        unique_classes = sorted(y_true.unique().tolist())
+        
+        # Sort by confidence (descending)
+        sorted_indices = np.argsort(confidence)[::-1]
+        
+        total_samples = len(y_true)
+        
+        logger.info(
+            "Starting top-k performance analysis",
+            total_samples=total_samples,
+            k_values=k_values,
+            unique_classes=unique_classes,
+        )
+        
+        for k in k_values:
+            if k <= 0 or k >= 100:
+                logger.warning(f"Skipping invalid k value: {k} (must be between 1 and 99)")
+                continue
+            
+            # Calculate number of samples in top-k%
+            k_samples = max(1, int(total_samples * k / 100))
+            
+            # Get top-k% indices
+            top_k_indices = sorted_indices[:k_samples]
+            
+            # Get y_true and y_pred for top-k%
+            y_true_top_k = y_true.iloc[top_k_indices]
+            y_pred_top_k = y_pred.iloc[top_k_indices]
+            y_pred_proba_top_k = y_pred_proba[top_k_indices]
+            
+            # Calculate metrics for top-k%
+            top_k_metrics = self._evaluate_classification(y_true_top_k, y_pred_top_k, y_pred_proba_top_k)
+            
+            # Add per-class metrics
+            try:
+                from sklearn.metrics import precision_score, recall_score, f1_score
+                
+                # Calculate per-class metrics with all known classes from original dataset
+                # This ensures we get metrics for all classes, even if they're not in top-k
+                # Using labels parameter prevents sklearn warnings when some classes are missing
+                if len(unique_classes) > 0:
+                    precision_per_class = precision_score(
+                        y_true_top_k, y_pred_top_k, average=None, zero_division=0, labels=unique_classes
+                    )
+                    recall_per_class = recall_score(
+                        y_true_top_k, y_pred_top_k, average=None, zero_division=0, labels=unique_classes
+                    )
+                    f1_per_class = f1_score(
+                        y_true_top_k, y_pred_top_k, average=None, zero_division=0, labels=unique_classes
+                    )
+                    
+                    for idx, class_label in enumerate(unique_classes):
+                        if idx < len(precision_per_class):
+                            top_k_metrics[f"precision_class_{class_label}"] = float(precision_per_class[idx])
+                        if idx < len(recall_per_class):
+                            top_k_metrics[f"recall_class_{class_label}"] = float(recall_per_class[idx])
+                        if idx < len(f1_per_class):
+                            top_k_metrics[f"f1_class_{class_label}"] = float(f1_per_class[idx])
+            except Exception as e:
+                logger.warning(f"Failed to calculate per-class metrics for top-{k}%", error=str(e))
+            
+            # Add coverage (should be k/100)
+            coverage = k_samples / total_samples if total_samples > 0 else 0.0
+            top_k_metrics["coverage"] = coverage
+            
+            # Calculate confidence threshold for top-k%
+            # Threshold is the minimum confidence among top-k% samples
+            # This threshold can be used in production to filter predictions
+            top_k_confidence_values = confidence[top_k_indices]
+            confidence_threshold = float(np.min(top_k_confidence_values)) if len(top_k_confidence_values) > 0 else 0.0
+            top_k_metrics["confidence_threshold"] = confidence_threshold
+            
+            # Add prefix to all metrics
+            for metric_name, metric_value in top_k_metrics.items():
+                results[f"top_k_{k}_{metric_name}"] = metric_value
+            
+            logger.info(
+                f"Top-{k}% analysis completed",
+                k=k,
+                k_samples=k_samples,
+                coverage=round(coverage, 4),
+                accuracy=top_k_metrics.get("accuracy"),
+                f1_score=top_k_metrics.get("f1_score"),
+                confidence_threshold=round(confidence_threshold, 4),
+            )
+        
+        return results
 
 
 # Global quality evaluator instance

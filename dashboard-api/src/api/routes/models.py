@@ -566,3 +566,47 @@ async def get_active_model_version(
         logger.error("active_model_version_failed", error=str(e), trace_id=trace_id, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to retrieve active model version: {str(e)}")
 
+
+@router.get("/models/{version}/analysis")
+async def get_model_analysis(version: str):
+    """Proxy model analysis request to model-service."""
+    trace_id = get_or_create_trace_id()
+    logger.info("model_analysis_request", version=version, trace_id=trace_id)
+    
+    try:
+        # Forward request to model-service
+        model_service_url = f"http://{settings.model_service_host}:{settings.model_service_port}/api/v1/models/{version}/analysis"
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                model_service_url,
+                headers={
+                    "X-API-Key": settings.model_service_api_key,
+                    "Content-Type": "application/json",
+                }
+            )
+            response.raise_for_status()
+            result = response.json()
+            
+            logger.info(
+                "model_analysis_completed",
+                version=version,
+                trace_id=trace_id
+            )
+            
+            return JSONResponse(status_code=response.status_code, content=result)
+            
+    except httpx.HTTPStatusError as e:
+        error_detail = e.response.json().get("detail", str(e)) if e.response.text else str(e)
+        logger.error(
+            "model_analysis_failed",
+            version=version,
+            status_code=e.response.status_code,
+            error=error_detail,
+            trace_id=trace_id
+        )
+        raise HTTPException(status_code=e.response.status_code, detail=error_detail)
+    except Exception as e:
+        logger.error("model_analysis_failed", version=version, error=str(e), trace_id=trace_id, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve model analysis: {str(e)}")
+

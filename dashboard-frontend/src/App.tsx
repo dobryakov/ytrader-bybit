@@ -4,6 +4,7 @@ import Positions from './pages/Positions'
 import Orders from './pages/Orders'
 import Signals from './pages/Signals'
 import Models from './pages/Models'
+import ModelDetail from './pages/ModelDetail'
 import Datasets from './pages/Datasets'
 import Containers from './pages/Containers'
 import { cn } from './lib/utils'
@@ -38,6 +39,7 @@ function App() {
             <Route path="/orders" element={<Orders />} />
             <Route path="/signals" element={<Signals />} />
             <Route path="/models" element={<Models />} />
+            <Route path="/models/:version" element={<ModelDetail />} />
             <Route path="/datasets" element={<Datasets />} />
             <Route path="/containers" element={<Containers />} />
           </Routes>

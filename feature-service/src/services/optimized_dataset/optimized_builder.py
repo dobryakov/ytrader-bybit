@@ -110,6 +110,7 @@ class OptimizedDatasetBuilder:
         walk_forward_config: Optional[Dict[str, Any]] = None,
         output_format: str = "parquet",
         feature_registry_version: Optional[str] = None,
+        strategy_id: Optional[str] = None,
     ) -> str:
         """
         Build a dataset from historical data using optimized approach.
@@ -226,6 +227,7 @@ class OptimizedDatasetBuilder:
             "target_registry_version": resolved_target_version,
             "feature_registry_version": registry_version,
             "output_format": output_format,
+            "strategy_id": strategy_id,  # Save strategy_id for model training
         }
         
         dataset_id = await self._metadata_storage.create_dataset(dataset_data)
@@ -403,6 +405,9 @@ class OptimizedDatasetBuilder:
                 logger.error("dataset_not_found", dataset_id=dataset_id)
                 return
             
+            # Get strategy_id from dataset metadata
+            dataset_strategy_id = dataset.get("strategy_id") if isinstance(dataset, dict) else getattr(dataset, "strategy_id", None)
+            
             if split_strategy == SplitStrategy.TIME_BASED:
                 splits = await self._split_time_based(
                     features_df, targets_df, dataset
@@ -454,6 +459,7 @@ class OptimizedDatasetBuilder:
                         validation_records=total_val,
                         test_records=total_test,
                         trace_id=None,
+                        strategy_id=dataset_strategy_id,  # Pass strategy_id from dataset
                     )
                 except Exception as e:
                     logger.warning(

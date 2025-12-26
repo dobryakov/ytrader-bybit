@@ -366,6 +366,7 @@ class MetadataStorage:
                 target_registry_version,
                 dataset_data["feature_registry_version"],
                 dataset_data.get("output_format", "parquet"),
+                dataset_data.get("strategy_id"),  # strategy_id (optional)
             ]
             
             # Final check of all datetime in query_params
@@ -456,6 +457,7 @@ class MetadataStorage:
                 target_registry_version_final,  # target_registry_version (string)
                 query_params[11],  # feature_registry_version
                 query_params[12],  # output_format
+                query_params[13],  # strategy_id (optional)
             ]
             
             # Execute query with fresh datetime objects
@@ -491,8 +493,8 @@ class MetadataStorage:
                         validation_period_start, validation_period_end,
                         test_period_start, test_period_end,
                         walk_forward_config, target_registry_version,
-                        feature_registry_version, output_format
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                        feature_registry_version, output_format, strategy_id
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
                     RETURNING id
                     """,
                     *final_params
@@ -515,13 +517,13 @@ class MetadataStorage:
                             validation_period_start, validation_period_end,
                             test_period_start, test_period_end,
                             walk_forward_config, target_registry_version,
-                            feature_registry_version, output_format
+                            feature_registry_version, output_format, strategy_id
                         ) VALUES (
                             $1, $2, $3,
                             $4::timestamptz, $5::timestamptz,
                             $6::timestamptz, $7::timestamptz,
                             $8::timestamptz, $9::timestamptz,
-                            $10, $11, $12, $13
+                            $10, $11, $12, $13, $14
                         )
                         """,
                         *final_params

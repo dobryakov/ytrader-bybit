@@ -96,6 +96,7 @@ class Dataset(BaseModel):
     target_registry_version: str = Field(description="Target Registry version used")
     feature_registry_version: str = Field(description="Feature Registry version used")
     target_config: Optional[TargetConfig] = Field(default=None, description="Target configuration (loaded from Target Registry, for backward compatibility)")
+    strategy_id: Optional[str] = Field(default=None, description="Trading strategy identifier (optional)")
     
     train_records: int = Field(default=0, description="Number of records in train split")
     validation_records: int = Field(default=0, description="Number of records in validation split")

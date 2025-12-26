@@ -10,6 +10,7 @@ Implements T072 from specs/004-order-manager/tasks.md.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -210,7 +211,7 @@ class InstrumentInfoManager:
                             Decimal(str(price_filter.get("priceLimitRatioY", "0.1")))
                             if price_filter.get("priceLimitRatioY") is not None
                             else None,
-                            symbol_data,
+                            json.dumps(symbol_data),
                         )
 
                         await connection.execute(upsert_query, *values)

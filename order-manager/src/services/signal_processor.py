@@ -222,9 +222,11 @@ class SignalProcessor:
 
                 # Step 4.1: Check take profit / stop loss exit rules
                 # Skip exit check if this is already an exit signal from model-service exit strategy
+                # or if this is a close signal created by order-manager (to avoid infinite recursion)
                 # to avoid double processing (model-service exit strategy already evaluated PnL)
                 is_exit_signal = signal.metadata and signal.metadata.get("exit_strategy", False)
-                if not is_exit_signal:
+                is_close_signal = signal.metadata and signal.metadata.get("exit_reason") is not None
+                if not is_exit_signal and not is_close_signal:
                     exit_check = await self.risk_manager.check_take_profit_stop_loss(asset, current_position, trace_id=trace_id)
                     if exit_check and exit_check.get("should_close"):
                         # Position should be closed due to take profit or stop loss
@@ -261,15 +263,25 @@ class SignalProcessor:
                                 return await self._process_signal_internal(close_signal)
                         # If position is None or size is 0, continue with original signal
                 else:
-                    # This is an exit signal from model-service exit strategy
-                    # Skip order-manager exit check to avoid double processing
-                    logger.debug(
-                        "skipping_exit_check_for_model_service_exit_signal",
-                        asset=asset,
-                        signal_id=str(signal_id),
-                        trace_id=trace_id,
-                        reason="Signal is already an exit signal from model-service exit strategy",
-                    )
+                    # This is an exit signal from model-service exit strategy or a close signal
+                    # Skip order-manager exit check to avoid double processing or infinite recursion
+                    if is_exit_signal:
+                        logger.debug(
+                            "skipping_exit_check_for_model_service_exit_signal",
+                            asset=asset,
+                            signal_id=str(signal_id),
+                            trace_id=trace_id,
+                            reason="Signal is already an exit signal from model-service exit strategy",
+                        )
+                    elif is_close_signal:
+                        logger.debug(
+                            "skipping_exit_check_for_close_signal",
+                            asset=asset,
+                            signal_id=str(signal_id),
+                            exit_reason=signal.metadata.get("exit_reason") if signal.metadata else None,
+                            trace_id=trace_id,
+                            reason="Signal is a close signal created by order-manager, skipping exit check to avoid recursion",
+                        )
 
                 # Step 4.5: Close position if opposite signal and feature enabled
                 if settings.order_manager_close_position_before_opposite_signal:

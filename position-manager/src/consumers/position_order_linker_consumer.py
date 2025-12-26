@@ -243,7 +243,28 @@ class PositionOrderLinkerConsumer:
                 trace_id=trace_id,
             )
 
-            # 5. Create or update position_orders record (handles partial fills)
+            # 5. Check if position_order relationship already exists before upsert
+            # This prevents duplicate fee accumulation when the same event is processed multiple times
+            existing_relationship = None
+            if order_id is not None:
+                # Check by order_id if available
+                pool = await DatabaseConnection.get_pool()
+                check_query = """
+                    SELECT id FROM position_orders
+                    WHERE position_id = $1 AND order_id = $2
+                    LIMIT 1
+                """
+                existing = await pool.fetchrow(check_query, position.id, order_id)
+                if existing:
+                    existing_relationship = dict(existing)
+            else:
+                # Check by bybit_order_id if order_id is NULL
+                existing_relationship = await self._position_order_repo.get_by_position_and_bybit_order(
+                    position_id=position.id,
+                    bybit_order_id=event.order_id,
+                )
+
+            # 6. Create or update position_orders record (handles partial fills)
             await self._position_order_repo.upsert(
                 position_id=position.id,
                 bybit_order_id=event.order_id,
@@ -254,11 +275,27 @@ class PositionOrderLinkerConsumer:
                 executed_at=event.execution_timestamp or datetime.utcnow(),
             )
 
-            # 6. Update positions.total_fees (if execution_fees provided)
-            if event.execution_fees:
+            # 7. Update positions.total_fees ONLY if this is a new relationship
+            # This prevents duplicate fee accumulation when the same event is processed multiple times
+            if event.execution_fees and existing_relationship is None:
                 await self._update_position_total_fees(
                     position_id=position.id,
                     fees=event.execution_fees,
+                    trace_id=trace_id,
+                )
+                logger.debug(
+                    "position_total_fees_added_for_new_order",
+                    position_id=str(position.id),
+                    bybit_order_id=event.order_id,
+                    fees_added=str(event.execution_fees),
+                    trace_id=trace_id,
+                )
+            elif event.execution_fees and existing_relationship is not None:
+                logger.debug(
+                    "position_total_fees_skipped_duplicate",
+                    position_id=str(position.id),
+                    bybit_order_id=event.order_id,
+                    fees_skipped=str(event.execution_fees),
                     trace_id=trace_id,
                 )
 

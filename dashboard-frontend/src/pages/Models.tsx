@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect } from 'react'
+import { Link } from 'react-router-dom'
 import { 
   useModels, 
   useModelTrainingHistory, 
@@ -216,7 +217,14 @@ export default function Models() {
             ) : (
               data?.models.map((model) => (
                 <TableRow key={model.id}>
-                  <TableCell className="font-medium">{model.version}</TableCell>
+                  <TableCell className="font-medium">
+                    <Link 
+                      to={`/models/${model.version}`}
+                      className="text-primary hover:underline"
+                    >
+                      {model.version}
+                    </Link>
+                  </TableCell>
                   <TableCell>{model.symbol || 'All'}</TableCell>
                   <TableCell>{model.strategy_id || 'N/A'}</TableCell>
                   <TableCell>{model.model_type}</TableCell>
@@ -248,14 +256,25 @@ export default function Models() {
                     </Badge>
                   </TableCell>
                   <TableCell>
-                    <Button
-                      onClick={() => handleRetrain(model)}
-                      disabled={retrainingModelId === model.id || !model.symbol || !model.strategy_id}
-                      size="sm"
-                      variant="outline"
-                    >
-                      {retrainingModelId === model.id ? 'Запуск...' : 'Retrain'}
-                    </Button>
+                    <div className="flex gap-2">
+                      <Button
+                        onClick={() => handleRetrain(model)}
+                        disabled={retrainingModelId === model.id || !model.symbol || !model.strategy_id}
+                        size="sm"
+                        variant="outline"
+                      >
+                        {retrainingModelId === model.id ? 'Запуск...' : 'Retrain'}
+                      </Button>
+                      <Button
+                        asChild
+                        size="sm"
+                        variant="default"
+                      >
+                        <Link to={`/models/${model.version}`}>
+                          Детали
+                        </Link>
+                      </Button>
+                    </div>
                   </TableCell>
                 </TableRow>
               ))
@@ -309,7 +328,14 @@ export default function Models() {
                 ) : (
                   trainingHistory.map((item) => (
                     <TableRow key={item.id}>
-                      <TableCell className="font-medium">{item.version}</TableCell>
+                      <TableCell className="font-medium">
+                        <Link 
+                          to={`/models/${item.version}`}
+                          className="text-primary hover:underline"
+                        >
+                          {item.version}
+                        </Link>
+                      </TableCell>
                       <TableCell>{item.symbol || 'All'}</TableCell>
                       <TableCell>{item.strategy_id || 'N/A'}</TableCell>
                       <TableCell>{item.model_type}</TableCell>

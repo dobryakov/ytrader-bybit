@@ -336,17 +336,20 @@ class OrderExecutor:
                 
                 # Error 30208: "The order price is higher than the maximum buying price"
                 # This can happen for Market orders if account settings reject orders outside price limits
+                # For Limit buy orders, this happens when price exceeds buyLmt
                 if ret_code == 30208:
                     logger.warning(
                         "order_creation_price_limit_error",
                         signal_id=str(signal_id),
                         asset=asset,
+                        order_type=order_type,
                         ret_code=ret_code,
                         ret_msg=ret_msg,
-                        note="This may be due to account settings. Consider using Limit orders or checking /v5/account/set-limit-px-action",
+                        price=float(price) if price else None,
                         trace_id=trace_id,
+                        note="Price exceeds maximum buying/selling price limit. For Limit buy orders, will try to adjust price to buyLmt.",
                     )
-                    # Try to get price limits for debugging
+                    # Try to get price limits
                     try:
                         price_limit_response = await bybit_client.get(
                             "/v5/market/price-limit",
@@ -354,14 +357,109 @@ class OrderExecutor:
                             authenticated=False,
                         )
                         price_limits = price_limit_response.get("result", {})
+                        buy_limit_str = price_limits.get("buyLmt")
+                        sell_limit_str = price_limits.get("sellLmt")
+                        
                         logger.info(
                             "order_creation_price_limits",
                             signal_id=str(signal_id),
                             asset=asset,
-                            buy_limit=price_limits.get("buyLmt"),
-                            sell_limit=price_limits.get("sellLmt"),
+                            buy_limit=buy_limit_str,
+                            sell_limit=sell_limit_str,
+                            order_price=float(price) if price else None,
                             trace_id=trace_id,
                         )
+                        
+                        # For Limit buy orders, try to adjust price to buyLmt and retry
+                        if order_type == "Limit" and signal.signal_type.lower() == "buy" and price and buy_limit_str:
+                            buy_limit = Decimal(str(buy_limit_str))
+                            if price > buy_limit:
+                                logger.info(
+                                    "order_creation_adjusting_limit_buy_price_to_buylmt",
+                                    signal_id=str(signal_id),
+                                    asset=asset,
+                                    original_price=float(price),
+                                    buy_limit=float(buy_limit),
+                                    trace_id=trace_id,
+                                    reason="Limit buy order price exceeds buyLmt, adjusting to buyLmt and retrying",
+                                )
+                                
+                                # Get tick size for proper rounding
+                                try:
+                                    instrument_info = await self.instrument_info_manager.get_instrument(asset)
+                                    tick_size = instrument_info.price_tick_size if instrument_info else Decimal("0.01")
+                                except Exception:
+                                    tick_size = Decimal("0.01")
+                                
+                                # Round buy_limit down to tick size
+                                adjusted_price = buy_limit.quantize(tick_size, rounding=ROUND_DOWN)
+                                
+                                # Prepare new order parameters with adjusted price
+                                adjusted_params = await self._prepare_bybit_order_params(
+                                    signal=signal,
+                                    order_type=order_type,
+                                    quantity=quantity,
+                                    price=adjusted_price,
+                                )
+                                
+                                # Retry order creation with adjusted price
+                                logger.info(
+                                    "order_creation_retrying_with_adjusted_price",
+                                    signal_id=str(signal_id),
+                                    asset=asset,
+                                    original_price=float(price),
+                                    adjusted_price=float(adjusted_price),
+                                    buy_limit=float(buy_limit),
+                                    trace_id=trace_id,
+                                )
+                                
+                                response = await bybit_client.post(endpoint, json_data=adjusted_params, authenticated=True)
+                                ret_code = response.get("retCode", 0)
+                                ret_msg = response.get("retMsg", "")
+                                
+                                if ret_code == 0:
+                                    # Success after adjusting price
+                                    result = response.get("result", {})
+                                    bybit_order_id = result.get("orderId")
+                                    if bybit_order_id:
+                                        logger.info(
+                                            "order_creation_success_after_price_adjustment",
+                                            signal_id=str(signal_id),
+                                            asset=asset,
+                                            bybit_order_id=bybit_order_id,
+                                            original_price=float(price),
+                                            adjusted_price=float(adjusted_price),
+                                            trace_id=trace_id,
+                                        )
+                                        # Save order with adjusted price
+                                        order = await self._save_order_to_database(
+                                            signal=signal,
+                                            bybit_order_id=bybit_order_id,
+                                            order_type=order_type,
+                                            quantity=quantity,
+                                            price=adjusted_price,
+                                            trace_id=trace_id,
+                                        )
+                                        logger.info(
+                                            "order_creation_complete",
+                                            signal_id=str(signal_id),
+                                            asset=asset,
+                                            order_id=str(order.id),
+                                            bybit_order_id=bybit_order_id,
+                                            trace_id=trace_id,
+                                        )
+                                        return order
+                                else:
+                                    logger.warning(
+                                        "order_creation_retry_with_adjusted_price_failed",
+                                        signal_id=str(signal_id),
+                                        asset=asset,
+                                        adjusted_price=float(adjusted_price),
+                                        ret_code=ret_code,
+                                        ret_msg=ret_msg,
+                                        trace_id=trace_id,
+                                    )
+                                    # Continue with original error handling below
                     except Exception as e:
                         logger.warning(
                             "order_creation_price_limit_fetch_failed",
@@ -1996,6 +2094,7 @@ class OrderExecutor:
         
         This method ensures that the limit order price is within the allowed
         deviation from current market price according to Bybit's price_limit_ratio.
+        Also validates buy orders against maximum buying price (buyLmt) from Bybit.
         
         Args:
             asset: Trading pair symbol
@@ -2019,6 +2118,78 @@ class OrderExecutor:
                     reason="Instrument info not found, skipping price_limit_ratio validation",
                 )
                 return price_str
+            
+            # For buy orders, check maximum buying price (buyLmt) from Bybit API
+            # This prevents error 30208: "The order price is higher than the maximum buying price"
+            if side.lower() == "buy":
+                try:
+                    bybit_client = get_bybit_client()
+                    price_limit_response = await bybit_client.get(
+                        "/v5/market/price-limit",
+                        params={"category": settings.bybit_market_category, "symbol": asset},
+                        authenticated=False,
+                    )
+                    price_limit_result = price_limit_response.get("result", {})
+                    buy_limit_str = price_limit_result.get("buyLmt")
+                    
+                    if buy_limit_str:
+                        buy_limit = Decimal(str(buy_limit_str))
+                        tick_size = instrument_info.price_tick_size or Decimal("0.01")
+                        
+                        # If price exceeds buyLmt, adjust it down to buyLmt (rounded down to tick size)
+                        if price_decimal > buy_limit:
+                            logger.warning(
+                                "price_exceeds_max_buying_price_adjusting",
+                                asset=asset,
+                                original_price=price_str,
+                                buy_limit=float(buy_limit),
+                                trace_id=trace_id,
+                                reason="Price exceeds maximum buying price (buyLmt), adjusting to limit",
+                            )
+                            
+                            # Round buy_limit down to tick size to ensure it's valid
+                            adjusted_price = buy_limit.quantize(tick_size, rounding=ROUND_DOWN)
+                            
+                            # Format adjusted price
+                            tick_str = str(tick_size).rstrip('0').rstrip('.')
+                            if '.' in tick_str:
+                                decimal_places = len(tick_str.split('.')[1])
+                            else:
+                                decimal_places = 0
+                            
+                            adjusted_price_str = self._format_decimal_to_string(adjusted_price, decimal_places)
+                            
+                            logger.info(
+                                "price_adjusted_for_max_buying_price",
+                                asset=asset,
+                                original_price=price_str,
+                                adjusted_price=adjusted_price_str,
+                                buy_limit=float(buy_limit),
+                                tick_size=float(tick_size),
+                                trace_id=trace_id,
+                            )
+                            
+                            # Return adjusted price (still need to validate against price_limit_ratio below)
+                            price_decimal = adjusted_price
+                            price_str = adjusted_price_str
+                        else:
+                            logger.debug(
+                                "price_within_max_buying_price",
+                                asset=asset,
+                                price=price_str,
+                                buy_limit=float(buy_limit),
+                                trace_id=trace_id,
+                            )
+                except Exception as e:
+                    logger.warning(
+                        "max_buying_price_validation_skipped",
+                        asset=asset,
+                        price=price_str,
+                        error=str(e),
+                        trace_id=trace_id,
+                        reason="Failed to fetch maximum buying price from API, continuing with price_limit_ratio validation",
+                    )
+                    # Continue with price_limit_ratio validation even if buyLmt check failed
             
             # Get price_limit_ratio (use X for buy orders, Y for sell orders)
             # Default to 0.1 (10%) if not available

@@ -1,0 +1,309 @@
+version: 1.6.1
+features:
+- name: candle_0_is_green
+  input_sources:
+  - kline
+  lookback_window: 45m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: candle_1_is_green
+  input_sources:
+  - kline
+  lookback_window: 45m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: candle_2_is_green
+  input_sources:
+  - kline
+  lookback_window: 45m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: candle_0_body_ratio
+  input_sources:
+  - kline
+  lookback_window: 45m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: candle_1_body_ratio
+  input_sources:
+  - kline
+  lookback_window: 45m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: candle_2_body_ratio
+  input_sources:
+  - kline
+  lookback_window: 45m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: candle_0_upper_shadow_ratio
+  input_sources:
+  - kline
+  lookback_window: 45m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: candle_1_upper_shadow_ratio
+  input_sources:
+  - kline
+  lookback_window: 45m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: candle_2_upper_shadow_ratio
+  input_sources:
+  - kline
+  lookback_window: 45m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: candle_0_lower_shadow_ratio
+  input_sources:
+  - kline
+  lookback_window: 45m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: candle_1_lower_shadow_ratio
+  input_sources:
+  - kline
+  lookback_window: 45m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: candle_2_lower_shadow_ratio
+  input_sources:
+  - kline
+  lookback_window: 45m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: candle_0_is_doji
+  input_sources:
+  - kline
+  lookback_window: 45m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: candle_0_is_hammer
+  input_sources:
+  - kline
+  lookback_window: 45m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: candle_1_is_doji
+  input_sources:
+  - kline
+  lookback_window: 45m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: candle_1_is_hammer
+  input_sources:
+  - kline
+  lookback_window: 45m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: candle_2_is_doji
+  input_sources:
+  - kline
+  lookback_window: 45m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: candle_2_is_hammer
+  input_sources:
+  - kline
+  lookback_window: 45m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: pattern_all_green
+  input_sources:
+  - kline
+  lookback_window: 45m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: pattern_all_red
+  input_sources:
+  - kline
+  lookback_window: 45m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: pattern_green_red_green
+  input_sources:
+  - kline
+  lookback_window: 45m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: pattern_red_green_red
+  input_sources:
+  - kline
+  lookback_window: 45m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: pattern_body_increasing
+  input_sources:
+  - kline
+  lookback_window: 45m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: pattern_body_decreasing
+  input_sources:
+  - kline
+  lookback_window: 45m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: pattern_volume_increasing
+  input_sources:
+  - kline
+  lookback_window: 45m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: pattern_volume_decreasing
+  input_sources:
+  - kline
+  lookback_window: 45m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: pattern_green_large_volume
+  input_sources:
+  - kline
+  lookback_window: 45m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: pattern_red_large_volume
+  input_sources:
+  - kline
+  lookback_window: 45m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: pattern_bullish_engulfing
+  input_sources:
+  - kline
+  lookback_window: 45m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: pattern_bearish_engulfing
+  input_sources:
+  - kline
+  lookback_window: 45m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: pattern_morning_star
+  input_sources:
+  - kline
+  lookback_window: 45m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: pattern_evening_star
+  input_sources:
+  - kline
+  lookback_window: 45m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: pattern_inside_bar_bullish
+  input_sources:
+  - kline
+  lookback_window: 45m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: pattern_inside_bar_bearish
+  input_sources:
+  - kline
+  lookback_window: 45m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+

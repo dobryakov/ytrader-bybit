@@ -24,6 +24,7 @@ from ..services.quality_evaluator import quality_evaluator
 from ..services.model_version_manager import model_version_manager
 from ..services.retraining_trigger import retraining_trigger
 from ..services.feature_service_client import feature_service_client
+from ..database.repositories.model_prediction_repo import ModelPredictionRepository
 from ..config.settings import settings
 from ..config.logging import get_logger
 
@@ -117,6 +118,7 @@ class TrainingOrchestrator:
             "target_registry_version": target_registry_version,
             "feature_registry_version": "latest",  # Use latest feature registry version
             "output_format": "parquet",
+            "strategy_id": strategy_id,  # Pass strategy_id to Feature Service
         }
 
         # Log request to debug validation periods
@@ -193,14 +195,50 @@ class TrainingOrchestrator:
                 # Remove from pending builds
                 del self._pending_dataset_builds[dataset_id]
             else:
-                # Dataset was not requested by us, but we can still train on it
-                # Use default strategy_id (first configured strategy or None)
-                strategy_id = self._normalize_strategy_id(None)
-                logger.info(
-                    "Dataset ready notification received for unrequested dataset, will train with default strategy",
-                    dataset_id=str(dataset_id),
-                    strategy_id=strategy_id,
-                    symbol=symbol,
+                    # Try to get strategy_id from dataset metadata in Feature Service
+                    try:
+                        dataset_meta = await feature_service_client.get_dataset(dataset_id, trace_id)
+                        if dataset_meta:
+                            # Try to get strategy_id from dataset metadata
+                            # Dataset model may have strategy_id as attribute or in dict
+                            dataset_strategy_id = getattr(dataset_meta, "strategy_id", None)
+                            if dataset_strategy_id:
+                                strategy_id = self._normalize_strategy_id(dataset_strategy_id)
+                                logger.info(
+                                    "Retrieved strategy_id from dataset metadata",
+                                    dataset_id=str(dataset_id),
+                                    strategy_id=strategy_id,
+                                    trace_id=trace_id,
+                                )
+                            else:
+                                # strategy_id not found in dataset metadata
+                                strategy_id = self._normalize_strategy_id(None)
+                                logger.info(
+                                    "Dataset ready notification received, strategy_id not found in metadata, will train with default strategy",
+                                    dataset_id=str(dataset_id),
+                                    strategy_id=strategy_id,
+                                    symbol=symbol,
+                                    trace_id=trace_id,
+                                )
+                        else:
+                            # Dataset metadata not found
+                            strategy_id = self._normalize_strategy_id(None)
+                            logger.warning(
+                                "Dataset ready notification received, dataset metadata not found, will train with default strategy",
+                                dataset_id=str(dataset_id),
+                                strategy_id=strategy_id,
+                                symbol=symbol,
+                                trace_id=trace_id,
+                            )
+                    except Exception as e:
+                        # Failed to get dataset metadata, use default
+                        strategy_id = self._normalize_strategy_id(None)
+                        logger.warning(
+                            "Failed to retrieve dataset metadata, will train with default strategy",
+                            dataset_id=str(dataset_id),
+                            strategy_id=strategy_id,
+                            symbol=symbol,
+                            error=str(e),
                     trace_id=trace_id,
                 )
 
@@ -961,6 +999,10 @@ class TrainingOrchestrator:
             test_features = None
             test_labels = None
             test_metrics = None
+            # Variables for predictions and metrics analysis (will be set during test evaluation)
+            test_predictions_data = None
+            baseline_metrics = None
+            top_k_results = None
 
             try:
                 # Check if test split has records before attempting download
@@ -1151,6 +1193,42 @@ class TrainingOrchestrator:
                                     metrics=test_metrics,
                                     trace_id=trace_id,
                                 )
+
+                                # Prepare predictions and metrics for later saving (after model_version is created)
+                                # Save raw predictions for test split analysis
+                                if task_type == "classification" and test_y_pred_proba is not None:
+                                    test_predictions_data = {
+                                        "model_version": None,  # Will be set after model_version creation
+                                        "dataset_id": dataset_id,
+                                        "y_true": test_labels,
+                                        "y_pred_proba": test_y_pred_proba,
+                                        "model": model,
+                                        "task_type": task_type,
+                                        "task_variant": task_variant,
+                                        "training_id": training_id,
+                                        "trace_id": trace_id,
+                                    }
+
+                                # Calculate baseline metrics (majority class strategy)
+                                if task_type == "classification":
+                                    baseline_metrics = quality_evaluator.calculate_baseline_metrics(test_labels)
+
+                                # Top-k analysis without filters
+                                if task_type == "classification" and test_y_pred_proba is not None:
+                                    top_k_results = quality_evaluator.analyze_top_k_performance(
+                                        y_true=test_labels,
+                                        y_pred_proba=test_y_pred_proba,
+                                        k_values=[10, 20, 30, 50],
+                                    )
+                                    if top_k_results and baseline_metrics:
+                                        # Calculate lift for each k (top_k_accuracy / baseline_accuracy)
+                                        baseline_accuracy = baseline_metrics.get("baseline_accuracy", 0.0)
+                                        if baseline_accuracy > 0:
+                                            for k in [10, 20, 30, 50]:
+                                                top_k_accuracy = top_k_results.get(f"top_k_{k}_accuracy")
+                                                if top_k_accuracy is not None:
+                                                    lift = top_k_accuracy / baseline_accuracy
+                                                    top_k_results[f"top_k_{k}_lift"] = lift
                         else:
                             logger.warning(
                                 "Target column not found in test split",
@@ -1263,6 +1341,92 @@ class TrainingOrchestrator:
                     evaluation_dataset_size=len(test_features),
                     dataset_split="test",
                 )
+
+            # Save test predictions, baseline metrics, and top-k analysis after model_version is created
+            if test_predictions_data:
+                try:
+                    # Update model_version in predictions data
+                    test_predictions_data["model_version"] = version
+                    await self._save_test_predictions(**test_predictions_data)
+                except Exception as e:
+                    logger.warning(
+                        "Failed to save test predictions",
+                        training_id=training_id,
+                        error=str(e),
+                        trace_id=trace_id,
+                        exc_info=True,
+                    )
+
+            if baseline_metrics:
+                try:
+                    await model_version_manager.save_quality_metrics(
+                        model_version_id=model_version["id"],
+                        metrics=baseline_metrics,
+                        evaluation_dataset_size=len(test_features) if test_features is not None else None,
+                        dataset_split="test",
+                    )
+                    logger.info(
+                        "Baseline metrics (majority class strategy) saved",
+                        training_id=training_id,
+                        model_version_id=str(model_version["id"]),
+                        dataset_split="test",
+                        baseline_accuracy=baseline_metrics.get("baseline_accuracy"),
+                        baseline_f1_score=baseline_metrics.get("baseline_f1_score"),
+                        baseline_balanced_accuracy=baseline_metrics.get("baseline_balanced_accuracy"),
+                        evaluation_dataset_size=len(test_features) if test_features is not None else None,
+                        trace_id=trace_id,
+                        note="Baseline strategy: always predict majority class. Used for comparison with model performance.",
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Failed to save baseline metrics",
+                        training_id=training_id,
+                        error=str(e),
+                        trace_id=trace_id,
+                        exc_info=True,
+                    )
+
+            if top_k_results:
+                try:
+                    await model_version_manager.save_quality_metrics(
+                        model_version_id=model_version["id"],
+                        metrics=top_k_results,
+                        evaluation_dataset_size=len(test_features) if test_features is not None else None,
+                        dataset_split="test",
+                    )
+                    # Log summary of top-k results
+                    top_k_summary = {}
+                    for k in [10, 20, 30, 50]:
+                        accuracy_key = f"top_k_{k}_accuracy"
+                        lift_key = f"top_k_{k}_lift"
+                        threshold_key = f"top_k_{k}_confidence_threshold"
+                        if accuracy_key in top_k_results:
+                            top_k_summary[f"top_{k}_accuracy"] = top_k_results[accuracy_key]
+                        if lift_key in top_k_results:
+                            top_k_summary[f"top_{k}_lift"] = top_k_results[lift_key]
+                        if threshold_key in top_k_results:
+                            top_k_summary[f"top_{k}_confidence_threshold"] = top_k_results[threshold_key]
+                    
+                    logger.info(
+                        "Top-k analysis metrics (without filters) saved",
+                        training_id=training_id,
+                        model_version_id=str(model_version["id"]),
+                        dataset_split="test",
+                        k_values=[10, 20, 30, 50],
+                        evaluation_dataset_size=len(test_features) if test_features is not None else None,
+                        top_k_summary=top_k_summary,
+                        trace_id=trace_id,
+                        note="Top-k% analysis: metrics calculated for top-k% predictions sorted by confidence, without applying confidence threshold or hysteresis filters. Used to evaluate ranking performance.",
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Failed to save top-k analysis metrics",
+                        training_id=training_id,
+                        error=str(e),
+                        trace_id=trace_id,
+                        exc_info=True,
+                    )
+
 
             # Check if model quality meets threshold for activation
             # Use test set metrics if available, otherwise fallback to validation metrics
@@ -1626,6 +1790,118 @@ class TrainingOrchestrator:
                 return semantic_predictions
             else:
                 return np.argmax(probabilities, axis=1)
+
+    async def _save_test_predictions(
+        self,
+        model_version: str,
+        dataset_id: UUID,
+        y_true: pd.Series,
+        y_pred_proba: np.ndarray,
+        model: Any,
+        task_type: str,
+        task_variant: Optional[str] = None,
+        training_id: Optional[str] = None,
+        trace_id: Optional[str] = None,
+    ) -> None:
+        """
+        Save raw predictions (probabilities) for test split analysis.
+        
+        Args:
+            model_version: Model version string
+            dataset_id: Dataset UUID identifier
+            y_true: True labels
+            y_pred_proba: Predicted probabilities (2D array: n_samples, n_classes)
+            model: Trained model (for label mapping)
+            task_type: Task type ('classification' or 'regression')
+            task_variant: Task variant ('binary_classification', etc.)
+            training_id: Optional training ID
+            trace_id: Optional trace ID
+        """
+        try:
+            if y_pred_proba is None or y_pred_proba.ndim != 2:
+                logger.warning(
+                    "Cannot save test predictions: invalid y_pred_proba",
+                    shape=y_pred_proba.shape if y_pred_proba is not None else None,
+                    training_id=training_id,
+                    trace_id=trace_id,
+                )
+                return
+
+            # Get label mapping if available (for remapped labels)
+            label_mapping = getattr(model, "_label_mapping_for_inference", None)
+            
+            # Prepare predictions list
+            predictions = []
+            for i in range(len(y_true)):
+                y_true_value = int(y_true.iloc[i]) if hasattr(y_true.iloc[i], '__int__') else y_true.iloc[i]
+                probabilities = [float(p) for p in y_pred_proba[i]]
+                confidence = float(np.max(probabilities))
+                
+                pred_dict = {
+                    "y_true": y_true_value,
+                    "probabilities": probabilities,
+                    "confidence": confidence,
+                }
+                
+                # Add semantic probabilities if label mapping exists
+                if label_mapping and isinstance(label_mapping, dict):
+                    sem_probs = {}
+                    for class_idx, sem_label in label_mapping.items():
+                        try:
+                            idx = int(class_idx)
+                        except (TypeError, ValueError):
+                            idx = class_idx
+                        if isinstance(idx, int) and 0 <= idx < len(probabilities):
+                            sem_probs[sem_label] = float(probabilities[idx])
+                    if sem_probs:
+                        pred_dict["semantic_probabilities"] = sem_probs
+                
+                predictions.append(pred_dict)
+
+            # Prepare metadata
+            metadata = {
+                "task_type": task_type,
+                "task_variant": task_variant,
+                "num_classes": y_pred_proba.shape[1],
+                "num_samples": len(y_true),
+                "training_id": training_id,
+            }
+
+            # Save to database
+            prediction_repo = ModelPredictionRepository()
+            await prediction_repo.create(
+                model_version=model_version,
+                dataset_id=dataset_id,
+                split="test",
+                predictions=predictions,
+                training_id=training_id,
+                metadata=metadata,
+            )
+
+            logger.info(
+                "Test predictions saved for analysis",
+                model_version=model_version,
+                dataset_id=str(dataset_id),
+                split="test",
+                num_predictions=len(predictions),
+                num_classes=y_pred_proba.shape[1],
+                task_type=task_type,
+                task_variant=task_variant,
+                training_id=training_id,
+                trace_id=trace_id,
+                note="Raw predictions (y_true + probabilities) saved for top-k analysis and ranking evaluation",
+            )
+        except Exception as e:
+            logger.error(
+                "Failed to save test predictions",
+                model_version=model_version,
+                dataset_id=str(dataset_id),
+                error=str(e),
+                training_id=training_id,
+                trace_id=trace_id,
+                exc_info=True,
+            )
+            # Don't raise - continue training even if prediction saving fails
     
     def _validate_data_quality(
         self,

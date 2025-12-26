@@ -199,16 +199,17 @@ async def lifespan(app: FastAPI):
             # Continue anyway - quality evaluation can be triggered manually
 
         # Start dataset ready consumer for Feature Service dataset notifications
-        async def handle_dataset_ready(dataset_id: UUID, symbol: Optional[str], trace_id: Optional[str]):
+        async def handle_dataset_ready(dataset_id: UUID, symbol: Optional[str], trace_id: Optional[str], strategy_id: Optional[str] = None):
             """Handle dataset ready notification from Feature Service."""
             try:
                 # Trigger training with ready dataset via TrainingOrchestrator
-                await training_orchestrator.handle_dataset_ready(dataset_id, symbol, trace_id)
+                await training_orchestrator.handle_dataset_ready(dataset_id, symbol, trace_id, strategy_id)
             except Exception as e:
                 logger.error(
                     "Error handling dataset ready notification",
                     dataset_id=str(dataset_id),
                     symbol=symbol,
+                    strategy_id=strategy_id,
                     error=str(e),
                     trace_id=trace_id,
                     exc_info=True,

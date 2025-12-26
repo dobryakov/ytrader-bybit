@@ -71,6 +71,7 @@ class DatasetBuildRequest(BaseModel):
     target_registry_version: str = Field(description="Target Registry version")
     feature_registry_version: str
     output_format: str = "parquet"
+    strategy_id: Optional[str] = Field(default=None, description="Trading strategy identifier (optional)")
 
 
 class DatasetResplitRequest(BaseModel):
@@ -102,6 +103,7 @@ async def build_dataset(
         logger.info(
             "Dataset build request received",
             symbol=request.symbol,
+            strategy_id=request.strategy_id,
             split_strategy=request.split_strategy.value,
             train_period_start=request.train_period_start.isoformat() if request.train_period_start else None,
             train_period_end=request.train_period_end.isoformat() if request.train_period_end else None,
@@ -124,6 +126,7 @@ async def build_dataset(
             walk_forward_config=request.walk_forward_config.model_dump() if request.walk_forward_config else None,
             output_format=request.output_format,
             feature_registry_version=request.feature_registry_version,
+            strategy_id=request.strategy_id,
         )
         
         # Get estimated completion

@@ -191,3 +191,87 @@ export function useActiveModelVersion(filters?: {
   })
 }
 
+export interface PredictionInfo {
+  split: string
+  count: number
+  dataset_id: string | null
+  created_at: string | null
+}
+
+export interface ModelMetricsDetail {
+  accuracy: number | null
+  precision: number | null
+  recall: number | null
+  f1_score: number | null
+  balanced_accuracy: number | null
+  roc_auc: number | null
+  pr_auc: number | null
+}
+
+export interface BaselineMetricsDetail {
+  accuracy: number | null
+  precision: number | null
+  recall: number | null
+  f1_score: number | null
+  balanced_accuracy: number | null
+  roc_auc: number | null
+  pr_auc: number | null
+}
+
+export interface TopKMetrics {
+  k: number
+  accuracy: number | null
+  precision: number | null
+  recall: number | null
+  f1_score: number | null
+  balanced_accuracy: number | null
+  roc_auc: number | null
+  pr_auc: number | null
+  lift: number | null
+  coverage: number | null
+  precision_class_1: number | null
+  recall_class_1: number | null
+  f1_class_1: number | null
+}
+
+export interface MetricComparison {
+  model: number | null
+  baseline: number | null
+  difference: number | null
+}
+
+export interface ConfidenceThresholdInfo {
+  threshold_value: number
+  threshold_source: 'top_k' | 'static'
+  top_k_percentage?: number | null
+  static_threshold?: number | null
+  metric_name?: string | null
+}
+
+export interface ModelAnalysisResponse {
+  model_version: string
+  model_id: string
+  predictions: PredictionInfo[]
+  model_metrics: ModelMetricsDetail
+  baseline_metrics: BaselineMetricsDetail
+  top_k_metrics: TopKMetrics[]
+  comparison: {
+    accuracy: MetricComparison
+    f1_score: MetricComparison
+    pr_auc: MetricComparison
+    roc_auc: MetricComparison
+  }
+  confidence_threshold_info?: ConfidenceThresholdInfo | null
+}
+
+export function useModelAnalysis(version: string) {
+  return useQuery<ModelAnalysisResponse>({
+    queryKey: ['modelAnalysis', version],
+    queryFn: async () => {
+      const response = await api.get(`/v1/models/${version}/analysis`)
+      return response.data
+    },
+    enabled: !!version,
+  })
+}
+

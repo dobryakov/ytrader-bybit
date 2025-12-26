@@ -393,7 +393,13 @@ Get detailed information about a specific model version including quality metric
       "metric_type": "classification",
       "evaluated_at": "2025-01-27T10:00:00Z"
     }
-  ]
+  ],
+  "confidence_threshold_info": {
+    "threshold_value": 0.65,
+    "threshold_source": "top_k",
+    "top_k_percentage": 10,
+    "metric_name": "top_k_10_confidence_threshold"
+  }
 }
 ```
 
@@ -492,6 +498,148 @@ Get time-series metrics data for charting.
   ]
 }
 ```
+
+#### Get Model Analysis (Detailed)
+
+```bash
+GET /api/v1/models/{version}/analysis
+```
+
+Get detailed analysis for a model version including predictions, baseline metrics, and top-k analysis.
+
+**Path Parameters:**
+- `version`: Model version identifier (e.g., 'v1', 'v2.1')
+
+**Response:**
+```json
+{
+  "model_version": "v1766688758",
+  "model_id": "c66769ec-d74e-4a2d-b0a5-c097260ce069",
+  "predictions": [
+    {
+      "split": "test",
+      "count": 6351,
+      "dataset_id": "b8adcd3d-fe4e-4b56-a7e2-f37021d63ed1",
+      "created_at": "2025-12-25T18:52:38.388136+00:00"
+    }
+  ],
+  "model_metrics": {
+    "accuracy": 0.6486,
+    "precision": 0.4403,
+    "recall": 0.6486,
+    "f1_score": 0.5245,
+    "balanced_accuracy": 0.4958,
+    "roc_auc": 0.6772,
+    "pr_auc": 0.7812
+  },
+  "baseline_metrics": {
+    "accuracy": 0.6541,
+    "precision": 0.4278,
+    "recall": 0.6541,
+    "f1_score": 0.5173,
+    "balanced_accuracy": 0.5,
+    "roc_auc": 0.0,
+    "pr_auc": 0.0
+  },
+  "top_k_metrics": [
+    {
+      "k": 10,
+      "accuracy": 0.4646,
+      "precision": 0.5087,
+      "recall": 0.4646,
+      "f1_score": 0.4856,
+      "balanced_accuracy": 0.4263,
+      "roc_auc": 0.9293,
+      "pr_auc": 0.9513,
+      "lift": 0.7103,
+      "coverage": 0.1,
+      "precision_class_1": 0.9335,
+      "recall_class_1": 0.8526,
+      "f1_class_1": 0.8912
+    },
+    {
+      "k": 20,
+      "accuracy": 0.5291,
+      "precision": 0.5185,
+      "recall": 0.5291,
+      "f1_score": 0.5238,
+      "balanced_accuracy": 0.4308,
+      "roc_auc": 0.8564,
+      "pr_auc": 0.8992,
+      "lift": 0.8090,
+      "coverage": 0.2,
+      "precision_class_1": 0.8442,
+      "recall_class_1": 0.8615,
+      "f1_class_1": 0.8528
+    },
+    {
+      "k": 30,
+      "accuracy": 0.5570,
+      "precision": 0.5398,
+      "recall": 0.5570,
+      "f1_score": 0.5483,
+      "balanced_accuracy": 0.4313,
+      "roc_auc": 0.8126,
+      "pr_auc": 0.8736,
+      "lift": 0.8515,
+      "coverage": 0.3,
+      "precision_class_1": 0.8361,
+      "recall_class_1": 0.8626,
+      "f1_class_1": 0.8491
+    },
+    {
+      "k": 50,
+      "accuracy": 0.5669,
+      "precision": 0.5370,
+      "recall": 0.5669,
+      "f1_score": 0.5515,
+      "balanced_accuracy": 0.4257,
+      "roc_auc": 0.7635,
+      "pr_auc": 0.8460,
+      "lift": 0.8668,
+      "coverage": 0.5,
+      "precision_class_1": 0.8065,
+      "recall_class_1": 0.8515,
+      "f1_class_1": 0.8283
+    }
+  ],
+  "comparison": {
+    "accuracy": {
+      "model": 0.6486,
+      "baseline": 0.6541,
+      "difference": -0.0055
+    },
+    "f1_score": {
+      "model": 0.5245,
+      "baseline": 0.5173,
+      "difference": 0.0072
+    },
+    "pr_auc": {
+      "model": 0.7812,
+      "baseline": 0.0,
+      "difference": 0.7812
+    },
+    "roc_auc": {
+      "model": 0.6772,
+      "baseline": 0.0,
+      "difference": 0.6772
+    }
+  }
+}
+```
+
+**Response Fields:**
+- `predictions`: List of saved predictions with count and split information
+- `model_metrics`: Main model metrics (accuracy, precision, recall, F1, ROC-AUC, PR-AUC)
+- `baseline_metrics`: Baseline metrics using majority class strategy
+- `top_k_metrics`: Top-k% analysis metrics for k=10,20,30,50 (without filters)
+- `comparison`: Direct comparison between model and baseline metrics with differences
+
+**Use Cases:**
+- Understanding model performance vs baseline
+- Evaluating edge in top-k% predictions
+- Data for threshold and filter optimization
+- Ranking performance analysis
 
 ### Training Management
 

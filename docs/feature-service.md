@@ -329,21 +329,396 @@ features:
 
 Нужен для детерминированного пересборки датасета и предотвращения data leakage.
 
+### Управление версиями через API
+
+Feature Registry поддерживает версионирование через базу данных. Версии хранятся в БД и могут быть созданы и активированы через API.
+
+#### Создание новой версии Feature Registry
+
+```bash
+POST /feature-registry/versions
+X-API-Key: <api_key>
+Content-Type: application/json
+
+{
+  "version": "1.6.0",
+  "config": {
+    "version": "1.6.0",
+    "features": [
+      {
+        "name": "mid_price",
+        "input_sources": ["orderbook"],
+        "lookback_window": "0s",
+        "lookahead_forbidden": true,
+        "max_lookback_days": 0,
+        "data_sources": [
+          {
+            "source": "orderbook",
+            "timestamp_required": true
+          }
+        ]
+      },
+      {
+        "name": "return_1m",
+        "input_sources": ["kline"],
+        "lookback_window": "1m",
+        "lookahead_forbidden": true,
+        "max_lookback_days": 1,
+        "data_sources": [
+          {
+            "source": "kline",
+            "timestamp_required": true
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+**Ответ:**
+```json
+{
+  "version": "1.6.0",
+  "is_active": false,
+  "created_at": "2025-12-25T16:30:00.000000Z",
+  "file_path": "/app/config/versions/feature_registry_v1.6.0.yaml",
+  "validated_at": null,
+  "validation_errors": null
+}
+```
+
+#### Активация версии Feature Registry
+
+```bash
+POST /feature-registry/versions/{version}/activate
+X-API-Key: <api_key>
+Content-Type: application/json
+
+{
+  "activated_by": "api",
+  "activation_reason": "Activated via API - added new features",
+  "acknowledge_breaking_changes": false
+}
+```
+
+**Ответ:**
+```json
+{
+  "version": "1.6.0",
+  "is_active": true,
+  "activated_at": "2025-12-25T16:30:05.000000Z",
+  "activated_by": "api",
+  "activation_reason": "Activated via API - added new features",
+  "previous_version": "1.5.0",
+  "hot_reload": true,
+  "reload_result": {
+    "status": "success"
+  }
+}
+```
+
+**Важно:** 
+- При активации новой версии предыдущая активная версия автоматически деактивируется
+- Активация включает hot reload — Feature Registry перезагружается в памяти без перезапуска сервиса
+- Если hot reload не удался, активация автоматически откатывается (rollback)
+- Если обнаружены breaking changes, требуется установить `acknowledge_breaking_changes: true`
+
+#### Получение активной версии
+
+```bash
+GET /feature-registry
+X-API-Key: <api_key>
+```
+
+#### Список всех версий
+
+```bash
+GET /feature-registry/versions
+X-API-Key: <api_key>
+```
+
+#### Получение конкретной версии
+
+```bash
+GET /feature-registry/versions/{version}
+X-API-Key: <api_key>
+```
+
+#### Проверка использования версии
+
+```bash
+GET /feature-registry/versions/{version}/usage
+X-API-Key: <api_key>
+```
+
+Возвращает информацию о том, сколько датасетов используют данную версию.
+
+#### Откат к предыдущей версии
+
+```bash
+POST /feature-registry/rollback
+X-API-Key: <api_key>
+```
+
+Откатывает активацию к предыдущей версии.
+
+#### Синхронизация файла с БД
+
+```bash
+POST /feature-registry/versions/{version}/sync-file
+X-API-Key: <api_key>
+```
+
+Синхронизирует метаданные в БД с файлом (используется, если файл был отредактирован вручную).
+
+#### Удаление версии
+
+```bash
+DELETE /feature-registry/versions/{version}
+X-API-Key: <api_key>
+```
+
+Удаляет версию только если она не используется ни одним датасетом.
+
+#### Перезагрузка конфигурации
+
+```bash
+POST /feature-registry/reload
+X-API-Key: <api_key>
+```
+
+Перезагружает активную версию Feature Registry из файла или БД.
+
+#### Валидация конфигурации
+
+```bash
+GET /feature-registry/validate
+X-API-Key: <api_key>
+```
+
+Проверяет текущую конфигурацию Feature Registry на корректность.
+
+### Пример использования curl
+
+```bash
+# Создание версии 1.6.0
+curl -X POST "http://localhost:4900/feature-registry/versions" \
+  -H "X-API-Key: your-feature-service-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "version": "1.6.0",
+    "config": {
+      "version": "1.6.0",
+      "features": [
+        {
+          "name": "mid_price",
+          "input_sources": ["orderbook"],
+          "lookback_window": "0s",
+          "lookahead_forbidden": true,
+          "max_lookback_days": 0,
+          "data_sources": [
+            {
+              "source": "orderbook",
+              "timestamp_required": true
+            }
+          ]
+        }
+      ]
+    }
+  }'
+
+# Активация версии
+curl -X POST "http://localhost:4900/feature-registry/versions/1.6.0/activate" \
+  -H "X-API-Key: your-feature-service-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "activated_by": "api",
+    "activation_reason": "Activated via API - added new features",
+    "acknowledge_breaking_changes": false
+  }'
+```
+
+### Хранение версий
+
+- Версии хранятся в базе данных в таблице `feature_registry_versions`
+- Конфигурация также сохраняется в файл `/app/config/versions/feature_registry_v{version}.yaml`
+- Файл является источником истины (source of truth) для конфигурации
+- При активации версии выполняется hot reload — Feature Registry перезагружается в памяти без перезапуска сервиса
+- Hot reload обновляет FeatureComputer, DatasetBuilder, OrderbookManager и другие компоненты
+
 ---
 
-## 8. Интеграция с Model Service
+## 8. Target Registry
 
-Model-service должен быть переработан:
+Target Registry управляет конфигурацией целевых переменных (targets) для обучения моделей. Версии Target Registry хранятся в базе данных и могут быть активированы через API.
 
-Убрать любую логику feature engineering из model-service.
+### Структура Target Registry
 
-model-service должен:
+Каждая версия Target Registry содержит:
 
-- принимать готовый feature vector;
-- выполнять inference;
-- выполнять обучение только на датасетах, предоставленных Feature Service;
-- поддерживать модельные артефакты (weights, metadata);
-- иметь API /model/train → принимает путь к датасету (или id датасета).
+- `type`: тип целевой переменной (`regression`, `classification`, `risk_adjusted`)
+- `horizon`: горизонт предсказания в секундах (например, 300, 900)
+- `threshold`: порог для классификации (опционально)
+- `computation`: конфигурация вычисления target (preset, overrides, options)
+- `description`: описание версии
+
+### Управление версиями через API
+
+#### Создание новой версии Target Registry
+
+```bash
+POST /target-registry/versions
+X-API-Key: <api_key>
+Content-Type: application/json
+
+{
+  "version": "1.6.1",
+  "config": {
+    "type": "classification",
+    "horizon": 900,
+    "threshold": null,
+    "computation": {
+      "preset": "next_candle_direction",
+      "overrides": {
+        "price_source": "close",
+        "future_price_source": "close",
+        "lookup_method": "nearest_forward",
+        "tolerance_seconds": 60
+      },
+      "options": {
+        "positive_label": 1,
+        "negative_label": -1,
+        "neutral_label": 0,
+        "min_positive_support": 0.05,
+        "min_negative_support": 0.05,
+        "task_variant": "binary_classification",
+        "clip_method": "quantile",
+        "clip_q_low": 0.01,
+        "clip_q_high": 0.99,
+        "normalize": "sharpe",
+        "sharpe_window": 20
+      }
+    }
+  },
+  "description": "Target Registry version 1.6.1 - binary directional target with 900 seconds horizon"
+}
+```
+
+**Ответ:**
+```json
+{
+  "version": "1.6.1",
+  "is_active": false,
+  "created_at": "2025-12-25T16:29:34.145231Z",
+  "file_path": "/app/config/versions/target_registry_v1.6.1.yaml",
+  "description": "..."
+}
+```
+
+#### Активация версии Target Registry
+
+```bash
+POST /target-registry/versions/{version}/activate
+X-API-Key: <api_key>
+Content-Type: application/json
+
+{
+  "activated_by": "api",
+  "activation_reason": "Activated via API - horizon changed to 900 seconds"
+}
+```
+
+**Ответ:**
+```json
+{
+  "version": "1.6.1",
+  "is_active": true,
+  "activated_at": "2025-12-25T16:29:36.841090Z",
+  "activated_by": "api",
+  "activation_reason": "Activated via API - horizon changed to 900 seconds",
+  "previous_version": "1.6.0"
+}
+```
+
+**Важно:** При активации новой версии предыдущая активная версия автоматически деактивируется.
+
+#### Получение активной версии
+
+```bash
+GET /target-registry
+X-API-Key: <api_key>
+```
+
+#### Список всех версий
+
+```bash
+GET /target-registry/versions
+X-API-Key: <api_key>
+```
+
+#### Получение конкретной версии
+
+```bash
+GET /target-registry/versions/{version}
+X-API-Key: <api_key>
+```
+
+### Пример использования curl
+
+```bash
+# Создание версии 1.6.1 с горизонтом 900 секунд
+curl -X POST "http://localhost:4900/target-registry/versions" \
+  -H "X-API-Key: your-feature-service-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "version": "1.6.1",
+    "config": {
+      "type": "classification",
+      "horizon": 900,
+      "threshold": null,
+      "computation": {
+        "preset": "next_candle_direction",
+        "overrides": {
+          "price_source": "close",
+          "future_price_source": "close",
+          "lookup_method": "nearest_forward",
+          "tolerance_seconds": 60
+        },
+        "options": {
+          "positive_label": 1,
+          "negative_label": -1,
+          "neutral_label": 0,
+          "min_positive_support": 0.05,
+          "min_negative_support": 0.05,
+          "task_variant": "binary_classification",
+          "clip_method": "quantile",
+          "clip_q_low": 0.01,
+          "clip_q_high": 0.99,
+          "normalize": "sharpe",
+          "sharpe_window": 20
+        }
+      }
+    },
+    "description": "Target Registry version 1.6.1 - binary directional target with 900 seconds horizon"
+  }'
+
+# Активация версии
+curl -X POST "http://localhost:4900/target-registry/versions/1.6.1/activate" \
+  -H "X-API-Key: your-feature-service-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "activated_by": "api",
+    "activation_reason": "Activated via API - horizon changed to 900 seconds"
+  }'
+```
+
+### Хранение версий
+
+- Версии хранятся в базе данных в таблице `target_registry_versions`
+- Конфигурация также сохраняется в файл `/app/config/versions/target_registry_v{version}.yaml`
+- Файл является источником истины (source of truth) для конфигурации
+- При активации версии FeatureScheduler автоматически обновляет интервалы вычисления
 
 ---
 

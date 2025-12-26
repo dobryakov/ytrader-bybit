@@ -49,6 +49,13 @@ class Settings(BaseSettings):
     # Model Training Configuration
     model_training_min_dataset_size: int = Field(default=1000, alias="MODEL_TRAINING_MIN_DATASET_SIZE")
     model_training_max_duration_seconds: int = Field(default=1800, alias="MODEL_TRAINING_MAX_DURATION_SECONDS")
+    # Top-K Analysis Configuration
+    model_signal_top_k_percentage: int = Field(
+        default=10,
+        alias="MODEL_SIGNAL_TOP_K_PERCENTAGE",
+        description="Top-K percentage to use for dynamic confidence threshold from model quality metrics. Default: 10 (top-10%). If top-k threshold is available, it will be used instead of static min_confidence_threshold. Valid values: 10, 20, 30, 50."
+    )
+    
     model_activation_threshold: float = Field(
         default=0.75, 
         alias="MODEL_ACTIVATION_THRESHOLD",

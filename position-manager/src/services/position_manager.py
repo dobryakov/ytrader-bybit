@@ -5,10 +5,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import json
 import time
 from datetime import datetime, timedelta
 from decimal import Decimal
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlencode
 
 import httpx
@@ -28,6 +29,43 @@ __all__ = ["PositionManager", "httpx"]
 
 class PositionManager:
     """Service for managing position state, queries, and ML feature helpers."""
+
+    @staticmethod
+    def _convert_datetime_to_iso_string(data: Any) -> Any:
+        """
+        Recursively convert all datetime objects to ISO format strings.
+        
+        This is needed for JSON serialization, as datetime objects cannot be
+        directly serialized to JSON. All datetime objects are converted to ISO
+        format strings with timezone information.
+        
+        Args:
+            data: Dictionary, list, or other data structure that may contain datetime objects
+            
+        Returns:
+            Data structure with all datetime objects converted to ISO format strings
+        """
+        if data is None:
+            return None
+        
+        if isinstance(data, datetime):
+            # Convert to ISO format string with timezone
+            return data.isoformat()
+        
+        if isinstance(data, dict):
+            return {
+                key: PositionManager._convert_datetime_to_iso_string(value)
+                for key, value in data.items()
+            }
+        
+        if isinstance(data, (list, tuple)):
+            converted_list = [
+                PositionManager._convert_datetime_to_iso_string(item)
+                for item in data
+            ]
+            return type(data)(converted_list) if isinstance(data, tuple) else converted_list
+        
+        return data
 
     # In-memory tracking of last-seen WebSocket timestamps for conflict resolution.
     # Keys are (asset_upper, mode_lower).
@@ -141,11 +179,13 @@ class PositionManager:
                     closed_at=closed_at.isoformat() if hasattr(closed_at, 'isoformat') else str(closed_at),
                     action="clearing_closed_at",
                 )
-                # Clear closed_at to indicate position is active again
+                # Clear closed_at and reset total_fees to 0 for new position cycle
+                # This ensures total_fees only accumulates for the current open position
                 await pool.execute(
                     """
                     UPDATE positions
                     SET closed_at = NULL,
+                        total_fees = 0,
                         version = version + 1,
                         last_updated = NOW()
                     WHERE asset = $1 AND mode = $2
@@ -154,11 +194,13 @@ class PositionManager:
                     mode.lower(),
                 )
                 position_dict["closed_at"] = None
+                position_dict["total_fees"] = Decimal("0")
                 logger.info(
                     "position_closed_at_cleared_after_reopen",
                     asset=asset,
                     mode=mode,
                     size=str(position_size),
+                    total_fees_reset=True,
                 )
             elif closed_at is not None and position_size == 0:
                 # Position is marked as closed and size is zero - this is correct state
@@ -340,10 +382,10 @@ class PositionManager:
                     insert_query = """
                         INSERT INTO positions (
                             asset, mode, size, average_entry_price,
-                            unrealized_pnl, realized_pnl,
+                            unrealized_pnl, realized_pnl, total_fees,
                             current_price, version, last_updated, created_at
                         )
-                        VALUES ($1, $2, $3, $4, $5, $6, $7, 1, NOW(), NOW())
+                        VALUES ($1, $2, $3, $4, $5, $6, 0, $7, 1, NOW(), NOW())
                         ON CONFLICT (asset, mode) DO NOTHING
                         RETURNING id, asset, mode, size, average_entry_price, current_price,
                                   unrealized_pnl, realized_pnl,
@@ -636,6 +678,10 @@ class PositionManager:
                                 WHEN $5::text = '' THEN average_entry_price
                                 WHEN CAST($5::text AS numeric) <= 0 THEN NULL
                                 ELSE CAST($5::text AS numeric)
+                            END,
+                            total_fees = CASE 
+                                WHEN CAST($1 AS numeric) = 0 THEN 0
+                                ELSE total_fees
                             END,
                             version = version + 1,
                             last_updated = NOW(),
@@ -980,12 +1026,17 @@ class PositionManager:
                 }
             )
 
+            # Convert datetime objects to ISO strings for JSON serialization
+            snapshot_payload_json = self._convert_datetime_to_iso_string(snapshot_payload)
+            # Convert dict to JSON string for JSONB column (asyncpg requires this)
+            snapshot_payload_json_str = json.dumps(snapshot_payload_json)
+
             pool = await DatabaseConnection.get_pool()
             insert_query = """
                 INSERT INTO position_snapshots (
                     id, position_id, asset, mode, snapshot_data, snapshot_timestamp
                 )
-                VALUES (gen_random_uuid(), $1, $2, $3, $4, NOW())
+                VALUES (gen_random_uuid(), $1, $2, $3, $4::jsonb, NOW())
                 RETURNING id, position_id, asset, mode, snapshot_data, snapshot_timestamp AS created_at
             """
             row = await pool.fetchrow(
@@ -993,7 +1044,7 @@ class PositionManager:
                 str(position.id),
                 position.asset,
                 position.mode,
-                snapshot_payload,
+                snapshot_payload_json_str,
             )
 
             snapshot = PositionSnapshot.from_db_dict(dict(row))
