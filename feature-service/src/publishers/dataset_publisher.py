@@ -97,21 +97,57 @@ class DatasetPublisher:
                 )
                 return  # Success - exit function
             
-            except (aiormq.exceptions.ChannelInvalidStateError, AttributeError) as e:
+            except (
+                aiormq.exceptions.ChannelInvalidStateError,
+                aiormq.exceptions.AMQPConnectionError,
+                ConnectionResetError,
+                AttributeError,
+                RuntimeError,
+            ) as e:
                 # Channel is closed or invalid - reinitialize and retry
                 error_type = type(e).__name__
+                error_msg = str(e)
+                
+                # Check if it's a connection closed error
+                is_connection_error = (
+                    isinstance(e, (aiormq.exceptions.AMQPConnectionError, ConnectionResetError)) or
+                    "closed" in error_msg.lower() or
+                    "Connection" in error_type or
+                    "Connection was not opened" in error_msg or
+                    "Connection reset" in error_msg
+                )
+                
                 logger.warning(
                     "channel_closed_during_publish",
                     dataset_id=dataset_id,
                     symbol=symbol,
-                    error=str(e),
+                    error=error_msg,
                     error_type=error_type,
                     queue="features.dataset.ready",
                     attempt=attempt + 1,
                     max_retries=max_retries,
+                    is_connection_error=is_connection_error,
                 )
                 
                 if attempt < max_retries - 1:
+                    # For connection errors, reset the connection in mq_manager
+                    # Use reset_connection() method to properly close channels before connection
+                    if is_connection_error and self._mq_manager is not None:
+                        try:
+                            await self._mq_manager.reset_connection()
+                        except Exception as reset_error:
+                            logger.debug(
+                                "Error resetting connection during publish retry",
+                                error=str(reset_error),
+                                error_type=type(reset_error).__name__,
+                            )
+                    
+                    # Reset channel reference before reinitialization
+                    self._channel = None
+                    
+                    # Add delay to allow connection to stabilize (exponential backoff)
+                    await asyncio.sleep(0.5 * (2 ** attempt))
+                    
                     # Reinitialize channel before retry
                     try:
                         # Check if mq_manager is valid
@@ -153,6 +189,17 @@ class DatasetPublisher:
                         error_type=error_type,
                         exc_info=True,
                     )
+            
+            except (asyncio.CancelledError, KeyboardInterrupt) as e:
+                # Don't retry on cancellation - re-raise immediately
+                logger.warning(
+                    "dataset_publish_cancelled",
+                    dataset_id=dataset_id,
+                    symbol=symbol,
+                    error=str(e),
+                    error_type=type(e).__name__,
+                )
+                raise
             
             except Exception as e:
                 # Other error - log and don't retry

@@ -243,6 +243,19 @@ class FeeRateManager:
         ret_code = response.get("retCode", 0)
         if ret_code != 0:
             error_msg = response.get("retMsg", "Unknown error")
+            # Handle closed/delisted symbols gracefully - these are expected for inactive contracts
+            # Error code 110074: "closed symbol error: This {symbol} contract is not live."
+            if ret_code == 110074 or "closed symbol" in error_msg.lower() or "not live" in error_msg.lower():
+                logger.warning(
+                    "fee_rate_api_closed_symbol",
+                    symbol=symbol,
+                    market_type=market_type,
+                    ret_code=ret_code,
+                    ret_msg=error_msg,
+                    trace_id=trace_id,
+                )
+                return None
+            # For other errors, log as error and raise exception
             logger.error(
                 "fee_rate_api_error",
                 symbol=symbol,
@@ -375,10 +388,12 @@ class FeeRateRefreshTask:
                 await asyncio.sleep(60)
 
     async def _refresh_all_fee_rates(self, trace_id: Optional[str] = None) -> int:
-        """Refresh fee rates for all symbols present in instrument_info table."""
+        """Refresh fee rates for all active (Trading) symbols present in instrument_info table."""
         try:
             pool = await DatabaseConnection.get_pool()
-            query = "SELECT symbol FROM instrument_info"
+            # Only refresh fee rates for active trading instruments
+            # Status "Trading" means the contract is live and available for trading
+            query = "SELECT symbol FROM instrument_info WHERE status = 'Trading'"
             rows = await pool.fetch(query)
             symbols = {row["symbol"] for row in rows if row.get("symbol")}
         except Exception as e:

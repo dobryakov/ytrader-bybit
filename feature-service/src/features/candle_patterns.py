@@ -155,21 +155,69 @@ def compute_all_candle_patterns_3m(
     start_time = now - timedelta(minutes=4)  # Extra buffer to ensure we have 3 complete candles
     klines = rolling_windows.get_klines_for_window("1m", start_time, now)
     
-    if len(klines) < 3:
-        # Return all features as None if insufficient data
-        return _get_empty_features_dict_3m()
-    
     # Sort by timestamp to ensure correct order (0 = oldest, 2 = newest/current)
     klines_sorted = klines.sort_values("timestamp").reset_index(drop=True)
     
     # Get last 3 candles (most recent)
     candle_data = []
-    for i in range(-3, 0):  # Last 3 candles
-        idx = len(klines_sorted) + i
-        candle_comp = _get_candle_components(klines_sorted, idx)
-        if candle_comp is None:
+    
+    # If we have less than 3 candles, try to approximate missing candles
+    if len(klines_sorted) < 3:
+        # Get all available candles
+        for i in range(-len(klines_sorted), 0):
+            idx = len(klines_sorted) + i
+            candle_comp = _get_candle_components(klines_sorted, idx)
+            if candle_comp is None:
+                return _get_empty_features_dict_3m()
+            candle_data.append(candle_comp)
+        
+        # If we have at least 1 candle, we can approximate the missing ones
+        if len(candle_data) == 0:
             return _get_empty_features_dict_3m()
-        candle_data.append(candle_comp)
+        
+        # Use the last available candle as a reference for approximation
+        last_candle = candle_data[-1]  # Last complete candle
+        open_last, high_last, low_last, close_last, volume_last, body_size_last = last_candle
+        
+        # Approximate missing candles (we need exactly 3 total)
+        # Strategy: replicate the last available candle for missing ones
+        # This is reasonable for the start of a day when candles haven't formed yet
+        while len(candle_data) < 3:
+            # Approximate missing candle:
+            # - open = close of previous candle (standard assumption)
+            # - close = close of previous candle (conservative, assumes no change yet)
+            # - high/low = close of previous candle (conservative, assumes no movement yet)
+            # - volume = 0 (candle just started or hasn't formed yet)
+            # This is a reasonable approximation for the first seconds/minutes of a new candle
+            approximated_candle = (
+                close_last,  # open = previous close
+                close_last,  # high = previous close (conservative)
+                close_last,  # low = previous close (conservative)
+                close_last,  # close = previous close (assumes no change yet)
+                0.0,        # volume = 0 (candle just started)
+                0.0,        # body_size = 0 (no body yet)
+            )
+            candle_data.append(approximated_candle)
+        
+        # Log that we're using approximation (only in debug mode to avoid spam)
+        import structlog
+        logger = structlog.get_logger(__name__)
+        logger.debug(
+            "candle_approximation_used_3m",
+            symbol=rolling_windows.symbol if hasattr(rolling_windows, 'symbol') else 'unknown',
+            available_candles=len(klines_sorted),
+            required_candles=3,
+            approximated_candles=3 - len(klines_sorted),
+            approximated_close=close_last,
+        )
+    else:
+        # We have at least 3 candles, use them directly
+        for i in range(-3, 0):  # Last 3 candles
+            idx = len(klines_sorted) + i
+            candle_comp = _get_candle_components(klines_sorted, idx)
+            if candle_comp is None:
+                return _get_empty_features_dict_3m()
+            candle_data.append(candle_comp)
     
     # Extract candle components (0 = oldest, 1 = middle, 2 = newest)
     open_0, high_0, low_0, close_0, volume_0, body_size_0 = candle_data[0]
@@ -651,12 +699,11 @@ def compute_all_candle_patterns_15m(
     Returns:
         Dictionary of feature name -> feature value (0.0 or 1.0 for binary, float for ratios)
     """
-    # IMPORTANT: Use the actual last available timestamp from klines data.
-    # This ensures the window is built on real data, not hypothetical current time.
-    # The window will automatically shift back if data is delayed.
-    now = datetime.now(timezone.utc)
+    # Use rolling_windows.last_update as the reference timestamp
+    # This is the timestamp for which we're computing features
+    now = _ensure_datetime(rolling_windows.last_update)
     
-    # Get the most recent timestamp from available klines
+    # Get the most recent timestamp from available klines (for data freshness check)
     last_available_timestamp = rolling_windows.get_last_available_timestamp("1m")
     
     if last_available_timestamp is None:
@@ -668,8 +715,9 @@ def compute_all_candle_patterns_15m(
         )
         return _get_empty_features_dict()
     
-    # Use the last available timestamp as end_time for the window
-    end_time = last_available_timestamp
+    # Use the target timestamp (now) as end_time for the window
+    # This ensures we're computing features for the correct time point
+    end_time = now
     # Get last 15 minutes of kline data (need at least 3 candles of 5 minutes each)
     # Since we only have 1m candles, we'll use 1m candles and aggregate them
     start_time = end_time - timedelta(minutes=16)  # Extra buffer to ensure we have 3 complete candles
@@ -688,14 +736,28 @@ def compute_all_candle_patterns_15m(
     # Try to get 5m candles first, but fall back to 1m if not available
     klines = rolling_windows.get_klines_for_window("5m", start_time, end_time)
     
+    # Log 5m klines availability for debugging (before fallback check)
+    import structlog
+    logger = structlog.get_logger(__name__)
+    if len(klines) < 3:
+        logger.debug(
+            "compute_all_candle_patterns_15m_5m_klines_check",
+            klines_5m_count=len(klines),
+            start_time=start_time.isoformat(),
+            end_time=end_time.isoformat(),
+            target_timestamp=now.isoformat(),
+            required_count=3,
+        )
+    
     # If no 5m candles, try to use 1m candles and aggregate them
     if len(klines) < 3:
-        import structlog
-        logger = structlog.get_logger(__name__)
         logger.warning(
             "compute_all_candle_patterns_15m_no_5m_klines",
             klines_5m_count=len(klines),
             falling_back_to_1m=True,
+            target_timestamp=now.isoformat(),
+            start_time=start_time.isoformat(),
+            end_time=end_time.isoformat(),
         )
         # Fall back to 1m candles - we need at least 15 candles (15 minutes)
         klines_1m = rolling_windows.get_klines_for_window("1m", start_time, end_time)
@@ -709,29 +771,80 @@ def compute_all_candle_patterns_15m(
                 missing_columns=missing_cols,
                 available_columns=list(klines_1m.columns),
                 klines_1m_count=len(klines_1m),
-            )
-            return _get_empty_features_dict()
-        
-        if len(klines_1m) < 15:
-            logger.warning(
-                "compute_all_candle_patterns_15m_insufficient_1m_klines",
-                klines_1m_count=len(klines_1m),
-                required_count=15,
-                available_columns=list(klines_1m.columns),
+                target_timestamp=now.isoformat(),
+                start_time=start_time.isoformat(),
+                end_time=end_time.isoformat(),
             )
             return _get_empty_features_dict()
         
         # Aggregate 1m candles into 5m candles
+        # Even if we have less than 15 minutes, we can still aggregate what we have
+        # and approximate missing 5-minute candles later
         klines_sorted = klines_1m.sort_values("timestamp").reset_index(drop=True)
         
-        # Group by 5-minute intervals
-        klines_sorted["time_bucket"] = (klines_sorted["timestamp"] - klines_sorted["timestamp"].min()).dt.total_seconds() // 300  # 5 minutes = 300 seconds
+        if len(klines_sorted) < 5:
+            # Need at least 5 minutes to create 1 five-minute candle
+            first_ts = klines_sorted.iloc[0]["timestamp"].isoformat() if len(klines_sorted) > 0 else None
+            last_ts = klines_sorted.iloc[-1]["timestamp"].isoformat() if len(klines_sorted) > 0 else None
+            
+            # Calculate time span to understand the gap
+            time_span_minutes = 0
+            if first_ts and last_ts:
+                first_dt = pd.to_datetime(first_ts)
+                last_dt = pd.to_datetime(last_ts)
+                time_span_minutes = (last_dt - first_dt).total_seconds() / 60.0
+            
+            logger.warning(
+                "compute_all_candle_patterns_15m_insufficient_1m_klines",
+                klines_1m_count=len(klines_sorted),
+                required_count=5,
+                available_columns=list(klines_sorted.columns),
+                target_timestamp=now.isoformat(),
+                start_time=start_time.isoformat(),
+                end_time=end_time.isoformat(),
+                first_kline_timestamp=first_ts,
+                last_kline_timestamp=last_ts,
+                time_span_minutes=time_span_minutes,
+                time_span_should_be_minutes=15.0,
+                gap_minutes=15.0 - time_span_minutes if time_span_minutes < 15.0 else 0.0,
+            )
+            return _get_empty_features_dict()
+        
+        if len(klines_sorted) < 15:
+            # We have some data but not enough for 3 five-minute candles
+            # We'll aggregate what we have and approximate the rest
+            logger.debug(
+                "compute_all_candle_patterns_15m_approximating_missing_minutes",
+                available_minutes=len(klines_sorted),
+                required_minutes=15,
+            )
+        
+        # Group by 5-minute intervals using standard time alignment
+        # Instead of relative grouping from min timestamp, use standard 5-minute boundaries
+        # This ensures consistent grouping regardless of where data starts
+        # Round down to nearest 5-minute boundary: floor(timestamp / 5 minutes) * 5 minutes
+        klines_sorted = klines_sorted.copy()
+        
+        # Convert timestamp to minutes since epoch, then floor to 5-minute boundaries
+        if not pd.api.types.is_datetime64_any_dtype(klines_sorted["timestamp"]):
+            klines_sorted["timestamp"] = pd.to_datetime(klines_sorted["timestamp"], utc=True)
+        
+        # Ensure timezone-aware
+        if klines_sorted["timestamp"].dt.tz is None:
+            klines_sorted["timestamp"] = klines_sorted["timestamp"].dt.tz_localize(timezone.utc)
+        
+        # Calculate 5-minute bucket: round down each timestamp to nearest 5-minute boundary
+        # Method: convert to seconds since epoch, floor divide by 300 (5 minutes in seconds), multiply back
+        epoch_start = pd.Timestamp("1970-01-01", tz=timezone.utc)
+        seconds_since_epoch = (klines_sorted["timestamp"] - epoch_start).dt.total_seconds()
+        bucket_number = (seconds_since_epoch // 300).astype(int)  # Floor division by 5 minutes
+        klines_sorted["time_bucket"] = bucket_number
         
         # Aggregate with explicit column selection - ensure all columns are present
         # Use a more robust aggregation that preserves all columns
         grouped = klines_sorted.groupby("time_bucket")
         klines_5m = pd.DataFrame({
-            "timestamp": grouped["timestamp"].first(),
+            "timestamp": grouped["timestamp"].first(),  # Start of 5-minute interval
             "open": grouped["open"].first(),
             "high": grouped["high"].max(),
             "low": grouped["low"].min(),
@@ -739,24 +852,94 @@ def compute_all_candle_patterns_15m(
             "volume": grouped["volume"].sum(),
         }).reset_index(drop=True)
         
+        # Sort by timestamp to ensure correct order
+        klines_5m = klines_5m.sort_values("timestamp").reset_index(drop=True)
+        
         klines = klines_5m
-    
-    if len(klines) < 3:
-        # Return all features as None if insufficient data
-        return _get_empty_features_dict()
     
     # Sort by timestamp to ensure correct order (0 = oldest, 2 = newest/current)
     klines_sorted = klines.sort_values("timestamp").reset_index(drop=True)
     
     # Get last 3 candles (most recent)
     candle_data = []
-    for i in range(-3, 0):  # Last 3 candles
-        idx = len(klines_sorted) + i
-        candle_comp = _get_candle_components(klines_sorted, idx)
-        if candle_comp is None:
-            # Return all features as None if insufficient data
+    
+    # If we have less than 3 candles, try to approximate missing candles
+    if len(klines_sorted) < 3:
+        # Get all available candles
+        for i in range(-len(klines_sorted), 0):
+            idx = len(klines_sorted) + i
+            candle_comp = _get_candle_components(klines_sorted, idx)
+            if candle_comp is None:
+                logger.warning(
+                    "compute_all_candle_patterns_15m_failed_to_get_candle_components",
+                    index=idx,
+                    klines_count=len(klines_sorted),
+                    target_timestamp=now.isoformat(),
+                    first_kline_timestamp=klines_sorted.iloc[0]["timestamp"].isoformat() if len(klines_sorted) > 0 else None,
+                    last_kline_timestamp=klines_sorted.iloc[-1]["timestamp"].isoformat() if len(klines_sorted) > 0 else None,
+                )
+                return _get_empty_features_dict()
+            candle_data.append(candle_comp)
+        
+        # If we have at least 1 candle, we can approximate the missing ones
+        if len(candle_data) == 0:
+            logger.warning(
+                "compute_all_candle_patterns_15m_no_candle_data_after_extraction",
+                klines_count=len(klines_sorted),
+                target_timestamp=now.isoformat(),
+            )
             return _get_empty_features_dict()
-        candle_data.append(candle_comp)
+        
+        # Use the last available candle as a reference for approximation
+        last_candle = candle_data[-1]  # Last complete candle
+        open_last, high_last, low_last, close_last, volume_last, body_size_last = last_candle
+        
+        # Approximate missing candles (we need exactly 3 total)
+        # Strategy: replicate the last available candle for missing ones
+        # This is reasonable for the start of a day when candles haven't formed yet
+        while len(candle_data) < 3:
+            # Approximate missing candle:
+            # - open = close of previous candle (standard assumption)
+            # - close = close of previous candle (conservative, assumes no change yet)
+            # - high/low = close of previous candle (conservative, assumes no movement yet)
+            # - volume = 0 (candle just started or hasn't formed yet)
+            # This is a reasonable approximation for the first seconds/minutes of a new candle
+            approximated_candle = (
+                close_last,  # open = previous close
+                close_last,  # high = previous close (conservative)
+                close_last,  # low = previous close (conservative)
+                close_last,  # close = previous close (assumes no change yet)
+                0.0,        # volume = 0 (candle just started)
+                0.0,        # body_size = 0 (no body yet)
+            )
+            candle_data.append(approximated_candle)
+        
+        # Log that we're using approximation (only in debug mode to avoid spam)
+        import structlog
+        logger = structlog.get_logger(__name__)
+        logger.debug(
+            "candle_approximation_used_15m",
+            symbol=rolling_windows.symbol if hasattr(rolling_windows, 'symbol') else 'unknown',
+            available_candles=len(klines_sorted),
+            required_candles=3,
+            approximated_candles=3 - len(klines_sorted),
+            approximated_close=close_last,
+        )
+    else:
+        # We have at least 3 candles, use them directly
+        for i in range(-3, 0):  # Last 3 candles
+            idx = len(klines_sorted) + i
+            candle_comp = _get_candle_components(klines_sorted, idx)
+            if candle_comp is None:
+                # Return all features as None if insufficient data
+                logger.warning(
+                    "compute_all_candle_patterns_15m_failed_to_get_candle_components_3plus",
+                    index=idx,
+                    klines_count=len(klines_sorted),
+                    target_timestamp=now.isoformat(),
+                )
+                return _get_empty_features_dict()
+            candle_data.append(candle_comp)
     
     # Extract candle components
     open_0, high_0, low_0, close_0, volume_0, body_size_0 = candle_data[0]

@@ -219,8 +219,19 @@ class IntelligentSignalGenerator:
                 trace_id=trace_id,
             )
             
+            # Get target config from model's training_config to determine task type
+            target_config = None
+            if active_model and active_model.get("training_config"):
+                training_config = active_model["training_config"]
+                if isinstance(training_config, str):
+                    training_config = json.loads(training_config)
+                target_registry_version = training_config.get("target_registry_version")
+                if target_registry_version:
+                    target_config = await target_registry_client.get_target_config(target_registry_version)
+            
             # Determine signal type from prediction (before threshold check to have signal_type for rejected signals)
-            signal_type = self._determine_signal_type(prediction_result)
+            # Pass target_config to reliably determine if model is classification or regression
+            signal_type = self._determine_signal_type(prediction_result, target_config=target_config)
             
             # Prepare raw prediction data for metadata (for all signals - valid and rejected)
             raw_prediction_metadata = {
@@ -586,7 +597,11 @@ class IntelligentSignalGenerator:
             "order_status": existing_order.status,
         }
 
-    def _determine_signal_type(self, prediction_result: Dict[str, Any]) -> Optional[str]:
+    def _determine_signal_type(
+        self, 
+        prediction_result: Dict[str, Any],
+        target_config: Optional[Dict[str, Any]] = None,
+    ) -> Optional[str]:
         """
         Determine signal type from model prediction.
 
@@ -603,16 +618,36 @@ class IntelligentSignalGenerator:
             prediction_result: Prediction result from model inference
                 - For classification: contains "buy_probability", "sell_probability"
                 - For regression: contains "prediction" (float, predicted return value)
+            target_config: Optional target config from model's training_config.
+                If provided, uses target_config["type"] to reliably determine task type.
+                If not provided, falls back to heuristic (prediction type).
 
         Returns:
             'buy', 'sell', or None (for HOLD)
         """
         from ..config.settings import settings
         
-        # Check if this is a regression model (prediction is a float, not int)
-        prediction = prediction_result.get("prediction")
+        # Determine task type: prefer target_config if available, otherwise use heuristic
+        is_regression = False
+        if target_config and isinstance(target_config, dict):
+            target_type = target_config.get("type", "").lower()
+            is_regression = target_type == "regression"
+            logger.debug(
+                "Determined task type from target_config",
+                target_type=target_type,
+                is_regression=is_regression,
+            )
+        else:
+            # Fallback heuristic: check if prediction is a float (regression) or int (classification)
+            prediction = prediction_result.get("prediction")
+            is_regression = prediction is not None and isinstance(prediction, float)
+            logger.debug(
+                "Determined task type from prediction type (heuristic)",
+                prediction_type=type(prediction).__name__,
+                is_regression=is_regression,
+            )
         
-        if prediction is not None and isinstance(prediction, float):
+        if is_regression:
             # Regression model: convert predicted return to signal
             predicted_return = float(prediction)
             threshold = settings.model_regression_threshold
@@ -1225,8 +1260,18 @@ class IntelligentSignalGenerator:
         Returns:
             TradingSignal with is_rejected=True
         """
+        # Get target config for signal type determination
+        target_config = None
+        if active_model and active_model.get("training_config"):
+            training_config = active_model["training_config"]
+            if isinstance(training_config, str):
+                training_config = json.loads(training_config)
+            target_registry_version = training_config.get("target_registry_version")
+            if target_registry_version:
+                target_config = await target_registry_client.get_target_config(target_registry_version)
+        
         # Determine signal type from prediction (even if rejected)
-        signal_type = self._determine_signal_type(prediction_result)
+        signal_type = self._determine_signal_type(prediction_result, target_config=target_config)
         # If signal_type is None (HOLD), use 'buy' as default for rejected signal structure
         if signal_type is None:
             signal_type = "buy"  # Default, won't be used for trading

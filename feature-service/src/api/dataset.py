@@ -74,6 +74,15 @@ class DatasetBuildRequest(BaseModel):
     strategy_id: Optional[str] = Field(default=None, description="Trading strategy identifier (optional)")
 
 
+class ComputeFeaturesRequest(BaseModel):
+    """Request model for computing features and target at a specific timestamp."""
+    symbol: str
+    timestamp: datetime = Field(description="Timestamp to compute features and target for")
+    target_registry_version: str = Field(description="Target Registry version")
+    feature_registry_version: str
+    strategy_id: Optional[str] = Field(default=None, description="Trading strategy identifier (optional)")
+
+
 class DatasetResplitRequest(BaseModel):
     """Request model for dataset resplitting."""
     train_period_start: Optional[datetime] = None
@@ -151,6 +160,390 @@ async def build_dataset(
     except Exception as e:
         logger.error("dataset_build_error", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.post("/compute-features", status_code=200)
+async def compute_features_at_timestamp(
+    request: ComputeFeaturesRequest,
+    api_key: str = Depends(verify_api_key),
+) -> dict:
+    """
+    Compute features and target for a specific timestamp.
+    
+    Uses the same parameters as dataset build, but computes features and target
+    for a single timestamp instead of building a full dataset.
+    
+    Returns:
+        Dictionary with features and target values for the specified timestamp
+    """
+    if _dataset_builder is None:
+        raise HTTPException(status_code=503, detail="Dataset builder not initialized")
+    
+    if _target_registry_version_manager is None:
+        raise HTTPException(status_code=503, detail="Target registry version manager not initialized")
+    
+    try:
+        from datetime import timezone, timedelta
+        from src.services.optimized_dataset.streaming_builder import StreamingDatasetBuilder
+        from src.services.optimized_dataset.requirements_analyzer import FeatureRequirementsAnalyzer
+        from src.services.optimized_dataset.rolling_window import OptimizedRollingWindow
+        from src.services.optimized_dataset.hybrid_feature_computer import HybridFeatureComputer
+        from src.services.optimized_dataset.incremental_orderbook import IncrementalOrderbookManager
+        from src.services.target_computation import TargetComputationEngine, TargetComputationPresets
+        from src.models.orderbook_state import OrderbookState
+        import pandas as pd
+        
+        logger.info(
+            "compute_features_request_received",
+            symbol=request.symbol,
+            timestamp=request.timestamp.isoformat(),
+            feature_registry_version=request.feature_registry_version,
+            target_registry_version=request.target_registry_version,
+            strategy_id=request.strategy_id,
+        )
+        
+        # Ensure timestamp is timezone-aware UTC
+        timestamp = request.timestamp
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        else:
+            timestamp = timestamp.astimezone(timezone.utc)
+        
+        # Load Feature Registry
+        feature_registry_loader = _dataset_builder._streaming_builder.feature_registry_loader
+        if feature_registry_loader is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Feature Registry loader not initialized"
+            )
+        
+        # Load Feature Registry config for the specified version
+        # Try to load from version manager if available
+        feature_registry = None
+        if feature_registry_loader._version_manager:
+            try:
+                # Get version record from DB
+                version_record = await _metadata_storage.get_feature_registry_version(
+                    request.feature_registry_version
+                )
+                if version_record:
+                    # Load config from file
+                    from pathlib import Path
+                    file_path = Path(version_record["file_path"])
+                    if file_path.exists():
+                        import yaml
+                        with open(file_path, "r") as f:
+                            config_data = yaml.safe_load(f)
+                        if config_data:
+                            from src.models.feature_registry import FeatureRegistry
+                            feature_registry = FeatureRegistry(**config_data)
+            except Exception as e:
+                logger.warning(
+                    "failed_to_load_feature_registry_from_db",
+                    version=request.feature_registry_version,
+                    error=str(e),
+                )
+        
+        # Fallback: try to load from file directly
+        if feature_registry is None:
+            try:
+                from src.config import config as app_config
+                from pathlib import Path
+                import yaml
+                from src.models.feature_registry import FeatureRegistry
+                
+                versions_dir = Path(app_config.feature_registry_versions_dir)
+                file_path = versions_dir / f"feature_registry_v{request.feature_registry_version}.yaml"
+                
+                if file_path.exists():
+                    with open(file_path, "r") as f:
+                        config_data = yaml.safe_load(f)
+                    if config_data:
+                        feature_registry = FeatureRegistry(**config_data)
+            except Exception as e:
+                logger.warning(
+                    "failed_to_load_feature_registry_from_file",
+                    version=request.feature_registry_version,
+                    error=str(e),
+                )
+        
+        if feature_registry is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Feature Registry version {request.feature_registry_version} not found"
+            )
+        
+        # Load Target Registry
+        target_config_dict = await _target_registry_version_manager.get_version(request.target_registry_version)
+        if target_config_dict is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Target Registry version {request.target_registry_version} not found"
+            )
+        
+        # Convert to TargetConfig
+        from src.models.dataset import TargetConfig
+        target_config = TargetConfig(**target_config_dict)
+        
+        # Analyze requirements
+        requirements_analyzer = FeatureRequirementsAnalyzer()
+        requirements = requirements_analyzer.analyze(feature_registry)
+        
+        # Calculate target horizon
+        target_horizon_seconds = target_config.horizon if target_config else 0
+        target_horizon_minutes = (target_horizon_seconds + 59) // 60  # Round up to minutes
+        
+        # Initialize rolling window
+        rolling_window = OptimizedRollingWindow(
+            max_lookback_minutes=requirements.max_lookback_minutes,
+            symbol=request.symbol,
+        )
+        
+        # Load data for the timestamp (need lookback window)
+        start_date = timestamp.date() - timedelta(days=1)  # Load previous day for lookback
+        end_date = timestamp.date() + timedelta(days=1)  # Load next day for target
+        
+        # Load klines
+        klines_df = await _dataset_builder._parquet_storage.read_klines_range(
+            request.symbol, start_date, end_date
+        )
+        
+        if klines_df.empty:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No klines data found for {request.symbol} around {timestamp.isoformat()}"
+            )
+        
+        # Filter klines to timestamp range (lookback + target horizon)
+        lookback_start = timestamp - timedelta(minutes=requirements.max_lookback_minutes + 5)
+        target_end = timestamp + timedelta(minutes=target_horizon_minutes + 5)
+        
+        klines_filtered = klines_df[
+            (klines_df["timestamp"] >= lookback_start) &
+            (klines_df["timestamp"] <= target_end)
+        ].copy()
+        
+        if klines_filtered.empty:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No klines data in required range for {timestamp.isoformat()}"
+            )
+        
+        # Load trades if needed
+        trades_df = pd.DataFrame()
+        if requirements.needs_trades:
+            # Load trades for the day
+            date_str = timestamp.date().strftime("%Y-%m-%d")
+            try:
+                trades_df = await _dataset_builder._parquet_storage.read_trades(
+                    request.symbol, date_str
+                )
+                if not trades_df.empty:
+                    trades_filtered = trades_df[
+                        (trades_df["timestamp"] >= lookback_start) &
+                        (trades_df["timestamp"] <= timestamp)
+                    ].copy()
+                    trades_df = trades_filtered
+            except FileNotFoundError:
+                logger.warning("no_trades_data", symbol=request.symbol, date=date_str)
+        
+        # Add data to rolling window
+        rolling_window.add_data(
+            timestamp=timestamp,
+            klines=klines_filtered,
+            trades=trades_df if not trades_df.empty else None,
+            skip_trim=True,  # Don't trim, we need all data
+        )
+        
+        # Load orderbook if needed
+        orderbook_states = {}
+        if requirements.needs_orderbook:
+            # Load orderbook snapshot for the day
+            date_str = timestamp.date().strftime("%Y-%m-%d")
+            try:
+                snapshots = await _dataset_builder._parquet_storage.read_orderbook_snapshots(
+                    request.symbol, date_str
+                )
+                if not snapshots.empty:
+                    # Find closest snapshot before timestamp
+                    snapshots_before = snapshots[snapshots["timestamp"] <= timestamp]
+                    if not snapshots_before.empty:
+                        closest_snapshot_row = snapshots_before.iloc[-1]
+                        # Convert DataFrame row to dictionary
+                        snapshot_dict = closest_snapshot_row.to_dict()
+                        # Ensure required fields
+                        if "symbol" not in snapshot_dict:
+                            snapshot_dict["symbol"] = request.symbol
+                        if "sequence" not in snapshot_dict:
+                            snapshot_dict["sequence"] = 0
+                        # Convert timestamp if needed
+                        if isinstance(snapshot_dict.get("timestamp"), pd.Timestamp):
+                            snapshot_dict["timestamp"] = snapshot_dict["timestamp"].to_pydatetime()
+                        # Ensure bids and asks are lists
+                        if "bids" not in snapshot_dict or not isinstance(snapshot_dict["bids"], list):
+                            snapshot_dict["bids"] = []
+                        if "asks" not in snapshot_dict or not isinstance(snapshot_dict["asks"], list):
+                            snapshot_dict["asks"] = []
+                        orderbook_state = OrderbookState.from_snapshot(snapshot_dict)
+                        orderbook_states[timestamp] = orderbook_state
+            except FileNotFoundError:
+                logger.warning("no_orderbook_data", symbol=request.symbol, date=date_str)
+        
+        # Initialize feature computer
+        feature_computer = HybridFeatureComputer(
+            requirements=requirements,
+            feature_registry_version=request.feature_registry_version,
+            feature_registry=feature_registry,
+            target_horizon_minutes=target_horizon_minutes,
+        )
+        
+        # Compute features
+        timestamps_series = pd.Series([timestamp])
+        features_df = feature_computer.compute_features_batch(
+            timestamps=timestamps_series,
+            rolling_window=rolling_window,
+            klines_df=klines_filtered,
+            trades_df=trades_df,
+            orderbook_states=orderbook_states if orderbook_states else None,
+        )
+        
+        if features_df.empty:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to compute features"
+            )
+        
+        # Compute target
+        # Merge features with prices for target computation
+        price_for_merge = klines_filtered[["timestamp", "close"]].rename(
+            columns={"close": "price"}
+        )
+        merged = features_df.merge(
+            price_for_merge, on="timestamp", how="left"
+        )
+        
+        logger.info(
+            "merged_data_for_target",
+            symbol=request.symbol,
+            timestamp=timestamp.isoformat(),
+            merged_rows=len(merged),
+            merged_columns=list(merged.columns),
+            has_price_column="price" in merged.columns,
+            has_timestamp_column="timestamp" in merged.columns,
+            price_values_count=merged["price"].notna().sum() if "price" in merged.columns else 0,
+        )
+        
+        # Get computation config
+        computation_config = TargetComputationPresets.get_computation_config(
+            target_config.computation
+        )
+        
+        # Compute target
+        logger.info(
+            "computing_target",
+            symbol=request.symbol,
+            timestamp=timestamp.isoformat(),
+            target_horizon_seconds=target_config.horizon,
+            target_type=target_config.type,
+            klines_count=len(klines_filtered),
+            klines_timestamp_range=(
+                klines_filtered["timestamp"].min().isoformat() if not klines_filtered.empty else None,
+                klines_filtered["timestamp"].max().isoformat() if not klines_filtered.empty else None,
+            ),
+        )
+        
+        if target_config.type == "regression":
+            targets_df = TargetComputationEngine.compute_target(
+                merged, target_config.horizon, computation_config, klines_filtered
+            )
+        elif target_config.type == "classification":
+            targets_df = TargetComputationEngine.compute_target(
+                merged, target_config.horizon, computation_config, klines_filtered
+            )
+            # Apply classification mapping if needed
+            if not targets_df.empty and "target" in targets_df.columns:
+                # Classification mapping logic would go here
+                pass
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported target type: {target_config.type}"
+            )
+        
+        logger.info(
+            "target_computation_result",
+            symbol=request.symbol,
+            timestamp=timestamp.isoformat(),
+            targets_df_empty=targets_df.empty,
+            targets_df_columns=list(targets_df.columns) if not targets_df.empty else [],
+            has_target_column="target" in targets_df.columns if not targets_df.empty else False,
+        )
+        
+        # Combine features and target
+        result = features_df.copy()
+        if not targets_df.empty and "target" in targets_df.columns:
+            result = result.merge(
+                targets_df[["timestamp", "target"]],
+                on="timestamp",
+                how="left"
+            )
+            logger.info(
+                "target_merged",
+                symbol=request.symbol,
+                timestamp=timestamp.isoformat(),
+                merged_target_value=result.iloc[0]["target"] if len(result) > 0 and "target" in result.columns else None,
+            )
+        
+        # Convert to dict for response
+        if len(result) == 0:
+            raise HTTPException(
+                status_code=500,
+                detail="No result computed"
+            )
+        
+        row = result.iloc[0]
+        response_data = {
+            "timestamp": row["timestamp"].isoformat() if pd.notna(row["timestamp"]) else None,
+            "symbol": request.symbol,
+            "features": {},
+            "target": None,
+        }
+        
+        # Extract features (exclude timestamp and target)
+        for col in result.columns:
+            if col not in ["timestamp", "target"]:
+                value = row[col]
+                # Convert numpy types to Python types
+                if pd.isna(value):
+                    response_data["features"][col] = None
+                elif isinstance(value, (pd.Timestamp, datetime)):
+                    response_data["features"][col] = value.isoformat()
+                else:
+                    response_data["features"][col] = float(value) if isinstance(value, (int, float)) else str(value)
+        
+        # Extract target
+        if "target" in result.columns:
+            target_value = row["target"]
+            if pd.notna(target_value):
+                response_data["target"] = float(target_value) if isinstance(target_value, (int, float)) else str(target_value)
+        
+        logger.info(
+            "compute_features_completed",
+            symbol=request.symbol,
+            timestamp=timestamp.isoformat(),
+            features_count=len(response_data["features"]),
+            has_target=response_data["target"] is not None,
+        )
+        
+        return response_data
+    
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error("compute_features_error", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
 @router.get("/list")

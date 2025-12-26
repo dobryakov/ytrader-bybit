@@ -192,6 +192,20 @@ class OptimizedRollingWindow:
         
         cutoff_time = end_timestamp - self.max_lookback
         
+        # Log diagnostic information for debugging
+        import structlog
+        logger = structlog.get_logger(__name__)
+        logger.debug(
+            "optimized_rolling_window_get_window",
+            end_timestamp=end_timestamp.isoformat(),
+            cutoff_time=cutoff_time.isoformat(),
+            max_lookback_minutes=self.max_lookback.total_seconds() / 60,
+            klines_buffer_size=len(self.klines_buffer),
+            trades_buffer_size=len(self.trades_buffer),
+            buffer_start=self._buffer_start.isoformat() if self._buffer_start else None,
+            buffer_last=self._last_timestamp.isoformat() if self._last_timestamp else None,
+        )
+        
         # Filter trades within window
         trades_window = pd.DataFrame(columns=["timestamp", "price", "volume", "side"])
         if not self.trades_buffer.empty and "timestamp" in self.trades_buffer.columns:
@@ -199,23 +213,63 @@ class OptimizedRollingWindow:
                 (self.trades_buffer["timestamp"] >= cutoff_time) &
                 (self.trades_buffer["timestamp"] <= end_timestamp)
             ].copy()
+            logger.debug(
+                "optimized_rolling_window_trades_filtered",
+                end_timestamp=end_timestamp.isoformat(),
+                cutoff_time=cutoff_time.isoformat(),
+                trades_before_filter=len(self.trades_buffer),
+                trades_after_filter=len(trades_window),
+            )
         
         # Filter klines within window
         klines_window = pd.DataFrame(
             columns=["timestamp", "open", "high", "low", "close", "volume"]
         )
         if not self.klines_buffer.empty and "timestamp" in self.klines_buffer.columns:
+            klines_before_count = len(self.klines_buffer)
             klines_window = self.klines_buffer[
                 (self.klines_buffer["timestamp"] >= cutoff_time) &
                 (self.klines_buffer["timestamp"] <= end_timestamp)
             ].copy()
+            klines_after_count = len(klines_window)
+            
+            # Log if we have significantly fewer klines than expected
+            if klines_after_count < 15 and klines_before_count > 0:
+                first_kline_ts = self.klines_buffer.iloc[0]["timestamp"].isoformat() if len(self.klines_buffer) > 0 else None
+                last_kline_ts = self.klines_buffer.iloc[-1]["timestamp"].isoformat() if len(self.klines_buffer) > 0 else None
+                
+                # Calculate time span in window
+                window_time_span_minutes = 0.0
+                if not klines_window.empty and "timestamp" in klines_window.columns:
+                    window_first = klines_window["timestamp"].min()
+                    window_last = klines_window["timestamp"].max()
+                    if pd.notna(window_first) and pd.notna(window_last):
+                        window_time_span_minutes = (window_last - window_first).total_seconds() / 60.0
+                
+                # Calculate expected time span (from cutoff to end)
+                expected_time_span_minutes = (end_timestamp - cutoff_time).total_seconds() / 60.0
+                
+                logger.warning(
+                    "optimized_rolling_window_insufficient_klines",
+                    end_timestamp=end_timestamp.isoformat(),
+                    cutoff_time=cutoff_time.isoformat(),
+                    klines_before_filter=klines_before_count,
+                    klines_after_filter=klines_after_count,
+                    buffer_first_timestamp=first_kline_ts,
+                    buffer_last_timestamp=last_kline_ts,
+                    expected_min_klines=15,
+                    window_time_span_minutes=window_time_span_minutes,
+                    expected_time_span_minutes=expected_time_span_minutes,
+                    gap_minutes=expected_time_span_minutes - window_time_span_minutes if window_time_span_minutes < expected_time_span_minutes else 0.0,
+                )
         
         # Create window structure for RollingWindows compatibility
         windows = {
             "1s": pd.DataFrame(columns=["timestamp", "price", "volume", "side"]),
             "3s": pd.DataFrame(columns=["timestamp", "price", "volume", "side"]),
             "15s": pd.DataFrame(columns=["timestamp", "price", "volume", "side"]),
-            "1m": pd.DataFrame(columns=["timestamp", "price", "volume", "side"]),
+            "1m": pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"]),
+            "5m": pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"]),
         }
         
         # Populate windows from trades
@@ -232,6 +286,70 @@ class OptimizedRollingWindow:
         # Populate 1m window with klines (if available)
         if not klines_window.empty:
             windows["1m"] = klines_window
+            
+            # Also create 5m window by aggregating 1m klines
+            # This is needed for compute_all_candle_patterns_15m
+            klines_sorted = klines_window.sort_values("timestamp").reset_index(drop=True)
+            
+            logger.debug(
+                "optimized_rolling_window_creating_5m_window",
+                end_timestamp=end_timestamp.isoformat(),
+                klines_window_size=len(klines_window),
+                klines_sorted_size=len(klines_sorted),
+                first_kline_ts=klines_sorted.iloc[0]["timestamp"].isoformat() if len(klines_sorted) > 0 else None,
+                last_kline_ts=klines_sorted.iloc[-1]["timestamp"].isoformat() if len(klines_sorted) > 0 else None,
+            )
+            
+            if len(klines_sorted) >= 5:
+                # Group by 5-minute intervals using standard time alignment
+                # Use standard 5-minute boundaries instead of relative grouping
+                # This ensures consistent grouping regardless of where data starts
+                klines_sorted = klines_sorted.copy()
+                
+                # Ensure timezone-aware timestamps
+                if not pd.api.types.is_datetime64_any_dtype(klines_sorted["timestamp"]):
+                    klines_sorted["timestamp"] = pd.to_datetime(klines_sorted["timestamp"], utc=True)
+                
+                if klines_sorted["timestamp"].dt.tz is None:
+                    klines_sorted["timestamp"] = klines_sorted["timestamp"].dt.tz_localize(timezone.utc)
+                
+                # Calculate 5-minute bucket: round down each timestamp to nearest 5-minute boundary
+                # Method: convert to seconds since epoch, floor divide by 300 (5 minutes in seconds)
+                from pandas import Timestamp
+                epoch_start = Timestamp("1970-01-01", tz=timezone.utc)
+                seconds_since_epoch = (klines_sorted["timestamp"] - epoch_start).dt.total_seconds()
+                bucket_number = (seconds_since_epoch // 300).astype(int)  # Floor division by 5 minutes
+                klines_sorted["time_bucket"] = bucket_number
+                
+                grouped = klines_sorted.groupby("time_bucket")
+                klines_5m = pd.DataFrame({
+                    "timestamp": grouped["timestamp"].first(),
+                    "open": grouped["open"].first(),
+                    "high": grouped["high"].max(),
+                    "low": grouped["low"].min(),
+                    "close": grouped["close"].last(),
+                    "volume": grouped["volume"].sum(),
+                }).reset_index(drop=True)
+                
+                # Sort by timestamp to ensure correct order
+                klines_5m = klines_5m.sort_values("timestamp").reset_index(drop=True)
+                
+                windows["5m"] = klines_5m
+                
+                logger.debug(
+                    "optimized_rolling_window_5m_window_created",
+                    end_timestamp=end_timestamp.isoformat(),
+                    klines_5m_count=len(klines_5m),
+                    first_5m_ts=klines_5m.iloc[0]["timestamp"].isoformat() if len(klines_5m) > 0 else None,
+                    last_5m_ts=klines_5m.iloc[-1]["timestamp"].isoformat() if len(klines_5m) > 0 else None,
+                )
+            else:
+                logger.warning(
+                    "optimized_rolling_window_insufficient_klines_for_5m",
+                    end_timestamp=end_timestamp.isoformat(),
+                    klines_sorted_size=len(klines_sorted),
+                    required_minimum=5,
+                )
         
         return RollingWindows(
             symbol=self.symbol,

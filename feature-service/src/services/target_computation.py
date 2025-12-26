@@ -328,7 +328,8 @@ class TargetComputationEngine:
                 q_low = config.get("clip_q_low")
                 q_high = config.get("clip_q_high")
                 # Require both quantiles and sane ordering
-                if q_low is not None and q_high is not None and 0.0 <= q_low < q_high <= 1.0:
+                # Also need at least 2 values to compute meaningful quantiles
+                if q_low is not None and q_high is not None and 0.0 <= q_low < q_high <= 1.0 and len(s) > 1:
                     try:
                         lo = float(s.quantile(q_low))
                         hi = float(s.quantile(q_high))
@@ -336,6 +337,13 @@ class TargetComputationEngine:
                     except Exception:
                         # On any numeric issue just fall back to un-clipped target
                         pass
+                elif len(s) <= 1:
+                    # Not enough data for quantile clipping, skip it
+                    logger.debug(
+                        "_postprocess_target_quantile_skipped",
+                        data_length=len(s),
+                        message="Not enough data for quantile clipping, returning un-clipped target",
+                    )
             elif clip_method == "fixed":
                 max_abs = config.get("clip_abs_max")
                 if max_abs is not None:
@@ -355,19 +363,39 @@ class TargetComputationEngine:
             if normalize == "sharpe":
                 # Rolling std of the series itself (like returns/std)
                 window = int(config.get("sharpe_window", 20))
-                if window > 1:
+                if window > 1 and len(s) >= window:
+                    # Only apply sharpe normalization if we have enough data
                     vol = s.rolling(window=window, min_periods=1).std()
                     # Avoid division by zero
                     vol = vol.replace(0.0, np.nan)
                     s = s / vol
+                elif len(s) < window:
+                    # If we don't have enough data for rolling window, skip normalization
+                    logger.debug(
+                        "_postprocess_target_sharpe_skipped",
+                        data_length=len(s),
+                        required_window=window,
+                        message="Not enough data for sharpe normalization, returning raw target",
+                    )
+                    # Keep original target values without normalization
+                    s = target.copy()
             elif normalize == "log":
                 # Symmetric log transform: sign(x) * log1p(|x|)
                 s = np.sign(s) * np.log1p(np.abs(s))
             elif normalize == "zscore":
-                mu = float(s.mean())
-                sigma = float(s.std())
-                if sigma > 0:
-                    s = (s - mu) / sigma
+                if len(s) > 1:
+                    mu = float(s.mean())
+                    sigma = float(s.std())
+                    if sigma > 0:
+                        s = (s - mu) / sigma
+                else:
+                    # Single value: zscore would be 0 or undefined, keep original
+                    logger.debug(
+                        "_postprocess_target_zscore_skipped",
+                        data_length=len(s),
+                        message="Not enough data for zscore normalization, returning raw target",
+                    )
+                    s = target.copy()
 
             target = s
 
@@ -375,7 +403,21 @@ class TargetComputationEngine:
         target = target.replace([np.inf, -np.inf], np.nan)
         result = result.copy()
         result["target"] = target
+        
+        logger.info(
+            "_postprocess_target_before_dropna",
+            rows_before=len(result),
+            target_values=result["target"].tolist() if "target" in result.columns else [],
+            target_notna=result["target"].notna().sum() if "target" in result.columns else 0,
+        )
+        
         result = result.dropna(subset=["target"])
+        
+        logger.info(
+            "_postprocess_target_after_dropna",
+            rows_after=len(result),
+            final_target_values=result["target"].tolist() if "target" in result.columns and len(result) > 0 else [],
+        )
 
         return result
     
@@ -486,18 +528,6 @@ class TargetComputationEngine:
         # Sort data by future_timestamp for merge_asof
         data_sorted = data.sort_values("future_timestamp").copy().reset_index(drop=True)
         
-        # Log before merge for debugging
-        logger.debug(
-            "_compute_base_target_before_merge",
-            data_rows=len(data_sorted),
-            price_lookup_rows=len(price_lookup),
-            data_future_timestamp_min=data_sorted["future_timestamp"].min() if not data_sorted.empty else None,
-            data_future_timestamp_max=data_sorted["future_timestamp"].max() if not data_sorted.empty else None,
-            price_lookup_timestamp_min=price_lookup["timestamp"].min() if not price_lookup.empty else None,
-            price_lookup_timestamp_max=price_lookup["timestamp"].max() if not price_lookup.empty else None,
-            lookup_method=lookup_method,
-        )
-        
         # Determine merge direction
         direction_map = {
             "nearest_forward": "forward",
@@ -506,6 +536,20 @@ class TargetComputationEngine:
             "exact": "forward",  # For exact, we'll filter after merge
         }
         direction = direction_map.get(lookup_method, "forward")
+        
+        # Log before merge for debugging
+        logger.info(
+            "_compute_base_target_before_merge",
+            data_rows=len(data_sorted),
+            price_lookup_rows=len(price_lookup),
+            data_future_timestamp_min=data_sorted["future_timestamp"].min().isoformat() if not data_sorted.empty else None,
+            data_future_timestamp_max=data_sorted["future_timestamp"].max().isoformat() if not data_sorted.empty else None,
+            price_lookup_timestamp_min=price_lookup["timestamp"].min().isoformat() if not price_lookup.empty else None,
+            price_lookup_timestamp_max=price_lookup["timestamp"].max().isoformat() if not price_lookup.empty else None,
+            lookup_method=lookup_method,
+            direction=direction,
+            horizon_seconds=horizon,
+        )
         
         # Use merge_asof to find future price
         # merge_asof requires both DataFrames to be sorted by the merge key
@@ -530,11 +574,12 @@ class TargetComputationEngine:
             raise
         
         # Log after merge for debugging
-        logger.debug(
+        logger.info(
             "_compute_base_target_after_merge",
             data_merged_rows=len(data_merged),
             data_merged_columns=list(data_merged.columns) if not data_merged.empty else [],
             has_future_price="future_price" in data_merged.columns if not data_merged.empty else False,
+            future_price_values=data_merged["future_price"].tolist() if not data_merged.empty and "future_price" in data_merged.columns else [],
         )
         
         # Apply tolerance if specified
@@ -569,6 +614,16 @@ class TargetComputationEngine:
             errors="ignore"
         )
         
+        # Log after price restoration
+        logger.info(
+            "_compute_base_target_after_price_restore",
+            data_merged_rows=len(data_merged),
+            has_future_price="future_price" in data_merged.columns,
+            has_price="price" in data_merged.columns,
+            future_price_values=data_merged["future_price"].tolist() if "future_price" in data_merged.columns else [],
+            price_values=data_merged["price"].tolist() if "price" in data_merged.columns else [],
+        )
+        
         # Check for valid prices
         if "future_price" not in data_merged.columns:
             logger.error(
@@ -590,6 +645,8 @@ class TargetComputationEngine:
                 data_merged_rows=len(data_merged),
                 future_price_notna=data_merged["future_price"].notna().sum(),
                 price_notna=data_merged["price"].notna().sum(),
+                future_price_values=data_merged["future_price"].tolist() if "future_price" in data_merged.columns else [],
+                price_values=data_merged["price"].tolist() if "price" in data_merged.columns else [],
                 data_timestamp_min=data["timestamp"].min() if not data.empty else None,
                 data_timestamp_max=data["timestamp"].max() if not data.empty else None,
                 future_timestamp_min=data["future_timestamp"].min() if "future_timestamp" in data.columns and not data.empty else None,
@@ -613,11 +670,25 @@ class TargetComputationEngine:
         else:
             raise ValueError(f"Unknown formula: {formula}")
         
+        # Log after target computation
+        logger.info(
+            "_compute_base_target_after_computation",
+            target_values=data_merged["target"].tolist() if "target" in data_merged.columns else [],
+            target_notna=data_merged["target"].notna().sum() if "target" in data_merged.columns else 0,
+            rows_before_dropna=len(data_merged),
+        )
+        
         # Remove invalid values
         data_merged = data_merged.dropna(subset=["target"])
         data_merged = data_merged[
             ~data_merged["target"].isin([float("inf"), float("-inf")])
         ]
+        
+        logger.info(
+            "_compute_base_target_final",
+            rows_after_dropna=len(data_merged),
+            final_target_values=data_merged["target"].tolist() if "target" in data_merged.columns and len(data_merged) > 0 else [],
+        )
         
         return data_merged[["timestamp", "target"]]
 

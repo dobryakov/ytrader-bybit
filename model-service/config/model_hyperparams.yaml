@@ -25,6 +25,9 @@ xgboost:
         drop_duplicates: true
         # Missing value imputation method: "median" (robust, default), "mean", or "forward_fill" (for time-series)
         missing_value_imputation: median
+        # Drop features with missing value percentage above this threshold (0.0-1.0). Default: 0.5 (50%)
+        # Features with >50% missing values are likely not informative and should be removed
+        missing_value_drop_threshold: 0.5
         n_estimators: 500
         max_depth: 4
         learning_rate: 0.05
@@ -42,6 +45,7 @@ xgboost:
         # Data cleaning options
         drop_duplicates: true
         missing_value_imputation: median
+        missing_value_drop_threshold: 0.5
         n_estimators: 500
         max_depth: 4
         learning_rate: 0.05
@@ -57,9 +61,13 @@ xgboost:
   regression:
     common:
       objective: reg:pseudohubererror
+      eval_metric: mae
       # Data cleaning options
       drop_duplicates: true
       missing_value_imputation: median
+      # Drop features with missing value percentage above this threshold (0.0-1.0). Default: 0.3 (30%)
+      # For regression, lower threshold is recommended due to sensitivity to missing data
+      missing_value_drop_threshold: 0.3
       n_estimators: 500
       max_depth: 4
       learning_rate: 0.03

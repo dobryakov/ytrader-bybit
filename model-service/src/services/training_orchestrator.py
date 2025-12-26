@@ -627,6 +627,13 @@ class TrainingOrchestrator:
                     trace_id=trace_id,
                 )
             else:  # regression
+                # Calculate additional statistics for regression targets
+                target_skew = float(labels_series.skew()) if len(labels_series) > 2 else 0.0
+                target_kurtosis = float(labels_series.kurtosis()) if len(labels_series) > 2 else 0.0
+                target_q25 = float(labels_series.quantile(0.25))
+                target_q75 = float(labels_series.quantile(0.75))
+                target_iqr = target_q75 - target_q25
+                
                 logger.info(
                     "Train dataset loaded with target statistics",
                     training_id=training_id,
@@ -637,6 +644,14 @@ class TrainingOrchestrator:
                     target_min=float(labels_series.min()),
                     target_max=float(labels_series.max()),
                     target_median=float(labels_series.median()),
+                    target_q25=target_q25,
+                    target_q75=target_q75,
+                    target_iqr=target_iqr,
+                    target_skew=target_skew,
+                    target_kurtosis=target_kurtosis,
+                    feature_count=len(features_df.columns),
+                    missing_values_total=int(features_df.isnull().sum().sum()),
+                    missing_values_percentage=round(float(features_df.isnull().sum().sum() / (len(features_df) * len(features_df.columns)) * 100), 2) if len(features_df) > 0 and len(features_df.columns) > 0 else 0.0,
                     trace_id=trace_id,
                 )
 
@@ -776,6 +791,26 @@ class TrainingOrchestrator:
                 logger.info("Training cancelled during model training", training_id=training_id)
                 return
 
+            # Get feature names from trained model (after data cleaning)
+            # This ensures validation/test features match training features
+            model_feature_names = self._get_model_feature_names(model)
+            if not model_feature_names:
+                logger.error(
+                    "Failed to get feature names from trained model",
+                    training_id=training_id,
+                    dataset_id=str(dataset_id),
+                    trace_id=trace_id,
+                )
+                return
+
+            logger.info(
+                "Model feature names after data cleaning",
+                training_id=training_id,
+                feature_count=len(model_feature_names),
+                feature_names=model_feature_names,
+                trace_id=trace_id,
+            )
+
             # Download validation split for evaluation
             validation_file_path = await feature_service_client.download_dataset(
                 dataset_id, split="validation", trace_id=trace_id
@@ -793,6 +828,15 @@ class TrainingOrchestrator:
                         # Keep only numeric columns for features
                         validation_features = validation_features.select_dtypes(include=[np.number])
                         validation_labels = val_df[target_column]
+                        
+                        # Align validation features with model's expected features
+                        validation_features = self._align_features_with_model(
+                            features=validation_features,
+                            model_feature_names=model_feature_names,
+                            split_name="validation",
+                            training_id=training_id,
+                            trace_id=trace_id,
+                        )
 
                         # Log original distribution for validation split BEFORE drop_zero_class
                         if task_type == "classification" and not validation_labels.empty:
@@ -851,6 +895,13 @@ class TrainingOrchestrator:
                                     trace_id=trace_id,
                                 )
                             else:  # regression
+                                # Calculate additional statistics for regression targets
+                                val_target_skew = float(validation_labels.skew()) if len(validation_labels) > 2 else 0.0
+                                val_target_kurtosis = float(validation_labels.kurtosis()) if len(validation_labels) > 2 else 0.0
+                                val_target_q25 = float(validation_labels.quantile(0.25))
+                                val_target_q75 = float(validation_labels.quantile(0.75))
+                                val_target_iqr = val_target_q75 - val_target_q25
+                                
                                 logger.info(
                                     "Validation dataset loaded",
                                     training_id=training_id,
@@ -860,6 +911,11 @@ class TrainingOrchestrator:
                                     target_min=float(validation_labels.min()),
                                     target_max=float(validation_labels.max()),
                                     target_median=float(validation_labels.median()),
+                                    target_q25=val_target_q25,
+                                    target_q75=val_target_q75,
+                                    target_iqr=val_target_iqr,
+                                    target_skew=val_target_skew,
+                                    target_kurtosis=val_target_kurtosis,
                                     trace_id=trace_id,
                                 )
                         else:
@@ -1037,6 +1093,15 @@ class TrainingOrchestrator:
                             # Keep only numeric columns for features
                             test_features = test_features.select_dtypes(include=[np.number])
                             test_labels = test_df[target_column]
+                            
+                            # Align test features with model's expected features
+                            test_features = self._align_features_with_model(
+                                features=test_features,
+                                model_feature_names=model_feature_names,
+                                split_name="test",
+                                training_id=training_id,
+                                trace_id=trace_id,
+                            )
 
                             # Log original distribution for test split BEFORE drop_zero_class
                             if task_type == "classification" and not test_labels.empty:
@@ -1102,6 +1167,13 @@ class TrainingOrchestrator:
                                         trace_id=trace_id,
                                     )
                                 else:  # regression
+                                    # Calculate additional statistics for regression targets
+                                    test_target_skew = float(test_labels.skew()) if len(test_labels) > 2 else 0.0
+                                    test_target_kurtosis = float(test_labels.kurtosis()) if len(test_labels) > 2 else 0.0
+                                    test_target_q25 = float(test_labels.quantile(0.25))
+                                    test_target_q75 = float(test_labels.quantile(0.75))
+                                    test_target_iqr = test_target_q75 - test_target_q25
+                                    
                                     logger.info(
                                         "Test dataset loaded",
                                         training_id=training_id,
@@ -1111,17 +1183,11 @@ class TrainingOrchestrator:
                                         target_min=float(test_labels.min()),
                                         target_max=float(test_labels.max()),
                                         target_median=float(test_labels.median()),
-                                        trace_id=trace_id,
-                                    )
-                                    logger.info(
-                                        "Test dataset loaded",
-                                        training_id=training_id,
-                                        record_count=len(test_features),
-                                        target_mean=float(test_labels.mean()),
-                                        target_std=float(test_labels.std()),
-                                        target_min=float(test_labels.min()),
-                                        target_max=float(test_labels.max()),
-                                        target_median=float(test_labels.median()),
+                                        target_q25=test_target_q25,
+                                        target_q75=test_target_q75,
+                                        target_iqr=test_target_iqr,
+                                        target_skew=test_target_skew,
+                                        target_kurtosis=test_target_kurtosis,
                                         trace_id=trace_id,
                                     )
 
@@ -1718,6 +1784,113 @@ class TrainingOrchestrator:
                 await self._cancel_current_training()
             except Exception as e:
                 logger.error("Error while waiting for training to complete during shutdown", error=str(e), exc_info=True)
+
+    def _get_model_feature_names(self, model: Any) -> List[str]:
+        """
+        Get feature names from trained model.
+        
+        Args:
+            model: Trained model (XGBoost or other)
+            
+        Returns:
+            List of feature names used by the model
+        """
+        expected_feature_names = None
+        
+        # Try feature_names_in_ first (newer XGBoost versions)
+        if hasattr(model, "feature_names_in_") and model.feature_names_in_ is not None:
+            expected_feature_names = list(model.feature_names_in_)
+            logger.debug("Using feature_names_in_ from model", count=len(expected_feature_names))
+        
+        # Try get_booster().feature_names (older XGBoost versions or when feature_names_in_ is None)
+        if expected_feature_names is None and hasattr(model, "get_booster"):
+            try:
+                booster = model.get_booster()
+                if hasattr(booster, "feature_names") and booster.feature_names:
+                    expected_feature_names = list(booster.feature_names)
+                    logger.debug("Using feature_names from booster", count=len(expected_feature_names))
+            except Exception as e:
+                logger.warning("Failed to get feature names from booster", error=str(e))
+        
+        if expected_feature_names is None or len(expected_feature_names) == 0:
+            logger.warning("Could not extract feature names from model, this may cause issues")
+            return []
+        
+        return expected_feature_names
+    
+    def _align_features_with_model(
+        self,
+        features: pd.DataFrame,
+        model_feature_names: List[str],
+        split_name: str,
+        training_id: str,
+        trace_id: Optional[str] = None,
+    ) -> pd.DataFrame:
+        """
+        Align features with model's expected feature names.
+        
+        Removes extra features and adds missing features with default values.
+        
+        Args:
+            features: DataFrame with features
+            model_feature_names: List of feature names expected by the model
+            split_name: Name of the split (validation/test) for logging
+            training_id: Training ID for logging
+            trace_id: Optional trace ID for request flow tracking
+            
+        Returns:
+            DataFrame with aligned features
+        """
+        if not model_feature_names:
+            logger.warning(
+                "Model feature names are empty, cannot align features",
+                split_name=split_name,
+                training_id=training_id,
+                trace_id=trace_id,
+            )
+            return features
+        
+        # Find missing features (expected by model but not in features)
+        missing_features = set(model_feature_names) - set(features.columns)
+        if missing_features:
+            logger.warning(
+                f"{split_name.capitalize()} split missing features, adding with default values",
+                split_name=split_name,
+                training_id=training_id,
+                missing_features=list(missing_features),
+                missing_count=len(missing_features),
+                trace_id=trace_id,
+            )
+            # Add missing features with default value 0.0
+            for feature_name in missing_features:
+                features[feature_name] = 0.0
+        
+        # Find extra features (in features but not expected by model)
+        extra_features = set(features.columns) - set(model_feature_names)
+        if extra_features:
+            logger.warning(
+                f"{split_name.capitalize()} split has extra features, removing them",
+                split_name=split_name,
+                training_id=training_id,
+                extra_features=list(extra_features),
+                extra_count=len(extra_features),
+                trace_id=trace_id,
+            )
+            # Remove extra features
+            features = features.drop(columns=list(extra_features))
+        
+        # Reorder columns to match model's expected order
+        features = features[model_feature_names]
+        
+        logger.debug(
+            f"{split_name.capitalize()} features aligned with model",
+            split_name=split_name,
+            training_id=training_id,
+            feature_count=len(features.columns),
+            trace_id=trace_id,
+        )
+        
+        return features
 
     def _predict_with_thresholds_or_argmax(
         self,

@@ -81,16 +81,24 @@ class FeaturePublisher:
                 )
                 return  # Success - exit function
             
-            except (aiormq.exceptions.ChannelInvalidStateError, AttributeError, RuntimeError) as e:
+            except (
+                aiormq.exceptions.ChannelInvalidStateError,
+                aiormq.exceptions.AMQPConnectionError,
+                ConnectionResetError,
+                AttributeError,
+                RuntimeError,
+            ) as e:
                 # Channel is closed or invalid - reinitialize and retry
                 error_type = type(e).__name__
                 error_msg = str(e)
                 
                 # Check if it's a connection closed error
                 is_connection_error = (
+                    isinstance(e, (aiormq.exceptions.AMQPConnectionError, ConnectionResetError)) or
                     "closed" in error_msg.lower() or
                     "Connection" in error_type or
-                    "Connection was not opened" in error_msg
+                    "Connection was not opened" in error_msg or
+                    "Connection reset" in error_msg
                 )
                 
                 logger.warning(
@@ -105,12 +113,24 @@ class FeaturePublisher:
                 )
                 
                 if attempt < max_retries - 1:
+                    # For connection errors, reset the connection in mq_manager
+                    # Use reset_connection() method to properly close channels before connection
+                    if is_connection_error and self._mq_manager is not None:
+                        try:
+                            await self._mq_manager.reset_connection()
+                        except Exception as reset_error:
+                            logger.debug(
+                                "Error resetting connection during publish retry",
+                                error=str(reset_error),
+                                error_type=type(reset_error).__name__,
+                            )
+                    
                     # Reset channel and queue references before reinitialization
                     self._channel = None
                     self._queue = None
                     
                     # Add delay to allow connection to stabilize (exponential backoff)
-                    await asyncio.sleep(0.5 * (attempt + 1))
+                    await asyncio.sleep(0.5 * (2 ** attempt))
                     
                     # Reinitialize channel and queue before retry
                     try:
@@ -151,6 +171,16 @@ class FeaturePublisher:
                     )
                     # Don't raise - just return to avoid breaking feature computation
                     return
+            
+            except (asyncio.CancelledError, KeyboardInterrupt) as e:
+                # Don't retry on cancellation - re-raise immediately
+                logger.warning(
+                    "feature_publish_cancelled",
+                    symbol=feature_vector.symbol,
+                    error=str(e),
+                    error_type=type(e).__name__,
+                )
+                raise
             
             except Exception as e:
                 # Other error - log and don't retry

@@ -445,16 +445,55 @@ class MetadataStorage:
             
             target_registry_version_final = query_params[10]
             
-            # Convert target_config to JSON string if it's a dict
+            # Convert target_config to JSON string if it's a dict or Pydantic model
             target_config_final = dataset_data.get("target_config")
-            if isinstance(target_config_final, dict):
-                # Convert datetime objects to ISO strings before JSON serialization
-                target_config_final = self._convert_datetime_to_iso_string(target_config_final)
+            if target_config_final is not None:
+                # Handle Pydantic models
+                if hasattr(target_config_final, 'model_dump'):
+                    target_config_final = target_config_final.model_dump()
+                elif hasattr(target_config_final, 'dict'):
+                    target_config_final = target_config_final.dict()
+                
+                # Convert to JSON string if it's still a dict or other non-string type
+                if isinstance(target_config_final, dict):
+                    # Convert datetime objects to ISO strings before JSON serialization
+                    target_config_final = self._convert_datetime_to_iso_string(target_config_final)
+                    target_config_final = json.dumps(target_config_final)
+                elif not isinstance(target_config_final, str):
+                    # Convert datetime objects to ISO strings before JSON serialization
+                    target_config_final = self._convert_datetime_to_iso_string(target_config_final)
+                    target_config_final = json.dumps(target_config_final)
+            
+            # Final safety check: ensure target_config_final is either None or a string
+            if target_config_final is not None and not isinstance(target_config_final, str):
+                logger.warning(
+                    "target_config_final is not a string, forcing conversion",
+                    type=type(target_config_final).__name__,
+                    value=str(target_config_final)[:100]
+                )
+                # Handle Pydantic models one more time
+                if hasattr(target_config_final, 'model_dump'):
+                    target_config_final = target_config_final.model_dump()
+                elif hasattr(target_config_final, 'dict'):
+                    target_config_final = target_config_final.dict()
+                # Convert datetime objects and serialize
+                if isinstance(target_config_final, dict):
+                    target_config_final = self._convert_datetime_to_iso_string(target_config_final)
                 target_config_final = json.dumps(target_config_final)
-            elif target_config_final is not None and not isinstance(target_config_final, str):
-                # Convert datetime objects to ISO strings before JSON serialization
-                target_config_final = self._convert_datetime_to_iso_string(target_config_final)
-                target_config_final = json.dumps(target_config_final)
+            
+            # Verify target_config_final is string or None before adding to final_params
+            if target_config_final is not None and not isinstance(target_config_final, str):
+                logger.error(
+                    "CRITICAL: target_config_final is still not a string after all conversions",
+                    type=type(target_config_final).__name__,
+                    value=str(target_config_final)[:200]
+                )
+                # Emergency fallback: try to serialize whatever it is
+                try:
+                    target_config_final = json.dumps(target_config_final, default=str)
+                except Exception as e:
+                    logger.error(f"Failed to serialize target_config_final: {e}")
+                    target_config_final = None
             
             final_params = [
                 query_params[0],  # symbol
@@ -468,10 +507,10 @@ class MetadataStorage:
                 final_datetime_params[5],  # test_period_end
                 walk_forward_config_final,  # walk_forward_config (JSON string or None)
                 target_registry_version_final,  # target_registry_version (string)
-                target_config_final,  # target_config (JSON string)
-                query_params[11],  # feature_registry_version
-                query_params[12],  # output_format
-                query_params[13],  # strategy_id (optional)
+                target_config_final,  # target_config (JSON string or None)
+                query_params[12],  # feature_registry_version (was query_params[11] - WRONG!)
+                query_params[13],  # output_format (was query_params[12] - WRONG!)
+                query_params[14] if len(query_params) > 14 else None,  # strategy_id (optional)
             ]
             
             # Execute query with fresh datetime objects
@@ -508,7 +547,7 @@ class MetadataStorage:
                         test_period_start, test_period_end,
                         walk_forward_config, target_registry_version, target_config,
                         feature_registry_version, output_format, strategy_id
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
                     RETURNING id
                     """,
                     *final_params
@@ -537,7 +576,7 @@ class MetadataStorage:
                             $4::timestamptz, $5::timestamptz,
                             $6::timestamptz, $7::timestamptz,
                             $8::timestamptz, $9::timestamptz,
-                            $10, $11, $12, $13, $14, $15, $16
+                            $10, $11, $12, $13, $14, $15
                         )
                         """,
                         *final_params
@@ -578,11 +617,21 @@ class MetadataStorage:
                     
                     # target_registry_version (index 10) - string, no conversion needed
                     
-                    # target_config (index 11)
-                    if isinstance(final_params_jsonb[11], dict):
-                        final_params_jsonb[11] = json.dumps(final_params_jsonb[11])
-                    elif final_params_jsonb[11] is not None and not isinstance(final_params_jsonb[11], str):
-                        final_params_jsonb[11] = json.dumps(final_params_jsonb[11])
+                    # target_config (index 11) - handle Pydantic models and dicts
+                    if final_params_jsonb[11] is not None:
+                        # Handle Pydantic models
+                        if hasattr(final_params_jsonb[11], 'model_dump'):
+                            final_params_jsonb[11] = final_params_jsonb[11].model_dump()
+                        elif hasattr(final_params_jsonb[11], 'dict'):
+                            final_params_jsonb[11] = final_params_jsonb[11].dict()
+                        
+                        # Convert to JSON string if it's still a dict or other non-string type
+                        if isinstance(final_params_jsonb[11], dict):
+                            final_params_jsonb[11] = self._convert_datetime_to_iso_string(final_params_jsonb[11])
+                            final_params_jsonb[11] = json.dumps(final_params_jsonb[11])
+                        elif not isinstance(final_params_jsonb[11], str):
+                            final_params_jsonb[11] = self._convert_datetime_to_iso_string(final_params_jsonb[11])
+                            final_params_jsonb[11] = json.dumps(final_params_jsonb[11])
                     
                     # Retry with JSON strings
                     result = await conn.fetchrow(
@@ -594,7 +643,7 @@ class MetadataStorage:
                             test_period_start, test_period_end,
                             walk_forward_config, target_registry_version, target_config,
                             feature_registry_version, output_format, strategy_id
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
                         RETURNING id
                         """,
                         *final_params_jsonb

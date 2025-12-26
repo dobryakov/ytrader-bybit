@@ -1,0 +1,23 @@
+version: 1.7.0
+config:
+  type: regression
+  horizon: 900
+  threshold: null
+  computation:
+    preset: returns
+    overrides:
+      price_source: close
+      future_price_source: close
+      lookup_method: nearest_forward
+      tolerance_seconds: 60
+    options:
+      clip_method: quantile
+      clip_q_low: 0.01
+      clip_q_high: 0.99
+      normalize: sharpe
+      sharpe_window: 20
+description: Target Registry version 1.7.0 - regression target (future return) with
+  900 seconds horizon. Base numeric target is (future_close - close) / close, computed
+  via preset 'returns'. Post-processing (quantile clipping and Sharpe normalization)
+  is applied to stabilize the target distribution across different market volatility
+  regimes.

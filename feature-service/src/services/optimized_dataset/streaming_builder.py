@@ -96,6 +96,7 @@ class StreamingDatasetBuilder:
             symbol=symbol,
             start_date=start_date.isoformat(),
             end_date=end_date.isoformat(),
+            builder_type="streaming",
         )
         
         # Step 1: Analyze requirements
@@ -109,6 +110,10 @@ class StreamingDatasetBuilder:
             data_types=list(requirements.required_data_types),
             max_lookback_minutes=requirements.max_lookback_minutes,
         )
+        
+        # Calculate target horizon minutes early (needed for HybridFeatureComputer)
+        target_horizon_seconds = target_config.horizon if target_config else 0
+        target_horizon_minutes = (target_horizon_seconds + 59) // 60  # Round up to minutes
         
         # Step 3: Initialize components
         # Collect all storage types needed
@@ -149,124 +154,242 @@ class StreamingDatasetBuilder:
         feature_computer = HybridFeatureComputer(
             requirements=requirements,
             feature_registry_version=feature_registry.version,
+            feature_registry=feature_registry,
+            target_horizon_minutes=target_horizon_minutes,
         )
         
-        # Step 4: Generate list of days to process
-        days_to_process = self._generate_days_list(start_date, end_date)
+        # Step 4: Calculate buffer period and load all required data upfront
+        # Buffer for safety (extra minutes beyond max_lookback)
+        buffer_minutes = 20
+        
+        # Calculate data loading period:
+        # Start: from midnight of first day, go back by max_lookback + buffer
+        # End: to end of last day + target horizon + buffer
+        first_day_midnight = datetime.combine(
+            start_date.date(), datetime.min.time(), tzinfo=timezone.utc
+        )
+        data_start = first_day_midnight - timedelta(
+            minutes=requirements.max_lookback_minutes + buffer_minutes
+        )
+        data_end = datetime.combine(
+            end_date.date(), datetime.max.time(), tzinfo=timezone.utc
+        ) + timedelta(minutes=target_horizon_minutes + buffer_minutes)
         
         logger.info(
             "streaming_dataset_initialized",
             dataset_id=dataset_id,
-            days_count=len(days_to_process),
+            start_date=start_date.isoformat(),
+            end_date=end_date.isoformat(),
+            data_start=data_start.isoformat(),
+            data_end=data_end.isoformat(),
+            max_lookback_minutes=requirements.max_lookback_minutes,
+            buffer_minutes=buffer_minutes,
+            target_horizon_minutes=target_horizon_minutes,
             cache_strategy=cache_strategy.cache_unit.value,
             needs_orderbook=requirements.needs_orderbook,
+            builder_type="streaming",
         )
         
-        # Step 5: Load previous day data for lookback (if needed)
-        # This ensures first day has sufficient data for features requiring lookback
-        if days_to_process:
-            first_day = days_to_process[0]
-            previous_day = first_day - timedelta(days=1)
-            
-            # Load previous day data to provide lookback for first day
-            logger.info(
-                "loading_previous_day_for_lookback",
-                dataset_id=dataset_id,
-                first_day=first_day.isoformat(),
-                previous_day=previous_day.isoformat(),
-                max_lookback_minutes=requirements.max_lookback_minutes,
-            )
-            
+        # Step 5: Load all required data into rolling window buffer
+        logger.info(
+            "loading_data_buffer",
+            dataset_id=dataset_id,
+            data_start=data_start.isoformat(),
+            data_end=data_end.isoformat(),
+            builder_type="streaming",
+        )
+        
+        all_klines = pd.DataFrame()
+        all_trades = pd.DataFrame()
+        
+        # Generate list of days to load
+        days_to_load = self._generate_days_list(
+            data_start, data_end
+        )
+        
+        for day_date in days_to_load:
             try:
                 if cache:
-                    prev_day_data = await cache.get_day_data(previous_day)
+                    day_data = await cache.get_day_data(day_date)
                 else:
-                    prev_day_data = await self._read_day_from_parquet(
-                        symbol, previous_day, requirements
+                    day_data = await self._read_day_from_parquet(
+                        symbol, day_date, requirements
                     )
                 
-                if prev_day_data:
-                    # Add previous day data to rolling window
-                    prev_klines = prev_day_data.get("klines", pd.DataFrame())
-                    prev_trades = prev_day_data.get("trades", pd.DataFrame())
+                if day_data:
+                    day_klines = day_data.get("klines", pd.DataFrame())
+                    day_trades = day_data.get("trades", pd.DataFrame())
                     
-                    if not prev_klines.empty or not prev_trades.empty:
-                        prev_day_end = datetime.combine(
-                            previous_day, datetime.max.time(), tzinfo=timezone.utc
-                        )
-                        rolling_window.add_data(
-                            timestamp=prev_day_end,
-                            trades=prev_trades,
-                            klines=prev_klines,
-                            skip_trim=True,
-                        )
-                        logger.info(
-                            "previous_day_data_loaded",
-                            dataset_id=dataset_id,
-                            previous_day=previous_day.isoformat(),
-                            klines_count=len(prev_klines),
-                            trades_count=len(prev_trades),
-                        )
-                    else:
-                        logger.warning(
-                            "previous_day_data_empty",
-                            dataset_id=dataset_id,
-                            previous_day=previous_day.isoformat(),
-                        )
-                else:
-                    logger.warning(
-                        "previous_day_data_unavailable",
-                        dataset_id=dataset_id,
-                        previous_day=previous_day.isoformat(),
-                        message="Previous day data not available, first day may have insufficient lookback",
-                    )
+                    if not day_klines.empty:
+                        # Filter klines within data period
+                        if "timestamp" in day_klines.columns:
+                            day_klines = day_klines[
+                                (day_klines["timestamp"] >= data_start) &
+                                (day_klines["timestamp"] <= data_end)
+                            ]
+                        all_klines = pd.concat([all_klines, day_klines], ignore_index=True)
+                    
+                    if not day_trades.empty:
+                        # Filter trades within data period
+                        if "timestamp" in day_trades.columns:
+                            day_trades = day_trades[
+                                (day_trades["timestamp"] >= data_start) &
+                                (day_trades["timestamp"] <= data_end)
+                            ]
+                        all_trades = pd.concat([all_trades, day_trades], ignore_index=True)
             except Exception as e:
                 logger.warning(
-                    "previous_day_load_failed",
+                    "day_data_load_failed",
                     dataset_id=dataset_id,
-                    previous_day=previous_day.isoformat(),
+                    day=day_date.isoformat(),
                     error=str(e),
-                    message="Continuing without previous day data, first day may have insufficient lookback",
                 )
         
-        # Step 6: Process days sequentially
+        # Sort and deduplicate
+        if not all_klines.empty and "timestamp" in all_klines.columns:
+            all_klines = all_klines.sort_values("timestamp").reset_index(drop=True)
+            all_klines = all_klines.drop_duplicates(subset=["timestamp"], keep="last")
+        
+        if not all_trades.empty and "timestamp" in all_trades.columns:
+            all_trades = all_trades.sort_values("timestamp").reset_index(drop=True)
+            all_trades = all_trades.drop_duplicates(subset=["timestamp"], keep="last")
+        
+        # Initialize rolling window with all loaded data
+        if not all_klines.empty or not all_trades.empty:
+            rolling_window.add_data(
+                timestamp=data_end,
+                trades=all_trades,
+                klines=all_klines,
+                skip_trim=True,  # Don't trim - we want all data in buffer
+            )
+            logger.info(
+                "data_buffer_loaded",
+                dataset_id=dataset_id,
+                klines_count=len(all_klines),
+                trades_count=len(all_trades),
+                data_start=data_start.isoformat(),
+                data_end=data_end.isoformat(),
+                builder_type="streaming",
+            )
+        else:
+            logger.warning(
+                "data_buffer_empty",
+                dataset_id=dataset_id,
+                data_start=data_start.isoformat(),
+                data_end=data_end.isoformat(),
+            )
+        
+        # Step 6: Generate all timestamps from start_date to end_date with 1-minute step
+        timestamps = self._generate_timestamps_for_period(
+            start_date, end_date, all_klines, all_trades, requirements
+        )
+        
+        if timestamps.empty:
+            logger.warning(
+                "no_timestamps_generated",
+                dataset_id=dataset_id,
+                start_date=start_date.isoformat(),
+                end_date=end_date.isoformat(),
+            )
+            return pd.DataFrame()
+        
+        logger.info(
+            "timestamps_generated",
+            dataset_id=dataset_id,
+            timestamps_count=len(timestamps),
+            first_timestamp=timestamps.iloc[0].isoformat() if len(timestamps) > 0 else None,
+            last_timestamp=timestamps.iloc[-1].isoformat() if len(timestamps) > 0 else None,
+            builder_type="streaming",
+        )
+        
+        # Step 7: Process timestamps sequentially in batches
         all_features = []
         
-        for day_idx, day_date in enumerate(days_to_process):
-            logger.info(
-                "processing_day",
-                dataset_id=dataset_id,
-                day=day_date.isoformat(),
-                day_index=day_idx + 1,
-                total_days=len(days_to_process),
-            )
+        for batch_start in range(0, len(timestamps), self.batch_size):
+            batch_end = min(batch_start + self.batch_size, len(timestamps))
+            # Reset index to ensure RangeIndex starting from 0 for each batch
+            # This prevents index alignment issues when merging results from different batches
+            batch_timestamps = timestamps.iloc[batch_start:batch_end].reset_index(drop=True)
             
-            # Process day
-            day_features = await self._process_day(
-                symbol=symbol,
-                day_date=day_date,
-                requirements=requirements,
-                cache=cache,
+            # Normalize batch timestamps for period-based data loading
+            batch_start_ts = batch_timestamps.iloc[0]
+            batch_end_ts = batch_timestamps.iloc[-1]
+            
+            # Normalize timestamps to datetime
+            if isinstance(batch_start_ts, pd.Timestamp):
+                batch_start_ts = batch_start_ts.to_pydatetime()
+            if isinstance(batch_end_ts, pd.Timestamp):
+                batch_end_ts = batch_end_ts.to_pydatetime()
+            
+            # Ensure timezone-aware UTC
+            if batch_start_ts.tzinfo is None:
+                batch_start_ts = batch_start_ts.replace(tzinfo=timezone.utc)
+            else:
+                batch_start_ts = batch_start_ts.astimezone(timezone.utc)
+            if batch_end_ts.tzinfo is None:
+                batch_end_ts = batch_end_ts.replace(tzinfo=timezone.utc)
+            else:
+                batch_end_ts = batch_end_ts.astimezone(timezone.utc)
+            
+            # Prepare orderbook states for batch (if needed)
+            orderbook_states = None
+            if requirements.needs_orderbook and orderbook_manager:
+                orderbook_states = await self._prepare_orderbook_states_for_period(
+                    batch_timestamps,
+                    batch_start_ts,
+                    batch_end_ts,
+                    symbol,
+                    requirements,
+                    cache,
+                    orderbook_manager,
+                )
+            
+            # Prepare funding rates (if needed)
+            funding_rates = None
+            next_funding_times = None
+            if requirements.needs_funding:
+                funding_data = await self._load_funding_data_for_period(
+                    symbol, batch_start_ts, batch_end_ts, cache, requirements
+                )
+                if not funding_data.empty:
+                    funding_rates, next_funding_times = self._prepare_funding_rates(
+                        batch_timestamps,
+                        funding_data,
+                    )
+            
+            # Compute features for batch
+            batch_features = feature_computer.compute_features_batch(
+                timestamps=batch_timestamps,
                 rolling_window=rolling_window,
-                orderbook_manager=orderbook_manager,
-                feature_computer=feature_computer,
-                prefetcher=prefetcher,
-                dataset_id=dataset_id,
+                klines_df=all_klines,
+                trades_df=all_trades,
+                orderbook_states=orderbook_states,
+                funding_rates=funding_rates,
+                next_funding_times=next_funding_times,
             )
             
-            if not day_features.empty:
-                all_features.append(day_features)
+            if not batch_features.empty:
+                all_features.append(batch_features)
             
-            # Prefetch next day if enabled
-            if prefetcher and day_idx < len(days_to_process) - 1:
-                next_day = days_to_process[day_idx + 1]
-                await prefetcher.prefetch_day(next_day)
+            # Update prefetcher processing speed
+            if prefetcher and len(batch_timestamps) > 0:
+                last_timestamp = batch_timestamps.iloc[-1]
+                # Normalize timestamp: convert pd.Timestamp to datetime and ensure timezone-aware
+                if isinstance(last_timestamp, pd.Timestamp):
+                    last_timestamp = last_timestamp.to_pydatetime()
+                # Ensure timezone-aware UTC
+                if last_timestamp.tzinfo is None:
+                    last_timestamp = last_timestamp.replace(tzinfo=timezone.utc)
+                else:
+                    last_timestamp = last_timestamp.astimezone(timezone.utc)
+                prefetcher.update_processing_speed(last_timestamp, len(batch_timestamps))
         
-        # Step 6: Combine all features
+        # Step 8: Combine all features
         if not all_features:
             logger.warning(
                 "no_features_computed",
                 dataset_id=dataset_id,
+                symbol=symbol,
             )
             return pd.DataFrame()
         
@@ -305,13 +428,17 @@ class StreamingDatasetBuilder:
         # frame instead of failing hard; this will be caught by downstream quality checks.
         filtered_df = features_df[allowed_columns]
 
+        # Calculate period days for logging
+        period_days = (end_date.date() - start_date.date()).days + 1
+        
         logger.info(
             "streaming_dataset_build_completed",
             dataset_id=dataset_id,
             total_features=len(filtered_df),
-            days_processed=len(days_to_process),
+            period_days=period_days,
             original_feature_columns=len(original_columns),
             kept_feature_columns=len(allowed_columns),
+            builder_type="streaming",
         )
         
         return filtered_df
@@ -543,6 +670,50 @@ class StreamingDatasetBuilder:
         timestamps_list = sorted(normalized_timestamps)
         return pd.Series(timestamps_list, name="timestamp", dtype="datetime64[ns, UTC]")
     
+    def _generate_timestamps_for_period(
+        self,
+        start_date: datetime,
+        end_date: datetime,
+        all_klines: pd.DataFrame,
+        all_trades: pd.DataFrame,
+        requirements: DataRequirements,
+    ) -> pd.Series:
+        """
+        Generate timestamps for entire period with 1-minute step.
+        
+        Args:
+            start_date: Start date for dataset
+            end_date: End date for dataset
+            all_klines: All klines DataFrame
+            all_trades: All trades DataFrame
+            requirements: Data requirements
+            
+        Returns:
+            Series of timestamps with 1-minute intervals
+        """
+        # Generate 1-minute intervals from start_date to end_date
+        timestamps = []
+        current = start_date
+        
+        # Ensure timezone-aware
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=timezone.utc)
+        if end_date.tzinfo is None:
+            end_date = end_date.replace(tzinfo=timezone.utc)
+        
+        # Round start_date to minute boundary
+        current = current.replace(second=0, microsecond=0)
+        
+        while current <= end_date:
+            timestamps.append(current)
+            current += timedelta(minutes=1)
+        
+        if not timestamps:
+            return pd.Series(dtype="datetime64[ns, UTC]")
+        
+        # Convert to Series
+        return pd.Series(timestamps, name="timestamp", dtype="datetime64[ns, UTC]")
+    
     async def _read_day_from_parquet(
         self,
         symbol: str,
@@ -658,4 +829,153 @@ class StreamingDatasetBuilder:
                 next_funding_times[ts] = int(latest.get("next_funding_time", 0))
         
         return funding_rates, next_funding_times
+    
+    async def _prepare_orderbook_states_for_period(
+        self,
+        timestamps: pd.Series,
+        batch_start_ts: datetime,
+        batch_end_ts: datetime,
+        symbol: str,
+        requirements: DataRequirements,
+        cache: Optional[OptimizedDailyDataCache],
+        orderbook_manager: IncrementalOrderbookManager,
+    ) -> Dict[datetime, Optional["OrderbookState"]]:
+        """
+        Prepare orderbook states for timestamps in a period.
+        
+        Args:
+            timestamps: Series of timestamps
+            batch_start_ts: Batch start timestamp
+            batch_end_ts: Batch end timestamp
+            symbol: Trading pair symbol
+            requirements: Data requirements
+            cache: Data cache
+            orderbook_manager: Orderbook manager
+            
+        Returns:
+            Dictionary mapping timestamp to OrderbookState
+        """
+        # Load orderbook data for the period
+        days_to_load = self._generate_days_list(batch_start_ts, batch_end_ts)
+        
+        all_snapshots = pd.DataFrame()
+        all_deltas = pd.DataFrame()
+        
+        for day_date in days_to_load:
+            try:
+                if cache:
+                    day_data = await cache.get_day_data(day_date)
+                else:
+                    day_data = await self._read_day_from_parquet(
+                        symbol, day_date, requirements
+                    )
+                
+                if day_data:
+                    snapshots = day_data.get("snapshots", pd.DataFrame())
+                    deltas = day_data.get("deltas", pd.DataFrame())
+                    
+                    if not snapshots.empty:
+                        # Filter snapshots within batch period
+                        if "timestamp" in snapshots.columns:
+                            snapshots = snapshots[
+                                (snapshots["timestamp"] >= batch_start_ts) &
+                                (snapshots["timestamp"] <= batch_end_ts)
+                            ]
+                        all_snapshots = pd.concat([all_snapshots, snapshots], ignore_index=True)
+                    
+                    if not deltas.empty:
+                        # Filter deltas within batch period
+                        if "timestamp" in deltas.columns:
+                            deltas = deltas[
+                                (deltas["timestamp"] >= batch_start_ts) &
+                                (deltas["timestamp"] <= batch_end_ts)
+                            ]
+                        all_deltas = pd.concat([all_deltas, deltas], ignore_index=True)
+            except Exception as e:
+                logger.warning(
+                    "orderbook_data_load_failed",
+                    day=day_date.isoformat(),
+                    error=str(e),
+                )
+        
+        # Sort and deduplicate
+        if not all_snapshots.empty and "timestamp" in all_snapshots.columns:
+            all_snapshots = all_snapshots.sort_values("timestamp").reset_index(drop=True)
+            all_snapshots = all_snapshots.drop_duplicates(subset=["timestamp"], keep="last")
+        
+        if not all_deltas.empty and "timestamp" in all_deltas.columns:
+            all_deltas = all_deltas.sort_values("timestamp").reset_index(drop=True)
+            all_deltas = all_deltas.drop_duplicates(subset=["timestamp"], keep="last")
+        
+        # Prepare orderbook states using existing method
+        day_data = {
+            "snapshots": all_snapshots,
+            "deltas": all_deltas,
+        }
+        return self._prepare_orderbook_states(
+            timestamps, day_data, orderbook_manager
+        )
+    
+    async def _load_funding_data_for_period(
+        self,
+        symbol: str,
+        batch_start_ts: datetime,
+        batch_end_ts: datetime,
+        cache: Optional[OptimizedDailyDataCache],
+        requirements: DataRequirements,
+    ) -> pd.DataFrame:
+        """
+        Load funding data for a period.
+        
+        Args:
+            symbol: Trading pair symbol
+            batch_start_ts: Batch start timestamp
+            batch_end_ts: Batch end timestamp
+            cache: Data cache
+            requirements: Data requirements
+            
+        Returns:
+            DataFrame with funding data
+        """
+        if not requirements.needs_funding:
+            return pd.DataFrame()
+        
+        # Load funding data for the period
+        days_to_load = self._generate_days_list(batch_start_ts, batch_end_ts)
+        
+        all_funding = pd.DataFrame()
+        
+        for day_date in days_to_load:
+            try:
+                if cache:
+                    day_data = await cache.get_day_data(day_date)
+                else:
+                    day_data = await self._read_day_from_parquet(
+                        symbol, day_date, requirements
+                    )
+                
+                if day_data:
+                    funding = day_data.get("funding", pd.DataFrame())
+                    
+                    if not funding.empty:
+                        # Filter funding within batch period
+                        if "timestamp" in funding.columns:
+                            funding = funding[
+                                (funding["timestamp"] >= batch_start_ts) &
+                                (funding["timestamp"] <= batch_end_ts)
+                            ]
+                        all_funding = pd.concat([all_funding, funding], ignore_index=True)
+            except Exception as e:
+                logger.warning(
+                    "funding_data_load_failed",
+                    day=day_date.isoformat(),
+                    error=str(e),
+                )
+        
+        # Sort and deduplicate
+        if not all_funding.empty and "timestamp" in all_funding.columns:
+            all_funding = all_funding.sort_values("timestamp").reset_index(drop=True)
+            all_funding = all_funding.drop_duplicates(subset=["timestamp"], keep="last")
+        
+        return all_funding
 

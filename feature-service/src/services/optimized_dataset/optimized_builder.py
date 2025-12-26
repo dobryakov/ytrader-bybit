@@ -94,6 +94,8 @@ class OptimizedDatasetBuilder:
             "optimized_dataset_builder_initialized",
             cache_enabled=cache_service is not None,
             batch_size=batch_size,
+            builder_type="optimized",
+            internal_builder="streaming",
         )
     
     async def build_dataset(
@@ -258,6 +260,8 @@ class OptimizedDatasetBuilder:
             split_strategy=split_strategy.value,
             start_date=start_date.isoformat(),
             end_date=end_date.isoformat(),
+            builder_type="optimized",
+            internal_builder="streaming",
         )
         
         return dataset_id
@@ -291,6 +295,8 @@ class OptimizedDatasetBuilder:
                 "optimized_dataset_build_task_started",
                 dataset_id=dataset_id,
                 symbol=symbol,
+                builder_type="optimized",
+                internal_builder="streaming",
             )
             
             # Step 0: Validate data availability before starting build
@@ -323,6 +329,13 @@ class OptimizedDatasetBuilder:
                 return
             
             # Step 1: Build features using streaming approach
+            logger.info(
+                "calling_streaming_builder",
+                dataset_id=dataset_id,
+                symbol=symbol,
+                builder_type="optimized",
+                internal_builder="streaming",
+            )
             features_df = await self._streaming_builder.build_dataset_streaming(
                 symbol=symbol,
                 start_date=start_date,
@@ -390,7 +403,30 @@ class OptimizedDatasetBuilder:
                 )
                 return
             
-            # Step 3: Validate no data leakage
+            # Step 3: Validate data quality (check for high missing values due to insufficient historical data)
+            try:
+                await self._validate_data_quality(
+                    features_df=features_df,
+                    feature_registry=feature_registry,
+                    dataset_id=dataset_id,
+                    symbol=symbol,
+                    start_date=start_date,
+                    end_date=end_date,
+                )
+            except ValueError as e:
+                error_msg = str(e)
+                await self._metadata_storage.update_dataset(
+                    dataset_id,
+                    {
+                        "status": DatasetStatus.FAILED.value,
+                        "error_message": error_msg,
+                        "completed_at": datetime.now(timezone.utc),
+                    },
+                )
+                # Note: Detailed logging with time ranges is done in _validate_data_quality method
+                return
+            
+            # Step 4: Validate no data leakage
             if not await self._validate_no_data_leakage(features_df, targets_df):
                 error_msg = "Data leakage detected in features or targets"
                 await self._metadata_storage.update_dataset(
@@ -403,7 +439,7 @@ class OptimizedDatasetBuilder:
                 )
                 return
             
-            # Step 4: Split dataset
+            # Step 5: Split dataset
             dataset = await self._metadata_storage.get_dataset(dataset_id)
             if dataset is None:
                 logger.error("dataset_not_found", dataset_id=dataset_id)
@@ -421,12 +457,12 @@ class OptimizedDatasetBuilder:
                     features_df, targets_df, dataset
                 )
             
-            # Step 5: Write splits to storage
+            # Step 6: Write splits to storage
             storage_path = await self._write_dataset_splits(
                 dataset_id, splits, output_format
             )
             
-            # Step 6: Update dataset record
+            # Step 7: Update dataset record
             total_train = len(splits["train"])
             total_val = len(splits["validation"])
             total_test = len(splits["test"])
@@ -805,6 +841,14 @@ class OptimizedDatasetBuilder:
                 for day_features in days_dict.values():
                     all_features.update(day_features)
                 
+                # Calculate date range for missing days
+                if len(missing_days) == 1:
+                    date_range_str = missing_days[0].isoformat()
+                elif len(missing_days) > 1:
+                    date_range_str = f"{missing_days[0].isoformat()} to {missing_days[-1].isoformat()}"
+                else:
+                    date_range_str = "N/A"
+                
                 error_parts.append(
                     f"\n  Storage type '{storage_type_name}':"
                 )
@@ -813,6 +857,9 @@ class OptimizedDatasetBuilder:
                 )
                 error_parts.append(
                     f"    Missing for days: {', '.join(d.isoformat() for d in missing_days)}"
+                )
+                error_parts.append(
+                    f"    Date range: {date_range_str}"
                 )
                 error_parts.append(
                     f"    Total missing days: {len(missing_days)}/{len(days_to_check)}"
@@ -824,6 +871,22 @@ class OptimizedDatasetBuilder:
             
             error_msg = "\n".join(error_parts)
             
+            # Build detailed missing data structure for logging
+            missing_data_details = {}
+            for storage_type_name, days_dict in missing_data.items():
+                missing_days = sorted(days_dict.keys())
+                all_features = set()
+                for day_features in days_dict.values():
+                    all_features.update(day_features)
+                
+                missing_data_details[storage_type_name] = {
+                    "missing_days": [d.isoformat() for d in missing_days],
+                    "date_range": f"{missing_days[0].isoformat()} to {missing_days[-1].isoformat()}" if len(missing_days) > 1 else missing_days[0].isoformat(),
+                    "missing_days_count": len(missing_days),
+                    "total_days_checked": len(days_to_check),
+                    "required_by_features": sorted(all_features),
+                }
+            
             logger.error(
                 "dataset_data_availability_check_failed",
                 dataset_id=dataset_id,
@@ -832,6 +895,7 @@ class OptimizedDatasetBuilder:
                 end_date=end_date.date().isoformat(),
                 missing_data_types=list(missing_data.keys()),
                 total_missing_days=sum(len(days) for days in missing_data.values()),
+                missing_data_details=missing_data_details,
             )
             
             raise ValueError(error_msg)
@@ -856,9 +920,11 @@ class OptimizedDatasetBuilder:
         """
         Validate that all features from Feature Registry are present and have data.
         
-        Strict validation:
-        - All features from Feature Registry must be present in dataset
-        - All features must have at least some non-null values (not all None/NaN)
+        Переписанная валидация с учётом проблем из исследования:
+        - Правильная проверка типов данных перед подсчётом NaN
+        - Корректная обработка object dtype (без использования == None)
+        - Детальное логирование типов данных и значений
+        - Проверка, что features_df не изменяется в процессе валидации
         
         Args:
             features_df: DataFrame with computed features
@@ -868,12 +934,26 @@ class OptimizedDatasetBuilder:
         Raises:
             ValueError: If features are missing or have no data
         """
+        # ВАЖНО: Создаём копию для валидации, чтобы не изменять исходный DataFrame
+        features_df_copy = features_df.copy()
+        
         # Get expected feature names from Feature Registry
         expected_features = {f.name for f in feature_registry.features}
         
         # Get actual feature columns (exclude service columns)
         service_columns = {"timestamp", "symbol"}
-        actual_features = set(features_df.columns) - service_columns
+        actual_features = set(features_df_copy.columns) - service_columns
+        
+        # Логируем базовую информацию о DataFrame
+        logger.debug(
+            "feature_completeness_validation_started",
+            dataset_id=dataset_id,
+            total_rows=len(features_df_copy),
+            total_columns=len(features_df_copy.columns),
+            expected_features_count=len(expected_features),
+            actual_features_count=len(actual_features),
+            dtypes=features_df_copy.dtypes.to_dict(),
+        )
         
         # Check 1: All expected features must be present
         missing_features = sorted(expected_features - actual_features)
@@ -891,38 +971,113 @@ class OptimizedDatasetBuilder:
                 actual_count=len(actual_features),
                 missing_count=len(missing_features),
                 missing_features=missing_features,
+                actual_feature_names=sorted(actual_features),
             )
             raise ValueError(error_msg)
         
         # Check 2: All features must have at least some non-null values
-        # (not completely None/NaN - indicates missing data)
+        # Исправленная логика подсчёта NaN с учётом всех нюансов из исследования
         features_with_no_data = []
+        feature_details = {}
+        
         for feature_name in expected_features:
-            if feature_name not in features_df.columns:
+            if feature_name not in features_df_copy.columns:
                 continue  # Already caught above, but double-check
             
-            feature_series = features_df[feature_name]
+            feature_series = features_df_copy[feature_name]
             
-            # Check if all values are None/NaN
-            if feature_series.isna().all():
-                features_with_no_data.append(feature_name)
+            # Детальная информация о фиче для отладки
+            feature_dtype = str(feature_series.dtype)
+            total_count = len(feature_series)
+            
+            # ИСПРАВЛЕННАЯ ЛОГИКА: Правильная проверка значений
+            # Pandas isna() корректно обрабатывает и NaN и None для всех типов данных
+            # Для object dtype isna() правильно находит и NaN и None значения
+            # НЕ используем == None, так как это может не работать правильно с numpy/pandas объектами
+            
+            # Используем isna() для всех типов - это универсальный способ
+            nan_mask = feature_series.isna()
+            nan_count = nan_mask.sum()
+            non_nan_count = (~nan_mask).sum()  # Эквивалентно feature_series.notna().sum()
+            
+            # Если все значения NaN/None, данных нет
+            if nan_count == total_count:
+                # Для object dtype дополнительно проверяем, есть ли реальные значения среди не-NaN
+                if feature_series.dtype == 'object' and non_nan_count == 0:
+                    # Проверяем первые несколько значений для диагностики
+                    sample_values = feature_series.head(5).tolist()
+                    sample_types = [type(v).__name__ if v is not None else 'None' for v in sample_values]
+                    
+                    features_with_no_data.append(feature_name)
+                    feature_details[feature_name] = {
+                        "dtype": feature_dtype,
+                        "total_count": total_count,
+                        "nan_count": int(nan_count),
+                        "non_nan_count": int(non_nan_count),
+                        "issue": "all_values_are_nan_or_none",
+                        "sample_types": sample_types,
+                    }
+                else:
+                    features_with_no_data.append(feature_name)
+                    feature_details[feature_name] = {
+                        "dtype": feature_dtype,
+                        "total_count": total_count,
+                        "nan_count": int(nan_count),
+                        "non_nan_count": int(non_nan_count),
+                        "issue": "all_values_are_nan",
+                    }
                 continue
             
-            # For object dtype (e.g., vwap with all None), check differently
-            if feature_series.dtype == 'object':
-                non_null_count = feature_series.notna().sum()
-                if non_null_count == 0:
-                    features_with_no_data.append(feature_name)
-                else:
-                    # Check if all non-null values are None
-                    non_null_series = feature_series.dropna()
-                    if len(non_null_series) > 0 and non_null_series.apply(lambda x: x is None).all():
+            # Проверяем, что есть хотя бы одно реальное значение
+            # Для object dtype: если есть не-NaN значения, но они все None, данных всё равно нет
+            if non_nan_count == 0:
+                features_with_no_data.append(feature_name)
+                feature_details[feature_name] = {
+                    "dtype": feature_dtype,
+                    "total_count": total_count,
+                    "nan_count": int(nan_count),
+                    "non_nan_count": int(non_nan_count),
+                    "issue": "no_valid_values",
+                }
+            elif feature_series.dtype == 'object':
+                # Для object dtype дополнительная проверка: все не-NaN значения - это None?
+                # Берём выборку не-NaN значений и проверяем
+                non_na_values = feature_series[~nan_mask]
+                if len(non_na_values) > 0:
+                    # Проверяем, есть ли хотя бы одно значение, которое не None
+                    has_real_value = False
+                    for val in non_na_values.head(100):  # Ограничиваем проверку для производительности
+                        if val is not None and not pd.isna(val):
+                            has_real_value = True
+                            break
+                    
+                    if not has_real_value:
+                        # Все не-NaN значения - это None, данных нет
                         features_with_no_data.append(feature_name)
+                        sample_types = [type(v).__name__ if v is not None else 'None' for v in non_na_values.head(5)]
+                        feature_details[feature_name] = {
+                            "dtype": feature_dtype,
+                            "total_count": total_count,
+                            "nan_count": int(nan_count),
+                            "non_nan_count": int(non_nan_count),
+                            "issue": "all_non_na_values_are_none",
+                            "sample_types": sample_types,
+                        }
+            
+            # Логируем успешную проверку фичи (только для первых нескольких)
+            if len(feature_details) < 5:
+                feature_details[feature_name] = {
+                    "dtype": feature_dtype,
+                    "total_count": total_count,
+                    "nan_count": int(nan_count) if 'nan_count' in locals() else None,
+                    "non_nan_count": int(non_nan_count) if 'non_nan_count' in locals() else None,
+                    "status": "valid",
+                }
         
         if features_with_no_data:
             error_msg = (
                 f"{len(features_with_no_data)} features have no data (all None/NaN). "
-                f"This indicates missing source data. "
+                f"This indicates missing source data or computation failure. "
                 f"Features with no data: {', '.join(features_with_no_data[:20])}"
                 + (f" (and {len(features_with_no_data) - 20} more)" if len(features_with_no_data) > 20 else "")
             )
@@ -931,6 +1086,7 @@ class OptimizedDatasetBuilder:
                 dataset_id=dataset_id,
                 features_with_no_data=features_with_no_data,
                 count=len(features_with_no_data),
+                feature_details={k: v for k, v in feature_details.items() if k in features_with_no_data},
             )
             raise ValueError(error_msg)
         
@@ -941,7 +1097,348 @@ class OptimizedDatasetBuilder:
             feature_count=len(actual_features),
             all_features_present=True,
             all_features_have_data=True,
+            total_rows=len(features_df_copy),
+            sample_feature_details={k: v for k, v in list(feature_details.items())[:5]},
         )
+    
+    async def _validate_data_quality(
+        self,
+        features_df: pd.DataFrame,
+        feature_registry: FeatureRegistry,
+        dataset_id: str,
+        symbol: str,
+        start_date: datetime,
+        end_date: datetime,
+    ) -> None:
+        """
+        Validate data quality by checking for high missing values in features.
+        
+        Переписанная валидация с учётом всех проблем из исследования:
+        - Правильная проверка типов данных перед подсчётом NaN
+        - Исправленная логика подсчёта NaN для object dtype (без == None)
+        - Детальное логирование на каждом этапе
+        - Проверка, что features_df не изменяется
+        - Анализ временных диапазонов с пропусками данных
+        
+        Args:
+            features_df: DataFrame with computed features
+            feature_registry: Feature Registry instance
+            dataset_id: Dataset ID for error reporting
+            symbol: Trading pair symbol
+            start_date: Start date for dataset
+            end_date: End date for dataset
+            
+        Raises:
+            ValueError: If data quality is insufficient (high missing values in lookback features)
+        """
+        from src.config import config as feature_config
+        
+        # ВАЖНО: Создаём копию для валидации, чтобы не изменять исходный DataFrame
+        features_df_copy = features_df.copy()
+        
+        # Get expected feature names from Feature Registry
+        expected_features = {f.name: f for f in feature_registry.features}
+        
+        # Get actual feature columns (exclude service columns)
+        service_columns = {"timestamp", "symbol"}
+        actual_features = set(features_df_copy.columns) - service_columns
+        
+        # Analyze which features require lookback
+        requirements_analyzer = FeatureRequirementsAnalyzer()
+        requirements = requirements_analyzer.analyze(feature_registry)
+        
+        # Identify features that require lookback (candle/pattern features)
+        lookback_features = set()
+        for feature_name, feature_def in expected_features.items():
+            if feature_def.lookback_window and feature_def.lookback_window != "0s":
+                lookback_features.add(feature_name)
+        
+        # Check missing values ratio for each feature
+        total_rows = len(features_df_copy)
+        if total_rows == 0:
+            raise ValueError("Dataset is empty - no rows in features DataFrame")
+        
+        # Логируем начальную информацию
+        logger.debug(
+            "data_quality_validation_started",
+            dataset_id=dataset_id,
+            symbol=symbol,
+            total_rows=total_rows,
+            total_features=len(actual_features),
+            lookback_features_count=len(lookback_features),
+            expected_features_count=len(expected_features),
+            features_df_dtypes=features_df_copy.dtypes.to_dict(),
+            features_df_memory_usage=features_df_copy.memory_usage(deep=True).to_dict(),
+        )
+        
+        # Thresholds for validation
+        max_nan_ratio = feature_config.dataset_max_feature_nan_ratio
+        max_lookback_nan_ratio = feature_config.dataset_max_lookback_feature_nan_ratio
+        fail_on_high_nan = feature_config.dataset_fail_on_high_nan_ratio
+        
+        # Collect features with high missing values
+        features_with_high_nan: Dict[str, Dict[str, Any]] = {}
+        
+        for feature_name in actual_features:
+            if feature_name not in expected_features:
+                continue  # Skip unexpected features
+            
+            feature_series = features_df_copy[feature_name]
+            feature_dtype = str(feature_series.dtype)
+            
+            # ИСПРАВЛЕННАЯ ЛОГИКА: Правильный подсчёт NaN
+            # Pandas isna() корректно обрабатывает и NaN и None для всех типов данных
+            # Для object dtype isna() правильно находит и NaN и None значения
+            # НЕ используем == None, так как это может не работать правильно с numpy/pandas объектами
+            
+            # Используем isna() для всех типов - это универсальный способ
+            nan_mask = feature_series.isna()
+            nan_count = nan_mask.sum()
+            
+            # Для object dtype: pandas isna() правильно находит и NaN и None
+            # Дополнительная проверка не требуется, так как isna() универсален
+            
+            nan_ratio = nan_count / total_rows if total_rows > 0 else 1.0
+            
+            # Determine if this is a lookback feature
+            is_lookback_feature = feature_name in lookback_features
+            
+            # Use stricter threshold for lookback features
+            threshold = max_lookback_nan_ratio if is_lookback_feature else max_nan_ratio
+            
+            # Check if this feature exceeds threshold
+            if nan_ratio > threshold:
+                features_with_high_nan[feature_name] = {
+                    "nan_count": int(nan_count),
+                    "nan_ratio": float(nan_ratio),
+                    "total_rows": total_rows,
+                    "is_lookback_feature": is_lookback_feature,
+                    "lookback_window": expected_features[feature_name].lookback_window if feature_name in expected_features else None,
+                    "threshold_used": float(threshold),
+                    "dtype": feature_dtype,
+                }
+        
+        # Логируем результаты проверки NaN
+        logger.debug(
+            "data_quality_nan_check_completed",
+            dataset_id=dataset_id,
+            features_checked=len(actual_features),
+            features_with_high_nan_count=len(features_with_high_nan),
+            total_rows=total_rows,
+        )
+        
+        # If no features with high NaN, validation passes
+        if not features_with_high_nan:
+            logger.info(
+                "dataset_data_quality_validated",
+                dataset_id=dataset_id,
+                symbol=symbol,
+                total_rows=total_rows,
+                total_features=len(actual_features),
+                lookback_features_count=len(lookback_features),
+                max_nan_ratio_threshold=max_nan_ratio,
+                max_lookback_nan_ratio_threshold=max_lookback_nan_ratio,
+            )
+            return
+        
+        # Separate lookback and non-lookback features with high NaN
+        lookback_high_nan = {
+            name: info for name, info in features_with_high_nan.items()
+            if info["is_lookback_feature"]
+        }
+        non_lookback_high_nan = {
+            name: info for name, info in features_with_high_nan.items()
+            if not info["is_lookback_feature"]
+        }
+        
+        # Analyze timestamps where features have missing values
+        # This helps identify specific time periods with data gaps
+        missing_timestamps_by_feature: Dict[str, pd.Series] = {}
+        missing_time_ranges: Dict[str, Dict[str, Any]] = {}
+        
+        if "timestamp" in features_df_copy.columns:
+            for feature_name, info in features_with_high_nan.items():
+                if feature_name not in features_df_copy.columns:
+                    continue
+                
+                feature_series = features_df_copy[feature_name]
+                timestamp_series = features_df_copy["timestamp"]
+                
+                # ИСПРАВЛЕННАЯ ЛОГИКА: Правильная маска для пропусков
+                # Используем isna() для всех типов - он правильно обрабатывает и NaN и None
+                missing_mask = feature_series.isna()
+                
+                missing_timestamps = timestamp_series[missing_mask]
+                
+                if len(missing_timestamps) > 0:
+                    missing_timestamps_by_feature[feature_name] = missing_timestamps
+                    
+                    # Calculate time ranges
+                    min_ts = missing_timestamps.min()
+                    max_ts = missing_timestamps.max()
+                    
+                    # Group by date to identify which days have missing data
+                    if pd.api.types.is_datetime64_any_dtype(missing_timestamps):
+                        missing_dates = missing_timestamps.dt.date.unique()
+                        missing_dates_sorted = sorted(missing_dates)
+                        
+                        missing_time_ranges[feature_name] = {
+                            "first_missing_timestamp": min_ts.isoformat() if isinstance(min_ts, pd.Timestamp) else str(min_ts),
+                            "last_missing_timestamp": max_ts.isoformat() if isinstance(max_ts, pd.Timestamp) else str(max_ts),
+                            "missing_dates": [d.isoformat() for d in missing_dates_sorted],
+                            "date_range": f"{missing_dates_sorted[0].isoformat()} to {missing_dates_sorted[-1].isoformat()}" if len(missing_dates_sorted) > 1 else missing_dates_sorted[0].isoformat(),
+                            "missing_timestamps_count": len(missing_timestamps),
+                        }
+        
+        # Build detailed error message
+        error_parts = [
+            f"Dataset build failed due to insufficient data quality (symbol: {symbol}, period: {start_date.date()} to {end_date.date()}):",
+            f"  Total rows: {total_rows}",
+            f"  Features with high missing values: {len(features_with_high_nan)}",
+            f"    - Lookback features threshold: >{(max_lookback_nan_ratio * 100):.1f}%",
+            f"    - Other features threshold: >{(max_nan_ratio * 100):.1f}%",
+        ]
+        
+        if lookback_high_nan:
+            error_parts.append(
+                f"\n  CRITICAL: {len(lookback_high_nan)} features requiring lookback have high missing values:"
+            )
+            # Sort by NaN ratio (descending)
+            sorted_lookback = sorted(
+                lookback_high_nan.items(),
+                key=lambda x: x[1]["nan_ratio"],
+                reverse=True
+            )
+            for feature_name, info in sorted_lookback[:20]:  # Show top 20
+                error_line = (
+                    f"    - {feature_name}: {(info['nan_ratio'] * 100):.1f}% missing "
+                    f"({info['nan_count']}/{info['total_rows']} rows, threshold: {(info['threshold_used'] * 100):.1f}%) "
+                    f"[lookback: {info['lookback_window']}, dtype: {info['dtype']}]"
+                )
+                
+                # Add time range information if available
+                if feature_name in missing_time_ranges:
+                    time_info = missing_time_ranges[feature_name]
+                    error_line += f"\n      Missing data period: {time_info['date_range']}"
+                    error_line += f"\n      First missing: {time_info['first_missing_timestamp']}"
+                    error_line += f"\n      Last missing: {time_info['last_missing_timestamp']}"
+                    error_line += f"\n      Affected dates: {', '.join(time_info['missing_dates'][:10])}"
+                    if len(time_info['missing_dates']) > 10:
+                        error_line += f" ... and {len(time_info['missing_dates']) - 10} more"
+                
+                error_parts.append(error_line)
+            if len(sorted_lookback) > 20:
+                error_parts.append(f"    ... and {len(sorted_lookback) - 20} more features")
+            
+            error_parts.append(
+                "\n  This indicates insufficient historical data for computing lookback features."
+            )
+            error_parts.append(
+                "  Possible causes:"
+            )
+            error_parts.append(
+                "    - Missing klines data for required historical period"
+            )
+            error_parts.append(
+                "    - Insufficient lookback period (need data before start_date)"
+            )
+            error_parts.append(
+                "    - Data gaps in historical data"
+            )
+            
+            # Add summary of missing time periods
+            if missing_time_ranges:
+                error_parts.append(
+                    "\n  Missing data time periods:"
+                )
+                # Group by date range to show common patterns
+                date_ranges_by_feature = {}
+                for feature_name, time_info in missing_time_ranges.items():
+                    date_range = time_info['date_range']
+                    if date_range not in date_ranges_by_feature:
+                        date_ranges_by_feature[date_range] = []
+                    date_ranges_by_feature[date_range].append(feature_name)
+                
+                for date_range, features in sorted(date_ranges_by_feature.items()):
+                    error_parts.append(
+                        f"    - {date_range}: {len(features)} features affected"
+                    )
+            
+            error_parts.append(
+                "\n  Action required: Run backfilling for missing historical data."
+            )
+        
+        if non_lookback_high_nan:
+            error_parts.append(
+                f"\n  WARNING: {len(non_lookback_high_nan)} non-lookback features have high missing values:"
+            )
+            sorted_non_lookback = sorted(
+                non_lookback_high_nan.items(),
+                key=lambda x: x[1]["nan_ratio"],
+                reverse=True
+            )
+            for feature_name, info in sorted_non_lookback[:10]:  # Show top 10
+                error_parts.append(
+                    f"    - {feature_name}: {(info['nan_ratio'] * 100):.1f}% missing "
+                    f"({info['nan_count']}/{info['total_rows']} rows, dtype: {info['dtype']})"
+                )
+            if len(sorted_non_lookback) > 10:
+                error_parts.append(f"    ... and {len(sorted_non_lookback) - 10} more features")
+        
+        error_msg = "\n".join(error_parts)
+        
+        # Build lookback features details with time ranges
+        lookback_features_details = {}
+        for name, info in lookback_high_nan.items():
+            lookback_features_details[name] = {
+                "nan_ratio": info["nan_ratio"],
+                "nan_count": info["nan_count"],
+                "lookback_window": info["lookback_window"],
+                "dtype": info["dtype"],
+            }
+            # Add time range if available
+            if name in missing_time_ranges:
+                lookback_features_details[name].update({
+                    "missing_date_range": missing_time_ranges[name]["date_range"],
+                    "first_missing_timestamp": missing_time_ranges[name]["first_missing_timestamp"],
+                    "last_missing_timestamp": missing_time_ranges[name]["last_missing_timestamp"],
+                    "missing_dates": missing_time_ranges[name]["missing_dates"],
+                })
+        
+        # Log detailed information
+        logger.error(
+            "dataset_data_quality_validation_failed",
+            dataset_id=dataset_id,
+            symbol=symbol,
+            start_date=start_date.isoformat(),
+            end_date=end_date.isoformat(),
+            total_rows=total_rows,
+            features_with_high_nan_count=len(features_with_high_nan),
+            lookback_high_nan_count=len(lookback_high_nan),
+            non_lookback_high_nan_count=len(non_lookback_high_nan),
+            max_nan_ratio_threshold=max_nan_ratio,
+            max_lookback_nan_ratio_threshold=max_lookback_nan_ratio,
+            lookback_features_details=lookback_features_details,
+            missing_time_ranges=missing_time_ranges if missing_time_ranges else {},
+        )
+        
+        # Always fail if lookback features have high NaN (these require historical data)
+        if lookback_high_nan:
+            raise ValueError(error_msg)
+        
+        # For non-lookback features, fail only if fail_on_high_nan is enabled
+        if non_lookback_high_nan and fail_on_high_nan:
+            raise ValueError(error_msg)
+        
+        # Otherwise, just log warning for non-lookback features
+        if non_lookback_high_nan:
+            logger.warning(
+                "dataset_data_quality_warning",
+                dataset_id=dataset_id,
+                symbol=symbol,
+                features_with_high_nan_count=len(non_lookback_high_nan),
+                message="High NaN ratio detected in non-lookback features but build continues (fail_on_high_nan_ratio=False)",
+            )
     
     async def _split_time_based(
         self,

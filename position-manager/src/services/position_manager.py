@@ -1032,11 +1032,16 @@ class PositionManager:
             snapshot_payload_json_str = json.dumps(snapshot_payload_json)
 
             pool = await DatabaseConnection.get_pool()
+            # Extract size from snapshot_data for legacy column compatibility
+            # The size column is NOT NULL in the table schema (migration 008)
+            # even though we primarily use snapshot_data (migration 044)
+            size_value = position.size if position.size is not None else Decimal("0")
+            
             insert_query = """
                 INSERT INTO position_snapshots (
-                    id, position_id, asset, mode, snapshot_data, snapshot_timestamp
+                    id, position_id, asset, mode, size, snapshot_data, snapshot_timestamp
                 )
-                VALUES (gen_random_uuid(), $1, $2, $3, $4::jsonb, NOW())
+                VALUES (gen_random_uuid(), $1, $2, $3, $4, $5::jsonb, NOW())
                 RETURNING id, position_id, asset, mode, snapshot_data, snapshot_timestamp AS created_at
             """
             row = await pool.fetchrow(
@@ -1044,6 +1049,7 @@ class PositionManager:
                 str(position.id),
                 position.asset,
                 position.mode,
+                str(size_value),
                 snapshot_payload_json_str,
             )
 
@@ -2147,11 +2153,14 @@ class PositionManager:
                             if position_id:
                                 try:
                                     # Find open prediction_trading_results for this position
+                                    # Join through signal_id -> orders -> position_orders -> positions
                                     open_results = await pool.fetch(
                                         """
-                                        SELECT id, signal_id, realized_pnl, unrealized_pnl
-                                        FROM prediction_trading_results
-                                        WHERE position_id = $1 AND is_closed = false
+                                        SELECT DISTINCT ptr.id, ptr.signal_id, ptr.realized_pnl, ptr.unrealized_pnl
+                                        FROM prediction_trading_results ptr
+                                        INNER JOIN orders o ON o.signal_id = ptr.signal_id
+                                        INNER JOIN position_orders po ON po.order_id = o.id
+                                        WHERE po.position_id = $1 AND ptr.is_closed = false
                                         """,
                                         position_id,
                                     )

@@ -21,6 +21,8 @@ class Config(BaseSettings):
     rabbitmq_port: int = Field(..., env="RABBITMQ_PORT", description="RabbitMQ port")
     rabbitmq_user: str = Field(..., env="RABBITMQ_USER", description="RabbitMQ username")
     rabbitmq_password: str = Field(..., env="RABBITMQ_PASSWORD", description="RabbitMQ password")
+    rabbitmq_heartbeat: int = Field(default=60, env="RABBITMQ_HEARTBEAT", description="RabbitMQ heartbeat interval in seconds (default: 60). Should match RABBITMQ_HEARTBEAT in docker-compose.yml")
+    rabbitmq_reconnect_interval: float = Field(default=5.0, env="RABBITMQ_RECONNECT_INTERVAL", description="RabbitMQ reconnect interval in seconds for RobustConnection (default: 5.0)")
     
     # Feature Service Configuration
     feature_service_port: int = Field(..., env="FEATURE_SERVICE_PORT", description="Feature Service REST API port")
@@ -62,6 +64,7 @@ class Config(BaseSettings):
     
     # Dataset Quality Control Configuration
     dataset_max_feature_nan_ratio: float = Field(default=0.5, env="DATASET_MAX_FEATURE_NAN_RATIO", description="Maximum ratio of NaN values per feature column (0.0-1.0, default: 0.5 = 50%)")
+    dataset_max_lookback_feature_nan_ratio: float = Field(default=0.2, env="DATASET_MAX_LOOKBACK_FEATURE_NAN_RATIO", description="Maximum ratio of NaN values for lookback features (candle/pattern) - stricter threshold (0.0-1.0, default: 0.2 = 20%). Lookback features require historical data, so missing values indicate insufficient data.")
     dataset_max_row_nan_ratio: float = Field(default=0.8, env="DATASET_MAX_ROW_NAN_RATIO", description="Maximum ratio of NaN values per row across all features (0.0-1.0, default: 0.8 = 80%). Rows exceeding this will be dropped.")
     dataset_min_valid_features_ratio: float = Field(default=0.3, env="DATASET_MIN_VALID_FEATURES_RATIO", description="Minimum ratio of valid (non-NaN) features per row (0.0-1.0, default: 0.3 = 30%). Rows below this will be dropped.")
     dataset_fail_on_high_nan_ratio: bool = Field(default=False, env="DATASET_FAIL_ON_HIGH_NAN_RATIO", description="Fail dataset build if any feature has NaN ratio above threshold (default: False, only logs warning)")

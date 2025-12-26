@@ -3,6 +3,7 @@ RabbitMQ connection manager using aio-pika.
 """
 import asyncio
 import aio_pika
+import aiormq.exceptions
 from typing import Optional
 from src.config import config
 from src.logging import get_logger
@@ -33,8 +34,12 @@ class MQConnectionManager:
         self._port = port or config.rabbitmq_port
         self._user = user or config.rabbitmq_user
         self._password = password or config.rabbitmq_password
+        self._heartbeat = config.rabbitmq_heartbeat
+        self._reconnect_interval = config.rabbitmq_reconnect_interval
         self._connection: Optional[aio_pika.Connection] = None
+        self._cached_channel: Optional[aio_pika.Channel] = None  # Cache for channel reuse
         self._connecting_lock: Optional[asyncio.Lock] = None  # Prevent concurrent connection attempts
+        self._channel_lock: Optional[asyncio.Lock] = None  # Prevent concurrent channel creation attempts
     
     async def connect(self) -> None:
         """Connect to RabbitMQ."""
@@ -83,10 +88,20 @@ class MQConnectionManager:
                         port=self._port,
                         login=self._user,
                         password=self._password,
+                        heartbeat=self._heartbeat,  # Match RABBITMQ_HEARTBEAT from docker-compose.yml
+                        reconnect_interval=self._reconnect_interval,  # Control reconnection frequency
                     ),
                     timeout=10.0,  # 10 second timeout for connection
                 )
-                logger.info("Connected to RabbitMQ", host=self._host, port=self._port)
+                logger.info(
+                    "Connected to RabbitMQ",
+                    host=self._host,
+                    port=self._port,
+                    heartbeat=self._heartbeat,
+                    reconnect_interval=self._reconnect_interval,
+                )
+                # Reset cached channel when connection is recreated
+                self._cached_channel = None
             except (asyncio.TimeoutError, asyncio.CancelledError, StopAsyncIteration) as e:
                 # Connection attempt was cancelled or timed out
                 logger.warning(
@@ -108,9 +123,73 @@ class MQConnectionManager:
     
     async def close(self) -> None:
         """Close RabbitMQ connection."""
-        if self._connection and not self._connection.is_closed:
-            await self._connection.close()
-            logger.info("Closed RabbitMQ connection")
+        # Close cached channel first to avoid callback errors
+        if self._cached_channel is not None:
+            try:
+                if not self._cached_channel.is_closed:
+                    await self._cached_channel.close()
+                    logger.debug("Closed cached channel")
+            except (RuntimeError, AttributeError, aiormq.exceptions.ChannelInvalidStateError, Exception) as e:
+                # Channel is in invalid state or already closed, just ignore
+                logger.debug(
+                    "Error closing cached channel (expected if channel is invalid)",
+                    error=str(e),
+                    error_type=type(e).__name__,
+                )
+            finally:
+                self._cached_channel = None
+        
+        if self._connection is not None:
+            try:
+                # Safely check if connection is closed
+                if not self._connection.is_closed:
+                    await self._connection.close()
+                    logger.info("Closed RabbitMQ connection")
+            except (RuntimeError, AttributeError, aiormq.exceptions.ChannelInvalidStateError):
+                # Connection is in invalid state, just reset it
+                logger.debug("Connection was in invalid state during close, resetting")
+            finally:
+                self._connection = None
+    
+    async def reset_connection(self) -> None:
+        """
+        Reset connection and channels, forcing reconnection on next use.
+        
+        This method should be used when connection errors occur to ensure
+        clean state for reconnection. It closes channels first to avoid
+        callback errors, then closes the connection.
+        """
+        # Close cached channel first to avoid callback errors
+        if self._cached_channel is not None:
+            try:
+                if not self._cached_channel.is_closed:
+                    await self._cached_channel.close()
+                    logger.debug("Closed cached channel during reset")
+            except (RuntimeError, AttributeError, aiormq.exceptions.ChannelInvalidStateError, Exception) as e:
+                # Channel is in invalid state or already closed, just ignore
+                logger.debug(
+                    "Error closing cached channel during reset (expected if channel is invalid)",
+                    error=str(e),
+                    error_type=type(e).__name__,
+                )
+            finally:
+                self._cached_channel = None
+        
+        if self._connection is not None:
+            try:
+                # Safely check if connection is closed
+                if not self._connection.is_closed:
+                    await self._connection.close()
+                    logger.debug("Closed connection during reset")
+            except (RuntimeError, AttributeError, aiormq.exceptions.ChannelInvalidStateError, Exception) as e:
+                # Connection is in invalid state, just reset it
+                logger.debug(
+                    "Error closing connection during reset (expected if connection is invalid)",
+                    error=str(e),
+                    error_type=type(e).__name__,
+                )
+            finally:
+                self._connection = None
     
     async def get_channel(self) -> aio_pika.Channel:
         """
@@ -122,82 +201,92 @@ class MQConnectionManager:
         Raises:
             RuntimeError: If connection cannot be established
         """
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                # Ensure connection is valid
-                if self._connection is None or self._connection.is_closed:
-                    await self.connect()
-                
-                # Check connection is still valid after connect()
-                if self._connection is None:
-                    raise RuntimeError("Connection is None after connect()")
-                
-                # Try to get channel with timeout
+        # Initialize lock if not already created
+        if self._channel_lock is None:
+            self._channel_lock = asyncio.Lock()
+        
+        # Use lock to prevent concurrent channel creation attempts
+        async with self._channel_lock:
+            max_retries = 3
+            for attempt in range(max_retries):
                 try:
-                    return await asyncio.wait_for(
-                        self._connection.channel(),
-                        timeout=5.0,  # 5 second timeout for channel creation
-                    )
+                    # Safely check if connection is valid
+                    connection_valid = False
+                    if self._connection is not None:
+                        try:
+                            # Check if connection is closed - this may raise exception if connection is invalid
+                            connection_valid = not self._connection.is_closed
+                        except (RuntimeError, AttributeError, aiormq.exceptions.ChannelInvalidStateError) as e:
+                            # Connection is in invalid state
+                            logger.debug(
+                                "Connection check failed, will reconnect",
+                                error=str(e),
+                                error_type=type(e).__name__,
+                            )
+                            connection_valid = False
+                    
+                    # Ensure connection is valid
+                    if not connection_valid:
+                        await self.connect()
+                    
+                    # Check connection is still valid after connect()
+                    if self._connection is None:
+                        raise RuntimeError("Connection is None after connect()")
+                    
+                    # Try to reuse cached channel if it's still valid
+                    if self._cached_channel is not None:
+                        try:
+                            # Check if cached channel is still valid
+                            if not self._cached_channel.is_closed:
+                                logger.debug("Reusing cached channel")
+                                return self._cached_channel
+                        except (RuntimeError, AttributeError, aiormq.exceptions.ChannelInvalidStateError):
+                            # Cached channel is invalid, reset it
+                            logger.debug("Cached channel is invalid, creating new one")
+                            self._cached_channel = None
+                    
+                    # For RobustConnection, channel() will handle reconnection automatically
+                    # Just try to create channel - if connection is reconnecting, it will wait
+                    # Use a reasonable timeout that accounts for potential reconnection delays
+                    try:
+                        channel = await asyncio.wait_for(
+                            self._connection.channel(),
+                            timeout=10.0,  # 10 second timeout for channel creation
+                        )
+                        # Cache the channel for reuse
+                        self._cached_channel = channel
+                        logger.debug("Created and cached new channel")
+                        return channel
+                    except asyncio.TimeoutError:
+                        # Timeout occurred - connection might be in reconnecting state
+                        # Log additional info and re-raise
+                        logger.warning(
+                            "Channel creation timeout - connection may be reconnecting",
+                            connection_is_none=self._connection is None,
+                            attempt=attempt + 1,
+                        )
+                        raise
+                
                 except (asyncio.TimeoutError, asyncio.CancelledError, StopAsyncIteration) as e:
                     # Channel creation was cancelled or timed out
+                    connection_state = "unknown"
+                    if self._connection is not None:
+                        try:
+                            connection_state = "closed" if self._connection.is_closed else "open"
+                        except Exception:
+                            connection_state = "invalid"
                     logger.warning(
                         "Channel creation failed, reconnecting",
                         error=str(e),
                         error_type=type(e).__name__,
                         attempt=attempt + 1,
                         max_retries=max_retries,
+                        connection_state=connection_state,
+                        connection_is_none=self._connection is None,
                     )
-                    # Reset connection and retry
-                    if self._connection is not None:
-                        try:
-                            # Check if we have a running event loop before using asyncio
-                            try:
-                                loop = asyncio.get_running_loop()
-                                if not self._connection.is_closed:
-                                    await self._connection.close()
-                            except RuntimeError:
-                                # No event loop in current thread - connection.close() may use ThreadPoolExecutor
-                                # Just reset the connection reference, don't try to close it
-                                logger.debug(
-                                    "No event loop available for connection.close(), skipping",
-                                    attempt=attempt + 1,
-                                )
-                        except Exception as close_error:
-                            # Ignore errors when closing invalid connection
-                            logger.debug(
-                                "Error closing connection after timeout",
-                                error=str(close_error),
-                                error_type=type(close_error).__name__,
-                            )
-                        finally:
-                            self._connection = None
+                    # Reset connection and retry - use reset_connection() to properly close channels first
+                    await self.reset_connection()
                     
-                    if attempt < max_retries - 1:
-                        # Wait before retry - ensure we have event loop
-                        try:
-                            loop = asyncio.get_running_loop()
-                            await asyncio.sleep(0.5 * (attempt + 1))
-                        except RuntimeError:
-                            # No event loop - this shouldn't happen in async context, but handle it gracefully
-                            logger.warning(
-                                "No event loop available for sleep, skipping delay",
-                                attempt=attempt + 1,
-                            )
-                        continue
-                    else:
-                        raise RuntimeError(f"Failed to get channel after {max_retries} attempts: {e}") from e
-                except AttributeError as e:
-                    # Connection object is invalid (None or missing attributes)
-                    logger.warning(
-                        "Connection object invalid when getting channel, reconnecting",
-                        error=str(e),
-                        error_type=type(e).__name__,
-                        attempt=attempt + 1,
-                        max_retries=max_retries,
-                    )
-                    # Reset connection and retry
-                    self._connection = None
                     if attempt < max_retries - 1:
                         # Wait before retry - ensure we have event loop
                         try:
@@ -213,35 +302,59 @@ class MQConnectionManager:
                     else:
                         raise RuntimeError(f"Failed to get channel after {max_retries} attempts: {e}") from e
                 
-            except RuntimeError as e:
-                # Connection was not opened or is invalid
-                if "Connection was not opened" in str(e) or "not opened" in str(e).lower() or "Connection is None" in str(e):
+                except RuntimeError as e:
+                    # Connection was not opened or is invalid
+                    if "Connection was not opened" in str(e) or "not opened" in str(e).lower() or "Connection is None" in str(e):
+                        logger.warning(
+                            "Connection invalid when getting channel, reconnecting",
+                            error=str(e),
+                            attempt=attempt + 1,
+                            max_retries=max_retries,
+                        )
+                        # Reset connection and reconnect - use reset_connection() to properly close channels first
+                        await self.reset_connection()
+                        
+                        if attempt < max_retries - 1:
+                            # Wait before retry - ensure we have event loop
+                            try:
+                                loop = asyncio.get_running_loop()
+                                await asyncio.sleep(0.5 * (attempt + 1))
+                            except RuntimeError:
+                                # No event loop - this shouldn't happen in async context, but handle it gracefully
+                                logger.warning(
+                                    "No event loop available for sleep, skipping delay",
+                                    attempt=attempt + 1,
+                                )
+                            continue
+                        else:
+                            raise RuntimeError(f"Failed to get channel after {max_retries} attempts: {e}") from e
+                    else:
+                        # Re-raise other RuntimeErrors
+                        raise
+                
+                except (asyncio.CancelledError, StopAsyncIteration) as e:
+                    # Task was cancelled or connection closed during operation
                     logger.warning(
-                        "Connection invalid when getting channel, reconnecting",
+                        "Operation cancelled during channel creation",
                         error=str(e),
+                        error_type=type(e).__name__,
                         attempt=attempt + 1,
                         max_retries=max_retries,
                     )
-                    # Reset connection and reconnect
-                    if self._connection is not None:
-                        try:
-                            # Check if we have a running event loop before using asyncio
-                            try:
-                                loop = asyncio.get_running_loop()
-                                if not self._connection.is_closed:
-                                    await self._connection.close()
-                            except RuntimeError:
-                                # No event loop in current thread - connection.close() may use ThreadPoolExecutor
-                                # Just reset the connection reference, don't try to close it
-                                logger.debug(
-                                    "No event loop available for connection.close(), skipping",
-                                    attempt=attempt + 1,
-                                )
-                        except Exception:
-                            pass
-                        finally:
-                            self._connection = None
-                    
+                    # Re-raise CancelledError immediately - don't retry on cancellation
+                    raise
+                
+                except (AttributeError, aiormq.exceptions.ChannelInvalidStateError) as e:
+                    # Connection object is invalid (None or missing attributes) or channel is in invalid state
+                    logger.warning(
+                        "Connection/channel invalid when getting channel, reconnecting",
+                        error=str(e),
+                        error_type=type(e).__name__,
+                        attempt=attempt + 1,
+                        max_retries=max_retries,
+                    )
+                    # Reset connection and retry - use reset_connection() to properly close channels first
+                    await self.reset_connection()
                     if attempt < max_retries - 1:
                         # Wait before retry - ensure we have event loop
                         try:
@@ -256,48 +369,9 @@ class MQConnectionManager:
                         continue
                     else:
                         raise RuntimeError(f"Failed to get channel after {max_retries} attempts: {e}") from e
-                else:
-                    # Re-raise other RuntimeErrors
-                    raise
-            except (asyncio.CancelledError, StopAsyncIteration) as e:
-                # Task was cancelled or connection closed during operation
-                logger.warning(
-                    "Operation cancelled during channel creation",
-                    error=str(e),
-                    error_type=type(e).__name__,
-                    attempt=attempt + 1,
-                    max_retries=max_retries,
-                )
-                # Re-raise CancelledError immediately - don't retry on cancellation
-                raise
-            except AttributeError as e:
-                # Connection object is invalid (None or missing attributes)
-                logger.warning(
-                    "Connection object invalid when getting channel, reconnecting",
-                    error=str(e),
-                    error_type=type(e).__name__,
-                    attempt=attempt + 1,
-                    max_retries=max_retries,
-                )
-                # Reset connection and retry
-                self._connection = None
-                if attempt < max_retries - 1:
-                    # Wait before retry - ensure we have event loop
-                    try:
-                        loop = asyncio.get_running_loop()
-                        await asyncio.sleep(0.5 * (attempt + 1))
-                    except RuntimeError:
-                        # No event loop - this shouldn't happen in async context, but handle it gracefully
-                        logger.warning(
-                            "No event loop available for sleep, skipping delay",
-                            attempt=attempt + 1,
-                        )
-                    continue
-                else:
-                    raise RuntimeError(f"Failed to get channel after {max_retries} attempts: {e}") from e
-        
-        # Should not reach here, but just in case
-        raise RuntimeError("Failed to get channel: max retries exceeded")
+            
+            # Should not reach here, but just in case
+            raise RuntimeError("Failed to get channel: max retries exceeded")
     
     def is_connected(self) -> bool:
         """
@@ -306,7 +380,13 @@ class MQConnectionManager:
         Returns:
             bool: True if connected, False otherwise
         """
-        return self._connection is not None and not self._connection.is_closed
+        if self._connection is None:
+            return False
+        try:
+            return not self._connection.is_closed
+        except (RuntimeError, AttributeError, aiormq.exceptions.ChannelInvalidStateError):
+            # Connection is in invalid state
+            return False
     
     @property
     def connection(self) -> Optional[aio_pika.Connection]:

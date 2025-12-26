@@ -52,6 +52,8 @@ class BybitClient:
         self.retry_max_delay = retry_max_delay
         self.retry_multiplier = retry_multiplier
         self._client: Optional[AsyncClient] = None
+        self._time_offset: Optional[int] = None  # Offset in milliseconds: server_time - local_time
+        self._time_sync_lock = asyncio.Lock()  # Lock for time synchronization
 
     async def _get_client(self) -> AsyncClient:
         """Get or create HTTP client."""
@@ -61,6 +63,72 @@ class BybitClient:
                 timeout=self.timeout,
             )
         return self._client
+
+    async def _sync_server_time(self) -> None:
+        """Synchronize local time with Bybit server time.
+        
+        Fetches server time from Bybit API and calculates offset between
+        local and server time to ensure accurate timestamps for authenticated requests.
+        Uses lock to prevent concurrent synchronization requests.
+        """
+        async with self._time_sync_lock:
+            # Double-check pattern: another coroutine might have synced while we waited
+            if self._time_offset is not None:
+                return
+            
+            try:
+                client = await self._get_client()
+                # Use unauthenticated endpoint to get server time
+                response = await client.get("/v5/market/time")
+                response.raise_for_status()
+                data = response.json()
+                
+                if data.get("retCode") == 0:
+                    result = data.get("result", {})
+                    # Bybit API v5 returns timeSecond (Unix timestamp in seconds)
+                    time_second = result.get("timeSecond")
+                    if time_second is not None:
+                        server_time_ms = int(time_second) * 1000
+                        local_time_ms = int(time.time() * 1000)
+                        
+                        # Calculate offset: server_time - local_time
+                        self._time_offset = server_time_ms - local_time_ms
+                        
+                        logger.info(
+                            "bybit_time_synced",
+                            server_time_ms=server_time_ms,
+                            local_time_ms=local_time_ms,
+                            offset_ms=self._time_offset,
+                        )
+                    else:
+                        logger.warning(
+                            "bybit_time_sync_invalid_response",
+                            result=result,
+                        )
+                else:
+                    logger.warning(
+                        "bybit_time_sync_failed",
+                        ret_code=data.get("retCode"),
+                        ret_msg=data.get("retMsg"),
+                    )
+            except Exception as e:
+                logger.warning(
+                    "bybit_time_sync_error",
+                    error=str(e),
+                    exc_info=True,
+                )
+                # Don't raise - we'll fall back to local time
+
+    def _get_adjusted_timestamp(self) -> int:
+        """Get timestamp adjusted for server time offset.
+        
+        Returns:
+            Timestamp in milliseconds, adjusted for server time offset if available.
+        """
+        local_time_ms = int(time.time() * 1000)
+        if self._time_offset is not None:
+            return local_time_ms + self._time_offset
+        return local_time_ms
 
     def _generate_signature(self, params: Dict[str, Any], timestamp: int) -> str:
         """
@@ -207,9 +275,13 @@ class BybitClient:
         trace_id = get_or_create_trace_id()
         client = await self._get_client()
 
+        # Sync server time before first authenticated request if not already synced
+        if authenticated and self._time_offset is None:
+            await self._sync_server_time()
+
         # Prepare authentication
-        timestamp = int(time.time() * 1000)  # Current timestamp in milliseconds
-        recv_window = "5000"  # Standard receive window (5 seconds)
+        timestamp = self._get_adjusted_timestamp()  # Adjusted timestamp in milliseconds
+        recv_window = "10000"  # Receive window (10 seconds) - increased to handle time drift
         
         # Prepare request parameters and headers
         request_params = params or {}

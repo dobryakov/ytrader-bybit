@@ -194,12 +194,61 @@ class ModelTrainer:
                 remaining_missing=missing_after,
             )
         
+        # Remove features with too many missing values (configurable threshold)
+        # Features with >50% missing values are likely not informative
+        missing_threshold_pct = merged_hparams.get("missing_value_drop_threshold", 0.5)
+        if missing_threshold_pct > 0 and len(numeric_cols) > 0:
+            missing_pct_per_col = X[numeric_cols].isnull().sum() / len(X)
+            high_missing_cols = missing_pct_per_col[missing_pct_per_col > missing_threshold_pct].index.tolist()
+            if high_missing_cols:
+                logger.warning(
+                    "Removing features with high percentage of missing values",
+                    dataset_id=getattr(dataset, "dataset_id", None),
+                    removed_features=high_missing_cols,
+                    missing_percentage_threshold=missing_threshold_pct * 100,
+                    missing_percentages={col: round(float(missing_pct_per_col[col]) * 100, 2) for col in high_missing_cols},
+                )
+                X = X.drop(columns=high_missing_cols, errors='ignore')
+                numeric_cols = numeric_cols.drop(high_missing_cols, errors='ignore')
+        
+        # Remove constant features (zero variance) - these provide no information
+        constant_features = []
+        for col in numeric_cols:
+            if X[col].nunique() <= 1:
+                constant_features.append(col)
+        
+        if constant_features:
+            logger.warning(
+                "Removing constant features (zero variance)",
+                dataset_id=getattr(dataset, "dataset_id", None),
+                removed_features=constant_features,
+                constant_values={col: float(X[col].iloc[0]) if len(X) > 0 else None for col in constant_features},
+            )
+            X = X.drop(columns=constant_features, errors='ignore')
+            numeric_cols = numeric_cols.drop(constant_features, errors='ignore')
+        
         # For non-numeric columns, fill with forward fill or drop if needed
         non_numeric_cols = X.select_dtypes(exclude=[np.number]).columns
         if len(non_numeric_cols) > 0:
             # Drop non-numeric columns that are not needed for training (like 'symbol', 'timestamp')
             # These should be excluded from features before training
             X = X.drop(columns=non_numeric_cols, errors='ignore')
+        
+        # Check if we have any features left after cleaning
+        if X.empty or len(X.columns) == 0:
+            raise ValueError(
+                "All features were removed during data cleaning. "
+                "This usually indicates severe data quality issues. "
+                "Please check your dataset for missing values, constant features, or other quality problems."
+            )
+        
+        # Log final feature count after cleaning
+        logger.info(
+            "Data cleaning completed - feature count",
+            dataset_id=getattr(dataset, "dataset_id", None),
+            final_feature_count=len(X.columns),
+            original_feature_count=len(dataset.features.columns) if hasattr(dataset, "features") else None,
+        )
         
         # Handle duplicate samples
         # Create combined DataFrame to detect duplicates
