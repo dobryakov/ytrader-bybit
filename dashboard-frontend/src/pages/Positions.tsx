@@ -95,7 +95,23 @@ export default function Positions() {
           placeholder="Asset (e.g., BTCUSDT)"
           className="px-3 py-2 border rounded-md"
           value={filters.asset || ''}
-          onChange={(e) => setFilters({ ...filters, asset: e.target.value || undefined })}
+          onChange={(e) => {
+            const newAsset = e.target.value || undefined
+            setFilters({ ...filters, asset: newAsset })
+            // Update URL params immediately
+            const newParams = new URLSearchParams(searchParams)
+            if (newAsset) {
+              newParams.set('asset', newAsset)
+            } else {
+              newParams.delete('asset')
+            }
+            setSearchParams(newParams)
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.currentTarget.blur()
+            }
+          }}
         />
         <select
           className="px-3 py-2 border rounded-md"

@@ -109,17 +109,8 @@ export default function Signals() {
                     <TableCell>{parseFloat(signal.amount).toFixed(2)} USDT</TableCell>
                     <TableCell>
                       {signal.model_task_type === 'regression' 
-                        ? 'N/A' 
-                        : (signal.confidence ? (signal.confidence * 100).toFixed(2) + '%' : 'N/A')}
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex flex-col gap-1">
-                        {signal.model_task_type === 'regression' ? (
-                          // Regression model display
-                          <>
-                            {signal.raw_prediction_data?.prediction_result?.prediction !== undefined && (
-                              <div className="flex items-center gap-2">
-                                <span className="text-xs text-muted-foreground">Return:</span>
+                        ? (signal.raw_prediction_data?.prediction_result?.prediction !== undefined 
+                            ? (
                                 <span className={`font-mono text-sm font-semibold ${
                                   Number(signal.raw_prediction_data.prediction_result.prediction) > 0 
                                     ? 'text-green-600' 
@@ -129,8 +120,15 @@ export default function Signals() {
                                 }`}>
                                   {(Number(signal.raw_prediction_data.prediction_result.prediction) * 100).toFixed(4)}%
                                 </span>
-                              </div>
-                            )}
+                              )
+                            : 'N/A')
+                        : (signal.confidence ? (signal.confidence * 100).toFixed(2) + '%' : 'N/A')}
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex flex-col gap-1">
+                        {signal.model_task_type === 'regression' ? (
+                          // Regression model display
+                          <>
                             {signal.raw_prediction_data?.regression_thresholds ? (
                               // Show regression thresholds (quantile thresholds) for regression models
                               <div className="text-xs text-muted-foreground space-y-0.5">

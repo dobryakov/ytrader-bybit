@@ -42,6 +42,11 @@ class Settings(BaseSettings):
     model_service_port: int = Field(default=4500, alias="MODEL_SERVICE_PORT")
     model_service_api_key: str = Field(..., alias="MODEL_SERVICE_API_KEY")
 
+    # Feature Service Configuration (for proxying registry requests)
+    feature_service_host: str = Field(default="feature-service", alias="FEATURE_SERVICE_HOST")
+    feature_service_port: int = Field(default=4900, alias="FEATURE_SERVICE_PORT")
+    feature_service_api_key: Optional[str] = Field(default=None, alias="FEATURE_SERVICE_API_KEY")
+
     # RabbitMQ Configuration
     rabbitmq_host: str = Field(default="rabbitmq", alias="RABBITMQ_HOST")
     rabbitmq_port: int = Field(default=5672, alias="RABBITMQ_PORT")
