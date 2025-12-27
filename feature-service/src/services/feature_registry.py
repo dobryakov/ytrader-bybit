@@ -164,10 +164,28 @@ class FeatureRegistryLoader:
         
         # Store config dict for backward compatibility
         self._config = config_data
+        
+        # Validate timestamp interval compatibility
+        if self._registry_model:
+            is_valid, error_message = self._registry_model.validate_timestamp_interval_compatibility()
+            if not is_valid and error_message:
+                logger.warning(
+                    "timestamp_interval_compatibility_warning",
+                    version=config_data.get("version"),
+                    error=error_message,
+                    message="Timestamp interval may not be optimal for all features",
+                )
+        
+        # Log timestamp interval if configured
+        timestamp_interval = None
+        if self._registry_model:
+            timestamp_interval = self._registry_model.get_timestamp_interval_minutes()
+        
         logger.info(
             "Feature Registry loaded and validated",
             version=config_data.get("version"),
             features_count=len(config_data.get("features", [])),
+            timestamp_interval_minutes=timestamp_interval,
             use_db=self._use_db,
         )
     

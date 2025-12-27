@@ -137,7 +137,26 @@ class TrainingOrchestrator:
 
         # Request dataset build from Feature Service
         trace_id = str(uuid4())
-        dataset_id = await feature_service_client.build_dataset(request, trace_id=trace_id)
+        logger.info(
+            "Calling Feature Service build_dataset",
+            url=f"{feature_service_client.base_url}/dataset/build",
+            symbol=symbol,
+            strategy_id=strategy_id,
+            trace_id=trace_id,
+        )
+        try:
+            dataset_id = await feature_service_client.build_dataset(request, trace_id=trace_id)
+        except Exception as e:
+            logger.error(
+                "Exception during build_dataset call",
+                error=str(e),
+                error_type=type(e).__name__,
+                symbol=symbol,
+                strategy_id=strategy_id,
+                trace_id=trace_id,
+                exc_info=True,
+            )
+            raise
 
         if not dataset_id:
             self._metrics["dataset_build_failures"] = self._metrics.get("dataset_build_failures", 0) + 1
@@ -1004,6 +1023,50 @@ class TrainingOrchestrator:
                 task_type=task_type,  # Use task_type from dataset target_config
             )
 
+            # Calculate quantile thresholds for regression models
+            # Top 20% → BUY, Bottom 20% → SELL, остальное → HOLD
+            regression_quantile_thresholds: Optional[Dict[str, float]] = None
+            if task_type == "regression" and len(y_pred) > 0:
+                try:
+                    # Calculate quantiles on validation predictions
+                    # 80th percentile (top 20%) → BUY threshold
+                    # 20th percentile (bottom 20%) → SELL threshold
+                    buy_quantile = 0.8
+                    sell_quantile = 0.2
+                    
+                    buy_threshold = float(np.quantile(y_pred, buy_quantile))
+                    sell_threshold = float(np.quantile(y_pred, sell_quantile))
+                    
+                    regression_quantile_thresholds = {
+                        "method": "quantile",
+                        "buy_quantile": buy_quantile,
+                        "sell_quantile": sell_quantile,
+                        "buy_threshold_value": buy_threshold,
+                        "sell_threshold_value": sell_threshold,
+                    }
+                    
+                    logger.info(
+                        "Calculated quantile thresholds for regression model",
+                        training_id=training_id,
+                        split=eval_split,
+                        buy_quantile=buy_quantile,
+                        sell_quantile=sell_quantile,
+                        buy_threshold_value=buy_threshold,
+                        sell_threshold_value=sell_threshold,
+                        total_predictions=len(y_pred),
+                        top_20_percent_count=int(len(y_pred) * 0.2),
+                        bottom_20_percent_count=int(len(y_pred) * 0.2),
+                        trace_id=trace_id,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Failed to calculate quantile thresholds for regression",
+                        training_id=training_id,
+                        error=str(e),
+                        trace_id=trace_id,
+                        exc_info=True,
+                    )
+
             # Optional: calibrate optimal probability thresholds on validation split
             # for binary classification tasks. We store these thresholds alongside
             # the model version so that inference can apply the same decision rule.
@@ -1262,6 +1325,7 @@ class TrainingOrchestrator:
 
                                 # Prepare predictions and metrics for later saving (after model_version is created)
                                 # Save raw predictions for test split analysis
+                                test_predictions_data = None
                                 if task_type == "classification" and test_y_pred_proba is not None:
                                     test_predictions_data = {
                                         "model_version": None,  # Will be set after model_version creation
@@ -1271,6 +1335,17 @@ class TrainingOrchestrator:
                                         "model": model,
                                         "task_type": task_type,
                                         "task_variant": task_variant,
+                                        "training_id": training_id,
+                                        "trace_id": trace_id,
+                                    }
+                                elif task_type == "regression":
+                                    # For regression: save y_true and y_pred (numerical values)
+                                    test_predictions_data = {
+                                        "model_version": None,  # Will be set after model_version creation
+                                        "dataset_id": dataset_id,
+                                        "y_true": test_labels,
+                                        "y_pred": test_y_pred,
+                                        "task_type": task_type,
                                         "training_id": training_id,
                                         "trace_id": trace_id,
                                     }
@@ -1371,6 +1446,11 @@ class TrainingOrchestrator:
                 training_config["probability_thresholds"] = {
                     str(k): float(v) for k, v in probability_thresholds.items()
                 }
+
+            # Persist quantile thresholds for regression models (if any) so that
+            # inference can apply the same decision rule for this model version.
+            if regression_quantile_thresholds is not None:
+                training_config["regression_thresholds"] = regression_quantile_thresholds
 
             # Get symbol from dataset metadata for model binding
             dataset_symbol = symbol or (dataset_meta.symbol if hasattr(dataset_meta, 'symbol') else None)
@@ -1578,37 +1658,50 @@ class TrainingOrchestrator:
                     trace_id=trace_id,
                 )
             elif task_type == "regression":
-                # For regression: use R² score (primary) and optionally RMSE (secondary)
-                r2_score = final_metrics.get("r2_score", -float('inf'))
-                rmse = final_metrics.get("rmse", float('inf'))
+                # For regression: use metric from MODEL_TRAINING_THRESHOLD_OPTIMIZATION_METRIC
+                # Use MODEL_ACTIVATION_THRESHOLD for all metrics (except RMSE which uses separate threshold)
+                optimization_metric = settings.model_training_threshold_optimization_metric
                 
-                # Primary check: R² score should meet threshold
-                r2_meets_threshold = r2_score >= settings.model_quality_threshold_r2
+                # Map optimization metric names to final_metrics keys
+                metric_key_map = {
+                    "r2_score": "r2_score",
+                    "directional_accuracy": "directional_accuracy",
+                    "sharpe_ratio": "sharpe_ratio",
+                    "information_coefficient": "information_coefficient",
+                    "ic": "information_coefficient",  # alias
+                    "rmse": "rmse",
+                }
                 
-                # Secondary check: RMSE (if threshold is configured)
-                rmse_meets_threshold = True
-                if settings.model_quality_threshold_rmse is not None:
-                    rmse_meets_threshold = rmse <= settings.model_quality_threshold_rmse
+                metric_key = metric_key_map.get(optimization_metric, "r2_score")
+                quality_metric = optimization_metric
+                quality_value = final_metrics.get(metric_key, -float('inf') if metric_key != "rmse" else float('inf'))
                 
-                quality_metric = "r2_score"
-                quality_value = r2_score
-                threshold_value = settings.model_quality_threshold_r2
-                should_activate = r2_meets_threshold and rmse_meets_threshold
+                # Use MODEL_ACTIVATION_THRESHOLD for all metrics except RMSE
+                # RMSE uses separate threshold because its values are not in 0-1 range
+                if metric_key == "rmse":
+                    threshold_value = settings.model_quality_threshold_rmse if settings.model_quality_threshold_rmse is not None else float('inf')
+                    should_activate = quality_value <= threshold_value
+                else:
+                    # Use unified MODEL_ACTIVATION_THRESHOLD for all other regression metrics
+                    threshold_value = settings.model_activation_threshold
+                    should_activate = quality_value >= threshold_value
                 
-                # Log additional RMSE info if threshold is configured
-                if settings.model_quality_threshold_rmse is not None:
-                    logger.debug(
-                        "Regression activation check",
-                        version=version,
-                        r2_score=r2_score,
-                        r2_threshold=settings.model_quality_threshold_r2,
-                        rmse=rmse,
-                        rmse_threshold=settings.model_quality_threshold_rmse,
-                        r2_ok=r2_meets_threshold,
-                        rmse_ok=rmse_meets_threshold,
-                        metrics_source=metrics_source,
-                        trace_id=trace_id,
-                    )
+                logger.debug(
+                    "Regression activation check",
+                    version=version,
+                    optimization_metric=optimization_metric,
+                    metric_key=metric_key,
+                    quality_value=quality_value,
+                    threshold=threshold_value,
+                    should_activate=should_activate,
+                    r2_score=final_metrics.get("r2_score"),
+                    directional_accuracy=final_metrics.get("directional_accuracy"),
+                    sharpe_ratio=final_metrics.get("sharpe_ratio"),
+                    information_coefficient=final_metrics.get("information_coefficient"),
+                    rmse=final_metrics.get("rmse"),
+                    metrics_source=metrics_source,
+                    trace_id=trace_id,
+                )
             else:
                 logger.warning(
                     "Unknown task type, skipping auto-activation",
@@ -1696,16 +1789,72 @@ class TrainingOrchestrator:
                     trace_id=trace_id,
                 )
 
+            # Prepare threshold information for logging
+            threshold_info = {}
+            if task_type == "classification" and probability_thresholds is not None:
+                threshold_info = {
+                    "type": "classification",
+                    "method": "calibrated",
+                    "optimization_metric": settings.model_training_threshold_optimization_metric,
+                    "thresholds": {str(k): float(v) for k, v in probability_thresholds.items()},
+                }
+            elif task_type == "regression" and regression_quantile_thresholds is not None:
+                threshold_info = {
+                    "type": "regression",
+                    "method": "quantile",
+                    "buy_threshold": regression_quantile_thresholds.get("buy_threshold_value"),
+                    "sell_threshold": regression_quantile_thresholds.get("sell_threshold_value"),
+                    "buy_quantile": regression_quantile_thresholds.get("buy_quantile"),
+                    "sell_quantile": regression_quantile_thresholds.get("sell_quantile"),
+                }
+            elif task_type == "regression":
+                # Fallback to fixed threshold
+                threshold_info = {
+                    "type": "regression",
+                    "method": "fixed",
+                    "threshold": settings.model_regression_threshold,
+                    "note": "Quantile thresholds not available, using fixed MODEL_REGRESSION_THRESHOLD",
+                }
+            else:
+                threshold_info = {
+                    "type": task_type,
+                    "method": "default",
+                    "note": "No custom thresholds configured",
+                }
+
+            # Prepare hyperparameter optimization metric info
+            hyperparameter_optimization_metric = None
+            if settings.model_training_hyperparameter_tuning:
+                if task_type == "classification":
+                    # For classification, hyperparameter tuning uses f1_macro (hardcoded in model_trainer.py)
+                    hyperparameter_optimization_metric = "f1_macro"
+                else:
+                    # For regression, use the metric from settings (same as threshold optimization)
+                    hyperparameter_optimization_metric = settings.model_training_threshold_optimization_metric
+            else:
+                hyperparameter_optimization_metric = "none (tuning disabled)"
+
             logger.info(
                 "Model training completed",
                 training_id=training_id,
                 version=version,
                 strategy_id=strategy_id,
                 dataset_id=str(dataset_id),
+                task_type=task_type,
                 duration_seconds=training_duration,
                 validation_metrics=validation_metrics,
                 test_metrics=test_metrics,
                 final_metrics_source=metrics_source,
+                threshold_info=threshold_info,
+                hyperparameter_optimization_metric=hyperparameter_optimization_metric,
+                hyperparameter_tuning_enabled=settings.model_training_hyperparameter_tuning,
+                activation_info={
+                    "metric": quality_metric,
+                    "value": quality_value,
+                    "threshold": threshold_value,
+                    "should_activate": should_activate,
+                    "optimization_metric_for_activation": settings.model_training_threshold_optimization_metric,
+                },
                 trace_id=trace_id,
             )
 
@@ -2011,76 +2160,113 @@ class TrainingOrchestrator:
         model_version: str,
         dataset_id: UUID,
         y_true: pd.Series,
-        y_pred_proba: np.ndarray,
-        model: Any,
-        task_type: str,
+        y_pred_proba: Optional[np.ndarray] = None,
+        y_pred: Optional[np.ndarray] = None,
+        model: Optional[Any] = None,
+        task_type: str = "classification",
         task_variant: Optional[str] = None,
         training_id: Optional[str] = None,
         trace_id: Optional[str] = None,
     ) -> None:
         """
-        Save raw predictions (probabilities) for test split analysis.
+        Save raw predictions for test split analysis.
+        
+        For classification: saves probabilities and confidence.
+        For regression: saves y_true and y_pred values.
         
         Args:
             model_version: Model version string
             dataset_id: Dataset UUID identifier
-            y_true: True labels
-            y_pred_proba: Predicted probabilities (2D array: n_samples, n_classes)
-            model: Trained model (for label mapping)
+            y_true: True labels/values
+            y_pred_proba: Predicted probabilities (2D array: n_samples, n_classes) - for classification
+            y_pred: Predicted values (1D array) - for regression
+            model: Trained model (for label mapping) - for classification
             task_type: Task type ('classification' or 'regression')
-            task_variant: Task variant ('binary_classification', etc.)
+            task_variant: Task variant ('binary_classification', etc.) - for classification
             training_id: Optional training ID
             trace_id: Optional trace ID
         """
         try:
-            if y_pred_proba is None or y_pred_proba.ndim != 2:
+            predictions = []
+            metadata = {
+                "task_type": task_type,
+                "num_samples": len(y_true),
+                "training_id": training_id,
+            }
+            
+            if task_type == "classification":
+                if y_pred_proba is None or y_pred_proba.ndim != 2:
+                    logger.warning(
+                        "Cannot save test predictions: invalid y_pred_proba for classification",
+                        shape=y_pred_proba.shape if y_pred_proba is not None else None,
+                        training_id=training_id,
+                        trace_id=trace_id,
+                    )
+                    return
+
+                # Get label mapping if available (for remapped labels)
+                label_mapping = getattr(model, "_label_mapping_for_inference", None) if model else None
+                
+                # Prepare predictions list for classification
+                for i in range(len(y_true)):
+                    y_true_value = int(y_true.iloc[i]) if hasattr(y_true.iloc[i], '__int__') else y_true.iloc[i]
+                    probabilities = [float(p) for p in y_pred_proba[i]]
+                    confidence = float(np.max(probabilities))
+                    
+                    pred_dict = {
+                        "y_true": y_true_value,
+                        "probabilities": probabilities,
+                        "confidence": confidence,
+                    }
+                    
+                    # Add semantic probabilities if label mapping exists
+                    if label_mapping and isinstance(label_mapping, dict):
+                        sem_probs = {}
+                        for class_idx, sem_label in label_mapping.items():
+                            try:
+                                idx = int(class_idx)
+                            except (TypeError, ValueError):
+                                idx = class_idx
+                            if isinstance(idx, int) and 0 <= idx < len(probabilities):
+                                sem_probs[sem_label] = float(probabilities[idx])
+                        if sem_probs:
+                            pred_dict["semantic_probabilities"] = sem_probs
+                    
+                    predictions.append(pred_dict)
+
+                metadata["task_variant"] = task_variant
+                metadata["num_classes"] = y_pred_proba.shape[1]
+                
+            elif task_type == "regression":
+                if y_pred is None:
+                    logger.warning(
+                        "Cannot save test predictions: y_pred is None for regression",
+                        training_id=training_id,
+                        trace_id=trace_id,
+                    )
+                    return
+                
+                # Prepare predictions list for regression
+                for i in range(len(y_true)):
+                    y_true_value = float(y_true.iloc[i])
+                    y_pred_value = float(y_pred[i]) if isinstance(y_pred, np.ndarray) else float(y_pred)
+                    
+                    pred_dict = {
+                        "y_true": y_true_value,
+                        "y_pred": y_pred_value,
+                        "error": float(y_true_value - y_pred_value),
+                        "abs_error": float(abs(y_true_value - y_pred_value)),
+                    }
+                    
+                    predictions.append(pred_dict)
+            else:
                 logger.warning(
-                    "Cannot save test predictions: invalid y_pred_proba",
-                    shape=y_pred_proba.shape if y_pred_proba is not None else None,
+                    "Unknown task type, cannot save predictions",
+                    task_type=task_type,
                     training_id=training_id,
                     trace_id=trace_id,
                 )
                 return
-
-            # Get label mapping if available (for remapped labels)
-            label_mapping = getattr(model, "_label_mapping_for_inference", None)
-            
-            # Prepare predictions list
-            predictions = []
-            for i in range(len(y_true)):
-                y_true_value = int(y_true.iloc[i]) if hasattr(y_true.iloc[i], '__int__') else y_true.iloc[i]
-                probabilities = [float(p) for p in y_pred_proba[i]]
-                confidence = float(np.max(probabilities))
-                
-                pred_dict = {
-                    "y_true": y_true_value,
-                    "probabilities": probabilities,
-                    "confidence": confidence,
-                }
-                
-                # Add semantic probabilities if label mapping exists
-                if label_mapping and isinstance(label_mapping, dict):
-                    sem_probs = {}
-                    for class_idx, sem_label in label_mapping.items():
-                        try:
-                            idx = int(class_idx)
-                        except (TypeError, ValueError):
-                            idx = class_idx
-                        if isinstance(idx, int) and 0 <= idx < len(probabilities):
-                            sem_probs[sem_label] = float(probabilities[idx])
-                    if sem_probs:
-                        pred_dict["semantic_probabilities"] = sem_probs
-                
-                predictions.append(pred_dict)
-
-            # Prepare metadata
-            metadata = {
-                "task_type": task_type,
-                "task_variant": task_variant,
-                "num_classes": y_pred_proba.shape[1],
-                "num_samples": len(y_true),
-                "training_id": training_id,
-            }
 
             # Save to database
             prediction_repo = ModelPredictionRepository()
@@ -2099,12 +2285,11 @@ class TrainingOrchestrator:
                 dataset_id=str(dataset_id),
                 split="test",
                 num_predictions=len(predictions),
-                num_classes=y_pred_proba.shape[1],
                 task_type=task_type,
                 task_variant=task_variant,
                 training_id=training_id,
                 trace_id=trace_id,
-                note="Raw predictions (y_true + probabilities) saved for top-k analysis and ranking evaluation",
+                note=f"Raw predictions saved for {task_type} analysis",
             )
         except Exception as e:
             logger.error(

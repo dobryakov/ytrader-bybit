@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from src.models.feature_registry import (
     FeatureRegistry,
     FeatureDefinition,
+    FeatureRegistryConfig,
     DataSource,
 )
 from tests.fixtures.feature_registry import (
@@ -254,4 +255,80 @@ class TestFeatureRegistry:
             FeatureRegistry(**config)
         
         assert "exceeds recommended limit" in str(exc_info.value)
+    
+    def test_feature_registry_with_config(self):
+        """Test feature registry with config section."""
+        config = get_valid_feature_registry_config()
+        config["config"] = {"timestamp_interval_minutes": 5}
+        
+        registry = FeatureRegistry(**config)
+        assert registry.config is not None
+        assert registry.config.timestamp_interval_minutes == 5
+        assert registry.get_timestamp_interval_minutes() == 5
+    
+    def test_feature_registry_without_config(self):
+        """Test feature registry without config section (backward compatibility)."""
+        config = get_valid_feature_registry_config()
+        # Ensure config is not present
+        if "config" in config:
+            del config["config"]
+        
+        registry = FeatureRegistry(**config)
+        assert registry.config is None
+        assert registry.get_timestamp_interval_minutes() == 1  # Default
+    
+    def test_get_timestamp_interval_minutes(self):
+        """Test get_timestamp_interval_minutes method."""
+        # With config
+        config = get_valid_feature_registry_config()
+        config["config"] = {"timestamp_interval_minutes": 15}
+        registry = FeatureRegistry(**config)
+        assert registry.get_timestamp_interval_minutes() == 15
+        
+        # Without config (default)
+        config = get_valid_feature_registry_config()
+        if "config" in config:
+            del config["config"]
+        registry = FeatureRegistry(**config)
+        assert registry.get_timestamp_interval_minutes() == 1
+    
+    def test_validate_timestamp_interval_compatibility(self):
+        """Test timestamp interval compatibility validation."""
+        # Compatible: interval (5) < min lookback (15m = 15 minutes)
+        # Create config with only 15m features (no smaller lookback windows)
+        config = {
+            "version": "1.0.0",
+            "config": {"timestamp_interval_minutes": 5},
+            "features": [
+                {
+                    "name": "test_15m",
+                    "input_sources": ["kline"],
+                    "lookback_window": "15m",
+                    "lookahead_forbidden": True,
+                    "max_lookback_days": 1,
+                }
+            ]
+        }
+        registry = FeatureRegistry(**config)
+        is_valid, msg = registry.validate_timestamp_interval_compatibility()
+        assert is_valid is True
+        assert msg is None
+        
+        # Incompatible: interval (20) > min lookback (1m = 1 minute)
+        config = get_valid_feature_registry_config()
+        config["config"] = {"timestamp_interval_minutes": 20}
+        registry = FeatureRegistry(**config)
+        is_valid, msg = registry.validate_timestamp_interval_compatibility()
+        assert is_valid is False
+        assert "exceeds minimum lookback_window" in msg
+    
+    def test_to_dict_with_config(self):
+        """Test converting registry to dictionary with config."""
+        config = get_valid_feature_registry_config()
+        config["config"] = {"timestamp_interval_minutes": 5}
+        registry = FeatureRegistry(**config)
+        
+        registry_dict = registry.to_dict()
+        assert "config" in registry_dict
+        assert registry_dict["config"]["timestamp_interval_minutes"] == 5
 

@@ -337,6 +337,54 @@ class QualityEvaluator:
             logger.warning("Failed to calculate R2 score", error=str(e))
             metrics["r2_score"] = 0.0
 
+        # Directional Accuracy (Hit Rate): mean(sign(y_pred) == sign(y_true))
+        try:
+            if len(y_true) > 0 and len(y_pred) > 0:
+                y_true_sign = np.sign(y_true.values)
+                y_pred_sign = np.sign(y_pred.values if isinstance(y_pred, pd.Series) else y_pred)
+                directional_accuracy = float(np.mean(y_true_sign == y_pred_sign))
+                metrics["directional_accuracy"] = directional_accuracy
+            else:
+                metrics["directional_accuracy"] = 0.0
+        except Exception as e:
+            logger.warning("Failed to calculate directional accuracy", error=str(e))
+            metrics["directional_accuracy"] = 0.0
+
+        # Sharpe Ratio: mean(returns) / std(returns)
+        # Using predicted returns as proxy for strategy returns
+        try:
+            if len(y_pred) > 1:
+                returns_array = y_pred.values if isinstance(y_pred, pd.Series) else np.array(y_pred)
+                returns_std = float(np.std(returns_array))
+                if returns_std > 0:
+                    returns_mean = float(np.mean(returns_array))
+                    metrics["sharpe_ratio"] = float(returns_mean / returns_std)
+                else:
+                    metrics["sharpe_ratio"] = 0.0
+            else:
+                metrics["sharpe_ratio"] = 0.0
+        except Exception as e:
+            logger.warning("Failed to calculate Sharpe ratio", error=str(e))
+            metrics["sharpe_ratio"] = 0.0
+
+        # Information Coefficient (IC): correlation between y_pred and y_true
+        try:
+            if len(y_true) > 1 and len(y_pred) > 1:
+                y_true_array = y_true.values if isinstance(y_true, pd.Series) else np.array(y_true)
+                y_pred_array = y_pred.values if isinstance(y_pred, pd.Series) else np.array(y_pred)
+                # Use Pearson correlation
+                correlation = float(np.corrcoef(y_true_array, y_pred_array)[0, 1])
+                # Handle NaN (can occur if std is 0)
+                if np.isnan(correlation):
+                    metrics["information_coefficient"] = 0.0
+                else:
+                    metrics["information_coefficient"] = correlation
+            else:
+                metrics["information_coefficient"] = 0.0
+        except Exception as e:
+            logger.warning("Failed to calculate Information Coefficient", error=str(e))
+            metrics["information_coefficient"] = 0.0
+
         return metrics
 
     def calculate_trading_metrics(

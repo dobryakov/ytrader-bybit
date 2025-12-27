@@ -127,11 +127,14 @@ class IntelligentSignalGenerator:
         try:
             # Get active model version from database first (needed for training_config)
             active_model = None
+            model_version_repo = ModelVersionRepository()
             if not model_version:
                 # Get active model version from database (by strategy_id and symbol/asset)
-                model_version_repo = ModelVersionRepository()
                 active_model = await model_version_repo.get_active_by_strategy_and_symbol(strategy_id, asset)
                 model_version = active_model["version"] if active_model else None
+            else:
+                # If model_version is provided, load it to get training_config
+                active_model = await model_version_repo.get_by_version(model_version)
 
             # Load model (with symbol binding - asset is the symbol)
             logger.info("Loading model", asset=asset, strategy_id=strategy_id, model_version=model_version, trace_id=trace_id)
@@ -206,39 +209,138 @@ class IntelligentSignalGenerator:
                 trace_id=trace_id,
             )
 
-            # Check confidence threshold
-            confidence = prediction_result.get("confidence", 0.0)
-            threshold_source = "top_k" if effective_threshold != self.min_confidence_threshold else "static"
-            logger.info(
-                "Checking confidence threshold",
-                asset=asset,
-                strategy_id=strategy_id,
-                confidence=confidence,
-                threshold=effective_threshold,
-                threshold_source=threshold_source,
-                trace_id=trace_id,
-            )
-            
             # Get target config from model's training_config to determine task type
+            # Reuse training_config if already loaded above, otherwise load it
             target_config = None
-            if active_model and active_model.get("training_config"):
+            if not training_config and active_model and active_model.get("training_config"):
                 training_config = active_model["training_config"]
                 if isinstance(training_config, str):
                     training_config = json.loads(training_config)
+            
+            if training_config:
                 target_registry_version = training_config.get("target_registry_version")
                 if target_registry_version:
                     target_config = await target_registry_client.get_target_config(target_registry_version)
             
+            # Determine if this is a regression model early (needed for confidence threshold check)
+            is_regression = prediction_result.get("probabilities") is None
+            
+            # Check confidence threshold (only for classification models)
+            # For regression models, confidence is just normalized return magnitude, not real confidence
+            confidence = prediction_result.get("confidence", 0.0)
+            threshold_source = "top_k" if effective_threshold != self.min_confidence_threshold else "static"
+            
+            if not is_regression:
+                # Only check confidence threshold for classification models
+                logger.info(
+                    "Checking confidence threshold",
+                    asset=asset,
+                    strategy_id=strategy_id,
+                    confidence=confidence,
+                    threshold=effective_threshold,
+                    threshold_source=threshold_source,
+                    trace_id=trace_id,
+                )
+            else:
+                # For regression models, skip confidence threshold check
+                logger.debug(
+                    "Skipping confidence threshold check for regression model (confidence is normalized return magnitude)",
+                    asset=asset,
+                    strategy_id=strategy_id,
+                    predicted_return=prediction_result.get("prediction"),
+                    trace_id=trace_id,
+                )
+            
             # Determine signal type from prediction (before threshold check to have signal_type for rejected signals)
             # Pass target_config to reliably determine if model is classification or regression
-            signal_type = self._determine_signal_type(prediction_result, target_config=target_config)
+            # Pass training_config to use quantile thresholds for regression models
+            signal_type = self._determine_signal_type(
+                prediction_result, 
+                target_config=target_config,
+                training_config=training_config,
+            )
             
             # Prepare raw prediction data for metadata (for all signals - valid and rejected)
+            # For regression models, we don't compute buy/sell probabilities - rely on predicted_return and thresholds
+            # For classification models, use buy/sell probabilities from prediction_result
+            buy_probability = prediction_result.get("buy_probability")
+            sell_probability = prediction_result.get("sell_probability")
+            
+            # Only set buy/sell probabilities for classification models
+            # For regression models, leave them as None
+            if is_regression:
+                # For regression: don't set buy/sell probabilities
+                buy_probability = None
+                sell_probability = None
+            elif buy_probability is None and sell_probability is None:
+                # Classification model but probabilities are missing - this shouldn't happen, but handle gracefully
+                buy_probability = None
+                sell_probability = None
+            elif buy_probability is None:
+                # Only buy_probability is None, set to complement of sell_probability
+                buy_probability = 1.0 - (sell_probability if sell_probability is not None else 0.5)
+            elif sell_probability is None:
+                # Only sell_probability is None, set to complement of buy_probability
+                sell_probability = 1.0 - buy_probability
+            
+            # For regression models, extract regression thresholds (quantile thresholds) from training_config
+            regression_thresholds_info = None
+            if is_regression:
+                if training_config and isinstance(training_config, dict):
+                    regression_thresholds = training_config.get("regression_thresholds")
+                    if regression_thresholds and isinstance(regression_thresholds, dict):
+                        method = regression_thresholds.get("method")
+                        buy_threshold_value = regression_thresholds.get("buy_threshold_value")
+                        sell_threshold_value = regression_thresholds.get("sell_threshold_value")
+                        if method and buy_threshold_value is not None and sell_threshold_value is not None:
+                            regression_thresholds_info = {
+                                "method": method,
+                                "buy_threshold": float(buy_threshold_value),
+                                "sell_threshold": float(sell_threshold_value),
+                            }
+                            logger.info(
+                                "Extracted regression thresholds from training_config",
+                                asset=asset,
+                                strategy_id=strategy_id,
+                                method=method,
+                                buy_threshold=buy_threshold_value,
+                                sell_threshold=sell_threshold_value,
+                                trace_id=trace_id,
+                            )
+                        else:
+                            logger.warning(
+                                "Regression thresholds in training_config missing required fields",
+                                asset=asset,
+                                strategy_id=strategy_id,
+                                method=method,
+                                buy_threshold_value=buy_threshold_value,
+                                sell_threshold_value=sell_threshold_value,
+                                trace_id=trace_id,
+                            )
+                    else:
+                        logger.warning(
+                            "No regression_thresholds found in training_config for regression model",
+                            asset=asset,
+                            strategy_id=strategy_id,
+                            training_config_keys=list(training_config.keys()) if training_config else None,
+                            trace_id=trace_id,
+                        )
+                else:
+                    logger.warning(
+                        "training_config not available for regression model - cannot extract regression thresholds",
+                        asset=asset,
+                        strategy_id=strategy_id,
+                        is_regression=is_regression,
+                        training_config_type=type(training_config).__name__ if training_config else None,
+                        has_active_model=active_model is not None,
+                        trace_id=trace_id,
+                    )
+            
             raw_prediction_metadata = {
                 "prediction_result": {
                     "prediction": prediction_result.get("prediction"),
-                    "buy_probability": prediction_result.get("buy_probability"),
-                    "sell_probability": prediction_result.get("sell_probability"),
+                    "buy_probability": buy_probability,
+                    "sell_probability": sell_probability,
                     "confidence": confidence,
                     "probabilities": prediction_result.get("probabilities"),  # Raw probabilities array if available
                 },
@@ -246,8 +348,30 @@ class IntelligentSignalGenerator:
                 "threshold_source": threshold_source,
             }
             
-            # Check if confidence is below threshold
-            if confidence < effective_threshold:
+            # Add regression thresholds info for regression models
+            if regression_thresholds_info:
+                raw_prediction_metadata["regression_thresholds"] = regression_thresholds_info
+                logger.info(
+                    "Added regression_thresholds to raw_prediction_metadata",
+                    asset=asset,
+                    strategy_id=strategy_id,
+                    regression_thresholds=regression_thresholds_info,
+                    trace_id=trace_id,
+                )
+            else:
+                if is_regression:
+                    logger.warning(
+                        "regression_thresholds_info is None for regression model - will not be saved in metadata",
+                        asset=asset,
+                        strategy_id=strategy_id,
+                        is_regression=is_regression,
+                        has_training_config=training_config is not None,
+                        trace_id=trace_id,
+                    )
+            
+            # Check if confidence is below threshold (only for classification models)
+            # For regression models, skip this check as confidence is not meaningful
+            if not is_regression and confidence < effective_threshold:
                 logger.info(
                     "Signal confidence below threshold - creating rejected signal",
                     asset=asset,
@@ -299,7 +423,19 @@ class IntelligentSignalGenerator:
             # Log prediction details for debugging
             prediction = prediction_result.get("prediction")
             if isinstance(prediction, float):
-                # Regression model
+                # Regression model - determine which threshold method was used
+                threshold_info = {"method": "fixed", "threshold": settings.model_regression_threshold}
+                if training_config and isinstance(training_config, dict):
+                    regression_thresholds = training_config.get("regression_thresholds")
+                    if regression_thresholds and isinstance(regression_thresholds, dict):
+                        method = regression_thresholds.get("method")
+                        if method == "quantile":
+                            threshold_info = {
+                                "method": "quantile",
+                                "buy_threshold": regression_thresholds.get("buy_threshold_value"),
+                                "sell_threshold": regression_thresholds.get("sell_threshold_value"),
+                            }
+                
                 logger.info(
                     "Model prediction (regression)",
                     asset=asset,
@@ -308,22 +444,23 @@ class IntelligentSignalGenerator:
                     predicted_return_pct=prediction * 100,
                     determined_signal_type=signal_type,
                     confidence=confidence,
-                    threshold=settings.model_regression_threshold,
+                    threshold_info=threshold_info,
                     trace_id=trace_id,
                 )
             else:
-                # Classification model
-                buy_probability = prediction_result.get("buy_probability", 0.0)
-                sell_probability = prediction_result.get("sell_probability", 0.0)
+                # Classification model (or regression with computed probabilities)
+                # Use computed values from raw_prediction_metadata if available
+                log_buy_probability = buy_probability if buy_probability is not None else prediction_result.get("buy_probability", 0.0)
+                log_sell_probability = sell_probability if sell_probability is not None else prediction_result.get("sell_probability", 0.0)
                 logger.info(
                     "Model prediction probabilities",
                     asset=asset,
                     strategy_id=strategy_id,
-                    buy_probability=buy_probability,
-                    sell_probability=sell_probability,
+                    buy_probability=log_buy_probability,
+                    sell_probability=log_sell_probability,
                     determined_signal_type=signal_type,
                     confidence=confidence,
-                    signal_direction_check=f"buy_prob({buy_probability:.4f}) {'>' if buy_probability > sell_probability else '<='} sell_prob({sell_probability:.4f})",
+                    signal_direction_check=f"buy_prob({log_buy_probability:.4f}) {'>' if log_buy_probability > log_sell_probability else '<='} sell_prob({log_sell_probability:.4f})",
                     trace_id=trace_id,
                 )
 
@@ -601,13 +738,16 @@ class IntelligentSignalGenerator:
         self, 
         prediction_result: Dict[str, Any],
         target_config: Optional[Dict[str, Any]] = None,
+        training_config: Optional[Dict[str, Any]] = None,
+        buy_probability: Optional[float] = None,
+        sell_probability: Optional[float] = None,
     ) -> Optional[str]:
         """
         Determine signal type from model prediction.
 
         Supports both classification and regression models:
         - Classification: Uses buy/sell probabilities with hysteresis (min_probability_diff)
-        - Regression: Converts predicted return to signal using threshold
+        - Regression: Converts predicted return to signal using quantile thresholds (if available) or fixed threshold
 
         INVARIANT: For classification models without calibrated thresholds:
         - If |buy_probability - sell_probability| < min_probability_diff → HOLD (None)
@@ -621,11 +761,16 @@ class IntelligentSignalGenerator:
             target_config: Optional target config from model's training_config.
                 If provided, uses target_config["type"] to reliably determine task type.
                 If not provided, falls back to heuristic (prediction type).
+            training_config: Optional training config from model version.
+                Used to get quantile thresholds for regression models.
 
         Returns:
             'buy', 'sell', or None (for HOLD)
         """
         from ..config.settings import settings
+        
+        # Get prediction value for type checking
+        prediction = prediction_result.get("prediction")
         
         # Determine task type: prefer target_config if available, otherwise use heuristic
         is_regression = False
@@ -639,26 +784,72 @@ class IntelligentSignalGenerator:
             )
         else:
             # Fallback heuristic: check if prediction is a float (regression) or int (classification)
-            prediction = prediction_result.get("prediction")
             is_regression = prediction is not None and isinstance(prediction, float)
             logger.debug(
                 "Determined task type from prediction type (heuristic)",
-                prediction_type=type(prediction).__name__,
+                prediction_type=type(prediction).__name__ if prediction is not None else None,
                 is_regression=is_regression,
             )
         
         if is_regression:
             # Regression model: convert predicted return to signal
-            predicted_return = float(prediction)
-            threshold = settings.model_regression_threshold
-            
-            if predicted_return > threshold:
-                return "buy"
-            elif predicted_return < -threshold:
-                return "sell"
-            else:
-                # HOLD: predicted return is within threshold range (hysteresis)
+            if prediction is None:
+                logger.warning("Regression prediction is None, returning HOLD")
                 return None
+            predicted_return = float(prediction)
+            
+            # Check if quantile thresholds are available in training_config
+            use_quantile_thresholds = False
+            buy_threshold = None
+            sell_threshold = None
+            
+            if training_config and isinstance(training_config, dict):
+                regression_thresholds = training_config.get("regression_thresholds")
+                if regression_thresholds and isinstance(regression_thresholds, dict):
+                    method = regression_thresholds.get("method")
+                    if method == "quantile":
+                        buy_threshold = regression_thresholds.get("buy_threshold_value")
+                        sell_threshold = regression_thresholds.get("sell_threshold_value")
+                        if buy_threshold is not None and sell_threshold is not None:
+                            use_quantile_thresholds = True
+                            logger.debug(
+                                "Using quantile thresholds for regression signal",
+                                buy_threshold=buy_threshold,
+                                sell_threshold=sell_threshold,
+                                predicted_return=predicted_return,
+                            )
+            
+            # Fallback to fixed threshold if quantile thresholds not available
+            if not use_quantile_thresholds:
+                threshold = settings.model_regression_threshold
+                buy_threshold = threshold
+                sell_threshold = -threshold
+                logger.debug(
+                    "Using fixed threshold for regression signal (quantile thresholds not available)",
+                    threshold=threshold,
+                    predicted_return=predicted_return,
+                )
+            
+            # Determine signal based on thresholds
+            # For regression models, we only use predicted_return and thresholds
+            # We don't use buy/sell probabilities as they are not meaningful for regression
+            if buy_threshold is not None and sell_threshold is not None:
+                if predicted_return >= buy_threshold:
+                    return "buy"
+                elif predicted_return <= sell_threshold:
+                    return "sell"
+                else:
+                    # HOLD: predicted return is within threshold range (hysteresis)
+                    return None
+            else:
+                # Fallback: use fixed threshold
+                threshold = settings.model_regression_threshold
+                if predicted_return > threshold:
+                    return "buy"
+                elif predicted_return < -threshold:
+                    return "sell"
+                else:
+                    return None
         
         # Classification model: use buy/sell probabilities
         buy_probability = prediction_result.get("buy_probability", 0.0)
@@ -900,23 +1091,63 @@ class IntelligentSignalGenerator:
             target_config = None
             if target_registry_version:
                 target_config = await target_registry_client.get_target_config(target_registry_version)
+                if target_config:
+                    logger.debug(
+                        "Using target_config from target_registry",
+                        signal_id=signal.signal_id,
+                        target_registry_version=target_registry_version,
+                        target_type=target_config.get("type"),
+                        preset=target_config.get("computation", {}).get("preset") if isinstance(target_config.get("computation"), dict) else None,
+                        trace_id=trace_id,
+                    )
             
             # Fallback to settings if target_config is unavailable (e.g., Feature Service timeout)
             # This ensures prediction_target is saved even during temporary service issues
+            # Try to determine target type from model's training_config if available
             if not target_config:
+                fallback_target_type = None
+                if model_version:
+                    from ..database.repositories.model_version_repo import ModelVersionRepository
+                    model_version_repo = ModelVersionRepository()
+                    model_record = await model_version_repo.get_by_version(model_version)
+                    if model_record and model_record.get("training_config"):
+                        training_config = model_record["training_config"]
+                        if isinstance(training_config, str):
+                            training_config = json.loads(training_config)
+                        task_type = training_config.get("task_type")
+                        # Map task_type to target_type: "regression" -> "regression", "classification" -> "classification"
+                        if task_type in ["regression", "classification"]:
+                            fallback_target_type = task_type
+                            logger.debug(
+                                "Using target type from model training_config for fallback",
+                                model_version=model_version,
+                                task_type=task_type,
+                                signal_id=signal.signal_id,
+                            )
+                
+                # If still not determined, default to regression (most common case)
+                if not fallback_target_type:
+                    fallback_target_type = "regression"
+                    logger.debug(
+                        "Using default regression target type for fallback",
+                        signal_id=signal.signal_id,
+                    )
+                
                 logger.warning(
-                    "Target registry config not available, using fallback from settings",
+                    "Target registry config not available, using fallback from model training_config or default",
                     signal_id=signal.signal_id,
                     target_registry_version=target_registry_version,
+                    fallback_target_type=fallback_target_type,
                     trace_id=trace_id,
                 )
-                # Use fallback config from settings
+                # Use fallback config - preset "returns" is always regression
+                # But we use the determined target_type for consistency
                 target_config = {
-                    "type": "classification",  # Default type
+                    "type": fallback_target_type,
                     "horizon": settings.model_prediction_horizon_seconds,
                     "computation": {
                         "preset": "returns",
-                        "threshold": settings.model_classification_threshold,
+                        "threshold": settings.model_classification_threshold if fallback_target_type == "classification" else None,
                     },
                 }
                 # Use default target_registry_version if not available
@@ -1262,6 +1493,7 @@ class IntelligentSignalGenerator:
         """
         # Get target config for signal type determination
         target_config = None
+        training_config = None
         if active_model and active_model.get("training_config"):
             training_config = active_model["training_config"]
             if isinstance(training_config, str):
@@ -1271,7 +1503,11 @@ class IntelligentSignalGenerator:
                 target_config = await target_registry_client.get_target_config(target_registry_version)
         
         # Determine signal type from prediction (even if rejected)
-        signal_type = self._determine_signal_type(prediction_result, target_config=target_config)
+        signal_type = self._determine_signal_type(
+            prediction_result, 
+            target_config=target_config,
+            training_config=training_config,
+        )
         # If signal_type is None (HOLD), use 'buy' as default for rejected signal structure
         if signal_type is None:
             signal_type = "buy"  # Default, won't be used for trading

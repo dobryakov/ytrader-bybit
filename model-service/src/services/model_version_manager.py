@@ -181,13 +181,23 @@ class ModelVersionManager:
             "mae": "regression",
             "rmse": "regression",
             "r2_score": "regression",
-            "sharpe_ratio": "trading_performance",
+            "directional_accuracy": "regression",
+            "information_coefficient": "regression",
+            # Note: sharpe_ratio can be both regression (ML metric) and trading_performance
+            # We check if it's in metrics dict along with other regression metrics to determine type
+            "sharpe_ratio": "trading_performance",  # Default, but can be overridden below
             "profit_factor": "trading_performance",
             "win_rate": "trading_performance",
             "total_pnl": "trading_performance",
             "avg_pnl": "trading_performance",
             "max_drawdown": "trading_performance",
         }
+        
+        # If sharpe_ratio appears with regression metrics, treat it as regression
+        # This handles the case where sharpe_ratio is calculated as ML metric for regression
+        regression_metrics = {"mse", "mae", "rmse", "r2_score", "directional_accuracy", "information_coefficient"}
+        if "sharpe_ratio" in metrics and any(metric in metrics for metric in regression_metrics):
+            metric_type_mapping["sharpe_ratio"] = "regression"
 
         # Include dataset_split in metadata if provided
         final_metadata = metadata.copy() if metadata else {}

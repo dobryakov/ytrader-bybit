@@ -192,6 +192,10 @@ class Position(BaseModel):
                 # Keep None for Optional fields (long_size, short_size, average_entry_price, current_price)
                 if field in ["unrealized_pnl", "realized_pnl"]:
                     data.pop(field, None)  # Remove to use default Decimal("0")
+                elif field == "size":
+                    # size is required (NOT NULL in DB), but handle None gracefully
+                    # Set to 0 if None (should not happen in normal operation)
+                    data[field] = Decimal("0")
 
         # Handle datetime fields with defaults
         if "created_at" in data and data["created_at"] is None:

@@ -279,9 +279,10 @@ class StreamingDatasetBuilder:
                 data_end=data_end.isoformat(),
             )
         
-        # Step 6: Generate all timestamps from start_date to end_date with 1-minute step
+        # Step 6: Generate all timestamps from start_date to end_date with configurable step
+        timestamp_interval_minutes = feature_registry.get_timestamp_interval_minutes()
         timestamps = self._generate_timestamps_for_period(
-            start_date, end_date, all_klines, all_trades, requirements
+            start_date, end_date, all_klines, all_trades, requirements, timestamp_interval_minutes
         )
         
         if timestamps.empty:
@@ -677,21 +678,27 @@ class StreamingDatasetBuilder:
         all_klines: pd.DataFrame,
         all_trades: pd.DataFrame,
         requirements: DataRequirements,
+        timestamp_interval_minutes: int = 1,
     ) -> pd.Series:
         """
-        Generate timestamps for entire period with 1-minute step.
+        Generate timestamps for entire period with configurable step.
+        
+        Timestamps are aligned to interval boundaries:
+        - For 1-minute intervals: 00:00, 01:00, 02:00, ...
+        - For 5-minute intervals: 00:00, 05:00, 10:00, 15:00, ...
+        - For 15-minute intervals: 00:00, 15:00, 30:00, 45:00, ...
         
         Args:
             start_date: Start date for dataset
             end_date: End date for dataset
-            all_klines: All klines DataFrame
-            all_trades: All trades DataFrame
-            requirements: Data requirements
+            all_klines: All klines DataFrame (unused, kept for compatibility)
+            all_trades: All trades DataFrame (unused, kept for compatibility)
+            requirements: Data requirements (unused, kept for compatibility)
+            timestamp_interval_minutes: Interval in minutes for timestamp generation (default: 1)
             
         Returns:
-            Series of timestamps with 1-minute intervals
+            Series of timestamps with specified interval, aligned to interval boundaries
         """
-        # Generate 1-minute intervals from start_date to end_date
         timestamps = []
         current = start_date
         
@@ -701,15 +708,37 @@ class StreamingDatasetBuilder:
         if end_date.tzinfo is None:
             end_date = end_date.replace(tzinfo=timezone.utc)
         
-        # Round start_date to minute boundary
-        current = current.replace(second=0, microsecond=0)
+        # Align start_date to interval boundary
+        # For 1-minute: round to minute (00:00, 01:00, ...)
+        # For 5-minute: round to 5-minute boundary (00:00, 05:00, 10:00, ...)
+        # For 15-minute: round to 15-minute boundary (00:00, 15:00, 30:00, 45:00, ...)
+        if timestamp_interval_minutes == 1:
+            # Round to minute boundary
+            current = current.replace(second=0, microsecond=0)
+        else:
+            # Round down to nearest interval boundary
+            # Example: 16:42:30 with 5-minute interval -> 16:40:00
+            # Example: 16:47:30 with 5-minute interval -> 16:45:00
+            minutes_aligned = (current.minute // timestamp_interval_minutes) * timestamp_interval_minutes
+            current = current.replace(minute=minutes_aligned, second=0, microsecond=0)
         
+        # Generate timestamps with specified interval
         while current <= end_date:
             timestamps.append(current)
-            current += timedelta(minutes=1)
+            current += timedelta(minutes=timestamp_interval_minutes)
         
         if not timestamps:
             return pd.Series(dtype="datetime64[ns, UTC]")
+        
+        logger.debug(
+            "timestamps_generated_for_period",
+            start_date=start_date.isoformat(),
+            end_date=end_date.isoformat(),
+            interval_minutes=timestamp_interval_minutes,
+            count=len(timestamps),
+            first_timestamp=timestamps[0].isoformat() if timestamps else None,
+            last_timestamp=timestamps[-1].isoformat() if timestamps else None,
+        )
         
         # Convert to Series
         return pd.Series(timestamps, name="timestamp", dtype="datetime64[ns, UTC]")

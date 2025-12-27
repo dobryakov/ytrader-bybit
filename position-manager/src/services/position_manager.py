@@ -1035,13 +1035,24 @@ class PositionManager:
             # Extract size from snapshot_data for legacy column compatibility
             # The size column is NOT NULL in the table schema (migration 008)
             # even though we primarily use snapshot_data (migration 044)
-            size_value = position.size if position.size is not None else Decimal("0")
+            # Ensure size is never None - use 0 as fallback
+            if position.size is None:
+                logger.warning(
+                    "position_size_is_none",
+                    position_id=str(position.id),
+                    asset=position.asset,
+                    mode=position.mode,
+                    trace_id=trace_id,
+                )
+                size_value = Decimal("0")
+            else:
+                size_value = position.size
             
             insert_query = """
                 INSERT INTO position_snapshots (
                     id, position_id, asset, mode, size, snapshot_data, snapshot_timestamp
                 )
-                VALUES (gen_random_uuid(), $1, $2, $3, $4, $5::jsonb, NOW())
+                VALUES (gen_random_uuid(), $1, $2, $3, $4::decimal, $5::jsonb, NOW())
                 RETURNING id, position_id, asset, mode, snapshot_data, snapshot_timestamp AS created_at
             """
             row = await pool.fetchrow(
@@ -1049,7 +1060,7 @@ class PositionManager:
                 str(position.id),
                 position.asset,
                 position.mode,
-                str(size_value),
+                size_value,  # Pass Decimal directly - asyncpg supports it
                 snapshot_payload_json_str,
             )
 
@@ -2154,6 +2165,8 @@ class PositionManager:
                                 try:
                                     # Find open prediction_trading_results for this position
                                     # Join through signal_id -> orders -> position_orders -> positions
+                                    # Note: position_id column was removed from prediction_trading_results (migration 033)
+                                    # so we join through position_orders table instead
                                     open_results = await pool.fetch(
                                         """
                                         SELECT DISTINCT ptr.id, ptr.signal_id, ptr.realized_pnl, ptr.unrealized_pnl

@@ -3,6 +3,7 @@ Feature Registry model for feature configuration.
 """
 from typing import Dict, Any, List, Optional
 from pydantic import BaseModel, Field, field_validator, model_validator, ConfigDict
+from src.logging import get_logger
 
 
 class DataSource(BaseModel):
@@ -96,10 +97,35 @@ class FeatureDefinition(BaseModel):
         return self
 
 
+class FeatureRegistryConfig(BaseModel):
+    """Feature Registry configuration options."""
+    
+    timestamp_interval_minutes: Optional[int] = Field(
+        default=1,
+        description="Timestamp interval in minutes for dataset generation. Default: 1 minute. Timestamps are aligned to interval boundaries (e.g., 00:00, 05:00, 10:00 for 5-minute intervals)."
+    )
+    
+    @field_validator("timestamp_interval_minutes")
+    @classmethod
+    def validate_timestamp_interval_minutes(cls, v: Optional[int]) -> int:
+        """Validate timestamp_interval_minutes."""
+        if v is None:
+            return 1
+        if v <= 0:
+            raise ValueError("timestamp_interval_minutes must be positive")
+        if v > 60:
+            raise ValueError("timestamp_interval_minutes should not exceed 60 minutes")
+        return v
+
+
 class FeatureRegistry(BaseModel):
     """Feature Registry configuration model."""
     
     version: str = Field(description="Feature Registry version identifier")
+    config: Optional[FeatureRegistryConfig] = Field(
+        default=None,
+        description="Optional configuration for dataset generation and other registry-level settings"
+    )
     features: List[FeatureDefinition] = Field(
         description="List of feature definitions"
     )
@@ -170,6 +196,88 @@ class FeatureRegistry(BaseModel):
             data_types.update(feature.input_sources)
         return data_types
     
+    def get_timestamp_interval_minutes(self) -> int:
+        """
+        Get timestamp interval in minutes for dataset generation.
+        
+        Returns:
+            Timestamp interval in minutes (default: 1)
+        """
+        if self.config and self.config.timestamp_interval_minutes:
+            return self.config.timestamp_interval_minutes
+        return 1
+    
+    def validate_timestamp_interval_compatibility(self) -> tuple[bool, Optional[str]]:
+        """
+        Validate that timestamp_interval_minutes is compatible with feature lookback windows.
+        
+        Returns:
+            Tuple of (is_valid, error_message)
+            - is_valid: True if interval is compatible, False otherwise
+            - error_message: Error message if incompatible, None otherwise
+        """
+        interval_minutes = self.get_timestamp_interval_minutes()
+        
+        # Parse all lookback windows to find minimum required interval
+        min_lookback_minutes = None
+        
+        for feature in self.features:
+            lookback_window = feature.lookback_window
+            
+            # Parse lookback_window (e.g., "15m" -> 15, "3s" -> 0.05, "1h" -> 60)
+            if not lookback_window:
+                continue
+            
+            unit = lookback_window[-1]
+            try:
+                value = int(lookback_window[:-1])
+            except (ValueError, IndexError):
+                continue
+            
+            # Convert to minutes
+            if unit == "s":
+                lookback_minutes = value / 60.0
+            elif unit == "m":
+                lookback_minutes = value
+            elif unit == "h":
+                lookback_minutes = value * 60
+            elif unit == "d":
+                lookback_minutes = value * 24 * 60
+            else:
+                continue
+            
+            # Track minimum lookback (most restrictive)
+            if min_lookback_minutes is None or lookback_minutes < min_lookback_minutes:
+                min_lookback_minutes = lookback_minutes
+        
+        # If no lookback windows found, allow any interval
+        if min_lookback_minutes is None:
+            return True, None
+        
+        # Rule: timestamp_interval_minutes should not exceed min_lookback_minutes
+        # This ensures we have enough granularity for features with small lookback windows
+        # However, for features with large lookback windows (e.g., 15m), we can use larger intervals
+        # So we allow interval up to min_lookback_minutes, but warn if it's too large
+        
+        if interval_minutes > min_lookback_minutes:
+            return False, (
+                f"timestamp_interval_minutes ({interval_minutes}) exceeds minimum "
+                f"lookback_window ({min_lookback_minutes:.2f} minutes). "
+                f"This may cause loss of granularity for features with small lookback windows."
+            )
+        
+        # Warn if interval is too large relative to lookback (but don't fail)
+        if interval_minutes > min_lookback_minutes * 0.5:
+            logger = get_logger(__name__)
+            logger.warning(
+                "timestamp_interval_large_relative_to_lookback",
+                interval_minutes=interval_minutes,
+                min_lookback_minutes=min_lookback_minutes,
+                message="Timestamp interval is large relative to minimum lookback window",
+            )
+        
+        return True, None
+    
     def to_dict(self) -> Dict[str, Any]:
         """
         Convert Feature Registry to dictionary.
@@ -177,10 +285,13 @@ class FeatureRegistry(BaseModel):
         Returns:
             Dictionary representation
         """
-        return {
+        result = {
             "version": self.version,
             "features": [feature.model_dump() for feature in self.features]
         }
+        if self.config:
+            result["config"] = self.config.model_dump()
+        return result
     
     model_config = ConfigDict(
         use_enum_values=True,

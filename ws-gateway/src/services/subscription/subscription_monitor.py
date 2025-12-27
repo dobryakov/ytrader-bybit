@@ -135,7 +135,8 @@ class SubscriptionMonitor:
             age = now - last_event_at
             
             # For event-driven channels, check WebSocket connection state
-            # If connection is alive and receiving messages, don't deactivate even if last_event_at is stale
+            # If connection is alive and receiving messages, don't treat as stale even if last_event_at is old
+            # This handles the case where position/balance/order don't change but connection is alive
             is_event_driven = subscription.channel_type in EVENT_DRIVEN_CHANNELS
             connection_active = False
             
@@ -144,21 +145,22 @@ class SubscriptionMonitor:
                     subscription, connection_states, now
                 )
                 
-                # If connection is active, skip deactivation even if last_event_at is stale
-                # This handles the case where position/balance/order don't change but connection is alive
-                if connection_active and age > self._auto_deactivate_threshold:
-                    logger.debug(
-                        "subscription_stale_but_connection_active",
-                        subscription_id=str(subscription.id),
-                        channel_type=subscription.channel_type,
-                        topic=subscription.topic,
-                        age_minutes=age.total_seconds() / 60,
-                        reason="WebSocket connection is active, skipping deactivation",
-                    )
-                    # Still log as critical for monitoring, but don't deactivate
-                    stale_critical.append((subscription, age))
+                # If connection is active, don't treat subscription as stale
+                # Event-driven channels may not receive events for long periods if nothing changes
+                if connection_active:
+                    if age > self._auto_deactivate_threshold:
+                        logger.debug(
+                            "subscription_stale_but_connection_active",
+                            subscription_id=str(subscription.id),
+                            channel_type=subscription.channel_type,
+                            topic=subscription.topic,
+                            age_minutes=age.total_seconds() / 60,
+                            reason="WebSocket connection is active, skipping stale detection",
+                        )
+                    # Skip all stale detection - connection is active, so subscription is healthy
                     continue
 
+            # Only check for staleness if connection is not active (or not event-driven channel)
             if age > self._auto_deactivate_threshold:
                 stale_auto_deactivate.append((subscription, age))
             elif age > self._critical_threshold:
@@ -444,10 +446,24 @@ class SubscriptionMonitor:
             state = connection_states.get(endpoint_type)
             
             if not state:
+                logger.debug(
+                    "subscription_monitor_connection_state_missing",
+                    subscription_id=str(subscription.id),
+                    channel_type=subscription.channel_type,
+                    endpoint_type=endpoint_type,
+                    available_states=list(connection_states.keys()),
+                )
                 return False
             
             # Check if connection is connected
-            if not state.get("is_connected", False):
+            is_connected = state.get("is_connected", False)
+            if not is_connected:
+                logger.debug(
+                    "subscription_monitor_connection_not_connected",
+                    subscription_id=str(subscription.id),
+                    channel_type=subscription.channel_type,
+                    endpoint_type=endpoint_type,
+                )
                 return False
             
             # Check last_message_at (any message, including ping/pong)
@@ -459,7 +475,17 @@ class SubscriptionMonitor:
                     last_message_at = last_message_at.astimezone(timezone.utc)
                 
                 message_age = now - last_message_at
-                if message_age.total_seconds() / 60 <= CONNECTION_ACTIVE_THRESHOLD_MINUTES:
+                message_age_minutes = message_age.total_seconds() / 60
+                if message_age_minutes <= CONNECTION_ACTIVE_THRESHOLD_MINUTES:
+                    logger.debug(
+                        "subscription_monitor_connection_active_by_message",
+                        subscription_id=str(subscription.id),
+                        channel_type=subscription.channel_type,
+                        endpoint_type=endpoint_type,
+                        last_message_at=last_message_at.isoformat(),
+                        message_age_minutes=message_age_minutes,
+                        threshold_minutes=CONNECTION_ACTIVE_THRESHOLD_MINUTES,
+                    )
                     return True
             
             # Fallback: check last_heartbeat_at
@@ -471,9 +497,31 @@ class SubscriptionMonitor:
                     last_heartbeat_at = last_heartbeat_at.astimezone(timezone.utc)
                 
                 heartbeat_age = now - last_heartbeat_at
-                if heartbeat_age.total_seconds() / 60 <= CONNECTION_ACTIVE_THRESHOLD_MINUTES:
+                heartbeat_age_minutes = heartbeat_age.total_seconds() / 60
+                if heartbeat_age_minutes <= CONNECTION_ACTIVE_THRESHOLD_MINUTES:
+                    logger.debug(
+                        "subscription_monitor_connection_active_by_heartbeat",
+                        subscription_id=str(subscription.id),
+                        channel_type=subscription.channel_type,
+                        endpoint_type=endpoint_type,
+                        last_heartbeat_at=last_heartbeat_at.isoformat(),
+                        heartbeat_age_minutes=heartbeat_age_minutes,
+                        threshold_minutes=CONNECTION_ACTIVE_THRESHOLD_MINUTES,
+                    )
                     return True
             
+            # Connection exists but last message/heartbeat is too old
+            logger.debug(
+                "subscription_monitor_connection_inactive",
+                subscription_id=str(subscription.id),
+                channel_type=subscription.channel_type,
+                endpoint_type=endpoint_type,
+                last_message_at=last_message_at.isoformat() if last_message_at else None,
+                last_heartbeat_at=last_heartbeat_at.isoformat() if last_heartbeat_at else None,
+                message_age_minutes=(now - last_message_at).total_seconds() / 60 if last_message_at else None,
+                heartbeat_age_minutes=(now - last_heartbeat_at).total_seconds() / 60 if last_heartbeat_at else None,
+                threshold_minutes=CONNECTION_ACTIVE_THRESHOLD_MINUTES,
+            )
             return False
         except Exception as e:
             logger.warning(

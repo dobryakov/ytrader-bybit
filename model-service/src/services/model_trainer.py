@@ -813,6 +813,30 @@ class ModelTrainer:
                 else:
                     model.fit(X, y)
 
+            # Prepare hyperparameter optimization info for logging
+            hyperparameter_info = {}
+            if settings.model_training_hyperparameter_tuning and model_type == "xgboost":
+                if task_type == "classification":
+                    hyperparameter_info = {
+                        "tuning_enabled": True,
+                        "optimization_metric": "f1_macro",
+                        "note": "Classification uses f1_macro for hyperparameter optimization",
+                    }
+                else:
+                    # For regression, use metric from settings
+                    optimization_metric = settings.model_training_threshold_optimization_metric
+                    hyperparameter_info = {
+                        "tuning_enabled": True,
+                        "optimization_metric": optimization_metric,
+                        "note": f"Regression uses {optimization_metric} from MODEL_TRAINING_THRESHOLD_OPTIMIZATION_METRIC",
+                    }
+            else:
+                hyperparameter_info = {
+                    "tuning_enabled": False,
+                    "optimization_metric": "none",
+                    "note": "Hyperparameter tuning disabled or not supported for this model type",
+                }
+
             logger.info(
                 "Model training completed",
                 model_type=model_type,
@@ -821,6 +845,7 @@ class ModelTrainer:
                 training_samples=len(X),
                 validation_samples=len(X_val) if X_val is not None else 0,
                 early_stopping_used=early_stopping_rounds is not None,
+                hyperparameter_optimization=hyperparameter_info,
             )
 
             return model
@@ -993,6 +1018,63 @@ class ModelTrainer:
 
         return defaults.get(model_type, {}).get(task_type, {})
 
+    def _calculate_regression_metric(
+        self,
+        y_true: pd.Series,
+        y_pred: np.ndarray,
+        metric_name: str,
+    ) -> float:
+        """
+        Calculate regression metric by name.
+        
+        Args:
+            y_true: True target values
+            y_pred: Predicted values
+            metric_name: Name of metric to calculate
+            
+        Returns:
+            Metric value (higher is better, except for RMSE which is inverted)
+        """
+        if metric_name == "r2_score":
+            from sklearn.metrics import r2_score
+            return float(r2_score(y_true, y_pred))
+        elif metric_name == "directional_accuracy":
+            # Directional Accuracy: mean(sign(y_pred) == sign(y_true))
+            y_true_sign = np.sign(y_true.values)
+            y_pred_sign = np.sign(y_pred)
+            return float(np.mean(y_true_sign == y_pred_sign))
+        elif metric_name == "sharpe_ratio":
+            # Sharpe Ratio: mean(returns) / std(returns)
+            returns_array = np.array(y_pred)
+            returns_std = float(np.std(returns_array))
+            if returns_std > 0:
+                returns_mean = float(np.mean(returns_array))
+                return float(returns_mean / returns_std)
+            else:
+                return 0.0
+        elif metric_name in ("information_coefficient", "ic"):
+            # Information Coefficient: correlation between y_pred and y_true
+            y_true_array = y_true.values if isinstance(y_true, pd.Series) else np.array(y_true)
+            y_pred_array = np.array(y_pred)
+            if len(y_true_array) > 1 and len(y_pred_array) > 1:
+                correlation = float(np.corrcoef(y_true_array, y_pred_array)[0, 1])
+                return correlation if not np.isnan(correlation) else 0.0
+            else:
+                return 0.0
+        elif metric_name == "rmse":
+            # RMSE: lower is better, so we return negative for maximization
+            from sklearn.metrics import mean_squared_error
+            rmse = float(np.sqrt(mean_squared_error(y_true, y_pred)))
+            return -rmse  # Return negative so higher is better
+        else:
+            # Fallback to R²
+            logger.warning(
+                "Unknown regression metric, falling back to r2_score",
+                metric_name=metric_name,
+            )
+            from sklearn.metrics import r2_score
+            return float(r2_score(y_true, y_pred))
+
     def _optimize_hyperparameters(
         self,
         X: pd.DataFrame,
@@ -1022,12 +1104,22 @@ class ModelTrainer:
         tuning_method = settings.model_training_tuning_method
         max_iterations = settings.model_training_tuning_max_iterations
 
+        # Get optimization metric from settings for regression
+        optimization_metric = None
+        if task_type == "regression":
+            optimization_metric = settings.model_training_threshold_optimization_metric
+            logger.info(
+                "Using regression optimization metric from settings",
+                optimization_metric=optimization_metric,
+            )
+
         logger.info(
             "Starting hyperparameter optimization",
             tuning_method=tuning_method,
             max_iterations=max_iterations,
             model_type=model_type,
             task_type=task_type,
+            optimization_metric=optimization_metric if task_type == "regression" else None,
         )
 
         if tuning_method == "grid_search":
@@ -1099,9 +1191,6 @@ class ModelTrainer:
             model_key = "classifier" if task_type == "classification" else "regressor"
             model_class = model_classes.get(model_key)
 
-            # Use F1-score for classification, R2 for regression
-            scoring = "f1_macro" if task_type == "classification" else "r2"
-
             # Perform grid search with cross-validation
             best_score = -np.inf
             best_params = base_hyperparameters.copy()
@@ -1168,13 +1257,16 @@ class ModelTrainer:
                     model.fit(X_train, y_train)
 
                 # Evaluate on validation set
+                y_pred = model.predict(X_val)
                 if task_type == "classification":
-                    y_pred = model.predict(X_val)
                     score = f1_score(y_val, y_pred, average="macro")
                 else:
-                    y_pred = model.predict(X_val)
-                    from sklearn.metrics import r2_score
-                    score = r2_score(y_val, y_pred)
+                    # Use optimization metric from settings for regression
+                    score = self._calculate_regression_metric(
+                        y_true=y_val,
+                        y_pred=y_pred,
+                        metric_name=optimization_metric or "r2_score",
+                    )
 
                 if score > best_score:
                     best_score = score

@@ -143,6 +143,9 @@ export default function Models() {
     { name: 'mse', label: 'MSE', type: 'regression' },
     { name: 'r2_score', label: 'R² Score', type: 'regression' },
     { name: 'rmse', label: 'RMSE', type: 'regression' },
+    { name: 'directional_accuracy', label: 'Directional Accuracy (%)', type: 'regression' },
+    { name: 'sharpe_ratio', label: 'Sharpe Ratio (ML)', type: 'regression' },
+    { name: 'information_coefficient', label: 'Information Coefficient (IC)', type: 'regression' },
     // Trading Performance
     { name: 'avg_pnl', label: 'Avg PnL', type: 'trading' },
     { name: 'max_drawdown', label: 'Max Drawdown', type: 'trading' },
@@ -221,6 +224,122 @@ export default function Models() {
     }
   }
 
+  // Determine if model is regression based on metrics or training_config
+  const isRegressionModel = (model: { metrics: any; training_config?: any }) => {
+    // Check training_config first (most reliable)
+    if (model.training_config) {
+      let config = model.training_config
+      if (typeof config === 'string') {
+        try {
+          config = JSON.parse(config)
+        } catch {
+          // Ignore parse errors
+        }
+      }
+      if (config && typeof config === 'object' && config.task_type === 'regression') {
+        return true
+      }
+    }
+    
+    // Fallback: check metrics - regression has r2_score, mse, mae, rmse
+    if (model.metrics) {
+      const hasRegressionMetrics = (
+        (model.metrics.r2_score !== null && model.metrics.r2_score !== undefined) ||
+        (model.metrics.mse !== null && model.metrics.mse !== undefined) ||
+        (model.metrics.mae !== null && model.metrics.mae !== undefined) ||
+        (model.metrics.rmse !== null && model.metrics.rmse !== undefined)
+      )
+      const hasClassificationMetrics = (
+        (model.metrics.accuracy !== null && model.metrics.accuracy !== undefined) ||
+        (model.metrics.f1_score !== null && model.metrics.f1_score !== undefined) ||
+        (model.metrics.precision !== null && model.metrics.precision !== undefined)
+      )
+      
+      // If has regression metrics but no classification metrics, it's regression
+      if (hasRegressionMetrics && !hasClassificationMetrics) {
+        return true
+      }
+    }
+    
+    return false
+  }
+
+  // Get metric value for a column based on model type
+  const getMetricValue = (model: { metrics: any; training_config?: any }, column: string) => {
+    const isRegression = isRegressionModel(model)
+    const metrics = model.metrics || {}
+    
+    if (isRegression) {
+      // Map classification columns to regression metrics
+      switch (column) {
+        case 'accuracy':
+          return metrics.r2_score !== null && metrics.r2_score !== undefined
+            ? { value: metrics.r2_score, label: 'R² Score', format: (v: number) => v.toFixed(4) }
+            : null
+        case 'f1_score':
+          return metrics.directional_accuracy !== null && metrics.directional_accuracy !== undefined
+            ? { value: metrics.directional_accuracy, label: 'Directional Accuracy', format: (v: number) => (v * 100).toFixed(2) + '%' }
+            : null
+        case 'precision':
+          return metrics.sharpe_ratio !== null && metrics.sharpe_ratio !== undefined
+            ? { value: metrics.sharpe_ratio, label: 'Sharpe Ratio', format: (v: number) => v.toFixed(4) }
+            : null
+        case 'recall':
+          return metrics.information_coefficient !== null && metrics.information_coefficient !== undefined
+            ? { value: metrics.information_coefficient, label: 'Information Coefficient (IC)', format: (v: number) => v.toFixed(4) }
+            : null
+        case 'roc_auc':
+          return metrics.rmse !== null && metrics.rmse !== undefined
+            ? { value: metrics.rmse, label: 'RMSE', format: (v: number) => v.toFixed(6) }
+            : null
+        case 'pr_auc':
+          return metrics.mae !== null && metrics.mae !== undefined
+            ? { value: metrics.mae, label: 'MAE', format: (v: number) => v.toFixed(6) }
+            : null
+        case 'balanced_accuracy':
+          return metrics.mse !== null && metrics.mse !== undefined
+            ? { value: metrics.mse, label: 'MSE', format: (v: number) => v.toFixed(6) }
+            : null
+        default:
+          return null
+      }
+    } else {
+      // Classification metrics
+      switch (column) {
+        case 'accuracy':
+          return metrics.accuracy !== null && metrics.accuracy !== undefined
+            ? { value: metrics.accuracy, label: 'Accuracy', format: (v: number) => (v * 100).toFixed(2) + '%' }
+            : null
+        case 'f1_score':
+          return metrics.f1_score !== null && metrics.f1_score !== undefined
+            ? { value: metrics.f1_score, label: 'F1 Score', format: (v: number) => (v * 100).toFixed(2) + '%' }
+            : null
+        case 'precision':
+          return metrics.precision !== null && metrics.precision !== undefined
+            ? { value: metrics.precision, label: 'Precision', format: (v: number) => (v * 100).toFixed(2) + '%' }
+            : null
+        case 'recall':
+          return metrics.recall !== null && metrics.recall !== undefined
+            ? { value: metrics.recall, label: 'Recall', format: (v: number) => (v * 100).toFixed(2) + '%' }
+            : null
+        case 'roc_auc':
+          return metrics.roc_auc !== null && metrics.roc_auc !== undefined
+            ? { value: metrics.roc_auc, label: 'ROC AUC', format: (v: number) => v.toFixed(4) }
+            : null
+        case 'pr_auc':
+          return metrics.pr_auc !== null && metrics.pr_auc !== undefined
+            ? { value: metrics.pr_auc, label: 'PR AUC', format: (v: number) => v.toFixed(4) }
+            : null
+        case 'balanced_accuracy':
+          return metrics.balanced_accuracy !== null && metrics.balanced_accuracy !== undefined
+            ? { value: metrics.balanced_accuracy, label: 'Balanced Accuracy', format: (v: number) => (v * 100).toFixed(2) + '%' }
+            : null
+        default:
+          return null
+      }
+    }
+  }
+
   return (
     <div className="space-y-6">
       <div>
@@ -258,78 +377,127 @@ export default function Models() {
                 </TableCell>
               </TableRow>
             ) : (
-              data?.models.map((model) => (
-                <TableRow key={model.id}>
-                  <TableCell className="font-medium">
-                    <Link 
-                      to={`/models/${model.version}`}
-                      className="text-primary hover:underline"
-                    >
-                      {model.version}
-                    </Link>
-                  </TableCell>
-                  <TableCell>{model.symbol || 'All'}</TableCell>
-                  <TableCell>{model.strategy_id || 'N/A'}</TableCell>
-                  <TableCell>{model.model_type}</TableCell>
-                  <TableCell>
-                    {model.metrics?.accuracy ? (model.metrics.accuracy * 100).toFixed(2) + '%' : 'N/A'}
-                  </TableCell>
-                  <TableCell>
-                    {model.metrics?.f1_score ? (model.metrics.f1_score * 100).toFixed(2) + '%' : 'N/A'}
-                  </TableCell>
-                  <TableCell>
-                    {model.metrics?.precision ? (model.metrics.precision * 100).toFixed(2) + '%' : 'N/A'}
-                  </TableCell>
-                  <TableCell>
-                    {model.metrics?.recall ? (model.metrics.recall * 100).toFixed(2) + '%' : 'N/A'}
-                  </TableCell>
-                  <TableCell>
-                    {model.metrics?.roc_auc ? model.metrics.roc_auc.toFixed(4) : 'N/A'}
-                  </TableCell>
-                  <TableCell>
-                    {model.metrics?.pr_auc ? model.metrics.pr_auc.toFixed(4) : 'N/A'}
-                  </TableCell>
-                  <TableCell>
-                    {model.metrics?.balanced_accuracy ? (model.metrics.balanced_accuracy * 100).toFixed(2) + '%' : 'N/A'}
-                  </TableCell>
-                  <TableCell>{format(parseISO(model.trained_at), 'dd.MM.yyyy HH:mm:ss')}</TableCell>
-                  <TableCell>
-                    <Badge variant={model.is_active ? 'default' : 'outline'}>
-                      {model.is_active ? 'Active' : 'Inactive'}
-                    </Badge>
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex gap-2">
-                      <Button
-                        onClick={() => handleRetrain(model)}
-                        disabled={retrainingModelId === model.id || !model.symbol || !model.strategy_id}
-                        size="sm"
-                        variant="outline"
+              data?.models.map((model) => {
+                const accuracyMetric = getMetricValue(model, 'accuracy')
+                const f1Metric = getMetricValue(model, 'f1_score')
+                const precisionMetric = getMetricValue(model, 'precision')
+                const recallMetric = getMetricValue(model, 'recall')
+                const rocAucMetric = getMetricValue(model, 'roc_auc')
+                const prAucMetric = getMetricValue(model, 'pr_auc')
+                const balancedAccMetric = getMetricValue(model, 'balanced_accuracy')
+                
+                return (
+                  <TableRow key={model.id}>
+                    <TableCell className="font-medium">
+                      <Link 
+                        to={`/models/${model.version}`}
+                        className="text-primary hover:underline"
                       >
-                        {retrainingModelId === model.id ? 'Запуск...' : 'Retrain'}
-                      </Button>
-                      <Button
-                        onClick={() => handleRelearn(model)}
-                        disabled={relearningModelId === model.id || !model.symbol || !model.training_config}
-                        size="sm"
-                        variant="outline"
-                        title="Перезапустить обучение на том же датасете"
-                      >
-                        {relearningModelId === model.id ? 'Запуск...' : 'Re-Learn'}
-                      </Button>
-                      <Button
-                        asChild
-                        size="sm"
-                        variant="default"
-                      >
-                        <Link to={`/models/${model.version}`}>
-                          Детали
-                        </Link>
-                      </Button>
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))
+                        {model.version}
+                      </Link>
+                    </TableCell>
+                    <TableCell>{model.symbol || 'All'}</TableCell>
+                    <TableCell>{model.strategy_id || 'N/A'}</TableCell>
+                    <TableCell>
+                      <Badge variant="outline">
+                        {isRegressionModel(model) ? 'Regression' : 'Classification'}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>
+                      {accuracyMetric ? (
+                        <div className="flex flex-col">
+                          <span className="text-xs text-muted-foreground">{accuracyMetric.label}</span>
+                          <span>{accuracyMetric.format(accuracyMetric.value)}</span>
+                        </div>
+                      ) : 'N/A'}
+                    </TableCell>
+                    <TableCell>
+                      {f1Metric ? (
+                        <div className="flex flex-col">
+                          <span className="text-xs text-muted-foreground">{f1Metric.label}</span>
+                          <span>{f1Metric.format(f1Metric.value)}</span>
+                        </div>
+                      ) : 'N/A'}
+                    </TableCell>
+                    <TableCell>
+                      {precisionMetric ? (
+                        <div className="flex flex-col">
+                          <span className="text-xs text-muted-foreground">{precisionMetric.label}</span>
+                          <span>{precisionMetric.format(precisionMetric.value)}</span>
+                        </div>
+                      ) : 'N/A'}
+                    </TableCell>
+                    <TableCell>
+                      {recallMetric ? (
+                        <div className="flex flex-col">
+                          <span className="text-xs text-muted-foreground">{recallMetric.label}</span>
+                          <span>{recallMetric.format(recallMetric.value)}</span>
+                        </div>
+                      ) : 'N/A'}
+                    </TableCell>
+                    <TableCell>
+                      {rocAucMetric ? (
+                        <div className="flex flex-col">
+                          <span className="text-xs text-muted-foreground">{rocAucMetric.label}</span>
+                          <span>{rocAucMetric.format(rocAucMetric.value)}</span>
+                        </div>
+                      ) : 'N/A'}
+                    </TableCell>
+                    <TableCell>
+                      {prAucMetric ? (
+                        <div className="flex flex-col">
+                          <span className="text-xs text-muted-foreground">{prAucMetric.label}</span>
+                          <span>{prAucMetric.format(prAucMetric.value)}</span>
+                        </div>
+                      ) : 'N/A'}
+                    </TableCell>
+                    <TableCell>
+                      {balancedAccMetric ? (
+                        <div className="flex flex-col">
+                          <span className="text-xs text-muted-foreground">{balancedAccMetric.label}</span>
+                          <span>{balancedAccMetric.format(balancedAccMetric.value)}</span>
+                        </div>
+                      ) : 'N/A'}
+                    </TableCell>
+                    <TableCell>{format(parseISO(model.trained_at), 'dd.MM.yyyy HH:mm:ss')}</TableCell>
+                    <TableCell>
+                      <Badge variant={model.is_active ? 'default' : 'outline'}>
+                        {model.is_active ? 'Active' : 'Inactive'}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex gap-2">
+                        <Button
+                          onClick={() => handleRetrain(model)}
+                          disabled={retrainingModelId === model.id || !model.symbol || !model.strategy_id}
+                          size="sm"
+                          variant="outline"
+                        >
+                          {retrainingModelId === model.id ? 'Запуск...' : 'Retrain'}
+                        </Button>
+                        <Button
+                          onClick={() => handleRelearn(model)}
+                          disabled={relearningModelId === model.id || !model.symbol || !model.training_config}
+                          size="sm"
+                          variant="outline"
+                          title="Перезапустить обучение на том же датасете"
+                        >
+                          {relearningModelId === model.id ? 'Запуск...' : 'Re-Learn'}
+                        </Button>
+                        <Button
+                          asChild
+                          size="sm"
+                          variant="default"
+                        >
+                          <Link to={`/models/${model.version}`}>
+                            Детали
+                          </Link>
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                )
+              })
             )}
           </TableBody>
         </Table>
@@ -365,7 +533,6 @@ export default function Models() {
                   <TableHead>ROC AUC</TableHead>
                   <TableHead>PR AUC</TableHead>
                   <TableHead>Balanced Acc</TableHead>
-                  <TableHead>Sharpe Ratio</TableHead>
                   <TableHead>Win Rate</TableHead>
                   <TableHead>Статус</TableHead>
                 </TableRow>
@@ -373,74 +540,121 @@ export default function Models() {
               <TableBody>
                 {!trainingHistory || trainingHistory.length === 0 ? (
                   <TableRow>
-                  <TableCell colSpan={19} className="text-center text-muted-foreground">
+                  <TableCell colSpan={18} className="text-center text-muted-foreground">
                     Нет истории обучения
                   </TableCell>
                   </TableRow>
                 ) : (
-                  trainingHistory.map((item) => (
-                    <TableRow key={item.id}>
-                      <TableCell className="font-medium">
-                        <Link 
-                          to={`/models/${item.version}`}
-                          className="text-primary hover:underline"
-                        >
-                          {item.version}
-                        </Link>
-                      </TableCell>
-                      <TableCell>{item.symbol || 'All'}</TableCell>
-                      <TableCell>{item.strategy_id || 'N/A'}</TableCell>
-                      <TableCell>{item.model_type}</TableCell>
-                      <TableCell className="text-xs">
-                        {format(parseISO(item.trained_at), 'dd.MM.yyyy HH:mm:ss')}
-                      </TableCell>
-                      <TableCell>{item.feature_count || 'N/A'}</TableCell>
-                      <TableCell className="text-xs">{item.feature_registry_version || 'N/A'}</TableCell>
-                      <TableCell className="text-xs">{item.target_registry_version || 'N/A'}</TableCell>
-                      <TableCell className="font-mono text-xs">
-                        {item.dataset_id ? (
+                  trainingHistory.map((item) => {
+                    const isRegression = isRegressionModel(item)
+                    const accuracyMetric = getMetricValue(item, 'accuracy')
+                    const f1Metric = getMetricValue(item, 'f1_score')
+                    const precisionMetric = getMetricValue(item, 'precision')
+                    const recallMetric = getMetricValue(item, 'recall')
+                    const rocAucMetric = getMetricValue(item, 'roc_auc')
+                    const prAucMetric = getMetricValue(item, 'pr_auc')
+                    const balancedAccMetric = getMetricValue(item, 'balanced_accuracy')
+                    
+                    return (
+                      <TableRow key={item.id}>
+                        <TableCell className="font-medium">
                           <Link 
-                            to={`/datasets/${item.dataset_id}`}
+                            to={`/models/${item.version}`}
                             className="text-primary hover:underline"
                           >
-                            {item.dataset_id.slice(0, 8)}...
+                            {item.version}
                           </Link>
-                        ) : 'N/A'}
-                      </TableCell>
-                      <TableCell>
-                        {item.metrics?.accuracy ? (item.metrics.accuracy * 100).toFixed(2) + '%' : 'N/A'}
-                      </TableCell>
-                      <TableCell>
-                        {item.metrics?.f1_score ? (item.metrics.f1_score * 100).toFixed(2) + '%' : 'N/A'}
-                      </TableCell>
-                      <TableCell>
-                        {item.metrics?.precision ? (item.metrics.precision * 100).toFixed(2) + '%' : 'N/A'}
-                      </TableCell>
-                      <TableCell>
-                        {item.metrics?.recall ? (item.metrics.recall * 100).toFixed(2) + '%' : 'N/A'}
-                      </TableCell>
-                      <TableCell>
-                        {item.metrics?.roc_auc ? item.metrics.roc_auc.toFixed(4) : 'N/A'}
-                      </TableCell>
-                      <TableCell>
-                        {item.metrics?.pr_auc ? item.metrics.pr_auc.toFixed(4) : 'N/A'}
-                      </TableCell>
-                      <TableCell>
-                        {item.metrics?.balanced_accuracy ? (item.metrics.balanced_accuracy * 100).toFixed(2) + '%' : 'N/A'}
-                      </TableCell>
-                      <TableCell>
-                        {item.metrics?.sharpe_ratio ? item.metrics.sharpe_ratio.toFixed(4) : 'N/A'}
-                      </TableCell>
-                      <TableCell>
-                        {item.metrics?.win_rate ? (item.metrics.win_rate * 100).toFixed(2) + '%' : 'N/A'}
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant={item.is_active ? 'default' : 'outline'}>
-                          {item.is_active ? 'Active' : 'Inactive'}
-                        </Badge>
-                      </TableCell>
-                    </TableRow>
-                  ))
+                        </TableCell>
+                        <TableCell>{item.symbol || 'All'}</TableCell>
+                        <TableCell>{item.strategy_id || 'N/A'}</TableCell>
+                        <TableCell>
+                          <Badge variant="outline">
+                            {isRegression ? 'Regression' : 'Classification'}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="text-xs">
+                          {format(parseISO(item.trained_at), 'dd.MM.yyyy HH:mm:ss')}
+                        </TableCell>
+                        <TableCell>{item.feature_count || 'N/A'}</TableCell>
+                        <TableCell className="text-xs">{item.feature_registry_version || 'N/A'}</TableCell>
+                        <TableCell className="text-xs">{item.target_registry_version || 'N/A'}</TableCell>
+                        <TableCell className="font-mono text-xs">
+                          {item.dataset_id ? (
+                            <Link 
+                              to={`/datasets/${item.dataset_id}`}
+                              className="text-primary hover:underline"
+                            >
+                              {item.dataset_id.slice(0, 8)}...
+                            </Link>
+                          ) : 'N/A'}
+                        </TableCell>
+                        <TableCell>
+                          {accuracyMetric ? (
+                            <div className="flex flex-col">
+                              <span className="text-xs text-muted-foreground">{accuracyMetric.label}</span>
+                              <span>{accuracyMetric.format(accuracyMetric.value)}</span>
+                            </div>
+                          ) : 'N/A'}
+                        </TableCell>
+                        <TableCell>
+                          {f1Metric ? (
+                            <div className="flex flex-col">
+                              <span className="text-xs text-muted-foreground">{f1Metric.label}</span>
+                              <span>{f1Metric.format(f1Metric.value)}</span>
+                            </div>
+                          ) : 'N/A'}
+                        </TableCell>
+                        <TableCell>
+                          {precisionMetric ? (
+                            <div className="flex flex-col">
+                              <span className="text-xs text-muted-foreground">{precisionMetric.label}</span>
+                              <span>{precisionMetric.format(precisionMetric.value)}</span>
+                            </div>
+                          ) : 'N/A'}
+                        </TableCell>
+                        <TableCell>
+                          {recallMetric ? (
+                            <div className="flex flex-col">
+                              <span className="text-xs text-muted-foreground">{recallMetric.label}</span>
+                              <span>{recallMetric.format(recallMetric.value)}</span>
+                            </div>
+                          ) : 'N/A'}
+                        </TableCell>
+                        <TableCell>
+                          {rocAucMetric ? (
+                            <div className="flex flex-col">
+                              <span className="text-xs text-muted-foreground">{rocAucMetric.label}</span>
+                              <span>{rocAucMetric.format(rocAucMetric.value)}</span>
+                            </div>
+                          ) : 'N/A'}
+                        </TableCell>
+                        <TableCell>
+                          {prAucMetric ? (
+                            <div className="flex flex-col">
+                              <span className="text-xs text-muted-foreground">{prAucMetric.label}</span>
+                              <span>{prAucMetric.format(prAucMetric.value)}</span>
+                            </div>
+                          ) : 'N/A'}
+                        </TableCell>
+                        <TableCell>
+                          {balancedAccMetric ? (
+                            <div className="flex flex-col">
+                              <span className="text-xs text-muted-foreground">{balancedAccMetric.label}</span>
+                              <span>{balancedAccMetric.format(balancedAccMetric.value)}</span>
+                            </div>
+                          ) : 'N/A'}
+                        </TableCell>
+                        <TableCell>
+                          {item.metrics?.win_rate ? (item.metrics.win_rate * 100).toFixed(2) + '%' : 'N/A'}
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant={item.is_active ? 'default' : 'outline'}>
+                            {item.is_active ? 'Active' : 'Inactive'}
+                          </Badge>
+                        </TableCell>
+                      </TableRow>
+                    )
+                  })
                 )}
               </TableBody>
             </Table>

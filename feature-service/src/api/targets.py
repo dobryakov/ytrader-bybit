@@ -429,8 +429,12 @@ async def compute_target(
         "computation_timestamp": computation_timestamp,
     }
     
-    if target_type == "regression" and preset == "returns":
+    # Preset "returns" is always regression, regardless of target_type in config
+    # This ensures consistency: if preset is "returns", we return regression format
+    if preset == "returns":
+        # Returns preset is always regression format
         response_data.update({
+            "target_type": "regression",  # Override to ensure consistency
             "target_value": target_value,
             "price_at_prediction": price_at_prediction,
             "price_at_target": price_at_target,

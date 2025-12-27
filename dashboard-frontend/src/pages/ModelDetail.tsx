@@ -1,5 +1,5 @@
 import { useParams, useNavigate, Link } from 'react-router-dom'
-import { useModelAnalysis } from '@/hooks/useModels'
+import { useModelAnalysis, usePredictionsData } from '@/hooks/useModels'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Badge } from '@/components/ui/badge'
@@ -8,13 +8,14 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { MetricCard } from '@/components/metrics/MetricCard'
 import { format } from 'date-fns'
 import { parseISO } from 'date-fns'
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart, Line } from 'recharts'
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart, Line, ScatterChart, Scatter, ReferenceLine } from 'recharts'
 import { ArrowLeft, TrendingUp, TrendingDown, Minus } from 'lucide-react'
 
 export default function ModelDetail() {
   const { version } = useParams<{ version: string }>()
   const navigate = useNavigate()
   const { data, isLoading, error } = useModelAnalysis(version || '')
+  const { data: predictionsData, isLoading: predictionsLoading } = usePredictionsData(version || '', 'test', 1000)
 
   if (isLoading) {
     return (
@@ -66,7 +67,12 @@ export default function ModelDetail() {
     return 'text-gray-500'
   }
 
-  // Prepare data for top-k chart
+  // Determine task type: regression if regression metrics exist, classification otherwise
+  const isRegression = data.model_metrics.r2_score !== null && data.model_metrics.r2_score !== undefined ||
+                       data.model_metrics.mse !== null && data.model_metrics.mse !== undefined ||
+                       data.model_metrics.directional_accuracy !== null && data.model_metrics.directional_accuracy !== undefined
+
+  // Prepare data for top-k chart (only for classification)
   const topKChartData = data.top_k_metrics.map((tk) => ({
     k: `Top-${tk.k}%`,
     pr_auc: tk.pr_auc ? tk.pr_auc * 100 : null,
@@ -74,6 +80,41 @@ export default function ModelDetail() {
     accuracy: tk.accuracy ? tk.accuracy * 100 : null,
     lift: tk.lift ? tk.lift : null, // Lift is already a ratio (e.g., 1.2 = 20% improvement)
   }))
+
+  // Prepare scatter plot data for regression
+  const scatterPlotData = isRegression && predictionsData ? predictionsData.data_points
+    .filter((dp) => dp.y_pred !== null && dp.y_pred !== undefined)
+    .map((dp) => ({
+      y_true: dp.y_true,
+      y_pred: dp.y_pred,
+    })) : []
+
+  // Prepare error distribution data for regression
+  const errorDistributionData = isRegression && predictionsData ? (() => {
+    const errors = predictionsData.data_points
+      .filter((dp) => dp.error !== null && dp.error !== undefined)
+      .map((dp) => dp.error!)
+    
+    if (errors.length === 0) return []
+    
+    // Create histogram bins
+    const minError = Math.min(...errors)
+    const maxError = Math.max(...errors)
+    const binCount = 20
+    const binSize = (maxError - minError) / binCount
+    
+    const bins = Array(binCount).fill(0).map((_, i) => ({
+      bin: minError + i * binSize,
+      count: 0,
+    }))
+    
+    errors.forEach((error) => {
+      const binIndex = Math.min(Math.floor((error - minError) / binSize), binCount - 1)
+      bins[binIndex].count++
+    })
+    
+    return bins
+  })() : []
 
   return (
     <div className="space-y-6">
@@ -89,8 +130,8 @@ export default function ModelDetail() {
         </div>
       </div>
 
-      {/* Optimal Top-K Percentage Info */}
-      {data.optimal_top_k_percentage !== null && data.optimal_top_k_percentage !== undefined && (
+      {/* Optimal Top-K Percentage Info - only for classification */}
+      {!isRegression && data.optimal_top_k_percentage !== null && data.optimal_top_k_percentage !== undefined && (
         <Card className="border-green-500">
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
@@ -154,8 +195,8 @@ export default function ModelDetail() {
         </Card>
       )}
 
-      {/* Confidence Threshold Info */}
-      {data.confidence_threshold_info && (
+      {/* Confidence Threshold Info - only for classification */}
+      {!isRegression && data.confidence_threshold_info && (
         <Card>
           <CardHeader>
             <CardTitle>Порог уверенности (Confidence Threshold)</CardTitle>
@@ -256,7 +297,11 @@ export default function ModelDetail() {
       <Card>
         <CardHeader>
           <CardTitle>Сохранённые предсказания</CardTitle>
-          <CardDescription>Raw probabilities и y_true для анализа</CardDescription>
+          <CardDescription>
+            {isRegression 
+              ? "Raw predictions (y_true и y_pred) для анализа регрессии"
+              : "Raw probabilities и y_true для анализа классификации"}
+          </CardDescription>
         </CardHeader>
         <CardContent>
           <Table>
@@ -311,76 +356,93 @@ export default function ModelDetail() {
             <CardDescription>Основные метрики качества на test split</CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="grid grid-cols-2 gap-4">
-              <MetricCard title="Accuracy" value={formatPercent(data.model_metrics.accuracy)} />
-              <MetricCard title="Precision" value={formatPercent(data.model_metrics.precision)} />
-              <MetricCard title="Recall" value={formatPercent(data.model_metrics.recall)} />
-              <MetricCard title="F1 Score" value={formatPercent(data.model_metrics.f1_score)} />
-              <MetricCard title="Balanced Accuracy" value={formatPercent(data.model_metrics.balanced_accuracy)} />
-              <MetricCard title="ROC AUC" value={formatDecimal(data.model_metrics.roc_auc)} />
-              <MetricCard title="PR AUC" value={formatDecimal(data.model_metrics.pr_auc)} />
-            </div>
+            {isRegression ? (
+              <div className="grid grid-cols-2 gap-4">
+                <MetricCard title="R² Score" value={formatDecimal(data.model_metrics.r2_score)} />
+                <MetricCard title="RMSE" value={formatDecimal(data.model_metrics.rmse)} />
+                <MetricCard title="MAE" value={formatDecimal(data.model_metrics.mae)} />
+                <MetricCard title="MSE" value={formatDecimal(data.model_metrics.mse)} />
+                <MetricCard title="Directional Accuracy" value={formatPercent(data.model_metrics.directional_accuracy)} />
+                <MetricCard title="Sharpe Ratio" value={formatDecimal(data.model_metrics.sharpe_ratio)} />
+                <MetricCard title="Information Coefficient" value={formatDecimal(data.model_metrics.information_coefficient)} />
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 gap-4">
+                <MetricCard title="Accuracy" value={formatPercent(data.model_metrics.accuracy)} />
+                <MetricCard title="Precision" value={formatPercent(data.model_metrics.precision)} />
+                <MetricCard title="Recall" value={formatPercent(data.model_metrics.recall)} />
+                <MetricCard title="F1 Score" value={formatPercent(data.model_metrics.f1_score)} />
+                <MetricCard title="Balanced Accuracy" value={formatPercent(data.model_metrics.balanced_accuracy)} />
+                <MetricCard title="ROC AUC" value={formatDecimal(data.model_metrics.roc_auc)} />
+                <MetricCard title="PR AUC" value={formatDecimal(data.model_metrics.pr_auc)} />
+              </div>
+            )}
           </CardContent>
         </Card>
 
-        <Card>
-          <CardHeader>
-            <CardTitle>Baseline метрики</CardTitle>
-            <CardDescription>Majority class strategy (всегда предсказывать большинство)</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-2 gap-4">
-              <MetricCard title="Accuracy" value={formatPercent(data.baseline_metrics.accuracy)} />
-              <MetricCard title="Precision" value={formatPercent(data.baseline_metrics.precision)} />
-              <MetricCard title="Recall" value={formatPercent(data.baseline_metrics.recall)} />
-              <MetricCard title="F1 Score" value={formatPercent(data.baseline_metrics.f1_score)} />
-              <MetricCard title="Balanced Accuracy" value={formatPercent(data.baseline_metrics.balanced_accuracy)} />
-              <MetricCard title="ROC AUC" value={formatDecimal(data.baseline_metrics.roc_auc)} />
-              <MetricCard title="PR AUC" value={formatDecimal(data.baseline_metrics.pr_auc)} />
-            </div>
-          </CardContent>
-        </Card>
+        {!isRegression && (
+          <Card>
+            <CardHeader>
+              <CardTitle>Baseline метрики</CardTitle>
+              <CardDescription>Majority class strategy (всегда предсказывать большинство)</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-2 gap-4">
+                <MetricCard title="Accuracy" value={formatPercent(data.baseline_metrics.accuracy)} />
+                <MetricCard title="Precision" value={formatPercent(data.baseline_metrics.precision)} />
+                <MetricCard title="Recall" value={formatPercent(data.baseline_metrics.recall)} />
+                <MetricCard title="F1 Score" value={formatPercent(data.baseline_metrics.f1_score)} />
+                <MetricCard title="Balanced Accuracy" value={formatPercent(data.baseline_metrics.balanced_accuracy)} />
+                <MetricCard title="ROC AUC" value={formatDecimal(data.baseline_metrics.roc_auc)} />
+                <MetricCard title="PR AUC" value={formatDecimal(data.baseline_metrics.pr_auc)} />
+              </div>
+            </CardContent>
+          </Card>
+        )}
       </div>
 
-      {/* Comparison */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Сравнение с Baseline</CardTitle>
-          <CardDescription>Разница между моделью и baseline стратегией</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            {Object.entries(data.comparison).map(([metric, comp]) => (
-              <Card key={metric}>
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-sm font-medium capitalize">{metric.replace('_', ' ')}</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="space-y-2">
-                    <div className="flex justify-between items-center">
-                      <span className="text-sm text-muted-foreground">Модель:</span>
-                      <span className="font-medium">{formatDecimal(comp.model)}</span>
+      {/* Comparison - only for classification */}
+      {!isRegression && data.comparison && Object.keys(data.comparison).length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Сравнение с Baseline</CardTitle>
+            <CardDescription>Разница между моделью и baseline стратегией</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+              {Object.entries(data.comparison).map(([metric, comp]) => (
+                <Card key={metric}>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm font-medium capitalize">{metric.replace('_', ' ')}</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="space-y-2">
+                      <div className="flex justify-between items-center">
+                        <span className="text-sm text-muted-foreground">Модель:</span>
+                        <span className="font-medium">{formatDecimal(comp.model)}</span>
+                      </div>
+                      <div className="flex justify-between items-center">
+                        <span className="text-sm text-muted-foreground">Baseline:</span>
+                        <span className="font-medium">{formatDecimal(comp.baseline)}</span>
+                      </div>
+                      <div className="flex justify-between items-center pt-2 border-t">
+                        <span className="text-sm font-medium">Разница:</span>
+                        <span className={`font-bold flex items-center gap-1 ${getComparisonColor(comp.difference)}`}>
+                          {getComparisonIcon(comp.difference)}
+                          {comp.difference !== null ? (comp.difference > 0 ? '+' : '') + formatDecimal(comp.difference) : 'N/A'}
+                        </span>
+                      </div>
                     </div>
-                    <div className="flex justify-between items-center">
-                      <span className="text-sm text-muted-foreground">Baseline:</span>
-                      <span className="font-medium">{formatDecimal(comp.baseline)}</span>
-                    </div>
-                    <div className="flex justify-between items-center pt-2 border-t">
-                      <span className="text-sm font-medium">Разница:</span>
-                      <span className={`font-bold flex items-center gap-1 ${getComparisonColor(comp.difference)}`}>
-                        {getComparisonIcon(comp.difference)}
-                        {comp.difference !== null ? (comp.difference > 0 ? '+' : '') + formatDecimal(comp.difference) : 'N/A'}
-                      </span>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-        </CardContent>
-      </Card>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
-      {/* Top-K Metrics */}
+      {/* Top-K Metrics - only for classification */}
+      {!isRegression && data.top_k_metrics && data.top_k_metrics.length > 0 && (
       <Card>
         <CardHeader>
           <CardTitle>Top-K% анализ</CardTitle>
@@ -486,8 +548,10 @@ export default function ModelDetail() {
           </div>
         </CardContent>
       </Card>
+      )}
 
-      {/* Detailed Metrics Comparison Table */}
+      {/* Detailed Metrics Comparison Table - only for classification */}
+      {!isRegression && data.comparison && Object.keys(data.comparison).length > 0 && (
       <Card>
         <CardHeader>
           <CardTitle>Детальное сравнение метрик</CardTitle>
@@ -537,6 +601,271 @@ export default function ModelDetail() {
           </Table>
         </CardContent>
       </Card>
+      )}
+
+      {/* Regression Thresholds Info - only for regression */}
+      {isRegression && data.regression_thresholds && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Пороги регрессии (Regression Thresholds)</CardTitle>
+            <CardDescription>Пороги для конвертации предсказанного возврата в сигналы BUY/SELL/HOLD</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-4">
+              <div className="flex items-center justify-between p-4 bg-muted rounded-lg">
+                <div>
+                  <div className="text-sm font-medium text-muted-foreground">Метод</div>
+                  <Badge variant={data.regression_thresholds.method === 'quantile' ? 'default' : 'secondary'}>
+                    {data.regression_thresholds.method === 'quantile' ? 'Квантильный' : 'Фиксированный'}
+                  </Badge>
+                </div>
+              </div>
+
+              {data.regression_thresholds.method === 'quantile' && (
+                <>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="p-4 border rounded-lg">
+                      <div className="text-sm font-medium text-muted-foreground mb-2">BUY порог</div>
+                      <div className="space-y-1">
+                        <div className="text-lg font-bold">
+                          {data.regression_thresholds.buy_threshold_value !== null && data.regression_thresholds.buy_threshold_value !== undefined
+                            ? formatDecimal(data.regression_thresholds.buy_threshold_value, 6)
+                            : 'N/A'}
+                        </div>
+                        {data.regression_thresholds.buy_quantile !== null && (
+                          <div className="text-xs text-muted-foreground">
+                            Квантиль: {formatPercent(data.regression_thresholds.buy_quantile)} (Top {formatPercent(1 - (data.regression_thresholds.buy_quantile || 0))})
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    <div className="p-4 border rounded-lg">
+                      <div className="text-sm font-medium text-muted-foreground mb-2">SELL порог</div>
+                      <div className="space-y-1">
+                        <div className="text-lg font-bold">
+                          {data.regression_thresholds.sell_threshold_value !== null && data.regression_thresholds.sell_threshold_value !== undefined
+                            ? formatDecimal(data.regression_thresholds.sell_threshold_value, 6)
+                            : 'N/A'}
+                        </div>
+                        {data.regression_thresholds.sell_quantile !== null && (
+                          <div className="text-xs text-muted-foreground">
+                            Квантиль: {formatPercent(data.regression_thresholds.sell_quantile)} (Bottom {formatPercent(data.regression_thresholds.sell_quantile || 0)})
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="pt-4 border-t">
+                    <h4 className="font-semibold mb-2 text-sm">Как работает квантильный подход:</h4>
+                    <ul className="list-disc list-inside space-y-1 text-sm text-muted-foreground">
+                      <li>Пороги вычисляются на валидационном наборе после обучения модели</li>
+                      <li>Top 20% предсказаний → BUY сигнал (≥ {formatDecimal(data.regression_thresholds.buy_threshold_value || 0, 6)})</li>
+                      <li>Bottom 20% предсказаний → SELL сигнал (≤ {formatDecimal(data.regression_thresholds.sell_threshold_value || 0, 6)})</li>
+                      <li>Остальные 60% → HOLD (нет сигнала)</li>
+                      <li>Это обеспечивает адаптивные пороги, которые подстраиваются под распределение предсказаний модели</li>
+                    </ul>
+                  </div>
+                </>
+              )}
+
+              {data.regression_thresholds.method === 'fixed' && (
+                <div className="pt-4 border-t">
+                  <p className="text-sm text-muted-foreground">
+                    Используется фиксированный порог из настроек (MODEL_REGRESSION_THRESHOLD).
+                    Квантильные пороги недоступны для этой модели.
+                  </p>
+                </div>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Regression Analysis - only for regression */}
+      {isRegression && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          {/* Error Statistics */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Статистика ошибок</CardTitle>
+              <CardDescription>Анализ распределения ошибок предсказаний</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <MetricCard 
+                    title="MAE" 
+                    value={data.model_metrics.mae !== null && data.model_metrics.mae !== undefined ? formatDecimal(data.model_metrics.mae) : 'N/A'} 
+                  />
+                  <MetricCard 
+                    title="RMSE" 
+                    value={data.model_metrics.rmse !== null && data.model_metrics.rmse !== undefined ? formatDecimal(data.model_metrics.rmse) : 'N/A'} 
+                  />
+                  <MetricCard 
+                    title="MSE" 
+                    value={data.model_metrics.mse !== null && data.model_metrics.mse !== undefined ? formatDecimal(data.model_metrics.mse) : 'N/A'} 
+                  />
+                  <MetricCard 
+                    title="R² Score" 
+                    value={data.model_metrics.r2_score !== null && data.model_metrics.r2_score !== undefined ? formatDecimal(data.model_metrics.r2_score) : 'N/A'} 
+                  />
+                </div>
+                <div className="pt-4 border-t">
+                  <h4 className="font-semibold mb-2 text-sm">Интерпретация:</h4>
+                  <ul className="list-disc list-inside space-y-1 text-sm text-muted-foreground">
+                    {data.model_metrics.r2_score !== null && data.model_metrics.r2_score < 0 && (
+                      <li className="text-red-600">R² отрицательный - модель хуже, чем предсказание среднего значения</li>
+                    )}
+                    {data.model_metrics.r2_score !== null && data.model_metrics.r2_score >= 0 && data.model_metrics.r2_score < 0.3 && (
+                      <li className="text-yellow-600">R² низкий (0-0.3) - слабая объясняющая способность</li>
+                    )}
+                    {data.model_metrics.r2_score !== null && data.model_metrics.r2_score >= 0.3 && data.model_metrics.r2_score < 0.7 && (
+                      <li className="text-blue-600">R² средний (0.3-0.7) - умеренная объясняющая способность</li>
+                    )}
+                    {data.model_metrics.r2_score !== null && data.model_metrics.r2_score >= 0.7 && (
+                      <li className="text-green-600">R² высокий (≥0.7) - хорошая объясняющая способность</li>
+                    )}
+                    {data.model_metrics.directional_accuracy !== null && data.model_metrics.directional_accuracy >= 0.5 && data.model_metrics.directional_accuracy < 0.6 && (
+                      <li>Directional Accuracy {formatPercent(data.model_metrics.directional_accuracy)} - лучше случайного, но низкий</li>
+                    )}
+                    {data.model_metrics.directional_accuracy !== null && data.model_metrics.directional_accuracy >= 0.6 && (
+                      <li className="text-green-600">Directional Accuracy {formatPercent(data.model_metrics.directional_accuracy)} - хороший показатель направления</li>
+                    )}
+                  </ul>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Regression Metrics Analysis */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Анализ метрик регрессии</CardTitle>
+              <CardDescription>Дополнительные метрики качества модели</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <MetricCard 
+                    title="Directional Accuracy" 
+                    value={data.model_metrics.directional_accuracy !== null && data.model_metrics.directional_accuracy !== undefined ? formatPercent(data.model_metrics.directional_accuracy) : 'N/A'} 
+                  />
+                  <MetricCard 
+                    title="Sharpe Ratio" 
+                    value={data.model_metrics.sharpe_ratio !== null && data.model_metrics.sharpe_ratio !== undefined ? formatDecimal(data.model_metrics.sharpe_ratio) : 'N/A'} 
+                  />
+                  <MetricCard 
+                    title="Information Coefficient" 
+                    value={data.model_metrics.information_coefficient !== null && data.model_metrics.information_coefficient !== undefined ? formatDecimal(data.model_metrics.information_coefficient) : 'N/A'} 
+                  />
+                </div>
+                <div className="pt-4 border-t">
+                  <h4 className="font-semibold mb-2 text-sm">Оценка качества:</h4>
+                  <ul className="list-disc list-inside space-y-1 text-sm text-muted-foreground">
+                    {data.model_metrics.sharpe_ratio !== null && data.model_metrics.sharpe_ratio < 0 && (
+                      <li className="text-red-600">Sharpe Ratio отрицательный - риск не оправдан доходностью</li>
+                    )}
+                    {data.model_metrics.sharpe_ratio !== null && data.model_metrics.sharpe_ratio >= 0 && data.model_metrics.sharpe_ratio < 1 && (
+                      <li>Sharpe Ratio {formatDecimal(data.model_metrics.sharpe_ratio)} - низкий риск-скорректированный доход</li>
+                    )}
+                    {data.model_metrics.sharpe_ratio !== null && data.model_metrics.sharpe_ratio >= 1 && (
+                      <li className="text-green-600">Sharpe Ratio {formatDecimal(data.model_metrics.sharpe_ratio)} - хороший риск-скорректированный доход</li>
+                    )}
+                    {data.model_metrics.information_coefficient !== null && data.model_metrics.information_coefficient >= 0.1 && data.model_metrics.information_coefficient < 0.3 && (
+                      <li>IC {formatDecimal(data.model_metrics.information_coefficient)} - слабая корреляция</li>
+                    )}
+                    {data.model_metrics.information_coefficient !== null && data.model_metrics.information_coefficient >= 0.3 && (
+                      <li className="text-green-600">IC {formatDecimal(data.model_metrics.information_coefficient)} - умеренная/сильная корреляция</li>
+                    )}
+                  </ul>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* Regression Visualizations - only for regression */}
+      {isRegression && predictionsData && predictionsData.data_points.length > 0 && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          {/* Scatter Plot: y_true vs y_pred */}
+          {scatterPlotData.length > 0 && (
+            <Card>
+              <CardHeader>
+                <CardTitle>Scatter Plot: Предсказания vs Фактические значения</CardTitle>
+                <CardDescription>Визуализация корреляции между предсказаниями и реальными значениями</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <ResponsiveContainer width="100%" height={400}>
+                  <ScatterChart data={scatterPlotData}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis 
+                      dataKey="y_true" 
+                      name="Фактическое значение"
+                      label={{ value: 'y_true', position: 'insideBottom', offset: -5 }}
+                    />
+                    <YAxis 
+                      dataKey="y_pred" 
+                      name="Предсказание"
+                      label={{ value: 'y_pred', angle: -90, position: 'insideLeft' }}
+                    />
+                    <Tooltip cursor={{ strokeDasharray: '3 3' }} />
+                    <Scatter name="Предсказания" data={scatterPlotData} fill="#8884d8" />
+                    {/* Perfect prediction line (y = x) */}
+                    {(() => {
+                      const minVal = Math.min(...scatterPlotData.map(d => Math.min(d.y_true, d.y_pred || 0)))
+                      const maxVal = Math.max(...scatterPlotData.map(d => Math.max(d.y_true, d.y_pred || 0)))
+                      return (
+                        <ReferenceLine 
+                          segment={[{ x: minVal, y: minVal }, { x: maxVal, y: maxVal }]}
+                          stroke="#82ca9d"
+                          strokeDasharray="5 5"
+                          strokeWidth={2}
+                        />
+                      )
+                    })()}
+                  </ScatterChart>
+                </ResponsiveContainer>
+                <div className="mt-4 text-sm text-muted-foreground">
+                  <p>Зелёная пунктирная линия: идеальное предсказание (y_pred = y_true)</p>
+                  <p>Точки выше линии: переоценка, ниже линии: недооценка</p>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Error Distribution */}
+          {errorDistributionData.length > 0 && (
+            <Card>
+              <CardHeader>
+                <CardTitle>Распределение ошибок</CardTitle>
+                <CardDescription>Гистограмма ошибок предсказаний (y_true - y_pred)</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <ResponsiveContainer width="100%" height={400}>
+                  <BarChart data={errorDistributionData}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis 
+                      dataKey="bin" 
+                      name="Ошибка"
+                      label={{ value: 'Ошибка (y_true - y_pred)', position: 'insideBottom', offset: -5 }}
+                    />
+                    <YAxis 
+                      label={{ value: 'Количество', angle: -90, position: 'insideLeft' }}
+                    />
+                    <Tooltip />
+                    <Bar dataKey="count" fill="#8884d8" name="Количество предсказаний" />
+                  </BarChart>
+                </ResponsiveContainer>
+                <div className="mt-4 text-sm text-muted-foreground">
+                  <p>Распределение ошибок показывает, насколько равномерно модель ошибается</p>
+                  <p>Идеальное распределение: нормальное распределение с центром около 0</p>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+        </div>
+      )}
 
       {/* Insights */}
       <Card>
@@ -546,50 +875,102 @@ export default function ModelDetail() {
         </CardHeader>
         <CardContent>
           <div className="space-y-4">
-            <div>
-              <h4 className="font-semibold mb-2">Edge в Top-K%:</h4>
-              <ul className="list-disc list-inside space-y-1 text-sm text-muted-foreground">
-                {data.top_k_metrics.map((tk) => (
-                  <li key={tk.k}>
-                    <strong>Top-{tk.k}%</strong>: PR-AUC = {formatDecimal(tk.pr_auc)}, 
-                    Lift = {tk.lift !== null ? `${tk.lift.toFixed(2)}x` : 'N/A'}, 
-                    Coverage = {formatPercent(tk.coverage)}
-                    {tk.pr_auc && tk.pr_auc > 0.9 && ' ⭐ Отличный результат!'}
-                  </li>
-                ))}
-              </ul>
-            </div>
-            <div>
-              <h4 className="font-semibold mb-2">Сравнение с Baseline:</h4>
-              <ul className="list-disc list-inside space-y-1 text-sm text-muted-foreground">
-                {Object.entries(data.comparison).map(([metric, comp]) => (
-                  <li key={metric}>
-                    <strong className="capitalize">{metric.replace('_', ' ')}</strong>: 
-                    {comp.difference !== null && comp.difference > 0 ? (
-                      <span className="text-green-600"> Модель лучше на {formatDecimal(comp.difference)}</span>
-                    ) : comp.difference !== null && comp.difference < 0 ? (
-                      <span className="text-red-600"> Baseline лучше на {formatDecimal(Math.abs(comp.difference))}</span>
-                    ) : (
-                      ' Нет разницы'
+            {isRegression ? (
+              <>
+                <div>
+                  <h4 className="font-semibold mb-2">Анализ метрик регрессии:</h4>
+                  <ul className="list-disc list-inside space-y-1 text-sm text-muted-foreground">
+                    {data.model_metrics.r2_score !== null && data.model_metrics.r2_score < 0 && (
+                      <li className="text-red-600">
+                        <strong>R² Score</strong> = {formatDecimal(data.model_metrics.r2_score)} - модель хуже, чем предсказание среднего значения. 
+                        Рекомендуется улучшить признаки или пересмотреть подход.
+                      </li>
                     )}
-                  </li>
-                ))}
-              </ul>
-            </div>
-            <div>
-              <h4 className="font-semibold mb-2">Рекомендации:</h4>
-              <ul className="list-disc list-inside space-y-1 text-sm text-muted-foreground">
-                {data.top_k_metrics.find(tk => tk.k === 10 && tk.pr_auc && tk.pr_auc > 0.9) && (
-                  <li>Top-10% показывает очень высокий PR-AUC - можно использовать для высокоточных сигналов</li>
-                )}
-                {data.comparison.pr_auc.difference && data.comparison.pr_auc.difference > 0.5 && (
-                  <li>Модель значительно превосходит baseline по PR-AUC - хороший знак для ранжирования</li>
-                )}
-                {data.top_k_metrics.find(tk => tk.lift && tk.lift > 0.8) && (
-                  <li>Высокий Lift в top-k% показывает хорошее ранжирование предсказаний</li>
-                )}
-              </ul>
-            </div>
+                    {data.model_metrics.directional_accuracy !== null && data.model_metrics.directional_accuracy >= 0.5 && (
+                      <li className="text-green-600">
+                        <strong>Directional Accuracy</strong> = {formatPercent(data.model_metrics.directional_accuracy)} - модель правильно определяет направление движения
+                        {data.model_metrics.directional_accuracy >= 0.6 && ' ⭐ Хороший результат!'}
+                      </li>
+                    )}
+                    {data.model_metrics.information_coefficient !== null && data.model_metrics.information_coefficient >= 0.1 && (
+                      <li>
+                        <strong>Information Coefficient</strong> = {formatDecimal(data.model_metrics.information_coefficient)} - 
+                        {data.model_metrics.information_coefficient >= 0.3 ? ' умеренная/сильная' : ' слабая'} корреляция между предсказаниями и фактическими значениями
+                      </li>
+                    )}
+                    {data.model_metrics.sharpe_ratio !== null && data.model_metrics.sharpe_ratio >= 1 && (
+                      <li className="text-green-600">
+                        <strong>Sharpe Ratio</strong> = {formatDecimal(data.model_metrics.sharpe_ratio)} - хороший риск-скорректированный доход ⭐
+                      </li>
+                    )}
+                  </ul>
+                </div>
+                <div>
+                  <h4 className="font-semibold mb-2">Рекомендации:</h4>
+                  <ul className="list-disc list-inside space-y-1 text-sm text-muted-foreground">
+                    {data.model_metrics.r2_score !== null && data.model_metrics.r2_score < 0 && (
+                      <li>R² отрицательный - рекомендуется пересмотреть признаки, увеличить объём данных или изменить гиперпараметры</li>
+                    )}
+                    {data.model_metrics.directional_accuracy !== null && data.model_metrics.directional_accuracy >= 0.6 && (
+                      <li>Высокая Directional Accuracy позволяет использовать модель для определения направления сделок</li>
+                    )}
+                    {data.model_metrics.information_coefficient !== null && data.model_metrics.information_coefficient >= 0.3 && (
+                      <li>Хорошая корреляция (IC ≥ 0.3) показывает, что модель улавливает закономерности в данных</li>
+                    )}
+                    {data.model_metrics.sharpe_ratio !== null && data.model_metrics.sharpe_ratio < 0 && (
+                      <li>Отрицательный Sharpe Ratio указывает на высокий риск относительно доходности - требуется оптимизация</li>
+                    )}
+                  </ul>
+                </div>
+              </>
+            ) : (
+              <>
+                <div>
+                  <h4 className="font-semibold mb-2">Edge в Top-K%:</h4>
+                  <ul className="list-disc list-inside space-y-1 text-sm text-muted-foreground">
+                    {data.top_k_metrics.map((tk) => (
+                      <li key={tk.k}>
+                        <strong>Top-{tk.k}%</strong>: PR-AUC = {formatDecimal(tk.pr_auc)}, 
+                        Lift = {tk.lift !== null ? `${tk.lift.toFixed(2)}x` : 'N/A'}, 
+                        Coverage = {formatPercent(tk.coverage)}
+                        {tk.pr_auc && tk.pr_auc > 0.9 && ' ⭐ Отличный результат!'}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+                <div>
+                  <h4 className="font-semibold mb-2">Сравнение с Baseline:</h4>
+                  <ul className="list-disc list-inside space-y-1 text-sm text-muted-foreground">
+                    {Object.entries(data.comparison).map(([metric, comp]) => (
+                      <li key={metric}>
+                        <strong className="capitalize">{metric.replace('_', ' ')}</strong>: 
+                        {comp.difference !== null && comp.difference > 0 ? (
+                          <span className="text-green-600"> Модель лучше на {formatDecimal(comp.difference)}</span>
+                        ) : comp.difference !== null && comp.difference < 0 ? (
+                          <span className="text-red-600"> Baseline лучше на {formatDecimal(Math.abs(comp.difference))}</span>
+                        ) : (
+                          ' Нет разницы'
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+                <div>
+                  <h4 className="font-semibold mb-2">Рекомендации:</h4>
+                  <ul className="list-disc list-inside space-y-1 text-sm text-muted-foreground">
+                    {data.top_k_metrics.find(tk => tk.k === 10 && tk.pr_auc && tk.pr_auc > 0.9) && (
+                      <li>Top-10% показывает очень высокий PR-AUC - можно использовать для высокоточных сигналов</li>
+                    )}
+                    {data.comparison.pr_auc && data.comparison.pr_auc.difference && data.comparison.pr_auc.difference > 0.5 && (
+                      <li>Модель значительно превосходит baseline по PR-AUC - хороший знак для ранжирования</li>
+                    )}
+                    {data.top_k_metrics.find(tk => tk.lift && tk.lift > 0.8) && (
+                      <li>Высокий Lift в top-k% показывает хорошее ранжирование предсказаний</li>
+                    )}
+                  </ul>
+                </div>
+              </>
+            )}
           </div>
         </CardContent>
       </Card>

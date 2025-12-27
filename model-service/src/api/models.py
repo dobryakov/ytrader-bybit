@@ -120,6 +120,7 @@ class BaselineMetrics(BaseModel):
 class ModelMetrics(BaseModel):
     """Main model metrics."""
 
+    # Classification metrics
     accuracy: Optional[float] = None
     precision: Optional[float] = None
     recall: Optional[float] = None
@@ -127,6 +128,14 @@ class ModelMetrics(BaseModel):
     balanced_accuracy: Optional[float] = None
     roc_auc: Optional[float] = None
     pr_auc: Optional[float] = None
+    # Regression metrics
+    mse: Optional[float] = None
+    mae: Optional[float] = None
+    rmse: Optional[float] = None
+    r2_score: Optional[float] = None
+    directional_accuracy: Optional[float] = None
+    sharpe_ratio: Optional[float] = None
+    information_coefficient: Optional[float] = None
 
 
 class PredictionInfo(BaseModel):
@@ -136,6 +145,36 @@ class PredictionInfo(BaseModel):
     count: int
     dataset_id: Optional[str] = None
     created_at: Optional[str] = None
+
+
+class PredictionDataPoint(BaseModel):
+    """Single prediction data point for visualization."""
+
+    y_true: float
+    y_pred: Optional[float] = None
+    error: Optional[float] = None
+    abs_error: Optional[float] = None
+    probabilities: Optional[List[float]] = None
+    confidence: Optional[float] = None
+
+
+class PredictionsDataResponse(BaseModel):
+    """Predictions data for visualization."""
+
+    split: str
+    task_type: str
+    data_points: List[PredictionDataPoint]
+    total_count: int
+
+
+class RegressionThresholdsInfo(BaseModel):
+    """Regression thresholds information."""
+    
+    method: str = Field(description="Threshold method: 'quantile' or 'fixed'")
+    buy_quantile: Optional[float] = Field(default=None, description="Buy quantile (e.g., 0.8 for top 20%)")
+    sell_quantile: Optional[float] = Field(default=None, description="Sell quantile (e.g., 0.2 for bottom 20%)")
+    buy_threshold_value: Optional[float] = Field(default=None, description="Buy threshold value")
+    sell_threshold_value: Optional[float] = Field(default=None, description="Sell threshold value")
 
 
 class ModelAnalysisResponse(BaseModel):
@@ -152,6 +191,10 @@ class ModelAnalysisResponse(BaseModel):
     optimal_top_k_percentage: Optional[int] = Field(
         default=None,
         description="Optimal top-k percentage selected for this model (from training_config)"
+    )
+    regression_thresholds: Optional[RegressionThresholdsInfo] = Field(
+        default=None,
+        description="Regression thresholds information (quantile or fixed) from training_config"
     )
 
 
@@ -633,6 +676,13 @@ async def get_model_analysis(version: str) -> ModelAnalysisResponse:
             balanced_accuracy=model_metrics_dict.get("balanced_accuracy"),
             roc_auc=model_metrics_dict.get("roc_auc"),
             pr_auc=model_metrics_dict.get("pr_auc"),
+            mse=model_metrics_dict.get("mse"),
+            mae=model_metrics_dict.get("mae"),
+            rmse=model_metrics_dict.get("rmse"),
+            r2_score=model_metrics_dict.get("r2_score"),
+            directional_accuracy=model_metrics_dict.get("directional_accuracy"),
+            sharpe_ratio=model_metrics_dict.get("sharpe_ratio"),
+            information_coefficient=model_metrics_dict.get("information_coefficient"),
         )
 
         baseline_metrics = BaselineMetrics(
@@ -703,8 +753,9 @@ async def get_model_analysis(version: str) -> ModelAnalysisResponse:
             version=version,
         )
 
-        # Extract optimal_top_k_percentage from training_config
+        # Extract optimal_top_k_percentage and regression_thresholds from training_config
         optimal_top_k_percentage = None
+        regression_thresholds = None
         training_config = model_version.get("training_config")
         if training_config:
             if isinstance(training_config, str):
@@ -720,6 +771,25 @@ async def get_model_analysis(version: str) -> ModelAnalysisResponse:
                         optimal_top_k_percentage = int(optimal_k)
                     except (ValueError, TypeError):
                         optimal_top_k_percentage = None
+                
+                # Extract regression thresholds if available
+                regression_thresholds_dict = training_config.get("regression_thresholds")
+                if regression_thresholds_dict and isinstance(regression_thresholds_dict, dict):
+                    try:
+                        regression_thresholds = RegressionThresholdsInfo(
+                            method=regression_thresholds_dict.get("method", "fixed"),
+                            buy_quantile=regression_thresholds_dict.get("buy_quantile"),
+                            sell_quantile=regression_thresholds_dict.get("sell_quantile"),
+                            buy_threshold_value=regression_thresholds_dict.get("buy_threshold_value"),
+                            sell_threshold_value=regression_thresholds_dict.get("sell_threshold_value"),
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "Failed to parse regression thresholds",
+                            version=version,
+                            error=str(e),
+                        )
+                        regression_thresholds = None
 
         logger.info(
             "Retrieved model analysis",
@@ -739,10 +809,113 @@ async def get_model_analysis(version: str) -> ModelAnalysisResponse:
             comparison=comparison,
             confidence_threshold_info=confidence_threshold_info,
             optimal_top_k_percentage=optimal_top_k_percentage,
+            regression_thresholds=regression_thresholds,
         )
     except HTTPException:
         raise
     except Exception as e:
         logger.error("Failed to get model analysis", version=version, error=str(e), exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+
+@router.get("/models/{version}/predictions-data", response_model=PredictionsDataResponse)
+async def get_predictions_data(
+    version: str,
+    split: str = Query("test", description="Dataset split ('train', 'validation', 'test')"),
+    limit: int = Query(1000, ge=1, le=10000, description="Maximum number of data points to return"),
+) -> PredictionsDataResponse:
+    """
+    Get predictions data for visualization (scatter plots, error analysis, etc.).
+
+    Args:
+        version: Model version identifier (e.g., 'v1', 'v2.1')
+        split: Dataset split to get predictions from
+        limit: Maximum number of data points (for performance)
+
+    Returns:
+        Predictions data with y_true, y_pred, errors, etc.
+
+    Raises:
+        HTTPException: If model version not found
+    """
+    # Validate version string to prevent path traversal
+    if not validate_version_string(version):
+        logger.warning("Invalid version string detected", version=version)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid version format")
+    
+    try:
+        pred_repo = ModelPredictionRepository()
+        predictions_data = await pred_repo.get_by_model_version(version, split=split)
+        
+        if not predictions_data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"No predictions found for model version {version} and split {split}"
+            )
+        
+        # Get the latest prediction record for this split
+        latest_pred = predictions_data[0]  # Already sorted by created_at DESC
+        
+        # Parse predictions JSONB
+        predictions_json = latest_pred.get("predictions")
+        if isinstance(predictions_json, str):
+            predictions_json = json.loads(predictions_json)
+        
+        if not isinstance(predictions_json, list):
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Invalid predictions data format"
+            )
+        
+        # Get task type from metadata
+        metadata = latest_pred.get("metadata")
+        if isinstance(metadata, str):
+            metadata = json.loads(metadata)
+        task_type = metadata.get("task_type", "classification") if metadata else "classification"
+        
+        # Convert to data points (limit for performance)
+        data_points = []
+        limited_predictions = predictions_json[:limit]
+        
+        for pred in limited_predictions:
+            if task_type == "regression":
+                # For regression: y_true, y_pred, error, abs_error
+                data_points.append(
+                    PredictionDataPoint(
+                        y_true=float(pred.get("y_true", 0)),
+                        y_pred=float(pred.get("y_pred", 0)) if pred.get("y_pred") is not None else None,
+                        error=float(pred.get("error", 0)) if pred.get("error") is not None else None,
+                        abs_error=float(pred.get("abs_error", 0)) if pred.get("abs_error") is not None else None,
+                    )
+                )
+            else:
+                # For classification: y_true, probabilities, confidence
+                data_points.append(
+                    PredictionDataPoint(
+                        y_true=float(pred.get("y_true", 0)),
+                        probabilities=pred.get("probabilities"),
+                        confidence=float(pred.get("confidence", 0)) if pred.get("confidence") is not None else None,
+                    )
+                )
+        
+        logger.info(
+            "Retrieved predictions data for visualization",
+            version=version,
+            split=split,
+            task_type=task_type,
+            data_points_count=len(data_points),
+            total_count=len(predictions_json),
+        )
+        
+        return PredictionsDataResponse(
+            split=split,
+            task_type=task_type,
+            data_points=data_points,
+            total_count=len(predictions_json),
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to get predictions data", version=version, error=str(e), exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 

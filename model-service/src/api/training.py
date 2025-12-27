@@ -163,14 +163,36 @@ async def request_dataset_build(request: Optional[DatasetBuildRequest] = None) -
         symbol = request.symbol if request else None
         target_registry_version = request.target_registry_version if request else None
 
-        # Request dataset build from Feature Service
-        dataset_id = await training_orchestrator.request_dataset_build(
-            strategy_id=strategy_id, 
+        logger.debug(
+            "Requesting dataset build",
+            strategy_id=strategy_id,
             symbol=symbol,
-            target_registry_version=target_registry_version
+            target_registry_version=target_registry_version,
         )
 
+        # Request dataset build from Feature Service
+        try:
+            dataset_id = await training_orchestrator.request_dataset_build(
+                strategy_id=strategy_id, 
+                symbol=symbol,
+                target_registry_version=target_registry_version
+            )
+        except Exception as e:
+            logger.error(
+                "Exception in request_dataset_build",
+                error=str(e),
+                error_type=type(e).__name__,
+                exc_info=True,
+            )
+            raise
+
         if not dataset_id:
+            logger.error(
+                "Dataset build returned None",
+                strategy_id=strategy_id,
+                symbol=symbol,
+                target_registry_version=target_registry_version,
+            )
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to request dataset build from Feature Service. Check Feature Service availability and logs.",
@@ -187,6 +209,6 @@ async def request_dataset_build(request: Optional[DatasetBuildRequest] = None) -
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("Failed to request dataset build", error=str(e), exc_info=True)
+        logger.error("Failed to request dataset build", error=str(e), error_type=type(e).__name__, exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 

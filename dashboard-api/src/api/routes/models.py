@@ -305,7 +305,10 @@ async def request_dataset_build(request: Request):
         # Forward request to model-service
         model_service_url = f"http://{settings.model_service_host}:{settings.model_service_port}/api/v1/training/dataset/build"
         
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        # Increase timeout for dataset build - Feature Service may take time to process
+        # Model service waits up to 3600s for Feature Service, but we don't need to wait that long
+        # 120 seconds should be enough for the initial request to be accepted
+        async with httpx.AsyncClient(timeout=120.0) as client:
             response = await client.post(
                 model_service_url,
                 json=body,

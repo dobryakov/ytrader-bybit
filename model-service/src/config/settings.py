@@ -76,6 +76,21 @@ class Settings(BaseSettings):
         alias="MODEL_QUALITY_THRESHOLD_RMSE",
         description="Maximum RMSE threshold for regression models to be auto-activated (optional). If set, model will be activated only if RMSE <= this value. Default: None (not used)"
     )
+    model_quality_threshold_directional_accuracy: float = Field(
+        default=0.5,
+        alias="MODEL_QUALITY_THRESHOLD_DIRECTIONAL_ACCURACY",
+        description="Minimum directional accuracy (hit rate) threshold for regression models to be auto-activated. Default: 0.5 (better than random)"
+    )
+    model_quality_threshold_sharpe_ratio: float = Field(
+        default=0.0,
+        alias="MODEL_QUALITY_THRESHOLD_SHARPE_RATIO",
+        description="Minimum Sharpe ratio threshold for regression models to be auto-activated. Default: 0.0 (positive risk-adjusted return)"
+    )
+    model_quality_threshold_information_coefficient: float = Field(
+        default=0.0,
+        alias="MODEL_QUALITY_THRESHOLD_INFORMATION_COEFFICIENT",
+        description="Minimum Information Coefficient (correlation) threshold for regression models to be auto-activated. Default: 0.0 (positive correlation)"
+    )
     # Class Balancing and Hyperparameter Tuning Configuration
     model_training_use_smote: bool = Field(default=False, alias="MODEL_TRAINING_USE_SMOTE")
     model_training_class_weight_method: str = Field(default="inverse_frequency", alias="MODEL_TRAINING_CLASS_WEIGHT_METHOD")
@@ -86,7 +101,7 @@ class Settings(BaseSettings):
     model_training_threshold_optimization_metric: str = Field(
         default="f1",
         alias="MODEL_TRAINING_THRESHOLD_OPTIMIZATION_METRIC",
-        description="Metric to optimize for threshold calibration: 'f1', 'pr_auc', 'balanced_accuracy', 'recall'. Default: 'f1'"
+        description="Metric to optimize for threshold calibration. For classification: 'f1', 'pr_auc', 'balanced_accuracy', 'recall', 'accuracy'. For regression: 'r2_score', 'directional_accuracy', 'sharpe_ratio', 'information_coefficient', 'rmse' (lower is better). Default: 'f1'"
     )
     
     # Time-Based Retraining Configuration (for market-data-only training)
@@ -433,11 +448,23 @@ class Settings(BaseSettings):
             raise ValueError(f"MODEL_TRAINING_CLASS_WEIGHT_METHOD must be one of {valid_methods}, got {v}")
         return v_lower
 
+    @field_validator("model_quality_threshold_rmse", mode="before")
+    @classmethod
+    def validate_optional_float(cls, v) -> Optional[float]:
+        """Convert empty strings to None for optional float fields."""
+        if v == "" or v is None:
+            return None
+        return v
+
     @field_validator("model_training_threshold_optimization_metric")
     @classmethod
     def validate_threshold_optimization_metric(cls, v: str) -> str:
         """Validate threshold optimization metric is one of the supported options."""
-        valid_metrics = {"f1", "pr_auc", "balanced_accuracy", "recall"}
+        # Classification metrics
+        classification_metrics = {"f1", "pr_auc", "balanced_accuracy", "recall", "accuracy"}
+        # Regression metrics
+        regression_metrics = {"r2_score", "directional_accuracy", "sharpe_ratio", "information_coefficient", "ic", "rmse"}
+        valid_metrics = classification_metrics | regression_metrics
         v_lower = v.lower()
         if v_lower not in valid_metrics:
             raise ValueError(f"MODEL_TRAINING_THRESHOLD_OPTIMIZATION_METRIC must be one of {valid_metrics}, got {v}")

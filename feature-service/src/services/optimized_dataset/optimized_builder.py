@@ -1266,25 +1266,25 @@ class OptimizedDatasetBuilder:
                     
                 # ИСПРАВЛЕННАЯ ЛОГИКА: Правильная маска для пропусков
                 # Используем isna() для всех типов - он правильно обрабатывает и NaN и None
-                    missing_mask = feature_series.isna()
+                missing_mask = feature_series.isna()
+                
+                missing_timestamps = timestamp_series[missing_mask]
+                
+                if len(missing_timestamps) > 0:
+                    missing_timestamps_by_feature[feature_name] = missing_timestamps
                     
-                    missing_timestamps = timestamp_series[missing_mask]
+                    # Calculate time ranges
+                    min_ts = missing_timestamps.min()
+                    max_ts = missing_timestamps.max()
                     
-                    if len(missing_timestamps) > 0:
-                        missing_timestamps_by_feature[feature_name] = missing_timestamps
-                        
-                        # Calculate time ranges
-                        min_ts = missing_timestamps.min()
-                        max_ts = missing_timestamps.max()
-                        
-                        # Group by date to identify which days have missing data
-                        if pd.api.types.is_datetime64_any_dtype(missing_timestamps):
-                            missing_dates = missing_timestamps.dt.date.unique()
-                            missing_dates_sorted = sorted(missing_dates)
-                            
-                            missing_time_ranges[feature_name] = {
-                                "first_missing_timestamp": min_ts.isoformat() if isinstance(min_ts, pd.Timestamp) else str(min_ts),
-                                "last_missing_timestamp": max_ts.isoformat() if isinstance(max_ts, pd.Timestamp) else str(max_ts),
+                    # Group by date to identify which days have missing data
+                    if pd.api.types.is_datetime64_any_dtype(missing_timestamps):
+                        missing_dates = missing_timestamps.dt.date.unique()
+                        missing_dates_sorted = sorted(missing_dates)
+                    
+                    missing_time_ranges[feature_name] = {
+                        "first_missing_timestamp": min_ts.isoformat() if isinstance(min_ts, pd.Timestamp) else str(min_ts),
+                        "last_missing_timestamp": max_ts.isoformat() if isinstance(max_ts, pd.Timestamp) else str(max_ts),
                                 "missing_dates": [d.isoformat() for d in missing_dates_sorted],
                                 "date_range": f"{missing_dates_sorted[0].isoformat()} to {missing_dates_sorted[-1].isoformat()}" if len(missing_dates_sorted) > 1 else missing_dates_sorted[0].isoformat(),
                                 "missing_timestamps_count": len(missing_timestamps),

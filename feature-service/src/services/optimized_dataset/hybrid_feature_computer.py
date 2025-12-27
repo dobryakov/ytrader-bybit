@@ -660,7 +660,7 @@ class HybridFeatureComputer:
                     if missing_cols:
                         # Initialize any missing columns (should not happen, but safety check)
                         for feature_name in missing_cols:
-                        result[feature_name] = None
+                            result[feature_name] = None
                 
                 # Check if patterns contains fewer keys than initialized columns
                 # This can happen if compute_all_candle_patterns_* returns incomplete dict
@@ -788,7 +788,7 @@ class HybridFeatureComputer:
                         # Set value in result DataFrame using .at[] for direct assignment
                         # Use .loc[] as fallback if .at[] doesn't work (shouldn't happen, but safety)
                         try:
-                        result.at[idx, feature_name] = value
+                            result.at[idx, feature_name] = value
                         except Exception as e:
                             # Fallback to .loc[] if .at[] fails
                             logger.warning(

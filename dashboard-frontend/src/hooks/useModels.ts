@@ -15,6 +15,9 @@ export interface ModelMetrics {
   mse: number | null
   r2_score: number | null
   rmse: number | null
+  directional_accuracy: number | null
+  sharpe_ratio: number | null
+  information_coefficient: number | null
   // Trading performance metrics
   avg_pnl: number | null
   max_drawdown: number | null
@@ -206,6 +209,13 @@ export interface ModelMetricsDetail {
   balanced_accuracy: number | null
   roc_auc: number | null
   pr_auc: number | null
+  mse: number | null
+  mae: number | null
+  rmse: number | null
+  r2_score: number | null
+  directional_accuracy: number | null
+  sharpe_ratio: number | null
+  information_coefficient: number | null
 }
 
 export interface BaselineMetricsDetail {
@@ -248,6 +258,14 @@ export interface ConfidenceThresholdInfo {
   metric_name?: string | null
 }
 
+export interface RegressionThresholdsInfo {
+  method: string
+  buy_quantile?: number | null
+  sell_quantile?: number | null
+  buy_threshold_value?: number | null
+  sell_threshold_value?: number | null
+}
+
 export interface ModelAnalysisResponse {
   model_version: string
   model_id: string
@@ -263,6 +281,7 @@ export interface ModelAnalysisResponse {
   }
   confidence_threshold_info?: ConfidenceThresholdInfo | null
   optimal_top_k_percentage?: number | null
+  regression_thresholds?: RegressionThresholdsInfo | null
 }
 
 export function useModelAnalysis(version: string) {
@@ -270,6 +289,35 @@ export function useModelAnalysis(version: string) {
     queryKey: ['modelAnalysis', version],
     queryFn: async () => {
       const response = await api.get(`/v1/models/${version}/analysis`)
+      return response.data
+    },
+    enabled: !!version,
+  })
+}
+
+export interface PredictionDataPoint {
+  y_true: number
+  y_pred?: number | null
+  error?: number | null
+  abs_error?: number | null
+  probabilities?: number[] | null
+  confidence?: number | null
+}
+
+export interface PredictionsDataResponse {
+  split: string
+  task_type: string
+  data_points: PredictionDataPoint[]
+  total_count: number
+}
+
+export function usePredictionsData(version: string, split: string = 'test', limit: number = 1000) {
+  return useQuery<PredictionsDataResponse>({
+    queryKey: ['predictionsData', version, split, limit],
+    queryFn: async () => {
+      const response = await api.get(`/v1/models/${version}/predictions-data`, {
+        params: { split, limit }
+      })
       return response.data
     },
     enabled: !!version,

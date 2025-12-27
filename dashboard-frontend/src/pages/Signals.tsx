@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, Link } from 'react-router-dom'
 import { useSignals } from '@/hooks/useSignals'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Badge } from '@/components/ui/badge'
@@ -89,10 +89,16 @@ export default function Signals() {
                     <TableCell className="font-mono text-xs">{signal.signal_id.slice(0, 8)}...</TableCell>
                     <TableCell>
                       <div className="flex items-center gap-2">
-                        <Badge variant={signal.signal_type === 'buy' ? 'default' : 'destructive'}>
-                          {signal.signal_type.toUpperCase()}
-                        </Badge>
-                        {signal.is_rejected && (
+                        {signal.rejection_reason === 'regression_hold_prediction' ? (
+                          <Badge variant="outline" className="border-orange-500 text-orange-600 dark:border-orange-400 dark:text-orange-400">
+                            HOLD
+                          </Badge>
+                        ) : (
+                          <Badge variant={signal.signal_type === 'buy' ? 'default' : 'destructive'}>
+                            {signal.signal_type.toUpperCase()}
+                          </Badge>
+                        )}
+                        {signal.is_rejected && signal.rejection_reason !== 'regression_hold_prediction' && (
                           <Badge variant="outline" className="border-red-500 text-red-600 dark:border-red-400 dark:text-red-400">
                             REJECTED
                           </Badge>
@@ -102,51 +108,100 @@ export default function Signals() {
                     <TableCell>{signal.asset}</TableCell>
                     <TableCell>{parseFloat(signal.amount).toFixed(2)} USDT</TableCell>
                     <TableCell>
-                      {signal.confidence ? (signal.confidence * 100).toFixed(2) + '%' : 'N/A'}
+                      {signal.model_task_type === 'regression' 
+                        ? 'N/A' 
+                        : (signal.confidence ? (signal.confidence * 100).toFixed(2) + '%' : 'N/A')}
                     </TableCell>
                     <TableCell>
                       <div className="flex flex-col gap-1">
-                        {signal.model_prediction ? (
-                          <Badge variant={signal.model_prediction === 'UP' ? 'default' : 'destructive'}>
-                            {signal.model_prediction}
-                          </Badge>
-                        ) : (
-                          <span className="text-muted-foreground">N/A</span>
-                        )}
-                        {signal.raw_prediction_data && (
-                          <div className="text-xs text-muted-foreground space-y-0.5">
-                            {signal.raw_prediction_data.prediction_result && (
-                              <>
-                                {signal.raw_prediction_data.prediction_result.buy_probability !== undefined && (
-                                  <div>
-                                    Buy: {(signal.raw_prediction_data.prediction_result.buy_probability * 100).toFixed(2)}%
-                                  </div>
-                                )}
-                                {signal.raw_prediction_data.prediction_result.sell_probability !== undefined && (
-                                  <div>
-                                    Sell: {(signal.raw_prediction_data.prediction_result.sell_probability * 100).toFixed(2)}%
-                                  </div>
-                                )}
-                                {signal.raw_prediction_data.prediction_result.probabilities && (
-                                  <div className="font-mono text-[10px]">
-                                    Probs: [{signal.raw_prediction_data.prediction_result.probabilities.map(p => (p * 100).toFixed(1)).join(', ')}%]
-                                  </div>
-                                )}
-                              </>
+                        {signal.model_task_type === 'regression' ? (
+                          // Regression model display
+                          <>
+                            {signal.raw_prediction_data?.prediction_result?.prediction !== undefined && (
+                              <div className="flex items-center gap-2">
+                                <span className="text-xs text-muted-foreground">Return:</span>
+                                <span className={`font-mono text-sm font-semibold ${
+                                  Number(signal.raw_prediction_data.prediction_result.prediction) > 0 
+                                    ? 'text-green-600' 
+                                    : Number(signal.raw_prediction_data.prediction_result.prediction) < 0 
+                                    ? 'text-red-600' 
+                                    : ''
+                                }`}>
+                                  {(Number(signal.raw_prediction_data.prediction_result.prediction) * 100).toFixed(4)}%
+                                </span>
+                              </div>
                             )}
-                            {signal.raw_prediction_data.effective_threshold !== null && signal.raw_prediction_data.effective_threshold !== undefined && (
-                              <div>
+                            {signal.raw_prediction_data?.regression_thresholds ? (
+                              // Show regression thresholds (quantile thresholds) for regression models
+                              <div className="text-xs text-muted-foreground space-y-0.5">
+                                <div>
+                                  Buy threshold: {(signal.raw_prediction_data.regression_thresholds.buy_threshold! * 100).toFixed(4)}%
+                                </div>
+                                <div>
+                                  Sell threshold: {(signal.raw_prediction_data.regression_thresholds.sell_threshold! * 100).toFixed(4)}%
+                                </div>
+                                {signal.raw_prediction_data.regression_thresholds.method && (
+                                  <div className="text-[10px]">
+                                    ({signal.raw_prediction_data.regression_thresholds.method})
+                                  </div>
+                                )}
+                              </div>
+                            ) : signal.raw_prediction_data?.effective_threshold !== null && signal.raw_prediction_data?.effective_threshold !== undefined ? (
+                              // Fallback: show effective_threshold if regression_thresholds not available
+                              <div className="text-xs text-muted-foreground">
                                 Threshold: {(signal.raw_prediction_data.effective_threshold * 100).toFixed(2)}%
                                 {signal.raw_prediction_data.threshold_source && (
                                   <span className="ml-1 text-[10px]">({signal.raw_prediction_data.threshold_source})</span>
                                 )}
                               </div>
+                            ) : null}
+                          </>
+                        ) : (
+                          // Classification model display (original)
+                          <>
+                            {signal.model_prediction ? (
+                              <Badge variant={signal.model_prediction === 'UP' ? 'default' : 'destructive'}>
+                                {signal.model_prediction}
+                              </Badge>
+                            ) : (
+                              <span className="text-muted-foreground">N/A</span>
                             )}
-                            {signal.is_rejected && (
-                              <div className="text-red-600 font-semibold">
-                                Rejected: {signal.rejection_reason || 'Unknown'}
+                            {signal.raw_prediction_data && (
+                              <div className="text-xs text-muted-foreground space-y-0.5">
+                                {signal.raw_prediction_data.prediction_result && (
+                                  <>
+                                    {signal.raw_prediction_data.prediction_result.buy_probability !== undefined && (
+                                      <div>
+                                        Buy: {(signal.raw_prediction_data.prediction_result.buy_probability * 100).toFixed(2)}%
+                                      </div>
+                                    )}
+                                    {signal.raw_prediction_data.prediction_result.sell_probability !== undefined && (
+                                      <div>
+                                        Sell: {(signal.raw_prediction_data.prediction_result.sell_probability * 100).toFixed(2)}%
+                                      </div>
+                                    )}
+                                    {signal.raw_prediction_data.prediction_result.probabilities && (
+                                      <div className="font-mono text-[10px]">
+                                        Probs: [{signal.raw_prediction_data.prediction_result.probabilities.map(p => (p * 100).toFixed(1)).join(', ')}%]
+                                      </div>
+                                    )}
+                                  </>
+                                )}
+                                {signal.raw_prediction_data.effective_threshold !== null && signal.raw_prediction_data.effective_threshold !== undefined && (
+                                  <div>
+                                    Threshold: {(signal.raw_prediction_data.effective_threshold * 100).toFixed(2)}%
+                                    {signal.raw_prediction_data.threshold_source && (
+                                      <span className="ml-1 text-[10px]">({signal.raw_prediction_data.threshold_source})</span>
+                                    )}
+                                  </div>
+                                )}
                               </div>
                             )}
+                          </>
+                        )}
+                        {signal.is_rejected && (
+                          <div className="text-xs text-red-600 font-semibold mt-1">
+                            Rejected: {signal.rejection_reason || 'Unknown'}
                           </div>
                         )}
                       </div>
@@ -217,7 +272,14 @@ export default function Signals() {
                     <TableCell>{signal.strategy_id || 'N/A'}</TableCell>
                     <TableCell>
                       {signal.model_version 
-                        ? `${signal.model_version}${signal.is_model_active ? ' [active]' : ''}`
+                        ? (
+                          <Link 
+                            to={`/models/${signal.model_version}`}
+                            className="text-primary hover:underline"
+                          >
+                            {signal.model_version}{signal.is_model_active ? ' [active]' : ''}
+                          </Link>
+                        )
                         : 'N/A'}
                     </TableCell>
                     <TableCell>{format(parseISO(signal.timestamp), 'dd.MM.yyyy HH:mm:ss')}</TableCell>

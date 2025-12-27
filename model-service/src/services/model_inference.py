@@ -431,12 +431,31 @@ class ModelInference:
                 if sem_probs:
                     # For directional binary targets we typically use -1 (down) and +1 (up).
                     if 1 in sem_probs or -1 in sem_probs:
+                        # Use -1/+1 mapping: +1 = buy, -1 = sell
                         buy_probability = float(sem_probs.get(1, 0.0))
                         sell_probability = float(sem_probs.get(-1, 0.0))
-                    else:
-                        # Fallback: try semantic labels 0/1 as up/down
+                    elif 0 in sem_probs or 1 in sem_probs:
+                        # Fallback: try semantic labels 0/1 as down/up
+                        # 1 = buy (up), 0 = sell (down)
                         buy_probability = float(sem_probs.get(1, 0.0))
                         sell_probability = float(sem_probs.get(0, 0.0))
+                    else:
+                        # sem_probs exists but doesn't contain expected keys
+                        # Try to use probabilities array as fallback
+                        if len(probabilities) >= 2:
+                            buy_probability = float(probabilities[0])
+                            sell_probability = float(probabilities[1])
+                        elif len(probabilities) == 1:
+                            # Single class: assume it's buy probability, sell is complement
+                            buy_probability = float(probabilities[0])
+                            sell_probability = 1.0 - buy_probability
+                        else:
+                            # No probabilities available, keep defaults (0.0, 0.0)
+                            logger.warning(
+                                "Cannot derive buy/sell probabilities: sem_probs has unexpected keys and probabilities array is empty",
+                                sem_probs_keys=list(sem_probs.keys()) if sem_probs else None,
+                                probabilities_len=len(probabilities) if probabilities is not None else 0,
+                            )
                 else:
                     # No semantic mapping available: fall back to legacy convention.
                     # For multi-class classification: [class_0_prob, class_1_prob]
@@ -444,10 +463,16 @@ class ModelInference:
                     if len(probabilities) >= 2:
                         buy_probability = float(probabilities[0])
                         sell_probability = float(probabilities[1])
+                    elif len(probabilities) == 1:
+                        # Single class: assume it's buy probability, sell is complement
+                        buy_probability = float(probabilities[0])
+                        sell_probability = 1.0 - buy_probability
                     else:
-                        # Fallback for single class or unexpected format
-                        buy_probability = float(probabilities[0]) if len(probabilities) > 0 else 0.0
-                        sell_probability = 0.0
+                        # No probabilities available, keep defaults (0.0, 0.0)
+                        logger.warning(
+                            "Cannot derive buy/sell probabilities: no semantic mapping and probabilities array is empty",
+                            probabilities_len=len(probabilities) if probabilities is not None else 0,
+                        )
 
                 # Log signal direction mapping for debugging
                 logger.debug(
@@ -489,6 +514,8 @@ class ModelInference:
                 max_expected_return = settings.model_regression_max_expected_return
                 confidence = min(1.0, max(0.0, abs(predicted_return) / max_expected_return))
 
+                # For regression models, we don't compute buy/sell probabilities
+                # Instead, we rely on predicted_return and thresholds for signal determination
                 result = {
                     "prediction": predicted_return,
                     "confidence": confidence,

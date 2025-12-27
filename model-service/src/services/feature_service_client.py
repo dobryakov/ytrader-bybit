@@ -212,8 +212,22 @@ class FeatureServiceClient:
         }
 
         try:
+            logger.info(
+                "Sending dataset build request to Feature Service",
+                url=url,
+                symbol=request.get("symbol"),
+                trace_id=trace_id,
+            )
+            
             async with httpx.AsyncClient(timeout=self.dataset_timeout) as client:
                 response = await client.post(url, headers=headers, json=request)
+                
+                logger.info(
+                    "Feature Service response received",
+                    status_code=response.status_code,
+                    trace_id=trace_id,
+                )
+                
                 response.raise_for_status()
                 data = response.json()
                 
@@ -227,10 +241,19 @@ class FeatureServiceClient:
                 return dataset_id
 
         except httpx.HTTPStatusError as e:
+            error_detail = None
+            try:
+                if e.response.content:
+                    error_detail = e.response.text
+            except Exception:
+                pass
+            
             logger.error(
                 "Feature Service dataset build API error",
                 status_code=e.response.status_code,
                 error=str(e),
+                error_detail=error_detail,
+                url=url,
                 request=request,
                 trace_id=trace_id,
             )
@@ -239,6 +262,17 @@ class FeatureServiceClient:
             logger.warning(
                 "Feature Service dataset build API timeout",
                 timeout=self.dataset_timeout,
+                url=url,
+                request=request,
+                trace_id=trace_id,
+            )
+            return None
+        except (httpx.ReadError, httpx.ConnectError, httpx.NetworkError) as e:
+            logger.error(
+                "Feature Service dataset build API network error",
+                error=str(e),
+                error_type=type(e).__name__,
+                url=url,
                 request=request,
                 trace_id=trace_id,
             )
@@ -247,6 +281,8 @@ class FeatureServiceClient:
             logger.error(
                 "Failed to request dataset build from Feature Service",
                 error=str(e),
+                error_type=type(e).__name__,
+                url=url,
                 request=request,
                 trace_id=trace_id,
                 exc_info=True,

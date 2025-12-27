@@ -38,10 +38,20 @@ async def list_signals(
                 ts.rejection_reason,
                 ts.effective_threshold,
                 pt.predicted_values->>'direction' as model_prediction,
-                COALESCE(pt.actual_values->>'candle_open', ts.market_data_snapshot->>'price') as price_from,
-                pt.actual_values->>'candle_close' as price_to,
+                COALESCE(
+                    pt.actual_values->>'candle_open',
+                    pt.actual_values->>'price_at_prediction',
+                    ts.market_data_snapshot->>'price'
+                ) as price_from,
+                COALESCE(
+                    pt.actual_values->>'candle_close',
+                    pt.actual_values->>'price_at_target'
+                ) as price_to,
                 pt.actual_values->>'direction' as actual_direction,
-                pt.actual_values->>'return_value' as actual_return,
+                COALESCE(
+                    pt.actual_values->>'return_value',
+                    pt.actual_values->>'value'
+                ) as actual_return,
                 pt.is_obsolete,
                 pt.actual_values_computed_at,
                 pt.target_timestamp,
@@ -56,23 +66,29 @@ async def list_signals(
                             AND (mv.strategy_id = ts.strategy_id OR (mv.strategy_id IS NULL AND ts.strategy_id IS NULL))
                             AND (mv.symbol = ts.asset OR mv.symbol IS NULL)
                     )
-                END as is_model_active
+                END as is_model_active,
+                CASE 
+                    WHEN ts.model_version IS NULL THEN NULL
+                    ELSE (
+                        SELECT mv.training_config->>'task_type'
+                        FROM model_versions mv
+                        WHERE mv.version = ts.model_version
+                        LIMIT 1
+                    )
+                END as model_task_type,
+                CASE 
+                    WHEN ts.model_version IS NULL THEN NULL
+                    ELSE (
+                        SELECT mv.training_config->'regression_thresholds'
+                        FROM model_versions mv
+                        WHERE mv.version = ts.model_version
+                        LIMIT 1
+                    )
+                END as model_regression_thresholds
             FROM trading_signals ts
             LEFT JOIN prediction_targets pt ON ts.signal_id = pt.signal_id
             LEFT JOIN execution_events ee ON ts.signal_id = ee.signal_id
             WHERE 1=1
-            GROUP BY ts.signal_id, ts.side, ts.asset, ts.price, ts.confidence,
-                     ts.strategy_id, ts.model_version, ts.timestamp, ts.is_warmup, ts.prediction_horizon_seconds,
-                     ts.metadata, ts.is_rejected, ts.rejection_reason, ts.effective_threshold,
-                     pt.predicted_values->>'direction',
-                     pt.actual_values->>'candle_open',
-                     ts.market_data_snapshot->>'price',
-                     pt.actual_values->>'candle_close',
-                     pt.actual_values->>'direction',
-                     pt.actual_values->>'return_value',
-                     pt.is_obsolete,
-                     pt.actual_values_computed_at,
-                     pt.target_timestamp
         """
         params = []
         param_idx = 1
@@ -112,7 +128,25 @@ async def list_signals(
             except ValueError:
                 raise HTTPException(status_code=400, detail="Invalid date_to format. Use ISO 8601 format.")
 
-        query += " ORDER BY ts.timestamp DESC"
+        query += """
+            GROUP BY ts.signal_id, ts.side, ts.asset, ts.price, ts.confidence,
+                     ts.strategy_id, ts.model_version, ts.timestamp, ts.is_warmup, ts.prediction_horizon_seconds,
+                     ts.metadata, ts.is_rejected, ts.rejection_reason, ts.effective_threshold,
+                     pt.predicted_values->>'direction',
+                     pt.actual_values->>'candle_open',
+                     ts.market_data_snapshot->>'price',
+                     pt.actual_values->>'candle_close',
+                     pt.actual_values->>'direction',
+                     pt.actual_values->>'return_value',
+                     pt.actual_values->>'price_at_prediction',
+                     pt.actual_values->>'price_at_target',
+                     pt.actual_values->>'value',
+                     pt.actual_values,
+                     pt.is_obsolete,
+                     pt.actual_values_computed_at,
+                     pt.target_timestamp
+            ORDER BY ts.timestamp DESC
+        """
 
         # Add pagination
         offset = (page - 1) * page_size
@@ -309,6 +343,27 @@ async def list_signals(
                     prediction_result = metadata.get("prediction_result")
                     effective_threshold = metadata.get("effective_threshold")
                     threshold_source = metadata.get("threshold_source")
+                    # regression_thresholds are stored at the top level of metadata
+                    regression_thresholds = metadata.get("regression_thresholds")
+                    # Also check in raw_prediction_data if present (for backward compatibility)
+                    if regression_thresholds is None and isinstance(metadata.get("raw_prediction_data"), dict):
+                        regression_thresholds = metadata.get("raw_prediction_data", {}).get("regression_thresholds")
+                    
+                    # For old classification signals: compute buy_probability and sell_probability if they are None
+                    # For regression models, we don't compute buy/sell probabilities - rely on predicted_return and thresholds
+                    if prediction_result and isinstance(prediction_result, dict):
+                        buy_prob = prediction_result.get("buy_probability")
+                        sell_prob = prediction_result.get("sell_probability")
+                        prediction = prediction_result.get("prediction")
+                        probabilities = prediction_result.get("probabilities")
+                        confidence = prediction_result.get("confidence")
+                        
+                        # Only compute buy/sell probabilities for classification models (have probabilities array)
+                        # For regression models (probabilities is None), leave buy/sell as None
+                        if buy_prob is None and sell_prob is None and probabilities is not None:
+                            # Classification model but probabilities are missing - this shouldn't happen, but handle gracefully
+                            # Don't compute for regression models
+                            pass
                     
                     if prediction_result or effective_threshold is not None:
                         raw_prediction_data = {
@@ -316,6 +371,9 @@ async def list_signals(
                             "effective_threshold": float(effective_threshold) if effective_threshold is not None else None,
                             "threshold_source": threshold_source,
                         }
+                        # Add regression_thresholds if present in metadata
+                        if regression_thresholds:
+                            raw_prediction_data["regression_thresholds"] = regression_thresholds
                 elif metadata:
                     logger.debug("Metadata is not a dict after parsing", signal_id=str(row.get("signal_id")), metadata_type=type(metadata).__name__)
             
@@ -328,6 +386,70 @@ async def list_signals(
                     raw_prediction_data["effective_threshold"] = float(effective_threshold_col)
                     if not raw_prediction_data.get("threshold_source"):
                         raw_prediction_data["threshold_source"] = "static"  # Default if not in metadata
+            
+            # Get model task type from database (from model_versions.training_config)
+            # Fallback to heuristic if not available
+            model_task_type = row.get("model_task_type")
+            
+            # Fallback: determine model type from prediction data if not in database
+            if not model_task_type and raw_prediction_data and raw_prediction_data.get("prediction_result"):
+                prediction_result = raw_prediction_data["prediction_result"]
+                # Regression models have probabilities = None and prediction is a float
+                # Classification models have probabilities array and prediction is typically int (-1, 0, 1)
+                if prediction_result.get("probabilities") is None:
+                    prediction = prediction_result.get("prediction")
+                    if prediction is not None:
+                        # Check if prediction is a float (regression) or int (classification)
+                        # Regression: typically float values like 0.0484, -0.0015
+                        # Classification: typically int values like -1, 0, 1
+                        try:
+                            pred_float = float(prediction)
+                            pred_int = int(prediction)
+                            # If float and int are different, or if it's a float with decimal part, it's regression
+                            # Also check if it's a small float value (typical for regression returns)
+                            if isinstance(prediction, float) or (pred_float != pred_int) or (abs(pred_float) < 1.0 and pred_float != 0.0):
+                                model_task_type = "regression"
+                            else:
+                                model_task_type = "classification"
+                        except (ValueError, TypeError):
+                            # If can't convert, assume classification
+                            model_task_type = "classification"
+                else:
+                    # Has probabilities array, must be classification
+                    model_task_type = "classification"
+            
+            # Fallback: if regression_thresholds are missing from raw_prediction_data but model is regression,
+            # extract them from model_regression_thresholds (from training_config)
+            if model_task_type == "regression" and raw_prediction_data:
+                if not raw_prediction_data.get("regression_thresholds"):
+                    model_regression_thresholds = row.get("model_regression_thresholds")
+                    if model_regression_thresholds:
+                        # Parse JSONB if it's a string
+                        if isinstance(model_regression_thresholds, str):
+                            try:
+                                import json
+                                model_regression_thresholds = json.loads(model_regression_thresholds)
+                            except (json.JSONDecodeError, TypeError):
+                                model_regression_thresholds = None
+                        
+                        if model_regression_thresholds and isinstance(model_regression_thresholds, dict):
+                            method = model_regression_thresholds.get("method")
+                            buy_threshold_value = model_regression_thresholds.get("buy_threshold_value")
+                            sell_threshold_value = model_regression_thresholds.get("sell_threshold_value")
+                            
+                            if method and buy_threshold_value is not None and sell_threshold_value is not None:
+                                raw_prediction_data["regression_thresholds"] = {
+                                    "method": method,
+                                    "buy_threshold": float(buy_threshold_value),
+                                    "sell_threshold": float(sell_threshold_value),
+                                }
+                                logger.debug(
+                                    "Extracted regression_thresholds from training_config as fallback",
+                                    signal_id=str(row.get("signal_id")),
+                                    method=method,
+                                    buy_threshold=buy_threshold_value,
+                                    sell_threshold=sell_threshold_value,
+                                )
             
             signal_dict = {
                 "signal_id": str(row["signal_id"]),
@@ -342,6 +464,7 @@ async def list_signals(
                 "horizon": row.get("prediction_horizon_seconds"),  # May be None
                 "model_prediction": model_prediction,  # "UP", "DOWN", or None
                 "raw_prediction_data": raw_prediction_data,  # Raw prediction data from metadata
+                "model_task_type": model_task_type,  # "classification", "regression", or None
                 "is_rejected": bool(row.get("is_rejected", False)),
                 "rejection_reason": row.get("rejection_reason"),
                 "actual_movement": {

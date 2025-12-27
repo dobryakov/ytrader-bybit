@@ -1,4 +1,6 @@
 version: 1.7.0
+config:
+  timestamp_interval_minutes: 5
 features:
 - name: candle_0_is_green
   input_sources:

@@ -342,8 +342,20 @@ class TargetEvaluator:
         preset = computation.get("preset", "returns") if isinstance(computation, dict) else "returns"
 
         try:
-            if target_type == "regression" and preset == "returns":
+            # Preset "returns" is always regression, not classification
+            # If target_type is classification but preset is returns, it's a data inconsistency
+            # We should still compute returns, but log a warning
+            if preset == "returns":
+                if target_type != "regression":
+                    logger.warning(
+                        "Inconsistent target_type for returns preset - should be regression",
+                        target_type=target_type,
+                        preset=preset,
+                        prediction_target_id=str(target.get("id")),
+                        note="Computing as regression anyway since preset=returns",
+                    )
                 return await self._compute_returns_actual(target)
+            
             if target_type == "classification" and preset == "next_candle_direction":
                 return await self._compute_candle_direction_actual(target)
             if target_type == "risk_adjusted" and preset == "sharpe_ratio":
@@ -425,10 +437,38 @@ class TargetEvaluator:
             )
         
         # Форматируем ответ в зависимости от типа таргета
-        target_type = result.get("target_type", "regression")
+        # Используем target_type из target_config (который был сохранен в prediction_targets),
+        # а не из результата feature-service, так как target_config - это источник истины
+        # Preset "returns" is always regression, regardless of target_type in result
         preset = result.get("preset", "returns")
+        target_type_from_result = result.get("target_type", "regression")
         
-        if target_type == "regression" and preset == "returns":
+        # Получаем target_type из target_config для логирования
+        target_type_from_config = None
+        target_config_raw = target.get("target_config")
+        if target_config_raw:
+            import json
+            if isinstance(target_config_raw, str):
+                try:
+                    target_config = json.loads(target_config_raw)
+                    target_type_from_config = target_config.get("type", "regression")
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            elif isinstance(target_config_raw, dict):
+                target_type_from_config = target_config_raw.get("type", "regression")
+        
+        # Логируем для отладки
+        logger.debug(
+            "Formatting returns actual values",
+            prediction_target_id=str(target.get("id")),
+            target_type_from_config=target_type_from_config,
+            target_type_from_result=target_type_from_result,
+            preset=preset,
+        )
+        
+        if preset == "returns":
+            # Returns preset is always regression format
+            # Use target_type from target_config (source of truth), not from result
             return {
                 "value": result["target_value"],
                 "price_at_prediction": result["price_at_prediction"],
@@ -438,7 +478,7 @@ class TargetEvaluator:
             # Fallback: возвращаем базовую структуру
             return {
                 "value": result.get("target_value"),
-                "target_type": target_type,
+                "target_type": target_type_from_config or target_type_from_result,  # Use from target_config, not from result
                 "preset": preset,
             }
 

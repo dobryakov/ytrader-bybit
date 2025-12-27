@@ -152,6 +152,28 @@ class ModelVersionRepository(BaseRepository[Dict[str, Any]]):
         count = await self._fetchval(query, strategy_id)
         return count > 0 if count is not None else False
 
+    async def get_any_active_by_strategy(self, strategy_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """
+        Get any active model version for a strategy (prefer universal model, but accept symbol-specific).
+
+        Args:
+            strategy_id: Trading strategy identifier (None for general models)
+
+        Returns:
+            Active model version record or None if not found
+            Prefers universal models (symbol IS NULL), but returns any active model if no universal model exists
+        """
+        # First try to get universal model (symbol IS NULL)
+        query = f"SELECT * FROM {self.table_name} WHERE strategy_id = $1 AND is_active = true AND symbol IS NULL ORDER BY trained_at DESC LIMIT 1"
+        record = await self._fetchrow(query, strategy_id)
+        if record:
+            return self._record_to_dict(record)
+        
+        # If no universal model, get any active model with symbol
+        query = f"SELECT * FROM {self.table_name} WHERE strategy_id = $1 AND is_active = true AND symbol IS NOT NULL ORDER BY trained_at DESC LIMIT 1"
+        record = await self._fetchrow(query, strategy_id)
+        return self._record_to_dict(record) if record else None
+
     async def get_active_by_strategy_and_symbol(
         self, 
         strategy_id: Optional[str] = None,

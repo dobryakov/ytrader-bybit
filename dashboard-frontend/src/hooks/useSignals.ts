@@ -23,6 +23,11 @@ export interface Signal {
     }
     effective_threshold?: number | null
     threshold_source?: string
+    regression_thresholds?: {
+      method?: string
+      buy_threshold?: number
+      sell_threshold?: number
+    }
   } | null
   is_rejected: boolean
   rejection_reason: string | null
@@ -35,6 +40,7 @@ export interface Signal {
   } | null
   total_pnl: string | null // Total PnL from execution events
   is_model_active: boolean // Whether the model is currently active
+  model_task_type: 'classification' | 'regression' | null // Model task type from training config
 }
 
 export interface SignalsResponse {
