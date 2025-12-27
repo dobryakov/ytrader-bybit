@@ -1024,15 +1024,14 @@ class TrainingOrchestrator:
             )
 
             # Calculate quantile thresholds for regression models
-            # Top 20% → BUY, Bottom 20% → SELL, остальное → HOLD
+            # Top (1 - buy_quantile)% → BUY, Bottom sell_quantile% → SELL, остальное → HOLD
             regression_quantile_thresholds: Optional[Dict[str, float]] = None
             if task_type == "regression" and len(y_pred) > 0:
                 try:
                     # Calculate quantiles on validation predictions
-                    # 80th percentile (top 20%) → BUY threshold
-                    # 20th percentile (bottom 20%) → SELL threshold
-                    buy_quantile = 0.8
-                    sell_quantile = 0.2
+                    # Use configurable quantiles from settings
+                    buy_quantile = settings.model_regression_buy_quantile
+                    sell_quantile = settings.model_regression_sell_quantile
                     
                     buy_threshold = float(np.quantile(y_pred, buy_quantile))
                     sell_threshold = float(np.quantile(y_pred, sell_quantile))
@@ -1045,6 +1044,8 @@ class TrainingOrchestrator:
                         "sell_threshold_value": sell_threshold,
                     }
                     
+                    top_percent = (1.0 - buy_quantile) * 100
+                    bottom_percent = sell_quantile * 100
                     logger.info(
                         "Calculated quantile thresholds for regression model",
                         training_id=training_id,
@@ -1054,8 +1055,10 @@ class TrainingOrchestrator:
                         buy_threshold_value=buy_threshold,
                         sell_threshold_value=sell_threshold,
                         total_predictions=len(y_pred),
-                        top_20_percent_count=int(len(y_pred) * 0.2),
-                        bottom_20_percent_count=int(len(y_pred) * 0.2),
+                        top_percent_count=int(len(y_pred) * (1.0 - buy_quantile)),
+                        bottom_percent_count=int(len(y_pred) * sell_quantile),
+                        top_percent=top_percent,
+                        bottom_percent=bottom_percent,
                         trace_id=trace_id,
                     )
                 except Exception as e:

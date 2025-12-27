@@ -91,6 +91,17 @@ class Settings(BaseSettings):
         alias="MODEL_QUALITY_THRESHOLD_INFORMATION_COEFFICIENT",
         description="Minimum Information Coefficient (correlation) threshold for regression models to be auto-activated. Default: 0.0 (positive correlation)"
     )
+    # Regression Quantile Thresholds Configuration
+    model_regression_buy_quantile: float = Field(
+        default=0.8,
+        alias="MODEL_REGRESSION_BUY_QUANTILE",
+        description="Buy quantile threshold for regression models (0.0-1.0). Top (1 - quantile) predictions will be classified as BUY. Default: 0.8 (top 20% → BUY)"
+    )
+    model_regression_sell_quantile: float = Field(
+        default=0.2,
+        alias="MODEL_REGRESSION_SELL_QUANTILE",
+        description="Sell quantile threshold for regression models (0.0-1.0). Bottom quantile predictions will be classified as SELL. Default: 0.2 (bottom 20% → SELL)"
+    )
     # Class Balancing and Hyperparameter Tuning Configuration
     model_training_use_smote: bool = Field(default=False, alias="MODEL_TRAINING_USE_SMOTE")
     model_training_class_weight_method: str = Field(default="inverse_frequency", alias="MODEL_TRAINING_CLASS_WEIGHT_METHOD")

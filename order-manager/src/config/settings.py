@@ -212,11 +212,11 @@ class Settings(BaseSettings):
         description="Which side to apply trailing stop to: 'LONG', 'SHORT', or 'BOTH'. Default: 'LONG'."
     )
 
-    # Position Closing Before Opposite Signal Configuration
+    # Position Closing Before Signal Configuration
     order_manager_close_position_before_opposite_signal: bool = Field(
         default=True,
         alias="ORDERMANAGER_CLOSE_POSITION_BEFORE_OPPOSITE_SIGNAL",
-        description="Enable closing position before processing opposite signal. If True, when opposite signal arrives (e.g., SELL when long position exists), position will be closed first, then new order will be created. Default: True"
+        description="Enable closing position before processing any signal. If True, when any signal arrives (regardless of direction), existing position will be closed first, then new order will be created. Default: True"
     )
     order_manager_position_close_timeout_seconds: int = Field(
         default=30,

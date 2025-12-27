@@ -283,9 +283,9 @@ class SignalProcessor:
                             reason="Signal is a close signal created by order-manager, skipping exit check to avoid recursion",
                         )
 
-                # Step 4.5: Close position if opposite signal and feature enabled
+                # Step 4.5: Close position if signal arrives and feature enabled
                 if settings.order_manager_close_position_before_opposite_signal:
-                    current_position = await self._handle_opposite_signal_position_closure(
+                    current_position = await self._handle_signal_position_closure(
                         signal=signal,
                         current_position=current_position,
                         asset=asset,
@@ -1102,14 +1102,14 @@ class SignalProcessor:
             # On error, allow processing to continue (fail open)
             return None
 
-    async def _handle_opposite_signal_position_closure(
+    async def _handle_signal_position_closure(
         self,
         signal: TradingSignal,
         current_position: Optional[Position],
         asset: str,
         trace_id: Optional[str],
     ) -> Optional[Position]:
-        """Handle position closure when opposite signal arrives.
+        """Handle position closure when signal arrives (any direction).
 
         Args:
             signal: Trading signal
@@ -1147,24 +1147,14 @@ class SignalProcessor:
             )
             return current_position
 
-        # Check if signal is opposite to position
         signal_type = signal.signal_type.lower()
-        is_opposite = False
-
-        if current_position.size > 0 and signal_type == "sell":
-            # Long position + SELL signal = opposite
-            is_opposite = True
-        elif current_position.size < 0 and signal_type == "buy":
-            # Short position + BUY signal = opposite
-            is_opposite = True
-
-        if not is_opposite:
-            return current_position
+        position_side = "long" if current_position.size > 0 else "short"
 
         logger.info(
-            "opposite_signal_detected_closing_position",
+            "signal_detected_closing_position",
             asset=asset,
             signal_type=signal_type,
+            position_side=position_side,
             position_size=float(current_position.size),
             trace_id=trace_id,
         )
@@ -1208,7 +1198,7 @@ class SignalProcessor:
                 error=str(e),
                 trace_id=trace_id,
                 exc_info=True,
-                reason="Failed to close position before opposite signal, continuing with new order",
+                reason="Failed to close position before new signal, continuing with new order",
             )
             # Continue with original position - new order will handle it with reduceOnly
 
@@ -1437,7 +1427,7 @@ class SignalProcessor:
         close_quantity = abs(position.size)
 
         logger.info(
-            "closing_position_before_opposite_signal",
+            "closing_position_before_new_signal",
             asset=asset,
             position_size=float(position.size),
             close_side=close_side,
