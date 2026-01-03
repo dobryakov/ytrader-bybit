@@ -388,6 +388,11 @@ class EventSubscriber:
             if new_status == "filled" and order.status != "filled":
                 executed_at = datetime.utcnow()
 
+            # Set cancellation reason if order was cancelled via WebSocket event
+            cancellation_reason = None
+            if new_status == "cancelled" and order.status != "cancelled":
+                cancellation_reason = "Cancelled by exchange via WebSocket event"
+
             update_query = """
                 UPDATE orders
                 SET status = $1,
@@ -395,7 +400,8 @@ class EventSubscriber:
                     average_price = $3,
                     fees = $4,
                     updated_at = NOW(),
-                    executed_at = $5
+                    executed_at = $5,
+                    rejection_reason = CASE WHEN $1 = 'cancelled' AND rejection_reason IS NULL THEN $7 ELSE rejection_reason END
                 WHERE id = $6
             """
             await pool.execute(
@@ -406,6 +412,7 @@ class EventSubscriber:
                 str(fees) if fees else None,
                 executed_at,
                 str(order.id),
+                cancellation_reason,
             )
 
             logger.info(

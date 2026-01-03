@@ -1,5 +1,6 @@
 """Signal consumer for processing trading signals from RabbitMQ queue."""
 
+import asyncio
 import json
 from typing import Optional
 
@@ -31,6 +32,17 @@ class SignalConsumer:
         """Start consuming signals from RabbitMQ queue."""
         try:
             channel = await RabbitMQConnection.get_channel()
+            
+            # Set QoS/prefetch to 1 to ensure sequential processing per channel
+            # This prevents multiple messages from being delivered before previous ones are acknowledged
+            # Combined with per-asset FIFO queues in SignalProcessor, this ensures strict sequential
+            # processing per asset while allowing parallel processing for different assets
+            await channel.set_qos(prefetch_count=1)
+            logger.info(
+                "rabbitmq_qos_set",
+                prefetch_count=1,
+                queue_name=self.queue_name,
+            )
 
             # Declare queue (ensure it exists)
             queue = await channel.declare_queue(
@@ -119,7 +131,7 @@ class SignalConsumer:
             if trace_id:
                 signal.trace_id = trace_id
 
-            # Process signal
+            # Process signal (will wait for FIFO queue processing)
             order = await self.signal_processor.process_signal(signal)
 
             if order:
@@ -147,6 +159,18 @@ class SignalConsumer:
                 trace_id=trace_id,
             )
             # Message will be rejected and sent to dead letter queue
+            await message.nack(requeue=False)
+
+        except asyncio.TimeoutError as e:
+            logger.error(
+                "signal_processing_timeout_error",
+                queue_name=self.queue_name,
+                signal_id=str(signal.signal_id) if 'signal' in locals() else None,
+                error=str(e),
+                trace_id=trace_id,
+            )
+            # Message will be rejected and sent to dead letter queue
+            # Timeout indicates signal processing took too long (likely stuck)
             await message.nack(requeue=False)
 
         except OrderExecutionError as e:

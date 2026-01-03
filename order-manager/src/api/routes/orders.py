@@ -171,7 +171,7 @@ async def list_orders(
         query = f"""
             SELECT id, order_id, signal_id, asset, side, order_type, quantity, price,
                    status, filled_quantity, average_price, fees, created_at, updated_at,
-                   executed_at, trace_id, is_dry_run
+                   executed_at, trace_id, is_dry_run, rejection_reason, target_timestamp
             FROM orders
             WHERE {where_clause}
             {order_clause}
@@ -205,6 +205,8 @@ async def list_orders(
                 "executed_at": order.executed_at.isoformat() + "Z" if order.executed_at else None,
                 "trace_id": order.trace_id,
                 "is_dry_run": order.is_dry_run,
+                "rejection_reason": order.rejection_reason,
+                "target_timestamp": order.target_timestamp.isoformat() + "Z" if order.target_timestamp else None,
             }
             orders_data.append(order_dict)
 
@@ -254,7 +256,7 @@ async def get_order_by_id(order_id: str):
         query = """
             SELECT id, order_id, signal_id, asset, side, order_type, quantity, price,
                    status, filled_quantity, average_price, fees, created_at, updated_at,
-                   executed_at, trace_id, is_dry_run
+                   executed_at, trace_id, is_dry_run, rejection_reason, target_timestamp
             FROM orders
             WHERE order_id = $1
         """
@@ -282,9 +284,11 @@ async def get_order_by_id(order_id: str):
             "fees": str(order.fees) if order.fees is not None else None,
             "created_at": order.created_at.isoformat() + "Z",
             "updated_at": order.updated_at.isoformat() + "Z",
-            "executed_at": order.executed_at.isoformat() + "Z" if order.executed_at else None,
-            "trace_id": order.trace_id,
-            "is_dry_run": order.is_dry_run,
+                "executed_at": order.executed_at.isoformat() + "Z" if order.executed_at else None,
+                "trace_id": order.trace_id,
+                "is_dry_run": order.is_dry_run,
+                "rejection_reason": order.rejection_reason,
+                "target_timestamp": order.target_timestamp.isoformat() + "Z" if order.target_timestamp else None,
         }
 
         logger.info("order_get_completed", order_id=order_id, trace_id=trace_id)

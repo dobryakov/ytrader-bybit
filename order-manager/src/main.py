@@ -25,6 +25,7 @@ from .services.order_state_sync import OrderStateSync
 from .services.instrument_info_manager import InstrumentInfoRefreshTask
 from .services.fee_rate_manager import FeeRateRefreshTask
 from .services.order_executor import OrderExecutor
+from .services.target_horizon_close_task import TargetHorizonCloseTask
 
 # Configure logging first
 configure_logging()
@@ -118,11 +119,13 @@ class PendingOrderCancellationTask:
                             trace_id=trace_id,
                         )
 
-                        # Cancel order via OrderExecutor
+                        # Cancel order via OrderExecutor with timeout reason
+                        cancellation_reason = f"Order timeout: exceeded {timeout_minutes} minutes"
                         success = await self._order_executor.cancel_order(
                             order_id=order_id,
                             asset=asset,
                             trace_id=trace_id,
+                            cancellation_reason=cancellation_reason,
                         )
 
                         if success:
@@ -268,6 +271,16 @@ async def lifespan(app: FastAPI):
             trace_id=trace_id,
         )
 
+        # Start background task for target horizon close
+        target_horizon_task = TargetHorizonCloseTask()
+        await target_horizon_task.start()
+        app.state.target_horizon_task = target_horizon_task
+        logger.info(
+            "target_horizon_close_task_started",
+            check_interval=60,
+            trace_id=trace_id,
+        )
+
         logger.info("application_started", port=settings.order_manager_port, trace_id=trace_id)
     except Exception as e:
         logger.error(
@@ -299,6 +312,11 @@ async def lifespan(app: FastAPI):
         if hasattr(app.state, "cancellation_task"):
             await app.state.cancellation_task.stop()
             logger.info("pending_order_cancellation_task_stopped")
+
+        # Stop target horizon close task
+        if hasattr(app.state, "target_horizon_task"):
+            await app.state.target_horizon_task.stop()
+            logger.info("target_horizon_close_task_stopped")
 
         # Stop event subscriber
         if hasattr(app.state, "event_subscriber") and app.state.event_subscriber is not None:

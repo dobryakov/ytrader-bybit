@@ -187,7 +187,7 @@ class OrderCreationTest:
                         id, order_id, signal_id, asset, side, order_type,
                         quantity, price, status, filled_quantity, average_price,
                         fees, created_at, updated_at, executed_at, trace_id,
-                        is_dry_run, rejection_reason
+                        is_dry_run, rejection_reason, target_timestamp
                     FROM orders
                     WHERE signal_id = $1
                     ORDER BY created_at DESC

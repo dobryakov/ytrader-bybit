@@ -29,8 +29,8 @@ async def test_create_and_read_order():
             INSERT INTO orders (
                 id, order_id, signal_id, asset, side, order_type, quantity, price,
                 status, filled_quantity, average_price, fees, created_at, updated_at,
-                trace_id, is_dry_run
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), NOW(), $13, $14)
+                trace_id, is_dry_run, target_timestamp
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), NOW(), $13, $14, $15)
         """
         
         await pool.execute(
@@ -49,13 +49,14 @@ async def test_create_and_read_order():
             None,
             "test-trace-001",
             False,
+            None,  # target_timestamp
         )
         
         # Read order back
         select_query = """
             SELECT id, order_id, signal_id, asset, side, order_type, quantity, price,
                    status, filled_quantity, average_price, fees, created_at, updated_at,
-                   executed_at, trace_id, is_dry_run, rejection_reason
+                   executed_at, trace_id, is_dry_run, rejection_reason, target_timestamp
             FROM orders
             WHERE id = $1
         """
@@ -103,8 +104,8 @@ async def test_create_signal_order_relationship():
         order_insert = """
             INSERT INTO orders (
                 id, order_id, signal_id, asset, side, order_type, quantity, price,
-                status, filled_quantity, created_at, updated_at, trace_id, is_dry_run
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW(), $11, $12)
+                status, filled_quantity, created_at, updated_at, trace_id, is_dry_run, target_timestamp
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW(), $11, $12, $13)
         """
         await pool.execute(
             order_insert,
@@ -120,6 +121,7 @@ async def test_create_signal_order_relationship():
             "0",
             "test-trace",
             False,
+            None,  # target_timestamp
         )
         
         # Create relationship
@@ -189,10 +191,10 @@ async def test_rejected_order_notional_below_expected_fee():
             INSERT INTO orders (
                 id, order_id, signal_id, asset, side, order_type, quantity, price,
                 status, filled_quantity, average_price, fees, created_at, updated_at,
-                executed_at, trace_id, is_dry_run, rejection_reason
+                executed_at, trace_id, is_dry_run, rejection_reason, target_timestamp
             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8,
                      $9, $10, $11, $12, NOW(), NOW(),
-                     NULL, $13, $14, $15)
+                     NULL, $13, $14, $15, $16)
         """
 
         rejection_reason = (
@@ -217,6 +219,7 @@ async def test_rejected_order_notional_below_expected_fee():
             "test-trace-fee",
             False,
             rejection_reason,
+            None,  # target_timestamp
         )
 
         # Read back and verify rejection_reason is persisted
@@ -255,8 +258,8 @@ async def test_update_order_status():
             """
             INSERT INTO orders (
                 id, order_id, signal_id, asset, side, order_type, quantity, price,
-                status, filled_quantity, created_at, updated_at, trace_id, is_dry_run
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW(), $11, $12)
+                status, filled_quantity, created_at, updated_at, trace_id, is_dry_run, target_timestamp
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW(), $11, $12, $13)
             """,
             str(order_id),
             f"bybit-{uuid4()}",
@@ -270,6 +273,7 @@ async def test_update_order_status():
             "0",
             "test-trace",
             False,
+            None,  # target_timestamp
         )
         
         # Update order status

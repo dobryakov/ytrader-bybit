@@ -59,6 +59,59 @@ class TradingSignal(BaseModel):
             raise ValueError("Asset must be a valid trading pair (e.g., 'BTCUSDT')")
         return v_upper
 
+    def get_target_timestamp(self) -> Optional[datetime]:
+        """Extract target timestamp from signal metadata.
+        
+        The target timestamp can be:
+        - Directly in metadata as 'target_timestamp' (ISO string)
+        - Computed from 'prediction_horizon_seconds' + signal timestamp
+        
+        Returns:
+            Target timestamp if available, None otherwise
+        """
+        if not self.metadata:
+            return None
+        
+        # Try to get target_timestamp directly
+        target_ts = self.metadata.get("target_timestamp")
+        if target_ts:
+            if isinstance(target_ts, str):
+                try:
+                    # Parse ISO format string, handling 'Z' suffix
+                    parsed_ts = datetime.fromisoformat(target_ts.replace("Z", "+00:00"))
+                    return parsed_ts
+                except (ValueError, AttributeError):
+                    pass
+            elif isinstance(target_ts, datetime):
+                return target_ts
+        
+        # Try to compute from prediction_horizon_seconds
+        horizon_seconds = self.metadata.get("prediction_horizon_seconds")
+        if horizon_seconds is not None:
+            try:
+                # Handle both int and string types
+                if isinstance(horizon_seconds, str):
+                    horizon = int(horizon_seconds)
+                elif isinstance(horizon_seconds, (int, float)):
+                    horizon = int(horizon_seconds)
+                else:
+                    horizon = None
+                
+                if horizon and horizon > 0:
+                    from datetime import timedelta
+                    # Ensure timestamp is timezone-aware for calculation
+                    timestamp = self.timestamp
+                    if timestamp.tzinfo is None:
+                        # If naive, assume UTC
+                        from datetime import timezone
+                        timestamp = timestamp.replace(tzinfo=timezone.utc)
+                    result = timestamp + timedelta(seconds=horizon)
+                    return result
+            except (ValueError, TypeError, AttributeError):
+                pass
+        
+        return None
+
     def to_dict(self) -> dict:
         """Convert signal to dictionary for serialization."""
         return {

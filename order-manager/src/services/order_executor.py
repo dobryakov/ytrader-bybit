@@ -3,7 +3,7 @@
 from decimal import Decimal
 from typing import Optional
 from uuid import UUID, uuid4
-from datetime import datetime
+from datetime import datetime, timezone
 
 from decimal import ROUND_DOWN, ROUND_UP
 
@@ -1242,6 +1242,7 @@ class OrderExecutor:
         order_id: str,
         asset: str,
         trace_id: Optional[str] = None,
+        cancellation_reason: Optional[str] = None,
     ) -> bool:
         """Cancel an order on Bybit exchange.
 
@@ -1249,6 +1250,7 @@ class OrderExecutor:
             order_id: Bybit order ID
             asset: Trading pair symbol
             trace_id: Trace ID for request tracking
+            cancellation_reason: Optional reason for cancellation (will be stored in rejection_reason field)
 
         Returns:
             True if cancellation successful, False otherwise
@@ -1276,10 +1278,13 @@ class OrderExecutor:
                 "order_cancellation_dry_run",
                 order_id=order_id,
                 asset=asset,
+                cancellation_reason=cancellation_reason,
                 trace_id=trace_id,
             )
-            # Update order status in database
-            await self._update_order_status_in_db(order_id, "cancelled", trace_id)
+            # Update order status in database with cancellation reason
+            await self._update_order_status_in_db(
+                order_id, "cancelled", trace_id, rejection_reason=cancellation_reason
+            )
             
             # Get updated order and publish event
             if order:
@@ -1313,8 +1318,10 @@ class OrderExecutor:
             endpoint = "/v5/order/cancel"
             response = await bybit_client.post(endpoint, json_data=bybit_params, authenticated=True)
 
-            # Update order status in database
-            await self._update_order_status_in_db(order_id, "cancelled", trace_id)
+            # Update order status in database with cancellation reason
+            await self._update_order_status_in_db(
+                order_id, "cancelled", trace_id, rejection_reason=cancellation_reason
+            )
 
             # Get updated order and publish modification event
             if order:
@@ -2394,15 +2401,45 @@ class OrderExecutor:
             pool = await DatabaseConnection.get_pool()
             side = "Buy" if signal.signal_type.lower() == "buy" else "SELL"
             status = "dry_run" if is_dry_run else "pending"
+            
+            # Extract target_timestamp from signal metadata
+            target_timestamp = signal.get_target_timestamp()
+            
+            # Normalize to timezone-naive UTC for database storage (TIMESTAMP column)
+            if target_timestamp:
+                if target_timestamp.tzinfo is not None:
+                    target_timestamp = target_timestamp.astimezone(timezone.utc).replace(tzinfo=None)
+                else:
+                    # Already naive, assume it's UTC
+                    pass
+            
+            if target_timestamp:
+                logger.info(
+                    "order_save_target_timestamp",
+                    signal_id=str(signal.signal_id),
+                    target_timestamp=target_timestamp.isoformat(),
+                    has_metadata=signal.metadata is not None,
+                    trace_id=trace_id,
+                )
+            elif signal.metadata and (signal.metadata.get("prediction_horizon_seconds") or signal.metadata.get("target_timestamp")):
+                logger.warning(
+                    "order_save_target_timestamp_missing",
+                    signal_id=str(signal.signal_id),
+                    has_prediction_horizon=signal.metadata.get("prediction_horizon_seconds") is not None,
+                    has_target_timestamp_in_meta=signal.metadata.get("target_timestamp") is not None,
+                    prediction_horizon=signal.metadata.get("prediction_horizon_seconds"),
+                    target_timestamp_in_meta=signal.metadata.get("target_timestamp"),
+                    trace_id=trace_id,
+                )
 
             query = """
                 INSERT INTO orders
                 (id, order_id, signal_id, asset, side, order_type, quantity, price,
-                 status, filled_quantity, created_at, updated_at, trace_id, is_dry_run)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW(), $11, $12)
+                 status, filled_quantity, created_at, updated_at, trace_id, is_dry_run, target_timestamp)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW(), $11, $12, $13)
                 RETURNING id, order_id, signal_id, asset, side, order_type, quantity, price,
                           status, filled_quantity, average_price, fees, created_at, updated_at,
-                          executed_at, trace_id, is_dry_run
+                          executed_at, trace_id, is_dry_run, target_timestamp
             """
             order_uuid = uuid4()
             row = await pool.fetchrow(
@@ -2419,6 +2456,7 @@ class OrderExecutor:
                 "0",
                 trace_id,
                 is_dry_run,
+                target_timestamp,
             )
 
             order_data = dict(row)
@@ -2447,6 +2485,7 @@ class OrderExecutor:
         bybit_order_id: str,
         status: str,
         trace_id: Optional[str],
+        rejection_reason: Optional[str] = None,
     ) -> None:
         """Update order status in database.
 
@@ -2454,20 +2493,30 @@ class OrderExecutor:
             bybit_order_id: Bybit order ID
             status: New status
             trace_id: Trace ID
+            rejection_reason: Optional rejection/cancellation reason (used for rejected and cancelled orders)
         """
         try:
             pool = await DatabaseConnection.get_pool()
-            query = """
-                UPDATE orders
-                SET status = $1, updated_at = NOW()
-                WHERE order_id = $2
-            """
-            await pool.execute(query, status, bybit_order_id)
+            if rejection_reason is not None:
+                query = """
+                    UPDATE orders
+                    SET status = $1, updated_at = NOW(), rejection_reason = $3
+                    WHERE order_id = $2
+                """
+                await pool.execute(query, status, bybit_order_id, rejection_reason)
+            else:
+                query = """
+                    UPDATE orders
+                    SET status = $1, updated_at = NOW()
+                    WHERE order_id = $2
+                """
+                await pool.execute(query, status, bybit_order_id)
 
             logger.debug(
                 "order_status_updated",
                 bybit_order_id=bybit_order_id,
                 status=status,
+                rejection_reason=rejection_reason,
                 trace_id=trace_id,
             )
 
@@ -2476,6 +2525,7 @@ class OrderExecutor:
                 "order_status_update_failed",
                 bybit_order_id=bybit_order_id,
                 status=status,
+                rejection_reason=rejection_reason,
                 error=str(e),
                 trace_id=trace_id,
             )
@@ -2498,7 +2548,7 @@ class OrderExecutor:
             query = """
                 SELECT id, order_id, signal_id, asset, side, order_type, quantity, price,
                        status, filled_quantity, average_price, fees, created_at, updated_at,
-                       executed_at, trace_id, is_dry_run
+                       executed_at, trace_id, is_dry_run, target_timestamp
                 FROM orders
                 WHERE order_id = $1
             """
@@ -3658,18 +3708,37 @@ class OrderExecutor:
             order_uuid = uuid4()
             bybit_order_id = f"REJECTED-{signal.signal_id}"
             
+            # Extract target_timestamp from signal metadata
+            target_timestamp = signal.get_target_timestamp()
+            
+            # Normalize to timezone-naive UTC for database storage (TIMESTAMP column)
+            if target_timestamp:
+                if target_timestamp.tzinfo is not None:
+                    target_timestamp = target_timestamp.astimezone(timezone.utc).replace(tzinfo=None)
+                else:
+                    # Already naive, assume it's UTC
+                    pass
+            
+            if target_timestamp:
+                logger.info(
+                    "rejected_order_save_target_timestamp",
+                    signal_id=str(signal.signal_id),
+                    target_timestamp=target_timestamp.isoformat(),
+                    trace_id=trace_id,
+                )
+            
             # Check if rejection_reason column exists (might not exist in older migrations)
             query = """
                 INSERT INTO orders
                 (id, order_id, signal_id, asset, side, order_type, quantity, price,
-                 status, filled_quantity, created_at, updated_at, trace_id, is_dry_run, rejection_reason)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW(), $11, $12, $13)
+                 status, filled_quantity, created_at, updated_at, trace_id, is_dry_run, rejection_reason, target_timestamp)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW(), $11, $12, $13, $14)
                 ON CONFLICT (order_id) DO UPDATE SET
                     rejection_reason = EXCLUDED.rejection_reason,
                     updated_at = NOW()
                 RETURNING id, order_id, signal_id, asset, side, order_type, quantity, price,
                           status, filled_quantity, average_price, fees, created_at, updated_at,
-                          executed_at, trace_id, is_dry_run, rejection_reason
+                          executed_at, trace_id, is_dry_run, rejection_reason, target_timestamp
             """
             
             row = await pool.fetchrow(
@@ -3687,6 +3756,7 @@ class OrderExecutor:
                 trace_id,
                 False,
                 rejection_reason,
+                target_timestamp,
             )
             
             if row:

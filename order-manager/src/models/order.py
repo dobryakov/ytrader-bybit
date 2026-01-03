@@ -33,6 +33,7 @@ class Order(BaseModel):
     trace_id: Optional[str] = Field(None, description="Trace ID for request flow tracking", max_length=100)
     is_dry_run: bool = Field(default=False, description="Whether order was created in dry-run mode")
     rejection_reason: Optional[str] = Field(None, description="Reason for order rejection (for rejected orders)")
+    target_timestamp: Optional[datetime] = Field(None, description="Target timestamp for order closure based on prediction horizon")
 
     @field_validator("side")
     @classmethod
@@ -106,6 +107,7 @@ class Order(BaseModel):
             "trace_id": self.trace_id,
             "is_dry_run": self.is_dry_run,
             "rejection_reason": self.rejection_reason,
+            "target_timestamp": self.target_timestamp,
         }
 
     @classmethod
@@ -122,6 +124,11 @@ class Order(BaseModel):
             if field in data and data[field] is not None:
                 if isinstance(data[field], str):
                     data[field] = Decimal(data[field])
+
+        # Convert target_timestamp string to datetime
+        if "target_timestamp" in data and data["target_timestamp"] is not None:
+            if isinstance(data["target_timestamp"], str):
+                data["target_timestamp"] = datetime.fromisoformat(data["target_timestamp"].replace("Z", "+00:00"))
 
         return cls(**data)
 

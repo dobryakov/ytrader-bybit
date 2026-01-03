@@ -114,6 +114,7 @@ class OrderStateSync:
                                     db_order.id,
                                     "cancelled",
                                     trace_id=trace_id,
+                                    rejection_reason="Cancelled: order not found in exchange during sync",
                                 )
                                 discrepancies.append(
                                     {
@@ -430,7 +431,7 @@ class OrderStateSync:
             raise DatabaseError(f"Failed to update order from Bybit: {e}") from e
 
     async def _update_order_status(
-        self, order_id: UUID, status: str, trace_id: Optional[str] = None
+        self, order_id: UUID, status: str, trace_id: Optional[str] = None, rejection_reason: Optional[str] = None
     ) -> None:
         """
         Update order status in database.
@@ -439,16 +440,25 @@ class OrderStateSync:
             order_id: Internal order ID (UUID)
             status: New status
             trace_id: Optional trace ID
+            rejection_reason: Optional rejection/cancellation reason (for rejected and cancelled orders)
         """
         try:
             pool = await DatabaseConnection.get_pool()
 
-            update_query = """
-                UPDATE orders
-                SET status = $1, updated_at = NOW()
-                WHERE id = $2
-            """
-            await pool.execute(update_query, status, str(order_id))
+            if rejection_reason is not None:
+                update_query = """
+                    UPDATE orders
+                    SET status = $1, updated_at = NOW(), rejection_reason = CASE WHEN $1 IN ('cancelled', 'rejected') AND rejection_reason IS NULL THEN $3 ELSE rejection_reason END
+                    WHERE id = $2
+                """
+                await pool.execute(update_query, status, str(order_id), rejection_reason)
+            else:
+                update_query = """
+                    UPDATE orders
+                    SET status = $1, updated_at = NOW()
+                    WHERE id = $2
+                """
+                await pool.execute(update_query, status, str(order_id))
 
             logger.debug(
                 "order_status_updated",

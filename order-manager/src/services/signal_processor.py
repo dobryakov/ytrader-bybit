@@ -44,6 +44,8 @@ class SignalProcessor:
         # Per-symbol FIFO queues for signal processing
         self._signal_queues: dict[str, asyncio.Queue] = {}
         self._processing_tasks: dict[str, asyncio.Task] = {}
+        # Mapping signal_id -> Future for returning processing results
+        self._signal_futures: dict[UUID, asyncio.Future] = {}
 
     async def process_signal(self, signal: TradingSignal) -> Optional[Order]:
         """Process a trading signal and create order if valid.
@@ -92,8 +94,12 @@ class SignalProcessor:
             # Start processing task for this asset
             self._processing_tasks[asset] = asyncio.create_task(self._process_asset_queue(asset))
 
-        # Step 3: Add signal to queue (FIFO per asset)
-        await self._signal_queues[asset].put(signal)
+        # Step 3: Create Future for signal processing result
+        future = asyncio.Future()
+        self._signal_futures[signal_id] = future
+
+        # Step 4: Add signal with future to queue (FIFO per asset)
+        await self._signal_queues[asset].put((signal, future))
 
         logger.debug(
             "signal_queued",
@@ -103,10 +109,37 @@ class SignalProcessor:
             trace_id=trace_id,
         )
 
-        # Step 4: Wait for processing result (in a real implementation, this would
-        # be handled asynchronously via callbacks or events)
-        # For now, we'll process immediately
-        return await self._process_signal_internal(signal)
+        # Step 5: Wait for processing result with timeout
+        try:
+            timeout_seconds = settings.order_manager_signal_processing_timeout_seconds
+            result = await asyncio.wait_for(future, timeout=timeout_seconds)
+            
+            logger.debug(
+                "signal_processing_completed",
+                signal_id=str(signal_id),
+                asset=asset,
+                has_result=result is not None,
+                trace_id=trace_id,
+            )
+            
+            return result
+        except asyncio.TimeoutError:
+            logger.error(
+                "signal_processing_timeout",
+                signal_id=str(signal_id),
+                asset=asset,
+                timeout_seconds=timeout_seconds,
+                trace_id=trace_id,
+            )
+            # Clean up future on timeout
+            self._signal_futures.pop(signal_id, None)
+            raise OrderExecutionError(
+                f"Signal processing timeout after {timeout_seconds} seconds for signal {signal_id}"
+            )
+        except Exception as e:
+            # Clean up future on exception
+            self._signal_futures.pop(signal_id, None)
+            raise
 
     async def _process_signal_internal(self, signal: TradingSignal) -> Optional[Order]:
         """Internal method to process signal after queuing.
@@ -252,6 +285,7 @@ class SignalProcessor:
                             )
                             if close_signal:
                                 # Process close signal instead of original signal
+                                # Use process_signal() to ensure it goes through FIFO queue
                                 logger.info(
                                     "processing_close_signal_instead_of_original",
                                     original_signal_id=str(signal_id),
@@ -259,8 +293,9 @@ class SignalProcessor:
                                     exit_reason=exit_reason,
                                     trace_id=trace_id,
                                 )
-                                # Recursively process close signal
-                                return await self._process_signal_internal(close_signal)
+                                # Process close signal through queue (ensures FIFO order)
+                                # Note: This will wait for close signal to be processed before returning
+                                return await self.process_signal(close_signal)
                         # If position is None or size is 0, continue with original signal
                 else:
                     # This is an exit signal from model-service exit strategy or a close signal
@@ -534,23 +569,42 @@ class SignalProcessor:
         logger.info("asset_queue_processor_started", asset=asset)
 
         while True:
+            signal = None
+            future = None
             try:
-                # Get signal from queue (blocks until available)
-                signal = await queue.get()
+                # Get signal and future from queue (blocks until available)
+                queue_item = await queue.get()
+                signal, future = queue_item
+                signal_id = signal.signal_id
                 queue_size = queue.qsize()
                 
                 if queue_size > 0:
                     logger.info(
                         "signal_processing_from_queue",
                         asset=asset,
-                        signal_id=str(signal.signal_id),
+                        signal_id=str(signal_id),
                         queue_size=queue_size,
                         trace_id=signal.trace_id,
-                        note="Processing signal from FIFO queue (conflict resolution for simultaneous signals)",
+                        note="Processing signal from FIFO queue (strict sequential processing per asset)",
                     )
 
                 # Process signal
-                await self._process_signal_internal(signal)
+                result = await self._process_signal_internal(signal)
+
+                # Set result in future
+                if not future.done():
+                    future.set_result(result)
+                    
+                logger.debug(
+                    "signal_processing_result_set",
+                    signal_id=str(signal_id),
+                    asset=asset,
+                    has_result=result is not None,
+                    trace_id=signal.trace_id,
+                )
+
+                # Clean up future mapping
+                self._signal_futures.pop(signal_id, None)
 
                 # Mark task as done
                 queue.task_done()
@@ -559,13 +613,28 @@ class SignalProcessor:
                 logger.info("asset_queue_processor_cancelled", asset=asset)
                 break
             except Exception as e:
+                signal_id = signal.signal_id if signal else None
+                trace_id = signal.trace_id if signal else None
+                
                 logger.error(
                     "asset_queue_processor_error",
                     asset=asset,
+                    signal_id=str(signal_id) if signal_id else None,
                     error=str(e),
                     error_type=type(e).__name__,
+                    trace_id=trace_id,
                     exc_info=True,
                 )
+                
+                # Set exception in future if available
+                if future and not future.done():
+                    future.set_exception(e)
+                
+                # Clean up future mapping
+                if signal_id:
+                    self._signal_futures.pop(signal_id, None)
+                
+                # Mark task as done
                 queue.task_done()
 
     def _validate_signal(self, signal: TradingSignal) -> None:
@@ -670,6 +739,7 @@ class SignalProcessor:
             for row in rows:
                 order_side = row["side"].lower()
                 should_cancel = False
+                cancellation_reason = None
 
                 if cancel_opposite_only:
                     # Only cancel opposite direction orders
@@ -677,29 +747,32 @@ class SignalProcessor:
                         signal_side == "sell" and order_side == "buy"
                     ):
                         should_cancel = True
+                        cancellation_reason = f"Cancelled due to new opposite direction signal ({signal.signal_type.upper()})"
                 else:
                     # Cancel all pending orders for this asset
                     should_cancel = True
+                    cancellation_reason = f"Cancelled due to new signal for same asset (signal_id: {str(signal.signal_id)[:8]}...)"
 
                 if should_cancel:
-                    orders_to_cancel.append(row)
+                    orders_to_cancel.append((row, cancellation_reason))
 
             # Cancel orders
             from ..services.order_executor import OrderExecutor
             if self._order_executor is None:
                 self._order_executor = OrderExecutor()
-            for order_row in orders_to_cancel:
+            for order_row, cancellation_reason in orders_to_cancel:
                 try:
                     await self._order_executor.cancel_order(
                         order_id=order_row["order_id"],
                         asset=asset,
                         trace_id=trace_id,
+                        cancellation_reason=cancellation_reason,
                     )
                     logger.info(
                         "order_cancelled_for_new_signal",
                         order_id=order_row["order_id"],
                         asset=asset,
-                        reason="new_signal",
+                        cancellation_reason=cancellation_reason,
                         trace_id=trace_id,
                     )
                 except Exception as e:
