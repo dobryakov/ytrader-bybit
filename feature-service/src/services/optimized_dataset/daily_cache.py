@@ -228,6 +228,10 @@ class OptimizedDailyDataCache:
             data_type: Data type
             data: DataFrame to cache
         """
+        # Don't cache empty DataFrames to allow retry if data is added later
+        if data.empty:
+            return
+            
         # Store in Redis cache
         cache_key = self._generate_cache_key(date_obj, data_type)
         await self.redis_cache.set(

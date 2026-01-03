@@ -37,7 +37,7 @@ async def list_datasets(
                 train_records, validation_records, test_records,
                 output_format, storage_path,
                 created_at, completed_at, estimated_completion,
-                error_message
+                error_message, feature_correlations
             FROM datasets
             WHERE 1=1
         """
@@ -90,6 +90,20 @@ async def list_datasets(
                     split_statistics = None
             # If it's already a dict, keep it as is
 
+            feature_correlations = row.get("feature_correlations")
+            if isinstance(feature_correlations, str):
+                try:
+                    feature_correlations = json.loads(feature_correlations)
+                except (json.JSONDecodeError, TypeError):
+                    feature_correlations = None
+
+            feature_correlations = row.get("feature_correlations")
+            if isinstance(feature_correlations, str):
+                try:
+                    feature_correlations = json.loads(feature_correlations)
+                except (json.JSONDecodeError, TypeError):
+                    feature_correlations = None
+
             dataset_dict = {
                 "id": str(row["id"]),
                 "symbol": row["symbol"],
@@ -116,6 +130,7 @@ async def list_datasets(
                 "completed_at": row["completed_at"].isoformat() + "Z" if row["completed_at"] else None,
                 "estimated_completion": row["estimated_completion"].isoformat() + "Z" if row["estimated_completion"] else None,
                 "error_message": row["error_message"],
+                "feature_correlations": feature_correlations,
             }
             datasets_data.append(dataset_dict)
 
@@ -153,7 +168,7 @@ async def get_dataset(
                 train_records, validation_records, test_records,
                 output_format, storage_path,
                 created_at, completed_at, estimated_completion,
-                error_message
+                error_message, feature_correlations
             FROM datasets
             WHERE id = $1
         """
@@ -190,6 +205,13 @@ async def get_dataset(
                 split_statistics = None
         # If it's already a dict, keep it as is
 
+        feature_correlations = row.get("feature_correlations")
+        if isinstance(feature_correlations, str):
+            try:
+                feature_correlations = json.loads(feature_correlations)
+            except (json.JSONDecodeError, TypeError):
+                feature_correlations = None
+
         dataset_dict = {
             "id": str(row["id"]),
             "symbol": row["symbol"],
@@ -216,6 +238,7 @@ async def get_dataset(
             "completed_at": row["completed_at"].isoformat() + "Z" if row["completed_at"] else None,
             "estimated_completion": row["estimated_completion"].isoformat() + "Z" if row["estimated_completion"] else None,
             "error_message": row["error_message"],
+            "feature_correlations": feature_correlations,
         }
 
         logger.info("dataset_get_completed", dataset_id=str(dataset_id), trace_id=trace_id)

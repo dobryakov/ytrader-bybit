@@ -51,6 +51,7 @@ class BackfillingService:
         parquet_storage: ParquetStorage,
         feature_registry_loader: Optional[FeatureRegistryLoader] = None,
         bybit_client: Optional[BybitClient] = None,
+        cache_invalidation_service: Optional["CacheInvalidationService"] = None,
     ):
         """
         Initialize backfilling service.
@@ -59,9 +60,11 @@ class BackfillingService:
             parquet_storage: Parquet storage for saving backfilled data
             feature_registry_loader: Optional Feature Registry loader for determining data types
             bybit_client: Optional Bybit REST API client (creates default if not provided)
+            cache_invalidation_service: Optional service for cache invalidation
         """
         self._parquet_storage = parquet_storage
         self._feature_registry_loader = feature_registry_loader
+        self._cache_invalidation_service = cache_invalidation_service
         
         if bybit_client is None:
             self._bybit_client = BybitClient(
@@ -1779,6 +1782,26 @@ class BackfillingService:
                     completed_dates=len(job.completed_dates),
                     failed_dates=len(job.failed_dates),
                 )
+            
+            # Invalidate cache after job completion (successful or with failures)
+            if self._cache_invalidation_service:
+                try:
+                    # Use actual start/end dates from job
+                    start_dt = datetime.combine(job.start_date, datetime.min.time(), tzinfo=timezone.utc)
+                    end_dt = datetime.combine(job.end_date, datetime.max.time(), tzinfo=timezone.utc)
+                    
+                    await self._cache_invalidation_service.invalidate_on_backfill_completion(
+                        symbol=job.symbol,
+                        start_date=start_dt,
+                        end_date=end_dt,
+                    )
+                except Exception as e:
+                    logger.error(
+                        "backfilling_cache_invalidation_failed",
+                        job_id=job.job_id,
+                        symbol=job.symbol,
+                        error=str(e),
+                    )
         
         except Exception as e:
             job.status = "failed"

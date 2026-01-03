@@ -134,6 +134,73 @@ class FeatureRegistryVersionManager:
         
         return config_data
     
+    async def load_version(self, version: str) -> Dict[str, Any]:
+        """
+        Load a specific version from database and read config from file.
+        
+        Args:
+            version: Version identifier
+            
+        Returns:
+            Config dict from file
+            
+        Raises:
+            FileNotFoundError: If version not found or file missing
+            ValueError: If version mismatch between DB and file
+        """
+        # Get version from DB
+        version_record = await self._metadata_storage.get_feature_registry_version(version)
+        
+        if version_record is None:
+            raise FileNotFoundError(f"Feature Registry version {version} not found in database")
+        
+        file_path = Path(version_record["file_path"])
+        
+        # Read config from file
+        if not file_path.exists():
+            logger.warning(
+                "feature_registry_file_not_found",
+                version=version,
+                file_path=str(file_path),
+            )
+            raise FileNotFoundError(f"Feature Registry file not found: {file_path}")
+        
+        with open(file_path, "r") as f:
+            config_data = yaml.safe_load(f)
+        
+        if not config_data:
+            raise ValueError(f"Feature Registry file is empty: {file_path}")
+        
+        # Validate version match
+        file_version = config_data.get("version")
+        if file_version != version:
+            logger.warning(
+                "feature_registry_version_mismatch",
+                db_version=version,
+                file_version=file_version,
+                file_path=str(file_path),
+            )
+        
+        # Validate config using FeatureRegistry model
+        try:
+            FeatureRegistry(**config_data)
+        except ValidationError as e:
+            logger.error(
+                "feature_registry_validation_failed",
+                version=version,
+                file_path=str(file_path),
+                errors=str(e),
+            )
+            raise ValueError(f"Feature Registry validation failed: {e}") from e
+        
+        logger.info(
+            "feature_registry_version_loaded",
+            version=version,
+            file_path=str(file_path),
+        )
+        
+        return config_data
+    
     async def create_version(
         self,
         version: str,

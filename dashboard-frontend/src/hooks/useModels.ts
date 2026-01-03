@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import api from '@/lib/api'
 
 export interface ModelMetrics {
@@ -332,6 +332,20 @@ export function useModelsByDataset(datasetId: string) {
       return response.data
     },
     enabled: !!datasetId,
+  })
+}
+
+export function useDeactivateModel() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async (version: string) => {
+      const response = await api.post(`/v1/models/${version}/deactivate`)
+      return response.data
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['models'] })
+    },
   })
 }
 

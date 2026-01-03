@@ -9,6 +9,7 @@ import Datasets from './pages/Datasets'
 import DatasetDetail from './pages/DatasetDetail'
 import Containers from './pages/Containers'
 import Registries from './pages/Registries'
+import Modes from './pages/Modes'
 import { cn } from './lib/utils'
 
 function App() {
@@ -27,6 +28,7 @@ function App() {
                   <NavLink to="/signals">Сигналы</NavLink>
                   <NavLink to="/models">Модели</NavLink>
                   <NavLink to="/datasets">Датасеты</NavLink>
+                  <NavLink to="/modes">Режимы</NavLink>
                   <NavLink to="/containers">Контейнеры</NavLink>
                   <NavLink to="/registries">Registry</NavLink>
                 </div>
@@ -45,6 +47,7 @@ function App() {
             <Route path="/models/:version" element={<ModelDetail />} />
             <Route path="/datasets" element={<Datasets />} />
             <Route path="/datasets/:id" element={<DatasetDetail />} />
+            <Route path="/modes" element={<Modes />} />
             <Route path="/containers" element={<Containers />} />
             <Route path="/registries" element={<Registries />} />
           </Routes>

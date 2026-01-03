@@ -208,16 +208,16 @@ export default function DatasetDetail() {
                 const targetStats = splitStats?.target_statistics
                 const recordsKey = `${splitName}_records` as 'train_records' | 'validation_records' | 'test_records'
                 const records = data[recordsKey] || 0
-                
+
                 if (!targetStats) return null
-                
+
                 // Calculate additional statistics
-                const cv = targetStats.std !== 0 && targetStats.mean !== 0 
-                  ? (targetStats.std / Math.abs(targetStats.mean)) * 100 
+                const cv = targetStats.std !== 0 && targetStats.mean !== 0
+                  ? (targetStats.std / Math.abs(targetStats.mean)) * 100
                   : 0
                 const range = targetStats.max - targetStats.min
                 const iqr_approx = targetStats.std * 1.35 // Approximate IQR from std (for normal distribution)
-                
+
                 return (
                   <Card key={splitName} className="border-2">
                     <CardHeader className="pb-3">
@@ -270,44 +270,99 @@ export default function DatasetDetail() {
             </div>
 
             {/* Comparison Chart */}
-            {(['train', 'validation', 'test'] as const).some(splitName => 
+            {(['train', 'validation', 'test'] as const).some(splitName =>
               data.split_statistics?.[splitName]?.target_statistics
             ) && (
-              <div className="mt-6">
-                <h4 className="text-lg font-semibold mb-4">Сравнение статистики между сплитами</h4>
-                <ResponsiveContainer width="100%" height={300}>
-                  <BarChart 
-                    data={(['train', 'validation', 'test'] as const)
-                      .map(splitName => {
-                        const stats = data.split_statistics?.[splitName]?.target_statistics
-                        if (!stats) return null
-                        return {
-                          split: splitName === 'train' ? 'Train' : splitName === 'validation' ? 'Validation' : 'Test',
-                          mean: stats.mean,
-                          median: stats.median,
-                          std: stats.std,
-                          min: stats.min,
-                          max: stats.max,
-                        }
-                      })
-                      .filter(Boolean)
+                <div className="mt-6">
+                  <h4 className="text-lg font-semibold mb-4">Сравнение статистики между сплитами</h4>
+                  <ResponsiveContainer width="100%" height={300}>
+                    <BarChart
+                      data={(['train', 'validation', 'test'] as const)
+                        .map(splitName => {
+                          const stats = data.split_statistics?.[splitName]?.target_statistics
+                          if (!stats) return null
+                          return {
+                            split: splitName === 'train' ? 'Train' : splitName === 'validation' ? 'Validation' : 'Test',
+                            mean: stats.mean,
+                            median: stats.median,
+                            std: stats.std,
+                            min: stats.min,
+                            max: stats.max,
+                          }
+                        })
+                        .filter(Boolean)
+                      }
+                    >
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="split" />
+                      <YAxis />
+                      <Tooltip
+                        formatter={(value: number) => value.toFixed(6)}
+                        labelFormatter={(label) => `Сплит: ${label}`}
+                      />
+                      <Legend />
+                      <Bar dataKey="mean" fill="#8884d8" name="Среднее (μ)" />
+                      <Bar dataKey="median" fill="#82ca9d" name="Медиана" />
+                      <Bar dataKey="std" fill="#ffc658" name="Стд. откл. (σ)" />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Feature Correlations */}
+      {data.feature_correlations && Object.keys(data.feature_correlations).length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Важность фичей (Корреляция с таргетом)</CardTitle>
+            <CardDescription>
+              Топ-20 фичей с наивысшей абсолютной корреляцией с целевой переменной.
+              Показывает линейную зависимость между фичей и таргетом.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="h-[500px] w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart
+                  layout="vertical"
+                  data={Object.entries(data.feature_correlations)
+                    .map(([feature, correlation]) => ({
+                      feature,
+                      correlation,
+                      absCorrelation: Math.abs(correlation)
+                    }))
+                    .sort((a, b) => b.absCorrelation - a.absCorrelation)
+                    .slice(0, 20)}
+                  margin={{ top: 5, right: 30, left: 20, bottom: 5 }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis type="number" domain={[-1, 1]} />
+                  <YAxis type="category" dataKey="feature" width={200} tick={{ fontSize: 12 }} />
+                  <Tooltip
+                    formatter={(value: number) => value.toFixed(4)}
+                    labelStyle={{ color: 'black' }}
+                  />
+                  <Legend />
+                  <Bar dataKey="correlation" name="Корреляция" fill="#8884d8">
+                    {Object.entries(data.feature_correlations)
+                      .map(([feature, correlation]) => ({ feature, correlation, abs: Math.abs(correlation) }))
+                      .sort((a, b) => b.abs - a.abs)
+                      .slice(0, 20)
+                      .map((entry, index) => (
+                        <Cell key={`cell-${index}`} fill={entry.correlation >= 0 ? '#82ca9d' : '#ef4444'} />
+                      ))
                     }
-                  >
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="split" />
-                    <YAxis />
-                    <Tooltip 
-                      formatter={(value: number) => value.toFixed(6)}
-                      labelFormatter={(label) => `Сплит: ${label}`}
-                    />
-                    <Legend />
-                    <Bar dataKey="mean" fill="#8884d8" name="Среднее (μ)" />
-                    <Bar dataKey="median" fill="#82ca9d" name="Медиана" />
-                    <Bar dataKey="std" fill="#ffc658" name="Стд. откл. (σ)" />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            )}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+
+            <div className="mt-4 text-sm text-muted-foreground text-center">
+              * Зеленый цвет: положительная корреляция (цена растет вместе с фичей).
+              Красный цвет: отрицательная корреляция (цена падает при росте фичи).
+            </div>
           </CardContent>
         </Card>
       )}
@@ -354,7 +409,7 @@ export default function DatasetDetail() {
                   <CartesianGrid strokeDasharray="3 3" />
                   <XAxis dataKey="split" />
                   <YAxis />
-                  <Tooltip 
+                  <Tooltip
                     formatter={(value: number) => [
                       `${value.toLocaleString()} записей`,
                       'Количество'
@@ -378,8 +433,8 @@ export default function DatasetDetail() {
                   <TableHead>Процент от общего</TableHead>
                   {data.target_config?.type === 'classification' || data.target_config?.type === 'risk_adjusted' ? (
                     <>
-                  <TableHead>Распределение классов</TableHead>
-                  <TableHead>Баланс классов</TableHead>
+                      <TableHead>Распределение классов</TableHead>
+                      <TableHead>Баланс классов</TableHead>
                     </>
                   ) : (
                     <>
@@ -402,13 +457,13 @@ export default function DatasetDetail() {
                   const records = data[recordsKey] || 0
                   const isClassification = data.target_config?.type === 'classification' || data.target_config?.type === 'risk_adjusted'
                   const targetStats = splitStats?.target_statistics
-                  
+
                   return (
                     <TableRow key={splitName}>
                       <TableCell className="font-medium capitalize">{splitName === 'train' ? 'Train' : splitName === 'validation' ? 'Validation' : 'Test'}</TableCell>
                       <TableCell>{records.toLocaleString()}</TableCell>
                       <TableCell>
-                        {totalRecords > 0 
+                        {totalRecords > 0
                           ? `${(records / totalRecords * 100).toFixed(2)}%`
                           : '0%'}
                       </TableCell>
@@ -416,20 +471,20 @@ export default function DatasetDetail() {
                         <>
                           {/* Classification columns */}
                           <TableCell className="text-xs" title={splitStats?.class_distribution ? Object.entries(splitStats.class_distribution).map(([cls, count]) => `${cls}: ${count.toLocaleString()}`).join(', ') : ''}>
-                            {splitStats?.class_distribution 
-                              ? (Object.keys(splitStats.class_distribution).length <= 3 
-                                  ? Object.entries(splitStats.class_distribution).map(([cls, count]) => `${cls}: ${count.toLocaleString()}`).join(', ')
-                                  : `${Object.keys(splitStats.class_distribution).length} классов`)
-                          : 'N/A'}
-                      </TableCell>
-                      <TableCell className="text-xs">
+                            {splitStats?.class_distribution
+                              ? (Object.keys(splitStats.class_distribution).length <= 3
+                                ? Object.entries(splitStats.class_distribution).map(([cls, count]) => `${cls}: ${count.toLocaleString()}`).join(', ')
+                                : `${Object.keys(splitStats.class_distribution).length} классов`)
+                              : 'N/A'}
+                          </TableCell>
+                          <TableCell className="text-xs">
                             {splitStats?.class_balance_ratio !== undefined ? (
                               <span className={splitStats.class_balance_ratio < 0.3 ? 'text-yellow-600 font-medium' : splitStats.class_balance_ratio < 0.5 ? 'text-orange-600 font-medium' : ''}>
                                 {(splitStats.class_balance_ratio * 100).toFixed(1)}%
                                 {splitStats.class_balance_ratio < 0.3 && ' ⚠️'}
-                          </span>
-                        ) : 'N/A'}
-                      </TableCell>
+                              </span>
+                            ) : 'N/A'}
+                          </TableCell>
                         </>
                       ) : (
                         <>
@@ -445,7 +500,7 @@ export default function DatasetDetail() {
                           </TableCell>
                           <TableCell className="text-xs font-mono" title={targetStats ? `Range: ${(targetStats.max - targetStats.min).toFixed(6)}` : ''}>
                             {targetStats ? (targetStats.max - targetStats.min).toFixed(6) : 'N/A'}
-                      </TableCell>
+                          </TableCell>
                         </>
                       )}
                       <TableCell className="text-xs">{formatDateShort(data[periodStartKey])}</TableCell>
@@ -478,12 +533,12 @@ export default function DatasetDetail() {
                 {(() => {
                   const activeModel = modelsData.models.find(m => m.is_active)
                   const modelToShow = activeModel || modelsData.models[0]
-                  
+
                   if (!modelToShow) return null
-                  
+
                   const metrics = modelToShow.metrics
                   const isClassification = data.target_config?.type === 'classification' || data.target_config?.type === 'risk_adjusted'
-                  
+
                   return (
                     <>
                       {/* Model Info */}
@@ -491,7 +546,7 @@ export default function DatasetDetail() {
                         <div>
                           <span className="text-sm text-muted-foreground">Версия модели:</span>
                           <div className="font-medium mt-1">
-                            <Link 
+                            <Link
                               to={`/models/${modelToShow.version}`}
                               className="text-primary hover:underline"
                             >
@@ -546,62 +601,62 @@ export default function DatasetDetail() {
                         (isClassification && (metrics.mae !== null || metrics.rmse !== null || metrics.r2_score !== null || metrics.mse !== null)) ||
                         (!isClassification && (metrics.accuracy !== null || metrics.precision !== null || metrics.recall !== null || metrics.f1_score !== null))
                       ) && (
-                        <div>
-                          <h4 className="font-semibold mb-4">Дополнительные метрики</h4>
-                          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                            {isClassification && (
-                              <>
-                                {metrics.mae !== null && <MetricCard title="MAE" value={formatDecimal(metrics.mae, 6)} />}
-                                {metrics.rmse !== null && <MetricCard title="RMSE" value={formatDecimal(metrics.rmse, 6)} />}
-                                {metrics.r2_score !== null && <MetricCard title="R² Score" value={formatDecimal(metrics.r2_score, 4)} />}
-                                {metrics.mse !== null && <MetricCard title="MSE" value={formatDecimal(metrics.mse, 6)} />}
-                              </>
-                            )}
-                            {!isClassification && (
-                              <>
-                                {metrics.accuracy !== null && <MetricCard title="Accuracy" value={formatPercent(metrics.accuracy)} />}
-                                {metrics.precision !== null && <MetricCard title="Precision" value={formatPercent(metrics.precision)} />}
-                                {metrics.recall !== null && <MetricCard title="Recall" value={formatPercent(metrics.recall)} />}
-                                {metrics.f1_score !== null && <MetricCard title="F1 Score" value={formatPercent(metrics.f1_score)} />}
-                                {metrics.balanced_accuracy !== null && <MetricCard title="Balanced Accuracy" value={formatPercent(metrics.balanced_accuracy)} />}
-                                {metrics.roc_auc !== null && <MetricCard title="ROC AUC" value={formatDecimal(metrics.roc_auc)} />}
-                                {metrics.pr_auc !== null && <MetricCard title="PR AUC" value={formatDecimal(metrics.pr_auc)} />}
-                              </>
-                            )}
+                          <div>
+                            <h4 className="font-semibold mb-4">Дополнительные метрики</h4>
+                            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                              {isClassification && (
+                                <>
+                                  {metrics.mae !== null && <MetricCard title="MAE" value={formatDecimal(metrics.mae, 6)} />}
+                                  {metrics.rmse !== null && <MetricCard title="RMSE" value={formatDecimal(metrics.rmse, 6)} />}
+                                  {metrics.r2_score !== null && <MetricCard title="R² Score" value={formatDecimal(metrics.r2_score, 4)} />}
+                                  {metrics.mse !== null && <MetricCard title="MSE" value={formatDecimal(metrics.mse, 6)} />}
+                                </>
+                              )}
+                              {!isClassification && (
+                                <>
+                                  {metrics.accuracy !== null && <MetricCard title="Accuracy" value={formatPercent(metrics.accuracy)} />}
+                                  {metrics.precision !== null && <MetricCard title="Precision" value={formatPercent(metrics.precision)} />}
+                                  {metrics.recall !== null && <MetricCard title="Recall" value={formatPercent(metrics.recall)} />}
+                                  {metrics.f1_score !== null && <MetricCard title="F1 Score" value={formatPercent(metrics.f1_score)} />}
+                                  {metrics.balanced_accuracy !== null && <MetricCard title="Balanced Accuracy" value={formatPercent(metrics.balanced_accuracy)} />}
+                                  {metrics.roc_auc !== null && <MetricCard title="ROC AUC" value={formatDecimal(metrics.roc_auc)} />}
+                                  {metrics.pr_auc !== null && <MetricCard title="PR AUC" value={formatDecimal(metrics.pr_auc)} />}
+                                </>
+                              )}
+                            </div>
                           </div>
-                        </div>
-                      )}
+                        )}
 
                       {/* Trading Performance Metrics */}
                       {metrics && (
                         <div>
                           <h4 className="font-semibold mb-4">Метрики торговой эффективности</h4>
                           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                            <MetricCard 
-                              title="Sharpe Ratio" 
-                              value={formatDecimal(metrics.sharpe_ratio)} 
+                            <MetricCard
+                              title="Sharpe Ratio"
+                              value={formatDecimal(metrics.sharpe_ratio)}
                             />
-                            <MetricCard 
-                              title="Win Rate" 
-                              value={formatPercent(metrics.win_rate)} 
+                            <MetricCard
+                              title="Win Rate"
+                              value={formatPercent(metrics.win_rate)}
                             />
-                            <MetricCard 
-                              title="Total PnL" 
+                            <MetricCard
+                              title="Total PnL"
                               value={metrics.total_pnl !== null ? metrics.total_pnl.toFixed(2) : 'N/A'}
                               className={metrics.total_pnl !== null ? (metrics.total_pnl >= 0 ? 'border-green-500' : 'border-red-500') : ''}
                             />
-                            <MetricCard 
-                              title="Profit Factor" 
-                              value={formatDecimal(metrics.profit_factor)} 
+                            <MetricCard
+                              title="Profit Factor"
+                              value={formatDecimal(metrics.profit_factor)}
                             />
-                            <MetricCard 
-                              title="Avg PnL" 
+                            <MetricCard
+                              title="Avg PnL"
                               value={metrics.avg_pnl !== null ? metrics.avg_pnl.toFixed(2) : 'N/A'}
                               className={metrics.avg_pnl !== null ? (metrics.avg_pnl >= 0 ? 'border-green-500' : 'border-red-500') : ''}
                             />
-                            <MetricCard 
-                              title="Max Drawdown" 
-                              value={formatDecimal(metrics.max_drawdown)} 
+                            <MetricCard
+                              title="Max Drawdown"
+                              value={formatDecimal(metrics.max_drawdown)}
                               className="border-red-500"
                             />
                           </div>
@@ -873,7 +928,7 @@ export default function DatasetDetail() {
                     <h4 className="font-semibold mb-2">Информация о таргете:</h4>
                     <ul className="list-disc list-inside space-y-1 text-sm text-muted-foreground">
                       <li>
-                        Тип: <strong>{data.target_config.type}</strong> - 
+                        Тип: <strong>{data.target_config.type}</strong> -
                         {data.target_config.type === 'classification' && ' задача классификации'}
                         {data.target_config.type === 'regression' && ' задача регрессии'}
                         {data.target_config.type === 'risk_adjusted' && ' задача с учетом риска'}

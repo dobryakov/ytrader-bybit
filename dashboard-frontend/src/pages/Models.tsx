@@ -1,12 +1,13 @@
 import { useState, useMemo, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { 
-  useModels, 
-  useModelTrainingHistory, 
-  useSignalSuccessRate, 
-  useAvailableAssets, 
+import {
+  useModels,
+  useModelTrainingHistory,
+  useSignalSuccessRate,
+  useAvailableAssets,
   useAvailableStrategies,
-  useActiveModelVersion
+  useActiveModelVersion,
+  useDeactivateModel
 } from '@/hooks/useModels'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Badge } from '@/components/ui/badge'
@@ -22,7 +23,10 @@ export default function Models() {
   const { data: trainingHistory, isLoading: isHistoryLoading } = useModelTrainingHistory({ limit: 100 })
   const [retrainingModelId, setRetrainingModelId] = useState<string | null>(null)
   const [relearningModelId, setRelearningModelId] = useState<string | null>(null)
+  const [deactivatingModelVersion, setDeactivatingModelVersion] = useState<string | null>(null)
   
+  const deactivateModel = useDeactivateModel()
+
   // Filters for metrics chart
   const [chartSymbolFilter, setChartSymbolFilter] = useState<string>('')
   const [chartStrategyFilter, setChartStrategyFilter] = useState<string>('')
@@ -40,11 +44,11 @@ export default function Models() {
   const [successRateModelVersion, setSuccessRateModelVersion] = useState<string>('')
   const [successRateAsset, setSuccessRateAsset] = useState<string>('')
   const [successRateStrategy, setSuccessRateStrategy] = useState<string>('')
-  
+
   // Fetch available assets and strategies
   const { data: availableAssets = [], isLoading: isLoadingAssets } = useAvailableAssets()
   const { data: availableStrategies = [], isLoading: isLoadingStrategies } = useAvailableStrategies()
-  
+
   // Fetch active model version when asset and strategy are selected
   const { data: activeModelVersion } = useActiveModelVersion({
     asset: successRateAsset || undefined,
@@ -144,7 +148,7 @@ export default function Models() {
     { name: 'r2_score', label: 'R² Score', type: 'regression' },
     { name: 'rmse', label: 'RMSE', type: 'regression' },
     { name: 'directional_accuracy', label: 'Directional Accuracy (%)', type: 'regression' },
-    { name: 'sharpe_ratio', label: 'Sharpe Ratio (ML)', type: 'regression' },
+
     { name: 'information_coefficient', label: 'Information Coefficient (IC)', type: 'regression' },
     // Trading Performance
     { name: 'avg_pnl', label: 'Avg PnL', type: 'trading' },
@@ -224,6 +228,28 @@ export default function Models() {
     }
   }
 
+  const handleDeactivate = async (model: { version: string; is_active: boolean }) => {
+    if (!model.is_active) {
+      alert('Модель уже деактивирована')
+      return
+    }
+
+    if (!window.confirm(`Вы уверены, что хотите деактивировать модель ${model.version}?`)) {
+      return
+    }
+
+    setDeactivatingModelVersion(model.version)
+    try {
+      await deactivateModel.mutateAsync(model.version)
+      alert(`Модель ${model.version} успешно деактивирована`)
+    } catch (error: any) {
+      const errorMessage = error.response?.data?.detail || error.message || 'Ошибка при деактивации модели'
+      alert(`Ошибка: ${errorMessage}`)
+    } finally {
+      setDeactivatingModelVersion(null)
+    }
+  }
+
   // Determine if model is regression based on metrics or training_config
   const isRegressionModel = (model: { metrics: any; training_config?: any }) => {
     // Check training_config first (most reliable)
@@ -240,7 +266,7 @@ export default function Models() {
         return true
       }
     }
-    
+
     // Fallback: check metrics - regression has r2_score, mse, mae, rmse
     if (model.metrics) {
       const hasRegressionMetrics = (
@@ -254,13 +280,13 @@ export default function Models() {
         (model.metrics.f1_score !== null && model.metrics.f1_score !== undefined) ||
         (model.metrics.precision !== null && model.metrics.precision !== undefined)
       )
-      
+
       // If has regression metrics but no classification metrics, it's regression
       if (hasRegressionMetrics && !hasClassificationMetrics) {
         return true
       }
     }
-    
+
     return false
   }
 
@@ -268,7 +294,7 @@ export default function Models() {
   const getMetricValue = (model: { metrics: any; training_config?: any }, column: string) => {
     const isRegression = isRegressionModel(model)
     const metrics = model.metrics || {}
-    
+
     if (isRegression) {
       // Map classification columns to regression metrics
       switch (column) {
@@ -385,11 +411,11 @@ export default function Models() {
                 const rocAucMetric = getMetricValue(model, 'roc_auc')
                 const prAucMetric = getMetricValue(model, 'pr_auc')
                 const balancedAccMetric = getMetricValue(model, 'balanced_accuracy')
-                
+
                 return (
                   <TableRow key={model.id}>
                     <TableCell className="font-medium">
-                      <Link 
+                      <Link
                         to={`/models/${model.version}`}
                         className="text-primary hover:underline"
                       >
@@ -484,6 +510,16 @@ export default function Models() {
                         >
                           {relearningModelId === model.id ? 'Запуск...' : 'Re-Learn'}
                         </Button>
+                        {model.is_active && (
+                          <Button
+                            onClick={() => handleDeactivate(model)}
+                            disabled={deactivatingModelVersion === model.version}
+                            size="sm"
+                            variant="destructive"
+                          >
+                            {deactivatingModelVersion === model.version ? 'Деактивация...' : 'Деактивировать'}
+                          </Button>
+                        )}
                         <Button
                           asChild
                           size="sm"
@@ -540,9 +576,9 @@ export default function Models() {
               <TableBody>
                 {!trainingHistory || trainingHistory.length === 0 ? (
                   <TableRow>
-                  <TableCell colSpan={18} className="text-center text-muted-foreground">
-                    Нет истории обучения
-                  </TableCell>
+                    <TableCell colSpan={18} className="text-center text-muted-foreground">
+                      Нет истории обучения
+                    </TableCell>
                   </TableRow>
                 ) : (
                   trainingHistory.map((item) => {
@@ -554,11 +590,11 @@ export default function Models() {
                     const rocAucMetric = getMetricValue(item, 'roc_auc')
                     const prAucMetric = getMetricValue(item, 'pr_auc')
                     const balancedAccMetric = getMetricValue(item, 'balanced_accuracy')
-                    
+
                     return (
                       <TableRow key={item.id}>
                         <TableCell className="font-medium">
-                          <Link 
+                          <Link
                             to={`/models/${item.version}`}
                             className="text-primary hover:underline"
                           >
@@ -580,7 +616,7 @@ export default function Models() {
                         <TableCell className="text-xs">{item.target_registry_version || 'N/A'}</TableCell>
                         <TableCell className="font-mono text-xs">
                           {item.dataset_id ? (
-                            <Link 
+                            <Link
                               to={`/datasets/${item.dataset_id}`}
                               className="text-primary hover:underline"
                             >
@@ -879,7 +915,7 @@ export default function Models() {
                   <CartesianGrid strokeDasharray="3 3" />
                   <XAxis dataKey="hour" angle={-45} textAnchor="end" height={100} />
                   <YAxis label={{ value: 'Процент успешности (%)', angle: -90, position: 'insideLeft' }} />
-                  <Tooltip 
+                  <Tooltip
                     formatter={(value: any, name: string) => {
                       if (name === 'successRate') return [`${value?.toFixed(2) || 0}%`, 'Процент успешности']
                       if (name === 'totalSignals') return [value, 'Всего сигналов']
@@ -915,7 +951,7 @@ export default function Models() {
                   <CartesianGrid strokeDasharray="3 3" />
                   <XAxis dataKey="hour" angle={-45} textAnchor="end" height={100} />
                   <YAxis label={{ value: 'Процент успешности (%)', angle: -90, position: 'insideLeft' }} />
-                  <Tooltip 
+                  <Tooltip
                     formatter={(value: any, name: string) => {
                       if (name === 'successRate') return [`${value?.toFixed(2) || 0}%`, 'Процент успешности']
                       if (name === 'totalSignals') return [value, 'Всего сигналов']
@@ -968,26 +1004,26 @@ export default function Models() {
                         <TableCell>{item.successful_by_direction}</TableCell>
                         <TableCell>{item.successful_by_pnl}</TableCell>
                         <TableCell>
-                          {item.success_rate_direction_percent !== null 
-                            ? `${item.success_rate_direction_percent.toFixed(2)}%` 
+                          {item.success_rate_direction_percent !== null
+                            ? `${item.success_rate_direction_percent.toFixed(2)}%`
                             : 'N/A'}
                         </TableCell>
                         <TableCell>
-                          {item.success_rate_pnl_percent !== null 
-                            ? `${item.success_rate_pnl_percent.toFixed(2)}%` 
+                          {item.success_rate_pnl_percent !== null
+                            ? `${item.success_rate_pnl_percent.toFixed(2)}%`
                             : 'N/A'}
                         </TableCell>
                         <TableCell>
-                          {item.avg_confidence !== null 
-                            ? `${(item.avg_confidence * 100).toFixed(2)}%` 
+                          {item.avg_confidence !== null
+                            ? `${(item.avg_confidence * 100).toFixed(2)}%`
                             : 'N/A'}
                         </TableCell>
                         <TableCell>
                           {item.buy_signals}/{item.sell_signals}
                         </TableCell>
                         <TableCell>
-                          {item.total_pnl_sum !== null 
-                            ? item.total_pnl_sum.toFixed(2) 
+                          {item.total_pnl_sum !== null
+                            ? item.total_pnl_sum.toFixed(2)
                             : 'N/A'}
                         </TableCell>
                       </TableRow>

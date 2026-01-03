@@ -167,6 +167,11 @@ class Dataset(BaseModel):
         description="Error message if status is 'failed'"
     )
     
+    feature_correlations: Optional[Dict[str, float]] = Field(
+        default=None,
+        description="Correlation between each feature and the target"
+    )
+    
     @field_validator("status", mode="before")
     @classmethod
     def validate_status(cls, v):

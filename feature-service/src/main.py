@@ -59,6 +59,7 @@ from src.services.optimized_dataset.optimized_builder import OptimizedDatasetBui
 from src.services.data_storage import DataStorageService
 from src.services.backfilling_service import BackfillingService
 from src.services.cache_service import CacheServiceFactory
+from src.services.cache_invalidation import CacheInvalidationService
 
 # Setup logging
 setup_logging(level=config.feature_service_log_level)
@@ -357,11 +358,15 @@ async def startup():
         parquet_storage = ParquetStorage(base_path=config.feature_service_raw_data_path)
         set_parquet_storage(parquet_storage)
         
+        # Initialize Cache Invalidation Service (T140: Unified cache invalidation)
+        cache_invalidation_service = CacheInvalidationService()
+        
         # Initialize Data Storage Service (T135: Integrate raw data storage)
         data_storage = DataStorageService(
             base_path=config.feature_service_raw_data_path,
             parquet_storage=parquet_storage,
             retention_days=config.feature_service_retention_days,
+            cache_invalidation_service=cache_invalidation_service,
         )
         await data_storage.start()
         
@@ -370,6 +375,7 @@ async def startup():
             backfilling_service = BackfillingService(
                 parquet_storage=parquet_storage,
                 feature_registry_loader=feature_registry_loader,
+                cache_invalidation_service=cache_invalidation_service,
             )
             set_backfilling_service(backfilling_service)
             logger.info("Backfilling service initialized")
@@ -402,6 +408,8 @@ async def startup():
                 logger.info("Cache service initialized", type=type(cache_service).__name__)
                 # Set cache service for API endpoints
                 set_cache_service(cache_service)
+                # Link cache service to invalidation service
+                cache_invalidation_service.set_cache_service(cache_service)
             except Exception as e:
                 logger.warning("Failed to initialize cache service, caching disabled", error=str(e))
                 cache_service = None

@@ -324,30 +324,36 @@ class RollingWindows(BaseModel):
                 have sufficient historical data after trimming.
         """
         from datetime import timezone
-        # IMPORTANT: Use current time for trimming, not self.last_update
-        # This ensures that klines with timestamps in the past (from queue backlog) are not
-        # immediately trimmed. We trim based on actual current time, keeping data within
-        # the lookback window from NOW, not from last_update.
+        # Use self.last_update as the reference time for trimming
+        # This allows the rolling window to work correctly in both:
+        # 1. Real-time mode (last_update ~= now)
+        # 2. Historical/Backfill mode (last_update = historical time)
+        # 
+        # Using system time (datetime.now()) caused historical data to be trimmed 
+        # immediately because it was considered "too old" relative to wall clock.
+        
         now = datetime.now(timezone.utc)
         
-        # Normalize self.last_update format if needed, but don't use it for trimming cutoff
-        if isinstance(self.last_update, str):
-            from dateutil.parser import parse
-            try:
-                parsed = datetime.fromisoformat(self.last_update.replace("Z", "+00:00"))
-            except (ValueError, AttributeError):
-                parsed = parse(self.last_update)
-            if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=timezone.utc)
-            # Only update if parsed is newer than current last_update
-            if isinstance(self.last_update, datetime):
-                self.last_update = max(self.last_update, parsed)
+        # Normalize self.last_update format if needed
+        reference_time = now
+        
+        if self.last_update:
+            if isinstance(self.last_update, str):
+                from dateutil.parser import parse
+                try:
+                    parsed = datetime.fromisoformat(self.last_update.replace("Z", "+00:00"))
+                except (ValueError, AttributeError):
+                    parsed = parse(self.last_update)
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                reference_time = parsed
+            elif isinstance(self.last_update, datetime):
+                reference_time = self.last_update
+                if reference_time.tzinfo is None:
+                    reference_time = reference_time.replace(tzinfo=timezone.utc)
             else:
-                self.last_update = parsed
-        elif not isinstance(self.last_update, datetime):
-            self.last_update = now
-        elif self.last_update.tzinfo is None:
-            self.last_update = self.last_update.replace(tzinfo=timezone.utc)
+                # Should not happen given standard usage, but fallback safely
+                pass
         
         # Window sizes for trimming old data
         # For "1m" window, use parameter if provided, otherwise use instance field, otherwise default to 30 minutes
@@ -389,7 +395,7 @@ class RollingWindows(BaseModel):
             if window_seconds is not None:
                 window_size = window_seconds
             
-            cutoff_time = now - timedelta(seconds=window_size)
+            cutoff_time = reference_time - timedelta(seconds=window_size)
             
             # Log cutoff time for debugging (changed to DEBUG to reduce logging overhead)
             if interval == "1m":

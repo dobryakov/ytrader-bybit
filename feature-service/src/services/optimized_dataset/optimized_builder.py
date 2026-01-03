@@ -177,8 +177,16 @@ class OptimizedDatasetBuilder:
         else:
             registry_version = feature_registry_version or "1.0.0"
         
-        # Load Feature Registry
-        await self._feature_registry_loader.load_async()
+        # Load Feature Registry for the specified version
+        if self._feature_registry_loader._version_manager:
+            # Load specific version from DB
+            config_data = await self._feature_registry_loader._version_manager.load_version(registry_version)
+            # Manually set the config to the loader
+            self._feature_registry_loader._validate_and_store_config(config_data)
+        else:
+            # Fallback to file-based loading (legacy mode)
+            await self._feature_registry_loader.load_async()
+        
         if self._feature_registry_loader._registry_model is None:
             raise ValueError("Feature Registry not loaded")
         
@@ -439,6 +447,11 @@ class OptimizedDatasetBuilder:
                 )
                 return
             
+            # Step 4.5: Compute feature correlations (before splitting to use all data)
+            feature_correlations = await asyncio.to_thread(
+                self._compute_feature_correlations, features_df, targets_df
+            )
+
             # Step 5: Split dataset
             dataset = await self._metadata_storage.get_dataset(dataset_id)
             if dataset is None:
@@ -481,6 +494,7 @@ class OptimizedDatasetBuilder:
                     "completed_at": datetime.now(timezone.utc),
                     "estimated_completion": None,
                     "split_statistics": split_statistics,
+                    "feature_correlations": feature_correlations,
                 },
             )
             
@@ -1724,4 +1738,74 @@ class OptimizedDatasetBuilder:
             "validation_records": dataset.get("validation_records", 0),
             "test_records": dataset.get("test_records", 0),
         }
+
+    def _compute_feature_correlations(
+        self, features_df: pd.DataFrame, targets_df: pd.DataFrame
+    ) -> Optional[Dict[str, float]]:
+        """
+        Compute correlation between each numeric feature and target.
+        
+        Args:
+            features_df: DataFrame with features
+            targets_df: DataFrame with targets
+            
+        Returns:
+            Dictionary with {feature_name: correlation_value}
+        """
+        if features_df.empty or targets_df.empty:
+            return None
+            
+        # Merge features and targets on timestamp
+        merged = features_df.merge(
+            targets_df[["timestamp", "target"]], on="timestamp", how="inner"
+        )
+        
+        if merged.empty or "target" not in merged.columns:
+            logger.warning("merged_df_empty_or_target_missing", 
+                           merged_empty=merged.empty, 
+                           has_target="target" in merged.columns)
+            return None
+            
+        # Filter for numeric columns excluding metadata
+        # Exclude common non-feature columns
+        exclude_cols = {"timestamp", "symbol", "target", "sequence"}
+        
+        # Select potential feature columns
+        potential_features = [c for c in merged.columns if c not in exclude_cols]
+        
+        # Convert to numeric, non-numeric will become NaN
+        # This handles cases where boolean features are stored as objects
+        numeric_df = merged[potential_features].apply(pd.to_numeric, errors='coerce')
+        
+        # Drop columns that are entirely NaN (e.g. non-numeric strings)
+        numeric_df = numeric_df.dropna(axis=1, how='all')
+        numeric_cols = numeric_df.columns.tolist()
+        
+        if not numeric_cols:
+            logger.warning("no_numeric_columns_for_correlation", 
+                           columns=list(merged.columns),
+                           potential_count=len(potential_features))
+            return None
+            
+        try:
+            # Ensure target is numeric
+            target_series = pd.to_numeric(merged["target"], errors="coerce")
+            
+            # Use pandas corrwith which is efficient
+            # numeric_df already contains the converted numeric features
+            
+            correlations = numeric_df.corrwith(target_series)
+            
+            # Fill NaNs with 0.0 (e.g. constant features) and convert to dict
+            result = correlations.fillna(0.0).to_dict()
+            
+            logger.info(
+                "feature_correlations_computed",
+                num_features=len(result),
+                top_correlations=dict(sorted(result.items(), key=lambda x: abs(x[1]), reverse=True)[:5])
+            )
+            return result
+        except Exception as e:
+            logger.error("correlation_computation_failed", error=str(e), exc_info=True)
+            return None
 

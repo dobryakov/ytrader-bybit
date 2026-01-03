@@ -57,6 +57,7 @@ class CacheInvalidationService:
         # Pattern: "*:{old_version}:*"
         pattern_historical = f"historical_data:*:{old_version}:*"
         pattern_features = f"features:*:{old_version}:*"
+        pattern_dataset = f"dataset_cache:*:{old_version}:*"
         
         invalidated_count = 0
         
@@ -81,6 +82,17 @@ class CacheInvalidationService:
                     old_version=old_version,
                     new_version=new_version,
                     count=count2,
+                )
+            
+            # Clear dataset cache entries
+            count3 = await self._cache_service.clear(pattern_dataset)
+            if count3 > 0:
+                invalidated_count += count3
+                logger.info(
+                    "cache_invalidated_dataset",
+                    old_version=old_version,
+                    new_version=new_version,
+                    count=count3,
                 )
         except Exception as e:
             logger.error(
@@ -129,9 +141,10 @@ class CacheInvalidationService:
                 pass
         
         # Invalidate all cache entries for this symbol
-        # Pattern: "historical_data:{symbol}:*" and "features:{symbol}:*"
+        # Pattern: "historical_data:{symbol}:*", "features:{symbol}:*", and "dataset_cache:{symbol}:*"
         pattern_historical = f"historical_data:{symbol}:*"
         pattern_features = f"features:{symbol}:*"
+        pattern_dataset = f"dataset_cache:{symbol}:*"
         
         invalidated_count = 0
         
@@ -156,6 +169,17 @@ class CacheInvalidationService:
                     symbol=symbol,
                     file_path=str(file_path),
                     count=count2,
+                )
+            
+            # Clear dataset cache entries
+            count3 = await self._cache_service.clear(pattern_dataset)
+            if count3 > 0:
+                invalidated_count += count3
+                logger.info(
+                    "cache_invalidated_dataset_file_modification",
+                    symbol=symbol,
+                    file_path=str(file_path),
+                    count=count3,
                 )
         except Exception as e:
             logger.error(
@@ -201,6 +225,7 @@ class CacheInvalidationService:
         # But we should still clear them to free up space
         pattern_historical = f"historical_data:{symbol}:*:{old_data_hash}"
         pattern_features = f"features:{symbol}:*:*:{old_data_hash}"
+        pattern_dataset = f"dataset_cache:{symbol}:*:*"  # Dataset cache doesn't use data_hash in key yet, but should be cleared
         
         invalidated_count = 0
         
@@ -227,6 +252,16 @@ class CacheInvalidationService:
                     old_hash=old_data_hash[:8],
                     new_hash=new_data_hash[:8],
                     count=count2,
+                )
+            
+            # Clear dataset cache entries
+            count3 = await self._cache_service.clear(pattern_dataset)
+            if count3 > 0:
+                invalidated_count += count3
+                logger.info(
+                    "cache_invalidated_dataset_hash_change",
+                    symbol=symbol,
+                    count=count3,
                 )
         except Exception as e:
             logger.error(
@@ -268,6 +303,7 @@ class CacheInvalidationService:
         # Pattern matching for date ranges is complex, so we'll invalidate all entries for symbol
         pattern_historical = f"historical_data:{symbol}:*"
         pattern_features = f"features:{symbol}:*"
+        pattern_dataset = f"dataset_cache:{symbol}:*"
         
         invalidated_count = 0
         
@@ -294,6 +330,18 @@ class CacheInvalidationService:
                     start_date=start_date.isoformat(),
                     end_date=end_date.isoformat(),
                     count=count2,
+                )
+            
+            # Clear dataset cache entries
+            count3 = await self._cache_service.clear(pattern_dataset)
+            if count3 > 0:
+                invalidated_count += count3
+                logger.info(
+                    "cache_invalidated_backfill_dataset",
+                    symbol=symbol,
+                    start_date=start_date.isoformat(),
+                    end_date=end_date.isoformat(),
+                    count=count3,
                 )
         except Exception as e:
             logger.error(
@@ -343,15 +391,17 @@ class CacheInvalidationService:
                 # Invalidate all entries for symbol
                 pattern_historical = f"historical_data:{symbol}:*"
                 pattern_features = f"features:{symbol}:*"
+                pattern_dataset = f"dataset_cache:{symbol}:*"
                 
                 count1 = await self._cache_service.clear(pattern_historical)
                 count2 = await self._cache_service.clear(pattern_features)
-                invalidated_count += count1 + count2
+                count3 = await self._cache_service.clear(pattern_dataset)
+                invalidated_count += count1 + count2 + count3
                 
                 logger.info(
                     "cache_invalidated_manual_symbol",
                     symbol=symbol,
-                    count=count1 + count2,
+                    count=count1 + count2 + count3,
                 )
             elif date_range:
                 # Invalidate entries in date range

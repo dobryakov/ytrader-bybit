@@ -74,6 +74,7 @@ export interface Dataset {
   completed_at: string | null
   estimated_completion: string | null
   error_message: string | null
+  feature_correlations?: Record<string, number>
 }
 
 export function useDatasets(filters?: {

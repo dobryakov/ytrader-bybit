@@ -1,0 +1,85 @@
+version: 1.7.2
+config:
+  timestamp_interval_minutes: 5
+features:
+- name: candle_0_is_green
+  input_sources:
+  - kline
+  lookback_window: 15m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: candle_1_is_green
+  input_sources:
+  - kline
+  lookback_window: 15m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: candle_2_is_green
+  input_sources:
+  - kline
+  lookback_window: 15m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: pattern_all_green
+  input_sources:
+  - kline
+  lookback_window: 15m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: pattern_all_red
+  input_sources:
+  - kline
+  lookback_window: 15m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: pattern_green_red_green
+  input_sources:
+  - kline
+  lookback_window: 15m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: pattern_green_large_volume
+  input_sources:
+  - kline
+  lookback_window: 15m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: pattern_volume_increasing
+  input_sources:
+  - kline
+  lookback_window: 15m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: pattern_volume_decreasing
+  input_sources:
+  - kline
+  lookback_window: 15m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true

@@ -17,8 +17,8 @@ from src.config import config
 async def main():
     """Run backfilling for missing dates."""
     symbol = "BTCUSDT"
-    start_date = date(2025, 12, 3)
-    end_date = date(2025, 12, 6)
+    start_date = date(2025, 12, 29)
+    end_date = date(2025, 12, 29)
     
     print(f"Starting backfilling for {symbol} from {start_date} to {end_date}")
     

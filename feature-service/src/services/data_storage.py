@@ -26,6 +26,7 @@ class DataStorageService:
         archive_path: Optional[str] = None,
         enable_archiving: bool = False,
         cleanup_interval_seconds: int = 3600,  # 1 hour
+        cache_invalidation_service: Optional["CacheInvalidationService"] = None,
     ):
         """
         Initialize data storage service.
@@ -37,6 +38,7 @@ class DataStorageService:
             archive_path: Path for archived data (optional)
             enable_archiving: Whether to archive expired data instead of deleting
             cleanup_interval_seconds: Interval for automatic cleanup task (seconds)
+            cache_invalidation_service: Optional service for cache invalidation
         """
         self._base_path = Path(base_path)
         self._parquet_storage = parquet_storage
@@ -44,6 +46,7 @@ class DataStorageService:
         self._archive_path = Path(archive_path) if archive_path else None
         self._enable_archiving = enable_archiving
         self._cleanup_interval = cleanup_interval_seconds
+        self._cache_invalidation_service = cache_invalidation_service
         
         # Buffers for batching writes (reduce I/O operations)
         self._buffers: Dict[str, List[Dict]] = defaultdict(list)
@@ -542,6 +545,11 @@ class DataStorageService:
                 date=date_str,
                 price=event.get("price"),
             )
+            
+            # Invalidate cache
+            if self._cache_invalidation_service:
+                file_path = self._parquet_storage._get_trades_path(symbol, date_str)
+                await self._cache_invalidation_service.invalidate_on_parquet_file_modification(symbol, file_path)
         except Exception as e:
             logger.error(
                 "trade_storage_error",
@@ -593,6 +601,11 @@ class DataStorageService:
                 interval=event.get("interval"),
                 timestamp=normalized_kline.get("timestamp") if "normalized_kline" in locals() else None,
             )
+            
+            # Invalidate cache
+            if self._cache_invalidation_service:
+                file_path = self._parquet_storage._get_klines_path(symbol, date_str)
+                await self._cache_invalidation_service.invalidate_on_parquet_file_modification(symbol, file_path)
         except Exception as e:
             logger.error(
                 "kline_storage_error",
