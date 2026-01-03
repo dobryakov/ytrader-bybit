@@ -95,21 +95,21 @@ class MarketDataConsumer:
     async def _create_subscriptions(self) -> None:
         """Create subscriptions via ws-gateway REST API with retry logic."""
         channels = [
-            {"channel_type": "orderbook", "symbol": symbol}
-            for symbol in self._symbols
-        ] + [
-            {"channel_type": "trades", "symbol": symbol}
-            for symbol in self._symbols
-        ] + [
-            {"channel_type": "ticker", "symbol": symbol}
-            for symbol in self._symbols
-        ] + [
             {"channel_type": "kline", "symbol": symbol}
             for symbol in self._symbols
-        ] + [
-            {"channel_type": "funding", "symbol": symbol}
-            for symbol in self._symbols
-        ]
+        ] # + [
+        #     {"channel_type": "orderbook", "symbol": symbol}
+        #     for symbol in self._symbols
+        # ] + [
+        #     {"channel_type": "trades", "symbol": symbol}
+        #     for symbol in self._symbols
+        # ] + [
+        #     {"channel_type": "ticker", "symbol": symbol}
+        #     for symbol in self._symbols
+        # ] + [
+        #     {"channel_type": "funding", "symbol": symbol}
+        #     for symbol in self._symbols
+        # ]
         
         for channel_config in channels:
             await self._create_single_subscription(channel_config)
@@ -250,11 +250,11 @@ class MarketDataConsumer:
         # See ws-gateway/src/services/queue/setup.py: SUPPORTED_EVENT_TYPES = {"trade", ...}
         # Queue name format: ws-gateway.{event_type}
         queues = [
-            "ws-gateway.orderbook",
-            "ws-gateway.trade",  # Note: singular, matches EventType in ws-gateway
-            "ws-gateway.ticker",
+            # "ws-gateway.orderbook",
+            # "ws-gateway.trade",  # Note: singular, matches EventType in ws-gateway
+            # "ws-gateway.ticker",
             "ws-gateway.kline",
-            "ws-gateway.funding",
+            # "ws-gateway.funding",
         ]
         
         for queue_name in queues:
