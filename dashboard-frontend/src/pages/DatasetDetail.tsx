@@ -263,6 +263,143 @@ export default function DatasetDetail() {
                           <div className="font-mono">{targetStats.count.toLocaleString()}</div>
                         </div>
                       </div>
+
+                      {/* Target Quality Metrics */}
+                      {(targetStats.zero_targets_count !== undefined || targetStats.positive_count !== undefined) && (
+                        <div className="mt-4 pt-4 border-t">
+                          <h5 className="font-semibold text-sm mb-2">Качество таргета</h5>
+                          <div className="grid grid-cols-2 gap-2 text-sm">
+                            {targetStats.zero_targets_count !== undefined && (
+                              <>
+                                <div>
+                                  <span className="text-muted-foreground">Нулевых значений:</span>
+                                  <div className={`font-mono font-semibold ${targetStats.zero_targets_percentage && targetStats.zero_targets_percentage > 15 ? 'text-yellow-600' : ''}`}>
+                                    {targetStats.zero_targets_count.toLocaleString()}
+                                    {targetStats.zero_targets_percentage !== undefined && (
+                                      <span className="text-xs ml-1">
+                                        ({targetStats.zero_targets_percentage.toFixed(2)}%)
+                                        {targetStats.zero_targets_percentage > 15 && ' ⚠️'}
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                                {targetStats.near_zero_count !== undefined && (
+                                  <div>
+                                    <span className="text-muted-foreground">Near-zero (&lt;1e-6):</span>
+                                    <div className="font-mono text-xs">
+                                      {targetStats.near_zero_count.toLocaleString()}
+                                      {targetStats.near_zero_percentage !== undefined && (
+                                        <span className="ml-1">({targetStats.near_zero_percentage.toFixed(2)}%)</span>
+                                      )}
+                                    </div>
+                                  </div>
+                                )}
+                              </>
+                            )}
+                            {targetStats.positive_count !== undefined && (
+                              <div>
+                                <span className="text-muted-foreground">Положительных:</span>
+                                <div className="font-mono text-xs text-green-600">
+                                  {targetStats.positive_count.toLocaleString()}
+                                  {targetStats.count > 0 && (
+                                    <span className="ml-1">
+                                      ({((targetStats.positive_count / targetStats.count) * 100).toFixed(2)}%)
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            )}
+                            {targetStats.negative_count !== undefined && (
+                              <div>
+                                <span className="text-muted-foreground">Отрицательных:</span>
+                                <div className="font-mono text-xs text-red-600">
+                                  {targetStats.negative_count.toLocaleString()}
+                                  {targetStats.count > 0 && (
+                                    <span className="ml-1">
+                                      ({((targetStats.negative_count / targetStats.count) * 100).toFixed(2)}%)
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                          
+                          {/* Consecutive zeros warning */}
+                          {targetStats.consecutive_zeros && targetStats.consecutive_zeros.sequences_count && targetStats.consecutive_zeros.sequences_count > 0 && (
+                            <div className="mt-3 p-2 bg-yellow-50 dark:bg-yellow-900/20 rounded-md">
+                              <div className="text-xs text-yellow-800 dark:text-yellow-200">
+                                <strong>⚠️ Последовательные нули:</strong> {targetStats.consecutive_zeros.sequences_count} последовательностей
+                                {targetStats.consecutive_zeros.max_consecutive_length && (
+                                  <span>, максимум {targetStats.consecutive_zeros.max_consecutive_length} подряд</span>
+                                )}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Percentiles */}
+                      {targetStats.percentiles && (
+                        <div className="mt-4 pt-4 border-t">
+                          <h5 className="font-semibold text-sm mb-2">Процентили</h5>
+                          <div className="grid grid-cols-3 gap-2 text-xs">
+                            {targetStats.percentiles.p1 !== undefined && (
+                              <div>
+                                <span className="text-muted-foreground">P1:</span>
+                                <div className="font-mono">{targetStats.percentiles.p1.toFixed(6)}</div>
+                              </div>
+                            )}
+                            {targetStats.percentiles.p5 !== undefined && (
+                              <div>
+                                <span className="text-muted-foreground">P5:</span>
+                                <div className="font-mono">{targetStats.percentiles.p5.toFixed(6)}</div>
+                              </div>
+                            )}
+                            {targetStats.percentiles.p10 !== undefined && (
+                              <div>
+                                <span className="text-muted-foreground">P10:</span>
+                                <div className="font-mono">{targetStats.percentiles.p10.toFixed(6)}</div>
+                              </div>
+                            )}
+                            {targetStats.percentiles.p25 !== undefined && (
+                              <div>
+                                <span className="text-muted-foreground">P25:</span>
+                                <div className="font-mono">{targetStats.percentiles.p25.toFixed(6)}</div>
+                              </div>
+                            )}
+                            {targetStats.percentiles.p50 !== undefined && (
+                              <div>
+                                <span className="text-muted-foreground">P50:</span>
+                                <div className="font-mono font-semibold">{targetStats.percentiles.p50.toFixed(6)}</div>
+                              </div>
+                            )}
+                            {targetStats.percentiles.p75 !== undefined && (
+                              <div>
+                                <span className="text-muted-foreground">P75:</span>
+                                <div className="font-mono">{targetStats.percentiles.p75.toFixed(6)}</div>
+                              </div>
+                            )}
+                            {targetStats.percentiles.p90 !== undefined && (
+                              <div>
+                                <span className="text-muted-foreground">P90:</span>
+                                <div className="font-mono">{targetStats.percentiles.p90.toFixed(6)}</div>
+                              </div>
+                            )}
+                            {targetStats.percentiles.p95 !== undefined && (
+                              <div>
+                                <span className="text-muted-foreground">P95:</span>
+                                <div className="font-mono">{targetStats.percentiles.p95.toFixed(6)}</div>
+                              </div>
+                            )}
+                            {targetStats.percentiles.p99 !== undefined && (
+                              <div>
+                                <span className="text-muted-foreground">P99:</span>
+                                <div className="font-mono">{targetStats.percentiles.p99.toFixed(6)}</div>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
                     </CardContent>
                   </Card>
                 )
@@ -273,41 +410,183 @@ export default function DatasetDetail() {
             {(['train', 'validation', 'test'] as const).some(splitName =>
               data.split_statistics?.[splitName]?.target_statistics
             ) && (
-                <div className="mt-6">
-                  <h4 className="text-lg font-semibold mb-4">Сравнение статистики между сплитами</h4>
-                  <ResponsiveContainer width="100%" height={300}>
-                    <BarChart
-                      data={(['train', 'validation', 'test'] as const)
-                        .map(splitName => {
-                          const stats = data.split_statistics?.[splitName]?.target_statistics
-                          if (!stats) return null
-                          return {
-                            split: splitName === 'train' ? 'Train' : splitName === 'validation' ? 'Validation' : 'Test',
-                            mean: stats.mean,
-                            median: stats.median,
-                            std: stats.std,
-                            min: stats.min,
-                            max: stats.max,
-                          }
-                        })
-                        .filter(Boolean)
-                      }
-                    >
-                      <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis dataKey="split" />
-                      <YAxis />
-                      <Tooltip
-                        formatter={(value: number) => value.toFixed(6)}
-                        labelFormatter={(label) => `Сплит: ${label}`}
-                      />
-                      <Legend />
-                      <Bar dataKey="mean" fill="#8884d8" name="Среднее (μ)" />
-                      <Bar dataKey="median" fill="#82ca9d" name="Медиана" />
-                      <Bar dataKey="std" fill="#ffc658" name="Стд. откл. (σ)" />
-                    </BarChart>
-                  </ResponsiveContainer>
+                <div className="mt-6 space-y-6">
+                  <div>
+                    <h4 className="text-lg font-semibold mb-4">Сравнение статистики между сплитами</h4>
+                    <ResponsiveContainer width="100%" height={300}>
+                      <BarChart
+                        data={(['train', 'validation', 'test'] as const)
+                          .map(splitName => {
+                            const stats = data.split_statistics?.[splitName]?.target_statistics
+                            if (!stats) return null
+                            return {
+                              split: splitName === 'train' ? 'Train' : splitName === 'validation' ? 'Validation' : 'Test',
+                              mean: stats.mean,
+                              median: stats.median,
+                              std: stats.std,
+                              min: stats.min,
+                              max: stats.max,
+                            }
+                          })
+                          .filter(Boolean)
+                        }
+                      >
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis dataKey="split" />
+                        <YAxis />
+                        <Tooltip
+                          formatter={(value: number) => value.toFixed(6)}
+                          labelFormatter={(label) => `Сплит: ${label}`}
+                        />
+                        <Legend />
+                        <Bar dataKey="mean" fill="#8884d8" name="Среднее (μ)" />
+                        <Bar dataKey="median" fill="#82ca9d" name="Медиана" />
+                        <Bar dataKey="std" fill="#ffc658" name="Стд. откл. (σ)" />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+
+                  {/* Target Quality Comparison Chart */}
+                  {(['train', 'validation', 'test'] as const).some(splitName =>
+                    data.split_statistics?.[splitName]?.target_statistics?.zero_targets_percentage !== undefined
+                  ) && (
+                      <div>
+                        <h4 className="text-lg font-semibold mb-4">Качество таргета: распределение значений</h4>
+                        <ResponsiveContainer width="100%" height={300}>
+                          <BarChart
+                            data={(['train', 'validation', 'test'] as const)
+                              .map(splitName => {
+                                const stats = data.split_statistics?.[splitName]?.target_statistics
+                                if (!stats) return null
+                                const total = stats.count || 0
+                                return {
+                                  split: splitName === 'train' ? 'Train' : splitName === 'validation' ? 'Validation' : 'Test',
+                                  zero: stats.zero_targets_count || 0,
+                                  zeroPercent: stats.zero_targets_percentage || 0,
+                                  positive: stats.positive_count || 0,
+                                  positivePercent: total > 0 ? ((stats.positive_count || 0) / total * 100) : 0,
+                                  negative: stats.negative_count || 0,
+                                  negativePercent: total > 0 ? ((stats.negative_count || 0) / total * 100) : 0,
+                                }
+                              })
+                              .filter(Boolean)
+                            }
+                          >
+                            <CartesianGrid strokeDasharray="3 3" />
+                            <XAxis dataKey="split" />
+                            <YAxis label={{ value: 'Процент', angle: -90, position: 'insideLeft' }} />
+                            <Tooltip
+                              formatter={(value: number, name: string) => {
+                                if (name === 'zeroPercent' || name === 'positivePercent' || name === 'negativePercent') {
+                                  return `${value.toFixed(2)}%`
+                                }
+                                return value.toLocaleString()
+                              }}
+                              labelFormatter={(label) => `Сплит: ${label}`}
+                            />
+                            <Legend />
+                            <Bar dataKey="zeroPercent" fill="#fbbf24" name="Нулевых (%)" />
+                            <Bar dataKey="positivePercent" fill="#10b981" name="Положительных (%)" />
+                            <Bar dataKey="negativePercent" fill="#ef4444" name="Отрицательных (%)" />
+                          </BarChart>
+                        </ResponsiveContainer>
+                        <div className="mt-2 text-xs text-muted-foreground text-center">
+                          * Процентное распределение значений таргета по типам (нулевые, положительные, отрицательные)
+                        </div>
+                      </div>
+                    )}
                 </div>
               )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Data Quality - Problematic Periods */}
+      {data.data_quality && data.data_quality.problematic_periods_excluded && data.data_quality.problematic_periods_excluded > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Качество данных</CardTitle>
+            <CardDescription>
+              Периоды с проблемными данными (идентичные OHLC), которые были исключены из датасета.
+              Эти периоды могут указывать на проблемы с качеством исторических данных от биржи.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <span className="text-muted-foreground">Исключено периодов:</span>
+                  <div className="text-2xl font-bold text-yellow-600">
+                    {data.data_quality.problematic_periods_excluded}
+                  </div>
+                </div>
+                <div className="text-sm text-muted-foreground">
+                  {data.data_quality.problematic_periods && data.data_quality.problematic_periods.length > 0 && (
+                    <span>Показано первых {Math.min(data.data_quality.problematic_periods.length, data.data_quality.problematic_periods_excluded)}</span>
+                  )}
+                </div>
+              </div>
+
+              {data.data_quality.problematic_periods && data.data_quality.problematic_periods.length > 0 && (
+                <div className="mt-4">
+                  <h4 className="text-sm font-semibold mb-3">Детали проблемных периодов:</h4>
+                  <div className="space-y-2 max-h-96 overflow-y-auto">
+                    {data.data_quality.problematic_periods.map((period, index) => {
+                      const startDate = format(parseISO(period.start), 'dd.MM.yyyy HH:mm:ss')
+                      const endDate = format(parseISO(period.end), 'dd.MM.yyyy HH:mm:ss')
+                      const priceSame = Math.abs(period.current_price - period.future_price) < 1e-6
+                      
+                      return (
+                        <div
+                          key={index}
+                          className="p-3 border rounded-lg bg-yellow-50 dark:bg-yellow-900/20 border-yellow-200 dark:border-yellow-800"
+                        >
+                          <div className="flex items-start justify-between">
+                            <div className="flex-1">
+                              <div className="text-sm font-semibold text-yellow-800 dark:text-yellow-200">
+                                Период #{index + 1}
+                              </div>
+                              <div className="text-xs text-yellow-700 dark:text-yellow-300 mt-1">
+                                <div>Начало: {startDate}</div>
+                                <div>Конец: {endDate}</div>
+                              </div>
+                            </div>
+                            <div className="text-right text-xs">
+                              <div className="text-yellow-800 dark:text-yellow-200">
+                                <div>Цена: {period.current_price.toFixed(2)}</div>
+                                {!priceSame && (
+                                  <div className="text-yellow-600 dark:text-yellow-400">
+                                    → {period.future_price.toFixed(2)}
+                                  </div>
+                                )}
+                                {priceSame && (
+                                  <div className="text-red-600 dark:text-red-400 font-semibold">
+                                    → {period.future_price.toFixed(2)} (одинаковая)
+                                  </div>
+                                )}
+                              </div>
+                              <div className="text-yellow-600 dark:text-yellow-400 mt-1">
+                                <div>Объем: {period.current_volume.toFixed(2)}</div>
+                                <div>→ {period.future_volume.toFixed(2)}</div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
+
+              <div className="mt-4 p-3 bg-blue-50 dark:bg-blue-900/20 rounded-md border border-blue-200 dark:border-blue-800">
+                <div className="text-xs text-blue-800 dark:text-blue-200">
+                  <strong>ℹ️ Примечание:</strong> Эти периоды были автоматически исключены из датасета,
+                  так как данные показывают идентичные OHLC значения (open = high = low = close),
+                  что указывает на проблемы с качеством исторических данных от биржи.
+                  Исключение таких периодов помогает улучшить качество датасета и снизить количество нулевых таргетов.
+                </div>
+              </div>
+            </div>
           </CardContent>
         </Card>
       )}
@@ -442,6 +721,9 @@ export default function DatasetDetail() {
                       <TableHead>Медиана</TableHead>
                       <TableHead>Стд. откл. (σ)</TableHead>
                       <TableHead>Размах</TableHead>
+                      <TableHead>Нулевых (%)</TableHead>
+                      <TableHead>Положительных</TableHead>
+                      <TableHead>Отрицательных</TableHead>
                     </>
                   )}
                   <TableHead>Период начала</TableHead>
@@ -500,6 +782,43 @@ export default function DatasetDetail() {
                           </TableCell>
                           <TableCell className="text-xs font-mono" title={targetStats ? `Range: ${(targetStats.max - targetStats.min).toFixed(6)}` : ''}>
                             {targetStats ? (targetStats.max - targetStats.min).toFixed(6) : 'N/A'}
+                          </TableCell>
+                          <TableCell className="text-xs" title={targetStats && targetStats.zero_targets_count !== undefined ? `${targetStats.zero_targets_count} нулевых значений` : ''}>
+                            {targetStats && targetStats.zero_targets_count !== undefined ? (
+                              <span className={targetStats.zero_targets_percentage && targetStats.zero_targets_percentage > 15 ? 'text-yellow-600 font-medium' : ''}>
+                                {targetStats.zero_targets_count.toLocaleString()}
+                                {targetStats.zero_targets_percentage !== undefined && (
+                                  <span className="ml-1">
+                                    ({targetStats.zero_targets_percentage.toFixed(1)}%)
+                                    {targetStats.zero_targets_percentage > 15 && ' ⚠️'}
+                                  </span>
+                                )}
+                              </span>
+                            ) : 'N/A'}
+                          </TableCell>
+                          <TableCell className="text-xs text-green-600">
+                            {targetStats && targetStats.positive_count !== undefined ? (
+                              <>
+                                {targetStats.positive_count.toLocaleString()}
+                                {targetStats.count > 0 && (
+                                  <span className="ml-1 text-muted-foreground">
+                                    ({((targetStats.positive_count / targetStats.count) * 100).toFixed(1)}%)
+                                  </span>
+                                )}
+                              </>
+                            ) : 'N/A'}
+                          </TableCell>
+                          <TableCell className="text-xs text-red-600">
+                            {targetStats && targetStats.negative_count !== undefined ? (
+                              <>
+                                {targetStats.negative_count.toLocaleString()}
+                                {targetStats.count > 0 && (
+                                  <span className="ml-1 text-muted-foreground">
+                                    ({((targetStats.negative_count / targetStats.count) * 100).toFixed(1)}%)
+                                  </span>
+                                )}
+                              </>
+                            ) : 'N/A'}
                           </TableCell>
                         </>
                       )}

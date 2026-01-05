@@ -482,7 +482,22 @@ class MarketDataConsumer:
             # Store raw data (T135: Integrate raw data storage into market data consumer)
             if self._data_storage:
                 # Store asynchronously (non-blocking) to avoid impacting feature computation latency
-                asyncio.create_task(self._data_storage.store_market_data_event(event))
+                # But wrap in error handler to ensure errors are logged
+                async def store_with_error_handling():
+                    try:
+                        await self._data_storage.store_market_data_event(event)
+                    except Exception as storage_error:
+                        logger.error(
+                            "data_storage_error",
+                            event_type=event_type,
+                            symbol=symbol,
+                            topic=topic,
+                            error=str(storage_error),
+                            error_type=type(storage_error).__name__,
+                            exc_info=True,
+                        )
+                
+                asyncio.create_task(store_with_error_handling())
             
             # Handle orderbook snapshot requests
             if event_type == "orderbook_snapshot" and self._orderbook_manager.is_desynchronized(symbol):

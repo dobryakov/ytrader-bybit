@@ -569,12 +569,67 @@ class DataStorageService:
         from src.storage.data_normalizer import normalize_kline_data
         
         symbol = event.get("symbol")
-        timestamp_str = event.get("timestamp") or event.get("internal_timestamp")
         
+        # Prefer exchange_timestamp over internal_timestamp for date determination
+        # exchange_timestamp is more reliable as it comes from the exchange
+        timestamp_str = (
+            event.get("timestamp") or 
+            event.get("exchange_timestamp") or 
+            event.get("internal_timestamp")
+        )
+        
+        # Validate timestamp - do not use current time as fallback
+        # If timestamp is missing or invalid, log warning and skip storage
         if not timestamp_str:
-            timestamp = datetime.now(timezone.utc)
-        else:
+            logger.warning(
+                "kline_missing_timestamp_skipped",
+                symbol=symbol,
+                event_keys=list(event.keys()),
+                message="Kline event missing timestamp, skipping storage to avoid data corruption",
+            )
+            return
+        
+        try:
             timestamp = self._parse_timestamp(timestamp_str)
+        except Exception as parse_error:
+            logger.warning(
+                "kline_invalid_timestamp_skipped",
+                symbol=symbol,
+                timestamp_str=timestamp_str,
+                error=str(parse_error),
+                message="Failed to parse kline timestamp, skipping storage to avoid data corruption",
+            )
+            return
+        
+        # Validate timestamp is reasonable (not too old, not too far in future)
+        now = datetime.now(timezone.utc)
+        max_age_days = 7  # Allow up to 7 days old data (for backfilling)
+        max_future_hours = 1  # Allow up to 1 hour in future (for clock skew)
+        
+        age = (now - timestamp).total_seconds() / 86400  # days
+        future_offset = (timestamp - now).total_seconds() / 3600  # hours
+        
+        if age > max_age_days:
+            logger.warning(
+                "kline_timestamp_too_old_skipped",
+                symbol=symbol,
+                timestamp=timestamp.isoformat(),
+                age_days=round(age, 2),
+                max_age_days=max_age_days,
+                message="Kline timestamp too old, skipping storage",
+            )
+            return
+        
+        if future_offset > max_future_hours:
+            logger.warning(
+                "kline_timestamp_too_future_skipped",
+                symbol=symbol,
+                timestamp=timestamp.isoformat(),
+                future_hours=round(future_offset, 2),
+                max_future_hours=max_future_hours,
+                message="Kline timestamp too far in future, skipping storage",
+            )
+            return
         
         date_str = timestamp.date().strftime("%Y-%m-%d")
         

@@ -275,10 +275,22 @@ class ParquetStorage:
                     # For orderbook deltas, use sequence if available, otherwise timestamp
                     if 'sequence' in combined_df.columns:
                         # Use sequence for orderbook deltas (more unique)
+                        # Keep 'last' for orderbook deltas as newer updates are more accurate
                         combined_df = combined_df.drop_duplicates(subset=['sequence'], keep='last')
                     else:
-                        # Use timestamp for other data types
-                        combined_df = combined_df.drop_duplicates(subset=['timestamp'], keep='last')
+                        # For klines and other data types, use timestamp
+                        # Keep 'first' to preserve original data and avoid overwriting correct data with incorrect
+                        # This is important because if data arrives out of order, we want to keep the first (correct) entry
+                        combined_df = combined_df.drop_duplicates(subset=['timestamp'], keep='first')
+                        
+                        # Log duplicate detection for monitoring
+                        if len(combined_df) < len(pd.concat([existing_df, data], ignore_index=True)):
+                            duplicates_count = len(pd.concat([existing_df, data], ignore_index=True)) - len(combined_df)
+                            logger.debug(
+                                f"Removed {duplicates_count} duplicate entries from {file_path.name}",
+                                duplicates_removed=duplicates_count,
+                                file=str(file_path),
+                            )
                     
                     # Sort by timestamp
                     combined_df = combined_df.sort_values('timestamp').reset_index(drop=True)

@@ -146,3 +146,58 @@ class TestFeatureComputer:
         
         assert feature_computer._latest_funding_rate["BTCUSDT"] == 0.0001
 
+    def test_get_candle_pattern_function_based_on_lookback_window(self, orderbook_manager):
+        """Test that pattern function is selected based on lookback_window, not version."""
+        from unittest.mock import Mock
+        from src.models.feature_registry import FeatureRegistry, FeatureDefinition
+        
+        # Create mock registry loader with 45m lookback_window
+        mock_loader = Mock()
+        mock_registry = FeatureRegistry(
+            version="1.7.3",
+            config={"timestamp_interval_minutes": 5},
+            features=[
+                FeatureDefinition(
+                    name="pattern_all_green",
+                    input_sources=["kline"],
+                    lookback_window="45m",
+                    lookahead_forbidden=True,
+                    max_lookback_days=1,
+                    data_sources=[{"source": "kline", "timestamp_required": True}],
+                ),
+                FeatureDefinition(
+                    name="candle_0_is_green",
+                    input_sources=["kline"],
+                    lookback_window="45m",
+                    lookahead_forbidden=True,
+                    max_lookback_days=1,
+                    data_sources=[{"source": "kline", "timestamp_required": True}],
+                ),
+            ],
+        )
+        mock_loader._registry_model = mock_registry
+        mock_loader.get_config.return_value = None
+        
+        computer = FeatureComputer(
+            orderbook_manager,
+            feature_registry_version="1.7.3",
+            feature_registry_loader=mock_loader,
+        )
+        
+        # Should select 45m function based on lookback_window
+        pattern_function = computer._get_candle_pattern_function()
+        from src.features.candle_patterns import compute_all_candle_patterns_45m
+        assert pattern_function == compute_all_candle_patterns_45m
+    
+    def test_get_candle_pattern_function_fallback_to_version(self, orderbook_manager):
+        """Test that pattern function falls back to version if no lookback_window found."""
+        computer = FeatureComputer(
+            orderbook_manager,
+            feature_registry_version="1.5.0",
+        )
+        
+        # Should fall back to version-based selection
+        pattern_function = computer._get_candle_pattern_function()
+        from src.features.candle_patterns import compute_all_candle_patterns_15m
+        assert pattern_function == compute_all_candle_patterns_15m
+

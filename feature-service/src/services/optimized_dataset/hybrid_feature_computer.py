@@ -4,10 +4,11 @@ Hybrid Feature Computer for optimized dataset building.
 Combines vectorized computation (where possible) with streaming computation
 (where needed, e.g., for orderbook features).
 """
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, date
 from typing import Dict, List, Optional, Tuple, Any
 import pandas as pd
 import structlog
+import asyncio
 
 from src.models.orderbook_state import OrderbookState
 from src.models.rolling_windows import RollingWindows
@@ -24,6 +25,7 @@ from src.features.candle_patterns import (
     compute_all_candle_patterns_3m,
     compute_all_candle_patterns_5m,
     compute_all_candle_patterns_15m,
+    compute_all_candle_patterns_45m,
 )
 
 logger = structlog.get_logger(__name__)
@@ -51,6 +53,7 @@ class HybridFeatureComputer:
         feature_registry_version: str = "1.0.0",
         feature_registry: Optional[Any] = None,
         target_horizon_minutes: int = 0,
+        backfilling_service: Optional[Any] = None,
     ):
         """
         Initialize hybrid feature computer.
@@ -60,11 +63,13 @@ class HybridFeatureComputer:
             feature_registry_version: Feature Registry version
             feature_registry: Optional FeatureRegistry instance for lookback info
             target_horizon_minutes: Target horizon in minutes
+            backfilling_service: Optional BackfillingService for automatic backfill
         """
         self.requirements = requirements
         self.feature_registry_version = feature_registry_version
         self.feature_registry = feature_registry
         self.target_horizon_minutes = target_horizon_minutes
+        self.backfilling_service = backfilling_service
         
         logger.info(
             "hybrid_feature_computer_initialized",
@@ -73,7 +78,141 @@ class HybridFeatureComputer:
             needs_klines=requirements.needs_klines,
             feature_groups=list(requirements.feature_groups.keys()),
             target_horizon_minutes=target_horizon_minutes,
+            backfilling_enabled=backfilling_service is not None,
         )
+    
+    async def _auto_backfill_missing_data(
+        self,
+        symbol: str,
+        timestamp: datetime,
+        missing_data: List[str],
+        max_lookback_minutes: int,
+    ) -> bool:
+        """
+        Automatically backfill missing data for the given timestamp.
+        
+        Args:
+            symbol: Trading pair symbol
+            timestamp: Timestamp where data is missing
+            missing_data: List of missing data types (e.g., ["klines_1m", "trades"])
+            max_lookback_minutes: Maximum lookback window in minutes
+            
+        Returns:
+            True if backfill was successful and data should be available, False otherwise
+        """
+        if not self.backfilling_service:
+            logger.warning(
+                "auto_backfill_not_available",
+                symbol=symbol,
+                timestamp=timestamp.isoformat(),
+                missing_data=missing_data,
+                message="BackfillingService not available, cannot auto-backfill",
+            )
+            return False
+        
+        # Determine which data types need backfilling
+        data_types_to_backfill = []
+        if any("klines" in item for item in missing_data):
+            data_types_to_backfill.append("klines")
+        if any("trades" in item for item in missing_data):
+            data_types_to_backfill.append("trades")
+        
+        if not data_types_to_backfill:
+            logger.warning(
+                "auto_backfill_no_data_types",
+                symbol=symbol,
+                timestamp=timestamp.isoformat(),
+                missing_data=missing_data,
+                message="No backfillable data types found in missing_data",
+            )
+            return False
+        
+        # Calculate date range for backfill
+        # We need to backfill from (timestamp - max_lookback) to timestamp
+        # Add some buffer to ensure we have enough data
+        buffer_minutes = 60  # 1 hour buffer
+        start_time = timestamp - timedelta(minutes=max_lookback_minutes + buffer_minutes)
+        end_time = timestamp + timedelta(minutes=buffer_minutes)
+        
+        start_date = start_time.date()
+        end_date = end_time.date()
+        
+        logger.info(
+            "auto_backfill_starting",
+            symbol=symbol,
+            timestamp=timestamp.isoformat(),
+            missing_data=missing_data,
+            data_types=data_types_to_backfill,
+            start_date=start_date.isoformat(),
+            end_date=end_date.isoformat(),
+            max_lookback_minutes=max_lookback_minutes,
+        )
+        
+        try:
+            # Start backfill job
+            job_id = await self.backfilling_service.backfill_historical(
+                symbol=symbol,
+                start_date=start_date,
+                end_date=end_date,
+                data_types=data_types_to_backfill,
+            )
+            
+            # Wait for job to complete (with timeout)
+            max_wait_seconds = 300  # 5 minutes
+            wait_interval_seconds = 2
+            waited_seconds = 0
+            
+            while waited_seconds < max_wait_seconds:
+                status = self.backfilling_service.get_job_status(job_id)
+                if not status:
+                    logger.error(
+                        "auto_backfill_job_not_found",
+                        job_id=job_id,
+                        symbol=symbol,
+                    )
+                    return False
+                
+                if status["status"] == "completed":
+                    logger.info(
+                        "auto_backfill_completed",
+                        job_id=job_id,
+                        symbol=symbol,
+                        completed_dates=status.get("completed_dates", []),
+                    )
+                    return True
+                elif status["status"] == "failed":
+                    logger.error(
+                        "auto_backfill_failed",
+                        job_id=job_id,
+                        symbol=symbol,
+                        error_message=status.get("error_message"),
+                        failed_dates=status.get("failed_dates", []),
+                    )
+                    return False
+                
+                # Job still in progress, wait a bit
+                await asyncio.sleep(wait_interval_seconds)
+                waited_seconds += wait_interval_seconds
+            
+            # Timeout reached
+            logger.warning(
+                "auto_backfill_timeout",
+                job_id=job_id,
+                symbol=symbol,
+                waited_seconds=waited_seconds,
+                max_wait_seconds=max_wait_seconds,
+            )
+            return False
+            
+        except Exception as e:
+            logger.error(
+                "auto_backfill_error",
+                symbol=symbol,
+                timestamp=timestamp.isoformat(),
+                error=str(e),
+                exc_info=True,
+            )
+            return False
     
     def compute_features_batch(
         self,
@@ -419,13 +558,8 @@ class HybridFeatureComputer:
         timestamps_reset = timestamps.reset_index(drop=True) if hasattr(timestamps, 'reset_index') else timestamps
         result = pd.DataFrame({"timestamp": timestamps_reset})
         
-        # Determine which version to use
-        if self.feature_registry_version and self.feature_registry_version >= "1.5.0":
-            compute_patterns = compute_all_candle_patterns_15m
-        elif self.feature_registry_version and self.feature_registry_version >= "1.4.0":
-            compute_patterns = compute_all_candle_patterns_5m
-        else:
-            compute_patterns = compute_all_candle_patterns_3m
+        # Determine which function to use based on lookback_window of pattern features
+        compute_patterns = self._get_candle_pattern_function()
         
         # Get feature names and lookback windows from registry
         feature_lookbacks = {}
@@ -590,6 +724,8 @@ class HybridFeatureComputer:
                 )
             
             # Fail immediately if required data is missing
+            # Note: Automatic backfill should be handled at a higher level (e.g., in dataset builder)
+            # This method is synchronous and cannot perform async backfill operations
             if missing_data:
                 required_data_types = []
                 if self.requirements.needs_klines:
@@ -610,6 +746,21 @@ class HybridFeatureComputer:
                 raise ValueError(
                     f"Missing required data at timestamp {ts_dt.isoformat()}: {', '.join(missing_data)}. "
                     f"Required data types: {', '.join(required_data_types)}"
+                )
+                
+                # Backfill completed successfully, but we need to reload data
+                # This will be handled by the caller (streaming_builder) which will retry
+                # For now, we raise a special exception to signal that backfill was done
+                # and data should be reloaded
+                logger.info(
+                    "feature_computation_backfill_completed_retry_needed",
+                    row_index=idx,
+                    current_timestamp=ts_dt.isoformat(),
+                    message="Backfill completed, data should be reloaded and computation retried",
+                )
+                raise RuntimeError(
+                    f"Data backfilled for timestamp {ts_dt.isoformat()}, please retry computation. "
+                    f"This is a signal to reload data, not an actual error."
                 )
             
             if rolling_windows:
@@ -909,4 +1060,59 @@ class HybridFeatureComputer:
                 return None
         except (ValueError, IndexError):
             return None
+    
+    def _get_candle_pattern_function(self):
+        """
+        Определить функцию для вычисления паттернов на основе lookback_window.
+        
+        Returns:
+            Функция для вычисления паттернов
+        """
+        if not self.feature_registry or not self.feature_registry.features:
+            # Fallback: использовать версию на основе версии Feature Registry
+            if self.feature_registry_version and self.feature_registry_version >= "1.5.0":
+                return compute_all_candle_patterns_15m
+            elif self.feature_registry_version and self.feature_registry_version >= "1.4.0":
+                return compute_all_candle_patterns_5m
+            else:
+                return compute_all_candle_patterns_3m
+        
+        # Найти все паттерны и определить их lookback_window
+        pattern_lookbacks = set()
+        for feature in self.feature_registry.features:
+            if feature.name.startswith(("candle_", "pattern_")):
+                if feature.lookback_window:
+                    pattern_lookbacks.add(feature.lookback_window)
+        
+        if not pattern_lookbacks:
+            # Fallback: использовать версию на основе версии Feature Registry
+            if self.feature_registry_version and self.feature_registry_version >= "1.5.0":
+                return compute_all_candle_patterns_15m
+            elif self.feature_registry_version and self.feature_registry_version >= "1.4.0":
+                return compute_all_candle_patterns_5m
+            else:
+                return compute_all_candle_patterns_3m
+        
+        # Используем наиболее часто встречающийся lookback_window
+        from collections import Counter
+        counter = Counter(pattern_lookbacks)
+        most_common = counter.most_common(1)[0][0]
+        
+        # Выбрать функцию на основе lookback_window
+        if most_common == "45m":
+            return compute_all_candle_patterns_45m
+        elif most_common == "15m":
+            return compute_all_candle_patterns_15m
+        elif most_common == "5m":
+            return compute_all_candle_patterns_5m
+        elif most_common == "3m":
+            return compute_all_candle_patterns_3m
+        else:
+            # Fallback: использовать версию на основе версии Feature Registry
+            if self.feature_registry_version and self.feature_registry_version >= "1.5.0":
+                return compute_all_candle_patterns_15m
+            elif self.feature_registry_version and self.feature_registry_version >= "1.4.0":
+                return compute_all_candle_patterns_5m
+            else:
+                return compute_all_candle_patterns_3m
 

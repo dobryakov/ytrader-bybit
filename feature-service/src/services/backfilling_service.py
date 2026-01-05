@@ -156,6 +156,10 @@ class BackfillingService:
                 # Log pagination details for debugging
                 first_timestamp = int(klines[0][0]) if klines else None
                 last_timestamp_in_response = int(klines[-1][0]) if klines else None
+                
+                # Check if API returned data beyond requested end
+                data_beyond_end = last_timestamp_in_response > current_end if last_timestamp_in_response else False
+                
                 logger.debug(
                     "backfilling_klines_api_response",
                     symbol=symbol,
@@ -166,7 +170,77 @@ class BackfillingService:
                     last_timestamp=last_timestamp_in_response,
                     first_datetime=datetime.fromtimestamp(first_timestamp / 1000, tz=timezone.utc).isoformat() if first_timestamp else None,
                     last_datetime=datetime.fromtimestamp(last_timestamp_in_response / 1000, tz=timezone.utc).isoformat() if last_timestamp_in_response else None,
+                    data_beyond_end=data_beyond_end,
+                    beyond_end_by_ms=(last_timestamp_in_response - current_end) if (last_timestamp_in_response and data_beyond_end) else 0,
                 )
+                
+                # Check for duplicates in current response BEFORE processing
+                timestamps_in_response = [int(k[0]) for k in klines]
+                unique_timestamps = set(timestamps_in_response)
+                if len(timestamps_in_response) != len(unique_timestamps):
+                    duplicates_in_response = len(timestamps_in_response) - len(unique_timestamps)
+                    logger.warning(
+                        "backfilling_duplicates_in_api_response",
+                        symbol=symbol,
+                        request_start=current_start,
+                        total_records=len(klines),
+                        unique_records=len(unique_timestamps),
+                        duplicates=duplicates_in_response,
+                        message="API returned duplicate timestamps in single response",
+                    )
+                    # Remove duplicates from klines (keep first occurrence)
+                    seen = set()
+                    klines = [k for k in klines if (ts := int(k[0])) not in seen and not seen.add(ts)]
+                    unique_timestamps = {int(k[0]) for k in klines}
+                
+                # Check for overlap with previously fetched data BEFORE adding to all_klines
+                # This is critical: we need to filter BEFORE adding to prevent duplicates
+                existing_timestamps = {int(k["timestamp"].timestamp() * 1000) for k in all_klines} if all_klines else set()
+                overlapping = existing_timestamps.intersection(unique_timestamps)
+                
+                if overlapping:
+                    logger.warning(
+                        "backfilling_pagination_overlap",
+                        symbol=symbol,
+                        request_start=current_start,
+                        request_end=current_end,
+                        overlapping_count=len(overlapping),
+                        overlapping_timestamps=sorted(list(overlapping))[:10],  # First 10 for logging
+                        last_timestamp_in_response=last_timestamp_in_response,
+                        data_beyond_end=data_beyond_end,
+                        message="API returned data that overlaps with previously fetched data - filtering duplicates",
+                    )
+                    # Filter out overlapping data BEFORE adding to all_klines
+                    # This prevents duplicates even if API returns overlapping data
+                    klines = [k for k in klines if int(k[0]) not in existing_timestamps]
+                    unique_timestamps = {int(k[0]) for k in klines}
+                    
+                    if len(klines) == 0:
+                        logger.info(
+                            "backfilling_all_data_overlapping",
+                            symbol=symbol,
+                            message="All data in response was overlapping - skipping this chunk",
+                        )
+                        # If all data was overlapping, we still need to advance to avoid infinite loop
+                        # Use the last timestamp from previous data or advance by chunk duration
+                        if all_klines:
+                            last_existing_timestamp = max(int(k["timestamp"].timestamp() * 1000) for k in all_klines)
+                            next_start = last_existing_timestamp + (interval * 60 * 1000)
+                        else:
+                            next_start = current_end + (interval * 60 * 1000)
+                        
+                        # Safety check: ensure we advance
+                        if next_start <= current_start:
+                            logger.warning(
+                                "backfilling_pagination_stuck_after_overlap",
+                                symbol=symbol,
+                                current_start=current_start,
+                                next_start=next_start,
+                            )
+                            break
+                        
+                        current_start = next_start
+                        continue
                 
                 # Convert to internal format using unified normalizer
                 from src.storage.data_normalizer import normalize_kline_data
@@ -193,58 +267,41 @@ class BackfillingService:
                     )
                     all_klines.append(internal_kline)
                 
-                # Check for duplicates in current response
-                timestamps_in_response = [int(k[0]) for k in klines]
-                unique_timestamps = set(timestamps_in_response)
-                if len(timestamps_in_response) != len(unique_timestamps):
-                    duplicates_in_response = len(timestamps_in_response) - len(unique_timestamps)
-                    logger.warning(
-                        "backfilling_duplicates_in_api_response",
-                        symbol=symbol,
-                        request_start=current_start,
-                        total_records=len(klines),
-                        unique_records=len(unique_timestamps),
-                        duplicates=duplicates_in_response,
-                        message="API returned duplicate timestamps in single response",
-                    )
-                
-                # Check for overlap with previously fetched data
-                if all_klines:
-                    existing_timestamps = {int(k["timestamp"].timestamp() * 1000) for k in all_klines}
-                    overlapping = existing_timestamps.intersection(unique_timestamps)
-                    if overlapping:
-                        logger.warning(
-                            "backfilling_pagination_overlap",
-                            symbol=symbol,
-                            request_start=current_start,
-                            overlapping_count=len(overlapping),
-                            overlapping_timestamps=sorted(list(overlapping))[:10],  # First 10 for logging
-                            message="API returned data that overlaps with previously fetched data",
-                        )
-                        # Filter out overlapping data before adding to all_klines
-                        # This prevents duplicates even if API returns overlapping data
-                        new_klines = [k for k in klines if int(k[0]) not in existing_timestamps]
-                        if len(new_klines) < len(klines):
-                            logger.info(
-                                "backfilling_filtered_overlapping",
-                                symbol=symbol,
-                                original_count=len(klines),
-                                filtered_count=len(new_klines),
-                                removed_count=len(klines) - len(new_klines),
-                            )
-                            klines = new_klines
-                            # Recalculate unique timestamps after filtering
-                            unique_timestamps = {int(k[0]) for k in klines}
-                
                 # Update current_start to last kline timestamp + interval duration
                 # This ensures we don't request the same data twice
                 # Use the last timestamp from filtered data (without overlaps)
+                # IMPORTANT: Bybit API may return data beyond the requested 'end' parameter.
+                # We use the actual last timestamp from response, not the calculated end.
+                last_timestamp = None
                 if klines:
                     last_timestamp = int(klines[-1][0])
+                    # Next request starts from last_timestamp + interval duration
+                    # This ensures we don't request the same candle twice
                     next_start = last_timestamp + (interval * 60 * 1000)
+                    
+                    # Log if API returned data beyond requested end
+                    if last_timestamp > current_end:
+                        logger.debug(
+                            "backfilling_api_returned_beyond_end",
+                            symbol=symbol,
+                            requested_end=current_end,
+                            actual_last_timestamp=last_timestamp,
+                            beyond_by_ms=last_timestamp - current_end,
+                            beyond_by_minutes=(last_timestamp - current_end) / 1000 / 60,
+                            message="API returned data beyond requested end - this is normal for Bybit API",
+                        )
                 else:
-                    # No new data in this response, advance by chunk duration to avoid infinite loop
+                    # No new data in this response (all was overlapping or empty)
+                    # Advance by chunk duration to avoid infinite loop
                     next_start = current_end + (interval * 60 * 1000)
+                    logger.debug(
+                        "backfilling_no_new_data_advancing",
+                        symbol=symbol,
+                        current_start=current_start,
+                        current_end=current_end,
+                        next_start=next_start,
+                        message="No new data in response, advancing by chunk duration",
+                    )
                 
                 # Safety check: if next_start doesn't advance, break to avoid infinite loop
                 if next_start <= current_start:
@@ -254,6 +311,8 @@ class BackfillingService:
                         current_start=current_start,
                         next_start=next_start,
                         last_timestamp=last_timestamp,
+                        current_end=current_end,
+                        message="Pagination stuck - next_start doesn't advance",
                     )
                     break
                 
@@ -261,6 +320,13 @@ class BackfillingService:
                 
                 # Safety check: if we've processed all requested data, break
                 if current_start >= end_timestamp:
+                    logger.debug(
+                        "backfilling_reached_end_timestamp",
+                        symbol=symbol,
+                        current_start=current_start,
+                        end_timestamp=end_timestamp,
+                        total_klines=len(all_klines),
+                    )
                     break
                 
                 logger.debug(

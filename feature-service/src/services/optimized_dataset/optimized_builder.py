@@ -55,6 +55,7 @@ class OptimizedDatasetBuilder:
         target_registry_version_manager: Optional[TargetRegistryVersionManager] = None,
         dataset_publisher: Optional["DatasetPublisher"] = None,
         batch_size: int = 1000,
+        backfilling_service: Optional[Any] = None,
     ):
         """
         Initialize optimized dataset builder.
@@ -68,6 +69,7 @@ class OptimizedDatasetBuilder:
             target_registry_version_manager: Target Registry version manager
             dataset_publisher: Optional dataset publisher for notifications
             batch_size: Batch size for processing timestamps
+            backfilling_service: Optional BackfillingService for automatic backfill
         """
         self._metadata_storage = metadata_storage
         self._parquet_storage = parquet_storage
@@ -78,6 +80,7 @@ class OptimizedDatasetBuilder:
         self._target_registry_version_manager = target_registry_version_manager
         self._dataset_publisher = dataset_publisher
         self._batch_size = batch_size
+        self._backfilling_service = backfilling_service
         
         # Initialize streaming builder
         self._streaming_builder = StreamingDatasetBuilder(
@@ -85,6 +88,7 @@ class OptimizedDatasetBuilder:
             parquet_storage=parquet_storage,
             feature_registry_loader=feature_registry_loader,
             batch_size=batch_size,
+            backfilling_service=backfilling_service,
         )
         
         # Active builds tracking
@@ -353,6 +357,9 @@ class OptimizedDatasetBuilder:
                 dataset_id=dataset_id,
             )
             
+            # Get problematic periods that were excluded
+            problematic_periods = self._streaming_builder.get_problematic_periods(dataset_id)
+            
             if features_df.empty:
                 error_msg = "No features computed"
                 await self._metadata_storage.update_dataset(
@@ -495,6 +502,10 @@ class OptimizedDatasetBuilder:
                     "estimated_completion": None,
                     "split_statistics": split_statistics,
                     "feature_correlations": feature_correlations,
+                    "data_quality": {
+                        "problematic_periods_excluded": len(problematic_periods),
+                        "problematic_periods": problematic_periods[:50],  # First 50 for metadata
+                    } if problematic_periods else None,
                 },
             )
             
@@ -842,8 +853,143 @@ class OptimizedDatasetBuilder:
                         missing_data[storage_type_name][day_date] = []
                     missing_data[storage_type_name][day_date].extend(features_requiring_type)
         
-        # If missing data found, raise detailed error
+        # If missing data found, try automatic backfill if service is available
         if missing_data:
+            # Try automatic backfill if backfilling_service is available
+            if self._backfilling_service:
+                # Map storage types to backfill data types
+                storage_to_backfill_type = {
+                    "klines": "klines",
+                    "trades": "trades",
+                    "ticker": "ticker",
+                    "funding": "funding",
+                    "orderbook_snapshots": "orderbook",
+                    "orderbook_deltas": "orderbook",
+                }
+                
+                # Collect all missing days and data types
+                all_missing_days = set()
+                backfill_data_types = set()
+                for storage_type_name, days_dict in missing_data.items():
+                    all_missing_days.update(days_dict.keys())
+                    if storage_type_name in storage_to_backfill_type:
+                        backfill_data_types.add(storage_to_backfill_type[storage_type_name])
+                
+                if all_missing_days and backfill_data_types:
+                    min_date = min(all_missing_days)
+                    max_date = max(all_missing_days)
+                    
+                    logger.info(
+                        "dataset_data_availability_auto_backfill_triggered",
+                        dataset_id=dataset_id,
+                        symbol=symbol,
+                        missing_days_count=len(all_missing_days),
+                        missing_days=[d.isoformat() for d in sorted(all_missing_days)],
+                        backfill_data_types=list(backfill_data_types),
+                        backfill_start_date=min_date.isoformat(),
+                        backfill_end_date=max_date.isoformat(),
+                        message="Automatically triggering backfill for missing data",
+                    )
+                    
+                    try:
+                        # Trigger backfill
+                        job_id = await self._backfilling_service.backfill_historical(
+                            symbol=symbol,
+                            start_date=min_date,
+                            end_date=max_date,
+                            data_types=list(backfill_data_types) if backfill_data_types else None,
+                        )
+                        
+                        logger.info(
+                            "dataset_data_availability_backfill_job_started",
+                            dataset_id=dataset_id,
+                            symbol=symbol,
+                            job_id=job_id,
+                            missing_days_count=len(all_missing_days),
+                            backfill_data_types=list(backfill_data_types),
+                            message="Backfill job started, waiting for completion",
+                        )
+                        
+                        # Wait for backfill to complete (with timeout)
+                        import asyncio
+                        max_wait_seconds = 300  # 5 minutes
+                        wait_interval = 5  # Check every 5 seconds
+                        waited = 0
+                        
+                        while waited < max_wait_seconds:
+                            await asyncio.sleep(wait_interval)
+                            waited += wait_interval
+                            
+                            job_status = self._backfilling_service.get_job_status(job_id)
+                            if job_status and job_status.get("status") == "completed":
+                                logger.info(
+                                    "dataset_data_availability_backfill_completed",
+                                    dataset_id=dataset_id,
+                                    symbol=symbol,
+                                    job_id=job_id,
+                                    wait_seconds=waited,
+                                    message="Backfill completed successfully, re-checking data availability",
+                                )
+                                # Re-check data availability after backfill
+                                # Recursively call this method to validate again
+                                try:
+                                    await self._validate_data_availability(
+                                        symbol=symbol,
+                                        start_date=start_date,
+                                        end_date=end_date,
+                                        feature_registry=feature_registry,
+                                        dataset_id=dataset_id,
+                                    )
+                                    # If we get here, data is now available
+                                    logger.info(
+                                        "dataset_data_availability_restored_after_backfill",
+                                        dataset_id=dataset_id,
+                                        symbol=symbol,
+                                        job_id=job_id,
+                                        message="Data availability restored after backfill, continuing dataset build",
+                                    )
+                                    return
+                                except ValueError:
+                                    # Still missing data after backfill
+                                    logger.warning(
+                                        "dataset_data_availability_still_missing_after_backfill",
+                                        dataset_id=dataset_id,
+                                        symbol=symbol,
+                                        job_id=job_id,
+                                        message="Data still missing after backfill, will raise error",
+                                    )
+                                    break
+                            elif job_status and job_status.get("status") == "failed":
+                                logger.error(
+                                    "dataset_data_availability_backfill_failed",
+                                    dataset_id=dataset_id,
+                                    symbol=symbol,
+                                    job_id=job_id,
+                                    error_message=job_status.get("error_message"),
+                                    message="Backfill job failed",
+                                )
+                                break
+                        
+                        if waited >= max_wait_seconds:
+                            logger.warning(
+                                "dataset_data_availability_backfill_timeout",
+                                dataset_id=dataset_id,
+                                symbol=symbol,
+                                job_id=job_id,
+                                wait_seconds=waited,
+                                message="Backfill job did not complete within timeout, will raise error",
+                            )
+                    except Exception as e:
+                        logger.error(
+                            "dataset_data_availability_backfill_error",
+                            dataset_id=dataset_id,
+                            symbol=symbol,
+                            error=str(e),
+                            exc_info=True,
+                            message="Failed to trigger or wait for backfill",
+                        )
+            
+            # Build error message
             error_parts = [
                 f"Missing required data for dataset build (symbol: {symbol}, period: {start_date.date()} to {end_date.date()}):"
             ]
@@ -879,9 +1025,14 @@ class OptimizedDatasetBuilder:
                     f"    Total missing days: {len(missing_days)}/{len(days_to_check)}"
                 )
             
-            error_parts.append(
-                f"\n  Action required: Run backfilling for missing data types and days."
-            )
+            if self._backfilling_service:
+                error_parts.append(
+                    f"\n  Automatic backfill was attempted but data is still missing."
+                )
+            else:
+                error_parts.append(
+                    f"\n  Action required: Run backfilling for missing data types and days."
+                )
             
             error_msg = "\n".join(error_parts)
             
@@ -1673,6 +1824,84 @@ class OptimizedDatasetBuilder:
                     "max": float(numeric_targets.max()),
                     "count": int(len(numeric_targets)),
                 }
+                
+                # Target quality metrics (for detecting zero targets issue)
+                zero_targets_count = int((numeric_targets == 0).sum())
+                zero_targets_percentage = float(zero_targets_count / len(numeric_targets) * 100) if len(numeric_targets) > 0 else 0.0
+                
+                # Count near-zero targets (abs < 1e-6)
+                near_zero_threshold = 1e-6
+                near_zero_count = int((numeric_targets.abs() < near_zero_threshold).sum())
+                near_zero_percentage = float(near_zero_count / len(numeric_targets) * 100) if len(numeric_targets) > 0 else 0.0
+                
+                # Count positive and negative targets
+                positive_count = int((numeric_targets > 0).sum())
+                negative_count = int((numeric_targets < 0).sum())
+                
+                # Calculate percentiles
+                percentiles = {}
+                for p in [1, 5, 10, 25, 50, 75, 90, 95, 99]:
+                    try:
+                        percentiles[f"p{p}"] = float(numeric_targets.quantile(p / 100.0))
+                    except Exception:
+                        percentiles[f"p{p}"] = None
+                
+                # Detect consecutive zero sequences (potential data quality issue)
+                consecutive_zeros_info = {}
+                if zero_targets_count > 0 and "timestamp" in split_df.columns:
+                    # Sort by timestamp to check for consecutive zeros
+                    sorted_df = split_df.sort_values("timestamp").copy()
+                    sorted_df["is_zero"] = (pd.to_numeric(sorted_df["target"], errors='coerce') == 0)
+                    
+                    # Find sequences of consecutive zeros
+                    consecutive_sequences = []
+                    current_seq = []
+                    for idx, row in sorted_df.iterrows():
+                        if row["is_zero"]:
+                            current_seq.append(row["timestamp"])
+                        else:
+                            if len(current_seq) > 1:
+                                consecutive_sequences.append(current_seq)
+                            current_seq = []
+                    if len(current_seq) > 1:
+                        consecutive_sequences.append(current_seq)
+                    
+                    if consecutive_sequences:
+                        max_consecutive = max(len(seq) for seq in consecutive_sequences)
+                        total_consecutive_zeros = sum(len(seq) for seq in consecutive_sequences)
+                        consecutive_zeros_info = {
+                            "sequences_count": len(consecutive_sequences),
+                            "max_consecutive_length": max_consecutive,
+                            "total_consecutive_zeros": total_consecutive_zeros,
+                            "longest_sequence_start": consecutive_sequences[0][0].isoformat() if consecutive_sequences and len(consecutive_sequences[0]) > 0 else None,
+                            "longest_sequence_end": consecutive_sequences[0][-1].isoformat() if consecutive_sequences and len(consecutive_sequences[0]) > 0 else None,
+                        }
+                
+                target_stats.update({
+                    "zero_targets_count": zero_targets_count,
+                    "zero_targets_percentage": zero_targets_percentage,
+                    "near_zero_count": near_zero_count,
+                    "near_zero_percentage": near_zero_percentage,
+                    "positive_count": positive_count,
+                    "negative_count": negative_count,
+                    "percentiles": percentiles,
+                })
+                
+                if consecutive_zeros_info:
+                    target_stats["consecutive_zeros"] = consecutive_zeros_info
+                
+                # Log warning if zero targets percentage is high
+                if zero_targets_percentage > 15.0:  # Threshold: 15%
+                    logger.warning(
+                        "target_quality_high_zero_percentage",
+                        split=split_name,
+                        zero_targets_count=zero_targets_count,
+                        zero_targets_percentage=zero_targets_percentage,
+                        total_targets=len(numeric_targets),
+                        horizon_seconds=target_config.horizon if hasattr(target_config, "horizon") else None,
+                        message=f"High percentage of zero targets detected in {split_name} split - may indicate data quality issues",
+                    )
+                
                 split_stats["target_statistics"] = target_stats
             
             statistics[split_name] = split_stats

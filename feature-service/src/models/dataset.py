@@ -172,6 +172,11 @@ class Dataset(BaseModel):
         description="Correlation between each feature and the target"
     )
     
+    data_quality: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Data quality information including excluded problematic periods (periods with identical OHLC values)"
+    )
+    
     @field_validator("status", mode="before")
     @classmethod
     def validate_status(cls, v):

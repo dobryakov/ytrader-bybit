@@ -362,10 +362,17 @@ class RollingWindows(BaseModel):
         default_1m_window_seconds = 1800  # 30 minutes default
         lookback_to_use = max_lookback_minutes_1m if max_lookback_minutes_1m is not None else self.max_lookback_minutes_1m
         if lookback_to_use is not None:
-            # Add 5 minute buffer to max_lookback for safety
-            window_size_1m_seconds = (lookback_to_use + 5) * 60
+            # Add larger buffer to max_lookback for safety
+            # Candle patterns need 15 minutes, so we need at least 15 + buffer
+            # Use max(required_minutes, lookback_to_use) + generous buffer
+            # Buffer of 10 minutes ensures we don't trim data that might be needed
+            # for features that require data from previous day (e.g., 2026-01-03T01:15:00 needs data from 2026-01-02T23:00:00+)
+            required_minutes_for_patterns = 15  # Minimum for candle patterns
+            effective_lookback = max(required_minutes_for_patterns, lookback_to_use)
+            window_size_1m_seconds = (effective_lookback + 10) * 60  # 10 minute buffer instead of 5
         else:
-            window_size_1m_seconds = default_1m_window_seconds
+            # Use default with larger buffer for safety
+            window_size_1m_seconds = default_1m_window_seconds + (10 * 60)  # Add 10 minute buffer
         
         window_sizes = {
             "1s": 1,

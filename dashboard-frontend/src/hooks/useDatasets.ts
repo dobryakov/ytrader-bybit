@@ -32,6 +32,30 @@ export interface Dataset {
         min: number
         max: number
         count: number
+        zero_targets_count?: number
+        zero_targets_percentage?: number
+        near_zero_count?: number
+        near_zero_percentage?: number
+        positive_count?: number
+        negative_count?: number
+        percentiles?: {
+          p1?: number
+          p5?: number
+          p10?: number
+          p25?: number
+          p50?: number
+          p75?: number
+          p90?: number
+          p95?: number
+          p99?: number
+        }
+        consecutive_zeros?: {
+          sequences_count?: number
+          max_consecutive_length?: number
+          total_consecutive_zeros?: number
+          longest_sequence_start?: string
+          longest_sequence_end?: string
+        }
       }
     }
     validation?: {
@@ -46,6 +70,30 @@ export interface Dataset {
         min: number
         max: number
         count: number
+        zero_targets_count?: number
+        zero_targets_percentage?: number
+        near_zero_count?: number
+        near_zero_percentage?: number
+        positive_count?: number
+        negative_count?: number
+        percentiles?: {
+          p1?: number
+          p5?: number
+          p10?: number
+          p25?: number
+          p50?: number
+          p75?: number
+          p90?: number
+          p95?: number
+          p99?: number
+        }
+        consecutive_zeros?: {
+          sequences_count?: number
+          max_consecutive_length?: number
+          total_consecutive_zeros?: number
+          longest_sequence_start?: string
+          longest_sequence_end?: string
+        }
       }
     }
     test?: {
@@ -60,6 +108,30 @@ export interface Dataset {
         min: number
         max: number
         count: number
+        zero_targets_count?: number
+        zero_targets_percentage?: number
+        near_zero_count?: number
+        near_zero_percentage?: number
+        positive_count?: number
+        negative_count?: number
+        percentiles?: {
+          p1?: number
+          p5?: number
+          p10?: number
+          p25?: number
+          p50?: number
+          p75?: number
+          p90?: number
+          p95?: number
+          p99?: number
+        }
+        consecutive_zeros?: {
+          sequences_count?: number
+          max_consecutive_length?: number
+          total_consecutive_zeros?: number
+          longest_sequence_start?: string
+          longest_sequence_end?: string
+        }
       }
     }
   }
@@ -75,6 +147,17 @@ export interface Dataset {
   estimated_completion: string | null
   error_message: string | null
   feature_correlations?: Record<string, number>
+  data_quality?: {
+    problematic_periods_excluded?: number
+    problematic_periods?: Array<{
+      start: string
+      end: string
+      current_price: number
+      future_price: number
+      current_volume: number
+      future_volume: number
+    }>
+  }
 }
 
 export function useDatasets(filters?: {

@@ -23,7 +23,7 @@ from src.features.orderflow_features import compute_all_orderflow_features
 from src.features.orderbook_features import compute_all_orderbook_features
 from src.features.perpetual_features import compute_all_perpetual_features
 from src.features.temporal_features import compute_all_temporal_features
-from src.features.candle_patterns import compute_all_candle_patterns_3m, compute_all_candle_patterns_5m, compute_all_candle_patterns_15m
+from src.features.candle_patterns import compute_all_candle_patterns_3m, compute_all_candle_patterns_5m, compute_all_candle_patterns_15m, compute_all_candle_patterns_45m
 
 logger = structlog.get_logger(__name__)
 
@@ -68,6 +68,9 @@ class FeatureComputer:
         # Требования к окнам (trade intervals + max lookback по 1m-клайнам)
         self._window_requirements: Optional[WindowRequirements] = None
         self._update_window_requirements()
+        # Lookback window для паттернов (определяется из Feature Registry)
+        self._pattern_lookback_window: Optional[str] = None
+        self._update_pattern_lookback_window()
     
     async def warmup_rolling_windows(
         self,
@@ -276,6 +279,104 @@ class FeatureComputer:
                 max_lookback_minutes_1m=30,
             )
     
+    def _update_pattern_lookback_window(self) -> None:
+        """
+        Определить lookback_window для паттернов из Feature Registry.
+        
+        Ищет все фичи, начинающиеся с 'candle_' или 'pattern_',
+        и определяет их lookback_window для выбора соответствующей функции.
+        """
+        if self._feature_registry_loader is None:
+            self._pattern_lookback_window = None
+            return
+        
+        try:
+            registry_model = self._feature_registry_loader._registry_model
+            if registry_model and registry_model.features:
+                # Найти все паттерны и определить их lookback_window
+                pattern_lookbacks = set()
+                for feature in registry_model.features:
+                    if feature.name.startswith(("candle_", "pattern_")):
+                        if feature.lookback_window:
+                            pattern_lookbacks.add(feature.lookback_window)
+                
+                if pattern_lookbacks:
+                    # Используем наиболее часто встречающийся lookback_window
+                    # Или самый большой, если есть несколько разных
+                    from collections import Counter
+                    counter = Counter(pattern_lookbacks)
+                    most_common = counter.most_common(1)[0][0]
+                    self._pattern_lookback_window = most_common
+                    logger.info(
+                        "pattern_lookback_window_determined",
+                        lookback_window=self._pattern_lookback_window,
+                        all_lookbacks=list(pattern_lookbacks),
+                    )
+                else:
+                    self._pattern_lookback_window = None
+            else:
+                # Попробовать загрузить из config
+                try:
+                    config = self._feature_registry_loader.get_config()
+                    if config and "features" in config:
+                        pattern_lookbacks = set()
+                        for feature in config["features"]:
+                            name = feature.get("name", "")
+                            if name.startswith(("candle_", "pattern_")):
+                                lookback = feature.get("lookback_window")
+                                if lookback:
+                                    pattern_lookbacks.add(lookback)
+                        
+                        if pattern_lookbacks:
+                            from collections import Counter
+                            counter = Counter(pattern_lookbacks)
+                            most_common = counter.most_common(1)[0][0]
+                            self._pattern_lookback_window = most_common
+                        else:
+                            self._pattern_lookback_window = None
+                    else:
+                        self._pattern_lookback_window = None
+                except Exception:
+                    self._pattern_lookback_window = None
+        except Exception as e:
+            logger.warning(
+                "failed_to_update_pattern_lookback_window",
+                error=str(e),
+                error_type=type(e).__name__,
+            )
+            self._pattern_lookback_window = None
+    
+    def _get_candle_pattern_function(self):
+        """
+        Определить функцию для вычисления паттернов на основе lookback_window.
+        
+        Returns:
+            Функция для вычисления паттернов
+        """
+        # Определить lookback_window паттернов
+        if self._pattern_lookback_window is None:
+            self._update_pattern_lookback_window()
+        
+        lookback = self._pattern_lookback_window
+        
+        # Выбрать функцию на основе lookback_window
+        if lookback == "45m":
+            return compute_all_candle_patterns_45m
+        elif lookback == "15m":
+            return compute_all_candle_patterns_15m
+        elif lookback == "5m":
+            return compute_all_candle_patterns_5m
+        elif lookback == "3m":
+            return compute_all_candle_patterns_3m
+        else:
+            # Fallback: использовать версию на основе версии Feature Registry (для обратной совместимости)
+            if self._feature_registry_version and self._feature_registry_version >= "1.5.0":
+                return compute_all_candle_patterns_15m
+            elif self._feature_registry_version and self._feature_registry_version >= "1.4.0":
+                return compute_all_candle_patterns_5m
+            else:
+                return compute_all_candle_patterns_3m
+    
     def get_rolling_windows(self, symbol: str) -> RollingWindows:
         """Get or create rolling windows for symbol."""
         if symbol in self._rolling_windows:
@@ -434,17 +535,10 @@ class FeatureComputer:
             temporal_features = compute_all_temporal_features(timestamp)
             all_features.update(temporal_features)
             
-            # Candlestick pattern features (3-minute window)
-            # Candle pattern features
-            # Use 15m version (5-minute candles) if Feature Registry version >= 1.5.0
-            # Use 5m version (1-minute candles) if Feature Registry version >= 1.4.0
-            # Otherwise use 3m version
-            if self._feature_registry_version and self._feature_registry_version >= "1.5.0":
-                candle_pattern_features = compute_all_candle_patterns_15m(rolling_windows)
-            elif self._feature_registry_version and self._feature_registry_version >= "1.4.0":
-                candle_pattern_features = compute_all_candle_patterns_5m(rolling_windows)
-            else:
-                candle_pattern_features = compute_all_candle_patterns_3m(rolling_windows)
+            # Candlestick pattern features
+            # Выбираем функцию на основе lookback_window паттернов из Feature Registry
+            pattern_function = self._get_candle_pattern_function()
+            candle_pattern_features = pattern_function(rolling_windows)
             all_features.update(candle_pattern_features)
             
             # Log all features before filtering for debugging

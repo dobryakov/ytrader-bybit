@@ -37,7 +37,7 @@ async def list_datasets(
                 train_records, validation_records, test_records,
                 output_format, storage_path,
                 created_at, completed_at, estimated_completion,
-                error_message, feature_correlations
+                error_message, feature_correlations, data_quality
             FROM datasets
             WHERE 1=1
         """
@@ -97,12 +97,12 @@ async def list_datasets(
                 except (json.JSONDecodeError, TypeError):
                     feature_correlations = None
 
-            feature_correlations = row.get("feature_correlations")
-            if isinstance(feature_correlations, str):
+            data_quality = row.get("data_quality")
+            if isinstance(data_quality, str):
                 try:
-                    feature_correlations = json.loads(feature_correlations)
+                    data_quality = json.loads(data_quality)
                 except (json.JSONDecodeError, TypeError):
-                    feature_correlations = None
+                    data_quality = None
 
             dataset_dict = {
                 "id": str(row["id"]),
@@ -131,6 +131,7 @@ async def list_datasets(
                 "estimated_completion": row["estimated_completion"].isoformat() + "Z" if row["estimated_completion"] else None,
                 "error_message": row["error_message"],
                 "feature_correlations": feature_correlations,
+                "data_quality": data_quality,
             }
             datasets_data.append(dataset_dict)
 
@@ -168,7 +169,7 @@ async def get_dataset(
                 train_records, validation_records, test_records,
                 output_format, storage_path,
                 created_at, completed_at, estimated_completion,
-                error_message, feature_correlations
+                error_message, feature_correlations, data_quality
             FROM datasets
             WHERE id = $1
         """
@@ -212,6 +213,13 @@ async def get_dataset(
             except (json.JSONDecodeError, TypeError):
                 feature_correlations = None
 
+        data_quality = row.get("data_quality")
+        if isinstance(data_quality, str):
+            try:
+                data_quality = json.loads(data_quality)
+            except (json.JSONDecodeError, TypeError):
+                data_quality = None
+
         dataset_dict = {
             "id": str(row["id"]),
             "symbol": row["symbol"],
@@ -239,6 +247,7 @@ async def get_dataset(
             "estimated_completion": row["estimated_completion"].isoformat() + "Z" if row["estimated_completion"] else None,
             "error_message": row["error_message"],
             "feature_correlations": feature_correlations,
+            "data_quality": data_quality,
         }
 
         logger.info("dataset_get_completed", dataset_id=str(dataset_id), trace_id=trace_id)

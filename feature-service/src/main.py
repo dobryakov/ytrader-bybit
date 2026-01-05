@@ -457,6 +457,7 @@ async def startup():
             target_registry_version_manager=target_registry_version_manager,
             dataset_publisher=dataset_publisher,
             batch_size=config.dataset_builder_batch_size,
+            backfilling_service=backfilling_service,
         )
         set_dataset_builder(dataset_builder)
         

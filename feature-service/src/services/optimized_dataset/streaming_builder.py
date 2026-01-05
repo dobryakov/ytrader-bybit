@@ -5,9 +5,11 @@ Processes data in streaming fashion, day by day, with optimized caching
 and vectorized feature computation.
 """
 from datetime import datetime, timedelta, timezone, date
-from typing import Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 import pandas as pd
 import structlog
+import asyncio
+import re
 
 from src.models.dataset import SplitStrategy, TargetConfig
 from src.models.feature_registry import FeatureRegistry
@@ -43,7 +45,10 @@ class StreamingDatasetBuilder:
         parquet_storage: "ParquetStorage",
         feature_registry_loader: Optional["FeatureRegistryLoader"],
         batch_size: int = 1000,
+        backfilling_service: Optional[Any] = None,
     ):
+        # Store problematic periods info for the last build
+        self._last_problematic_periods: Dict[str, List[Dict[str, Any]]] = {}
         """
         Initialize streaming dataset builder.
         
@@ -52,11 +57,13 @@ class StreamingDatasetBuilder:
             parquet_storage: Parquet storage service
             feature_registry_loader: Feature Registry loader
             batch_size: Batch size for processing timestamps
+            backfilling_service: Optional BackfillingService for automatic backfill
         """
         self.cache_service = cache_service
         self.parquet_storage = parquet_storage
         self.feature_registry_loader = feature_registry_loader
         self.batch_size = batch_size
+        self.backfilling_service = backfilling_service
         
         self._requirements_analyzer = FeatureRequirementsAnalyzer()
         self._cache_strategy_selector = AdaptiveCacheStrategy()
@@ -156,6 +163,7 @@ class StreamingDatasetBuilder:
             feature_registry_version=feature_registry.version,
             feature_registry=feature_registry,
             target_horizon_minutes=target_horizon_minutes,
+            backfilling_service=self.backfilling_service,
         )
         
         # Step 4: Calculate buffer period and load all required data upfront
@@ -303,6 +311,37 @@ class StreamingDatasetBuilder:
             builder_type="streaming",
         )
         
+        # Step 6.5: Filter out problematic timestamps (identical OHLC periods)
+        problematic_periods = []
+        if not all_klines.empty and not timestamps.empty:
+            timestamps, problematic_periods = self._filter_problematic_timestamps(
+                timestamps, all_klines, dataset_id, symbol, target_horizon_seconds
+            )
+            
+            # Store problematic periods for this dataset
+            self._last_problematic_periods[dataset_id] = problematic_periods
+            
+            if problematic_periods:
+                logger.warning(
+                    "problematic_periods_excluded",
+                    dataset_id=dataset_id,
+                    symbol=symbol,
+                    excluded_count=len(problematic_periods),
+                    excluded_periods=[f"{p['start']} to {p['end']}" for p in problematic_periods[:10]],  # First 10
+                    total_excluded_periods=len(problematic_periods),
+                    remaining_timestamps=len(timestamps),
+                    message="Excluded timestamps with identical OHLC (data quality issue)",
+                )
+        
+        if timestamps.empty:
+            logger.warning(
+                "all_timestamps_filtered_out",
+                dataset_id=dataset_id,
+                symbol=symbol,
+                message="All timestamps were filtered out due to data quality issues",
+            )
+            return pd.DataFrame()
+        
         # Step 7: Process timestamps sequentially in batches
         all_features = []
         
@@ -359,14 +398,332 @@ class StreamingDatasetBuilder:
                     )
             
             # Compute features for batch
-            batch_features = feature_computer.compute_features_batch(
-                timestamps=batch_timestamps,
-                rolling_window=rolling_window,
-                klines_df=all_klines,
-                trades_df=all_trades,
-                orderbook_states=orderbook_states,
-                funding_rates=funding_rates,
-                next_funding_times=next_funding_times,
+            # Retry logic for automatic backfill
+            max_retries = 2  # Allow 2 retries (initial attempt + 2 retries after backfill)
+            retry_count = 0
+            batch_features = None
+            
+            while retry_count <= max_retries:
+                try:
+                    batch_features = feature_computer.compute_features_batch(
+                        timestamps=batch_timestamps,
+                        rolling_window=rolling_window,
+                        klines_df=all_klines,
+                        trades_df=all_trades,
+                        orderbook_states=orderbook_states,
+                        funding_rates=funding_rates,
+                        next_funding_times=next_funding_times,
+                    )
+                    break  # Success, exit retry loop
+                except ValueError as e:
+                    error_msg = str(e)
+                    logger.debug(
+                        "value_error_caught_in_batch",
+                        dataset_id=dataset_id,
+                        symbol=symbol,
+                        error_message=error_msg,
+                        retry_count=retry_count,
+                        max_retries=max_retries,
+                        has_backfilling_service=self.backfilling_service is not None,
+                        is_missing_data="Missing required data" in error_msg,
+                    )
+                    # Check if this is a missing data error
+                    if "Missing required data" in error_msg and retry_count < max_retries and self.backfilling_service:
+                        # Extract timestamp from error message
+                        # Error format: "Missing required data at timestamp 2026-01-03T01:15:00+00:00: ..."
+                        # Use more specific regex to match ISO format timestamp
+                        timestamp_match = re.search(r'at timestamp ([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?(?:\+[0-9]{2}:[0-9]{2}|Z|))', error_msg)
+                        if timestamp_match:
+                            error_timestamp_str = timestamp_match.group(1)
+                            try:
+                                # Handle different timestamp formats
+                                if error_timestamp_str.endswith('Z'):
+                                    error_timestamp_str = error_timestamp_str.replace('Z', '+00:00')
+                                elif '+' not in error_timestamp_str and '-' not in error_timestamp_str[-6:]:
+                                    # Assume UTC if no timezone
+                                    error_timestamp_str = error_timestamp_str + '+00:00'
+                                error_timestamp = datetime.fromisoformat(error_timestamp_str)
+                                if error_timestamp.tzinfo is None:
+                                    error_timestamp = error_timestamp.replace(tzinfo=timezone.utc)
+                                logger.debug(
+                                    "timestamp_extracted_from_error",
+                                    original_error=error_msg,
+                                    extracted_timestamp=error_timestamp.isoformat(),
+                                )
+                            except Exception as parse_error:
+                                logger.warning(
+                                    "failed_to_parse_timestamp_from_error",
+                                    error_message=error_msg,
+                                    timestamp_str=error_timestamp_str,
+                                    parse_error=str(parse_error),
+                                    fallback="using batch_start_ts",
+                                )
+                                error_timestamp = batch_start_ts  # Fallback to batch start
+                        else:
+                            logger.warning(
+                                "timestamp_not_found_in_error",
+                                error_message=error_msg,
+                                fallback="using batch_start_ts",
+                            )
+                            error_timestamp = batch_start_ts  # Fallback to batch start
+                        
+                        # Determine missing data types from error message
+                        missing_data_types = []
+                        if "klines" in error_msg.lower():
+                            missing_data_types.append("klines")
+                        if "trades" in error_msg.lower():
+                            missing_data_types.append("trades")
+                        
+                        if not missing_data_types:
+                            missing_data_types = ["klines"]  # Default to klines
+                        
+                        logger.warning(
+                            "missing_data_detected_attempting_backfill",
+                            dataset_id=dataset_id,
+                            symbol=symbol,
+                            error_timestamp=error_timestamp.isoformat(),
+                            missing_data_types=missing_data_types,
+                            error_message=error_msg,
+                            retry_count=retry_count,
+                        )
+                        
+                        # Calculate date range for backfill
+                        max_lookback = requirements.max_lookback_minutes
+                        buffer_minutes = 60  # 1 hour buffer
+                        backfill_start = error_timestamp - timedelta(minutes=max_lookback + buffer_minutes)
+                        backfill_end = error_timestamp + timedelta(minutes=buffer_minutes)
+                        
+                        backfill_start_date = backfill_start.date()
+                        backfill_end_date = backfill_end.date()
+                        
+                        try:
+                            # Start backfill job
+                            job_id = await self.backfilling_service.backfill_historical(
+                                symbol=symbol,
+                                start_date=backfill_start_date,
+                                end_date=backfill_end_date,
+                                data_types=missing_data_types,
+                            )
+                            
+                            # Wait for job to complete (with timeout)
+                            max_wait_seconds = 300  # 5 minutes
+                            wait_interval_seconds = 2
+                            waited_seconds = 0
+                            backfill_success = False
+                            
+                            while waited_seconds < max_wait_seconds:
+                                status = self.backfilling_service.get_job_status(job_id)
+                                if not status:
+                                    logger.error(
+                                        "backfill_job_not_found",
+                                        job_id=job_id,
+                                        symbol=symbol,
+                                    )
+                                    break
+                                
+                                if status["status"] == "completed":
+                                    logger.info(
+                                        "backfill_completed",
+                                        job_id=job_id,
+                                        symbol=symbol,
+                                        completed_dates=status.get("completed_dates", []),
+                                    )
+                                    backfill_success = True
+                                    break
+                                elif status["status"] == "failed":
+                                    logger.error(
+                                        "backfill_failed",
+                                        job_id=job_id,
+                                        symbol=symbol,
+                                        error_message=status.get("error_message"),
+                                        failed_dates=status.get("failed_dates", []),
+                                    )
+                                    break
+                                
+                                # Job still in progress, wait a bit
+                                await asyncio.sleep(wait_interval_seconds)
+                                waited_seconds += wait_interval_seconds
+                            
+                            if not backfill_success:
+                                logger.warning(
+                                    "backfill_timeout_or_failed",
+                                    job_id=job_id,
+                                    symbol=symbol,
+                                    waited_seconds=waited_seconds,
+                                    max_wait_seconds=max_wait_seconds,
+                                )
+                                # Still try to reload data in case some data was backfilled
+                            
+                        except Exception as backfill_error:
+                            logger.error(
+                                "backfill_error",
+                                symbol=symbol,
+                                error_timestamp=error_timestamp.isoformat(),
+                                error=str(backfill_error),
+                                exc_info=True,
+                            )
+                            # Still try to reload data in case some data was backfilled
+                        
+                        # Reload data after backfill attempt
+                        # Backfill was done, reload data and retry
+                        logger.info(
+                            "reloading_data_after_backfill",
+                            dataset_id=dataset_id,
+                            symbol=symbol,
+                            batch_start=batch_start,
+                            batch_end=batch_end,
+                            retry_count=retry_count,
+                        )
+                        
+                        # Clear cache for affected dates to ensure fresh data is loaded
+                        if cache:
+                            # Clear local cache to force reload from parquet
+                            cache.clear_local_cache()
+                            logger.debug(
+                                "cache_cleared_before_reload",
+                                dataset_id=dataset_id,
+                                symbol=symbol,
+                                cache_type="local",
+                            )
+                        
+                        # Reload data for the period
+                        # Calculate data period needed for this batch
+                        max_lookback = requirements.max_lookback_minutes
+                        batch_data_start = batch_start_ts - timedelta(minutes=max_lookback + 20)
+                        batch_data_end = batch_end_ts + timedelta(minutes=target_horizon_minutes + 20)
+                        
+                        logger.debug(
+                            "data_reload_period_calculated",
+                            dataset_id=dataset_id,
+                            symbol=symbol,
+                            batch_data_start=batch_data_start.isoformat(),
+                            batch_data_end=batch_data_end.isoformat(),
+                            max_lookback_minutes=max_lookback,
+                            error_timestamp=error_timestamp.isoformat(),
+                        )
+                        
+                        # Reload klines and trades
+                        batch_days_to_load = self._generate_days_list(batch_data_start, batch_data_end)
+                        batch_all_klines = pd.DataFrame()
+                        batch_all_trades = pd.DataFrame()
+                        
+                        for day_date in batch_days_to_load:
+                            try:
+                                if cache:
+                                    day_data = await cache.get_day_data(day_date)
+                                else:
+                                    day_data = await self._read_day_from_parquet(
+                                        symbol, day_date, requirements
+                                    )
+                                
+                                if day_data:
+                                    day_klines = day_data.get("klines", pd.DataFrame())
+                                    day_trades = day_data.get("trades", pd.DataFrame())
+                                    
+                                    if not day_klines.empty:
+                                        if "timestamp" in day_klines.columns:
+                                            day_klines = day_klines[
+                                                (day_klines["timestamp"] >= batch_data_start) &
+                                                (day_klines["timestamp"] <= batch_data_end)
+                                            ]
+                                        batch_all_klines = pd.concat([batch_all_klines, day_klines], ignore_index=True)
+                                    
+                                    if not day_trades.empty:
+                                        if "timestamp" in day_trades.columns:
+                                            day_trades = day_trades[
+                                                (day_trades["timestamp"] >= batch_data_start) &
+                                                (day_trades["timestamp"] <= batch_data_end)
+                                            ]
+                                        batch_all_trades = pd.concat([batch_all_trades, day_trades], ignore_index=True)
+                            except Exception as day_error:
+                                logger.warning(
+                                    "day_data_reload_failed",
+                                    dataset_id=dataset_id,
+                                    day=day_date.isoformat(),
+                                    error=str(day_error),
+                                )
+                        
+                        # Update rolling window with reloaded data
+                        if not batch_all_klines.empty or not batch_all_trades.empty:
+                            # Sort and deduplicate
+                            if not batch_all_klines.empty and "timestamp" in batch_all_klines.columns:
+                                batch_all_klines = batch_all_klines.sort_values("timestamp").reset_index(drop=True)
+                                batch_all_klines = batch_all_klines.drop_duplicates(subset=["timestamp"], keep="last")
+                            
+                            if not batch_all_trades.empty and "timestamp" in batch_all_trades.columns:
+                                batch_all_trades = batch_all_trades.sort_values("timestamp").reset_index(drop=True)
+                                batch_all_trades = batch_all_trades.drop_duplicates(subset=["timestamp"], keep="last")
+                            
+                            # Clear rolling window before adding reloaded data
+                            rolling_window.clear()
+                            
+                            # Update rolling window with reloaded data
+                            rolling_window.add_data(
+                                timestamp=batch_data_end,
+                                trades=batch_all_trades,
+                                klines=batch_all_klines,
+                                skip_trim=True,
+                            )
+                            
+                            # Update all_klines and all_trades for this batch
+                            all_klines = batch_all_klines
+                            all_trades = batch_all_trades
+                            
+                            # Log detailed information about reloaded data
+                            klines_timestamp_range = None
+                            if not batch_all_klines.empty and "timestamp" in batch_all_klines.columns:
+                                klines_timestamp_range = {
+                                    "min": batch_all_klines["timestamp"].min().isoformat(),
+                                    "max": batch_all_klines["timestamp"].max().isoformat(),
+                                }
+                            
+                            # Check if we have data around the error timestamp
+                            error_window_start = error_timestamp - timedelta(minutes=15)
+                            error_window_end = error_timestamp
+                            klines_in_error_window = 0
+                            if not batch_all_klines.empty and "timestamp" in batch_all_klines.columns:
+                                klines_in_error_window = len(
+                                    batch_all_klines[
+                                        (batch_all_klines["timestamp"] >= error_window_start) &
+                                        (batch_all_klines["timestamp"] <= error_window_end)
+                                    ]
+                                )
+                            
+                            logger.info(
+                                "data_reloaded_after_backfill",
+                                dataset_id=dataset_id,
+                                symbol=symbol,
+                                klines_count=len(batch_all_klines),
+                                trades_count=len(batch_all_trades),
+                                klines_timestamp_range=klines_timestamp_range,
+                                error_timestamp=error_timestamp.isoformat(),
+                                klines_in_error_window=klines_in_error_window,
+                                error_window_start=error_window_start.isoformat(),
+                                error_window_end=error_window_end.isoformat(),
+                            )
+                        
+                        retry_count += 1
+                        continue  # Retry computation with reloaded data
+                    else:
+                        # Log why backfill was not attempted
+                        logger.warning(
+                            "missing_data_error_not_handled",
+                            dataset_id=dataset_id,
+                            symbol=symbol,
+                            error_message=error_msg,
+                            has_backfilling_service=self.backfilling_service is not None,
+                            retry_count=retry_count,
+                            max_retries=max_retries,
+                            is_missing_data_error="Missing required data" in error_msg,
+                        )
+                        # Not a backfill-related error or max retries reached, re-raise
+                        raise
+            
+            if batch_features is None:
+                # All retries failed, raise the last error
+                raise ValueError(
+                    f"Failed to compute features for batch after {max_retries + 1} attempts. "
+                    f"Last error should have been logged above."
             )
             
             if not batch_features.empty:
@@ -742,6 +1099,126 @@ class StreamingDatasetBuilder:
         
         # Convert to Series
         return pd.Series(timestamps, name="timestamp", dtype="datetime64[ns, UTC]")
+    
+    def _filter_problematic_timestamps(
+        self,
+        timestamps: pd.Series,
+        klines: pd.DataFrame,
+        dataset_id: str,
+        symbol: str,
+        horizon_seconds: int = 3600,
+    ) -> tuple[pd.Series, List[Dict[str, Any]]]:
+        """
+        Filter out timestamps that fall into problematic periods with identical OHLC.
+        
+        A timestamp is considered problematic if:
+        1. The kline at that timestamp has identical OHLC values
+        2. The kline 1 hour ahead (for target computation) also has identical OHLC
+        3. Both prices are the same (would result in zero target)
+        
+        Args:
+            timestamps: Series of timestamps to filter
+            klines: DataFrame with klines data
+            dataset_id: Dataset ID for logging
+            symbol: Symbol for logging
+            horizon_seconds: Target horizon in seconds (default: 3600 for 1 hour)
+            
+        Returns:
+            Tuple of (filtered_timestamps, problematic_periods_list)
+        """
+        if klines.empty or timestamps.empty:
+            return timestamps, []
+        
+        # Ensure klines are sorted by timestamp
+        klines_sorted = klines.sort_values("timestamp").reset_index(drop=True)
+        
+        # Create a set of problematic timestamps to exclude
+        problematic_timestamps = set()
+        problematic_periods = []
+        
+        # Check each timestamp
+        for ts in timestamps:
+            # Find kline at this timestamp (or nearest)
+            current_klines = klines_sorted[klines_sorted["timestamp"] >= ts]
+            if current_klines.empty:
+                continue
+            
+            current_kline = current_klines.iloc[0]
+            
+            # Check if current kline has identical OHLC
+            current_identical = (
+                abs(current_kline["open"] - current_kline["high"]) < 1e-6 and
+                abs(current_kline["high"] - current_kline["low"]) < 1e-6 and
+                abs(current_kline["low"] - current_kline["close"]) < 1e-6
+            )
+            
+            if not current_identical:
+                continue  # Current kline is OK, skip
+            
+            # Check future kline (for target computation)
+            future_ts = ts + timedelta(seconds=horizon_seconds)
+            future_klines = klines_sorted[klines_sorted["timestamp"] >= future_ts]
+            if future_klines.empty:
+                continue
+            
+            future_kline = future_klines.iloc[0]
+            
+            # Check if future kline also has identical OHLC
+            future_identical = (
+                abs(future_kline["open"] - future_kline["high"]) < 1e-6 and
+                abs(future_kline["high"] - future_kline["low"]) < 1e-6 and
+                abs(future_kline["low"] - future_kline["close"]) < 1e-6
+            )
+            
+            if not future_identical:
+                continue  # Future kline is OK, skip
+            
+            # Check if prices are the same (would result in zero target)
+            price_same = abs(current_kline["close"] - future_kline["close"]) < 1e-6
+            
+            if price_same:
+                # This timestamp is problematic - exclude it
+                problematic_timestamps.add(ts)
+                
+                # Track problematic period
+                problematic_periods.append({
+                    "start": ts.isoformat(),
+                    "end": future_ts.isoformat(),
+                    "current_price": float(current_kline["close"]),
+                    "future_price": float(future_kline["close"]),
+                    "current_volume": float(current_kline.get("volume", 0)),
+                    "future_volume": float(future_kline.get("volume", 0)),
+                })
+        
+        # Filter out problematic timestamps
+        if problematic_timestamps:
+            filtered_timestamps = timestamps[~timestamps.isin(problematic_timestamps)]
+            
+            logger.info(
+                "problematic_timestamps_filtered",
+                dataset_id=dataset_id,
+                symbol=symbol,
+                original_count=len(timestamps),
+                filtered_count=len(filtered_timestamps),
+                excluded_count=len(problematic_timestamps),
+                excluded_percentage=len(problematic_timestamps) / len(timestamps) * 100,
+            )
+            
+            return filtered_timestamps, problematic_periods
+        else:
+            return timestamps, []
+    
+    def get_problematic_periods(self, dataset_id: str) -> List[Dict[str, Any]]:
+        """
+        Get problematic periods that were excluded for a dataset.
+        
+        Args:
+            dataset_id: Dataset ID
+            
+        Returns:
+            List of problematic periods dictionaries
+        """
+        return self._last_problematic_periods.get(dataset_id, [])
     
     async def _read_day_from_parquet(
         self,

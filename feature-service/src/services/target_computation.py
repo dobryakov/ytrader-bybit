@@ -729,10 +729,57 @@ class TargetComputationEngine:
         else:
             raise ValueError(f"Unknown formula: {formula}")
         
+        # Validate and log zero targets (price didn't change)
+        if "target" in data_merged.columns and "price" in data_merged.columns and "future_price" in data_merged.columns:
+            zero_targets = data_merged[data_merged["target"] == 0]
+            if len(zero_targets) > 0:
+                # Check if prices are actually the same (not just rounded to zero)
+                exact_zeros = zero_targets[
+                    (zero_targets["price"] == zero_targets["future_price"])
+                ]
+                
+                # Calculate price difference for zero targets
+                price_diff = (zero_targets["future_price"] - zero_targets["price"]).abs()
+                max_price_diff = price_diff.max() if len(price_diff) > 0 else 0
+                min_price_diff = price_diff.min() if len(price_diff) > 0 else 0
+                
+                logger.warning(
+                    "_compute_base_target_zero_targets_detected",
+                    zero_targets_count=len(zero_targets),
+                    exact_price_match_count=len(exact_zeros),
+                    total_targets=len(data_merged),
+                    zero_targets_percentage=(len(zero_targets) / len(data_merged) * 100) if len(data_merged) > 0 else 0,
+                    max_price_diff_for_zeros=max_price_diff,
+                    min_price_diff_for_zeros=min_price_diff,
+                    horizon_seconds=horizon,
+                    sample_timestamps=zero_targets["timestamp"].head(5).tolist() if len(zero_targets) > 0 else [],
+                    message="Detected zero targets - price didn't change over horizon period",
+                )
+                
+                # Log sample zero target cases for debugging
+                if len(zero_targets) > 0:
+                    sample = zero_targets.head(3)
+                    for idx, row in sample.iterrows():
+                        logger.debug(
+                            "_compute_base_target_zero_target_sample",
+                            timestamp=row["timestamp"].isoformat() if hasattr(row["timestamp"], "isoformat") else str(row["timestamp"]),
+                            current_price=float(row["price"]),
+                            future_price=float(row["future_price"]),
+                            price_diff=float(row["future_price"] - row["price"]),
+                            target=float(row["target"]),
+                            horizon_seconds=horizon,
+                        )
+        
         # Log after target computation
         target_summary_after_computation = {}
         if "target" in data_merged.columns:
             target_summary_after_computation = _get_series_summary(data_merged["target"])
+            
+            # Add zero targets statistics
+            if len(data_merged) > 0:
+                zero_count = (data_merged["target"] == 0).sum()
+                target_summary_after_computation["zero_targets_count"] = int(zero_count)
+                target_summary_after_computation["zero_targets_percentage"] = float(zero_count / len(data_merged) * 100)
         
         logger.info(
             "_compute_base_target_after_computation",

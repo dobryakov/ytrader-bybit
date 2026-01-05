@@ -1051,3 +1051,327 @@ def compute_all_candle_patterns_15m(
     features["pattern_inside_bar_bearish"] = 1.0 if (pattern_inside_bar and candle_1_features["is_red"]) else 0.0
     
     return features
+
+
+def compute_all_candle_patterns_45m(
+    rolling_windows: RollingWindows,
+) -> Dict[str, Optional[float]]:
+    """
+    Compute all candlestick pattern features from the last 45 minutes (3 candles of 15 minutes each).
+    
+    This version works with 15-minute candles instead of 5-minute candles, providing
+    longer-term patterns for more stable predictions.
+    
+    Returns dictionary with same features as 3m version (uses 3 candles for patterns),
+    but with 15-minute candle intervals.
+    
+    Args:
+        rolling_windows: RollingWindows instance with kline data
+        
+    Returns:
+        Dictionary of feature name -> feature value (0.0 or 1.0 for binary, float for ratios)
+    """
+    # Use rolling_windows.last_update as the reference timestamp
+    # This is the timestamp for which we're computing features
+    now = _ensure_datetime(rolling_windows.last_update)
+    
+    # Get the most recent timestamp from available klines (for data freshness check)
+    last_available_timestamp = rolling_windows.get_last_available_timestamp("1m")
+    
+    if last_available_timestamp is None:
+        # No klines available at all
+        import structlog
+        logger = structlog.get_logger(__name__)
+        logger.warning(
+            "compute_all_candle_patterns_45m_no_klines_available",
+        )
+        return _get_empty_features_dict()
+    
+    # Use the target timestamp (now) as end_time for the window
+    # This ensures we're computing features for the correct time point
+    end_time = now
+    # Get last 45 minutes of kline data (need at least 3 candles of 15 minutes each)
+    # Since we only have 1m candles, we'll use 1m candles and aggregate them
+    start_time = end_time - timedelta(minutes=46)  # Extra buffer to ensure we have 3 complete candles
+    
+    # Check data freshness (warn if data is very stale, but still use it)
+    data_age_seconds = (now - last_available_timestamp).total_seconds()
+    if data_age_seconds > 300:  # 5 minutes
+        import structlog
+        logger = structlog.get_logger(__name__)
+        logger.warning(
+            "compute_all_candle_patterns_45m_stale_data",
+            data_age_seconds=data_age_seconds,
+            last_available_timestamp=last_available_timestamp.isoformat(),
+        )
+    
+    # Try to get 15m candles first, but fall back to 1m if not available
+    klines = rolling_windows.get_klines_for_window("15m", start_time, end_time)
+    
+    # Log 15m klines availability for debugging (before fallback check)
+    import structlog
+    logger = structlog.get_logger(__name__)
+    if len(klines) < 3:
+        logger.debug(
+            "compute_all_candle_patterns_45m_15m_klines_check",
+            klines_15m_count=len(klines),
+            start_time=start_time.isoformat(),
+            end_time=end_time.isoformat(),
+            target_timestamp=now.isoformat(),
+            required_count=3,
+        )
+    
+    # If no 15m candles, try to use 1m candles and aggregate them
+    if len(klines) < 3:
+        logger.warning(
+            "compute_all_candle_patterns_45m_no_15m_klines",
+            klines_15m_count=len(klines),
+            falling_back_to_1m=True,
+            target_timestamp=now.isoformat(),
+            start_time=start_time.isoformat(),
+            end_time=end_time.isoformat(),
+        )
+        # Fall back to 1m candles - we need at least 45 candles (45 minutes)
+        klines_1m = rolling_windows.get_klines_for_window("1m", start_time, end_time)
+        
+        # Check that required columns exist BEFORE checking length
+        required_cols = ["open", "high", "low", "close", "volume", "timestamp"]
+        missing_cols = [col for col in required_cols if col not in klines_1m.columns]
+        if missing_cols:
+            logger.warning(
+                "compute_all_candle_patterns_45m_missing_columns",
+                missing_columns=missing_cols,
+                available_columns=list(klines_1m.columns),
+                klines_1m_count=len(klines_1m),
+                target_timestamp=now.isoformat(),
+                start_time=start_time.isoformat(),
+                end_time=end_time.isoformat(),
+            )
+            return _get_empty_features_dict()
+        
+        # Aggregate 1m candles into 15m candles
+        # Even if we have less than 45 minutes, we can still aggregate what we have
+        # and approximate missing 15-minute candles later
+        klines_sorted = klines_1m.sort_values("timestamp").reset_index(drop=True)
+        
+        if len(klines_sorted) < 15:
+            # Need at least 15 minutes to create 1 fifteen-minute candle
+            first_ts = klines_sorted.iloc[0]["timestamp"].isoformat() if len(klines_sorted) > 0 else None
+            last_ts = klines_sorted.iloc[-1]["timestamp"].isoformat() if len(klines_sorted) > 0 else None
+            
+            # Calculate time span to understand the gap
+            time_span_minutes = 0
+            if first_ts and last_ts:
+                first_dt = pd.to_datetime(first_ts)
+                last_dt = pd.to_datetime(last_ts)
+                time_span_minutes = (last_dt - first_dt).total_seconds() / 60.0
+            
+            logger.warning(
+                "compute_all_candle_patterns_45m_insufficient_1m_klines",
+                klines_1m_count=len(klines_sorted),
+                required_count=15,
+                available_columns=list(klines_sorted.columns),
+                target_timestamp=now.isoformat(),
+                start_time=start_time.isoformat(),
+                end_time=end_time.isoformat(),
+                first_kline_timestamp=first_ts,
+                last_kline_timestamp=last_ts,
+                time_span_minutes=time_span_minutes,
+                time_span_should_be_minutes=45.0,
+                gap_minutes=45.0 - time_span_minutes if time_span_minutes < 45.0 else 0.0,
+            )
+            return _get_empty_features_dict()
+        
+        if len(klines_sorted) < 45:
+            # We have some data but not enough for 3 fifteen-minute candles
+            # We'll aggregate what we have and approximate the rest
+            logger.debug(
+                "compute_all_candle_patterns_45m_approximating_missing_minutes",
+                available_minutes=len(klines_sorted),
+                required_minutes=45,
+            )
+        
+        # Group by 15-minute intervals using standard time alignment
+        # Round down to nearest 15-minute boundary: floor(timestamp / 15 minutes) * 15 minutes
+        klines_sorted = klines_sorted.copy()
+        
+        # Convert timestamp to minutes since epoch, then floor to 15-minute boundaries
+        if not pd.api.types.is_datetime64_any_dtype(klines_sorted["timestamp"]):
+            klines_sorted["timestamp"] = pd.to_datetime(klines_sorted["timestamp"], utc=True)
+        
+        # Ensure timezone-aware
+        if klines_sorted["timestamp"].dt.tz is None:
+            klines_sorted["timestamp"] = klines_sorted["timestamp"].dt.tz_localize(timezone.utc)
+        
+        # Calculate 15-minute bucket: round down each timestamp to nearest 15-minute boundary
+        # Method: convert to seconds since epoch, floor divide by 900 (15 minutes in seconds), multiply back
+        epoch_start = pd.Timestamp("1970-01-01", tz=timezone.utc)
+        seconds_since_epoch = (klines_sorted["timestamp"] - epoch_start).dt.total_seconds()
+        bucket_number = (seconds_since_epoch // 900).astype(int)  # Floor division by 15 minutes
+        klines_sorted["time_bucket"] = bucket_number
+        
+        # Aggregate with explicit column selection - ensure all columns are present
+        grouped = klines_sorted.groupby("time_bucket")
+        klines_15m = pd.DataFrame({
+            "timestamp": grouped["timestamp"].first(),  # Start of 15-minute interval
+            "open": grouped["open"].first(),
+            "high": grouped["high"].max(),
+            "low": grouped["low"].min(),
+            "close": grouped["close"].last(),
+            "volume": grouped["volume"].sum(),
+        }).reset_index(drop=True)
+        
+        # Sort by timestamp to ensure correct order
+        klines_15m = klines_15m.sort_values("timestamp").reset_index(drop=True)
+        
+        klines = klines_15m
+    
+    # Sort by timestamp to ensure correct order (0 = oldest, 2 = newest/current)
+    klines_sorted = klines.sort_values("timestamp").reset_index(drop=True)
+    
+    # Get last 3 candles (most recent)
+    candle_data = []
+    
+    # If we have less than 3 candles, try to approximate missing candles
+    if len(klines_sorted) < 3:
+        # Get all available candles
+        for i in range(-len(klines_sorted), 0):
+            idx = len(klines_sorted) + i
+            candle_comp = _get_candle_components(klines_sorted, idx)
+            if candle_comp is None:
+                logger.warning(
+                    "compute_all_candle_patterns_45m_failed_to_get_candle_components",
+                    index=idx,
+                    klines_count=len(klines_sorted),
+                    target_timestamp=now.isoformat(),
+                    first_kline_timestamp=klines_sorted.iloc[0]["timestamp"].isoformat() if len(klines_sorted) > 0 else None,
+                    last_kline_timestamp=klines_sorted.iloc[-1]["timestamp"].isoformat() if len(klines_sorted) > 0 else None,
+                )
+                return _get_empty_features_dict()
+            candle_data.append(candle_comp)
+        
+        # If we have at least 1 candle, we can approximate the missing ones
+        if len(candle_data) == 0:
+            logger.warning(
+                "compute_all_candle_patterns_45m_no_candle_data_after_extraction",
+                klines_count=len(klines_sorted),
+                target_timestamp=now.isoformat(),
+            )
+            return _get_empty_features_dict()
+        
+        # Use the last available candle as a reference for approximation
+        last_candle = candle_data[-1]  # Last complete candle
+        open_last, high_last, low_last, close_last, volume_last, body_size_last = last_candle
+        
+        # Approximate missing candles (we need exactly 3 total)
+        while len(candle_data) < 3:
+            approximated_candle = (
+                close_last,  # open = previous close
+                close_last,  # high = previous close (conservative)
+                close_last,  # low = previous close (conservative)
+                close_last,  # close = previous close (assumes no change yet)
+                0.0,        # volume = 0 (candle just started)
+                0.0,        # body_size = 0 (no body yet)
+            )
+            candle_data.append(approximated_candle)
+        
+        logger.debug(
+            "candle_approximation_used_45m",
+            symbol=rolling_windows.symbol if hasattr(rolling_windows, 'symbol') else 'unknown',
+            available_candles=len(klines_sorted),
+            required_candles=3,
+            approximated_candles=3 - len(klines_sorted),
+            approximated_close=close_last,
+        )
+    else:
+        # We have at least 3 candles, use them directly
+        for i in range(-3, 0):  # Last 3 candles
+            idx = len(klines_sorted) + i
+            candle_comp = _get_candle_components(klines_sorted, idx)
+            if candle_comp is None:
+                logger.warning(
+                    "compute_all_candle_patterns_45m_failed_to_get_candle_components_3plus",
+                    index=idx,
+                    klines_count=len(klines_sorted),
+                    target_timestamp=now.isoformat(),
+                )
+                return _get_empty_features_dict()
+            candle_data.append(candle_comp)
+    
+    # Extract candle components
+    open_0, high_0, low_0, close_0, volume_0, body_size_0 = candle_data[0]
+    open_1, high_1, low_1, close_1, volume_1, body_size_1 = candle_data[1]
+    open_2, high_2, low_2, close_2, volume_2, body_size_2 = candle_data[2]
+    
+    # Compute features for each candle
+    candle_0_features = _compute_candle_features(open_0, high_0, low_0, close_0, volume_0, body_size_0)
+    candle_1_features = _compute_candle_features(open_1, high_1, low_1, close_1, volume_1, body_size_1)
+    candle_2_features = _compute_candle_features(open_2, high_2, low_2, close_2, volume_2, body_size_2)
+    
+    # Compute relative thresholds (averages over 3 candles)
+    avg_body_size = (body_size_0 + body_size_1 + body_size_2) / 3.0
+    avg_upper_shadow = (
+        candle_0_features["upper_shadow"] + candle_1_features["upper_shadow"] + 
+        candle_2_features["upper_shadow"]
+    ) / 3.0
+    avg_lower_shadow = (
+        candle_0_features["lower_shadow"] + candle_1_features["lower_shadow"] + 
+        candle_2_features["lower_shadow"]
+    ) / 3.0
+    avg_volume = (volume_0 + volume_1 + volume_2) / 3.0
+    
+    # Use minimum threshold if average is zero (all doji case)
+    min_body_threshold = 0.01 / 100  # 0.01%
+    min_shadow_threshold = 0.01 / 100
+    min_volume_threshold = 1e-8
+    
+    body_threshold = max(avg_body_size, min_body_threshold)
+    upper_shadow_threshold = max(avg_upper_shadow, min_shadow_threshold)
+    lower_shadow_threshold = max(avg_lower_shadow, min_shadow_threshold)
+    volume_threshold = max(avg_volume, min_volume_threshold)
+    
+    features = {}
+    
+    # Compute total_range for each candle to calculate ratios
+    total_range_0 = candle_0_features["total_range"]
+    total_range_1 = candle_1_features["total_range"]
+    total_range_2 = candle_2_features["total_range"]
+    
+    # Candle 0 features (oldest)
+    features["candle_0_is_green"] = candle_0_features["is_green"]
+    features["candle_0_is_red"] = candle_0_features["is_red"]
+    features["candle_0_body_ratio"] = body_size_0 / total_range_0 if total_range_0 > 0 else 0.0
+    features["candle_0_upper_shadow_ratio"] = candle_0_features["upper_shadow"] / total_range_0 if total_range_0 > 0 else 0.0
+    features["candle_0_lower_shadow_ratio"] = candle_0_features["lower_shadow"] / total_range_0 if total_range_0 > 0 else 0.0
+    features["candle_0_is_doji"] = candle_0_features["is_doji"]
+    features["candle_0_is_hammer"] = candle_0_features["is_hammer"]
+    
+    # Candle 1 features (middle)
+    features["candle_1_is_green"] = candle_1_features["is_green"]
+    features["candle_1_is_red"] = candle_1_features["is_red"]
+    features["candle_1_body_ratio"] = body_size_1 / total_range_1 if total_range_1 > 0 else 0.0
+    features["candle_1_upper_shadow_ratio"] = candle_1_features["upper_shadow"] / total_range_1 if total_range_1 > 0 else 0.0
+    features["candle_1_lower_shadow_ratio"] = candle_1_features["lower_shadow"] / total_range_1 if total_range_1 > 0 else 0.0
+    features["candle_1_is_doji"] = candle_1_features["is_doji"]
+    features["candle_1_is_hammer"] = candle_1_features["is_hammer"]
+    
+    # Candle 2 features (newest/current)
+    features["candle_2_is_green"] = candle_2_features["is_green"]
+    features["candle_2_is_red"] = candle_2_features["is_red"]
+    features["candle_2_body_ratio"] = body_size_2 / total_range_2 if total_range_2 > 0 else 0.0
+    features["candle_2_upper_shadow_ratio"] = candle_2_features["upper_shadow"] / total_range_2 if total_range_2 > 0 else 0.0
+    features["candle_2_lower_shadow_ratio"] = candle_2_features["lower_shadow"] / total_range_2 if total_range_2 > 0 else 0.0
+    features["candle_2_is_doji"] = candle_2_features["is_doji"]
+    features["candle_2_is_hammer"] = candle_2_features["is_hammer"]
+    
+    # Multi-candle patterns
+    features["pattern_all_green"] = 1.0 if (candle_0_features["is_green"] and candle_1_features["is_green"] and candle_2_features["is_green"]) else 0.0
+    features["pattern_all_red"] = 1.0 if (candle_0_features["is_red"] and candle_1_features["is_red"] and candle_2_features["is_red"]) else 0.0
+    features["pattern_green_red_green"] = 1.0 if (candle_0_features["is_green"] and candle_1_features["is_red"] and candle_2_features["is_green"]) else 0.0
+    
+    # Volume patterns
+    features["pattern_volume_increasing"] = 1.0 if (volume_0 < volume_1 < volume_2) else 0.0
+    features["pattern_volume_decreasing"] = 1.0 if (volume_0 > volume_1 > volume_2) else 0.0
+    features["pattern_green_large_volume"] = 1.0 if (candle_2_features["is_green"] and volume_2 > volume_threshold * 1.5) else 0.0
+    
+    return features
