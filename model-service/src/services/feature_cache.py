@@ -116,6 +116,72 @@ class FeatureCache:
             }
             logger.debug("Feature vector cached", symbol=symbol, cache_size=len(self._cache))
 
+    async def get_by_key(self, key: str, max_age_seconds: Optional[int] = None) -> Optional[FeatureVector]:
+        """
+        Get cached feature vector by custom key (e.g., 'BTCUSDT:1.2.0').
+
+        Args:
+            key: Custom cache key (can include version)
+            max_age_seconds: Optional maximum age threshold (overrides TTL)
+
+        Returns:
+            Cached FeatureVector or None if not found/expired
+        """
+        if not self.enabled:
+            return None
+
+        async with self._lock:
+            if key not in self._cache:
+                logger.debug("Feature cache miss", key=key)
+                return None
+
+            entry = self._cache[key]
+            cached_at = entry.get("cached_at", 0)
+            age = time.time() - cached_at
+
+            # Use max_age_seconds if provided, otherwise use TTL
+            expiration_threshold = max_age_seconds if max_age_seconds is not None else self.ttl_seconds
+
+            if age > expiration_threshold:
+                # Entry expired
+                del self._cache[key]
+                logger.debug("Feature cache entry expired", key=key, age_seconds=age)
+                return None
+
+            # Move to end (LRU)
+            self._cache.move_to_end(key)
+            logger.debug("Feature cache hit", key=key, age_seconds=age)
+            return entry.get("data")
+
+    async def set_by_key(self, key: str, feature_vector: FeatureVector) -> None:
+        """
+        Cache feature vector by custom key.
+
+        Args:
+            key: Custom cache key (can include version)
+            feature_vector: FeatureVector to cache
+        """
+        if not self.enabled:
+            return
+
+        async with self._lock:
+            # Remove if exists to update position in LRU
+            if key in self._cache:
+                del self._cache[key]
+
+            # Check if we need to evict oldest entry
+            if len(self._cache) >= self.max_size:
+                oldest_key = next(iter(self._cache))
+                del self._cache[oldest_key]
+                logger.debug("Feature cache evicted oldest entry", evicted_key=oldest_key, max_size=self.max_size)
+
+            # Add new entry
+            self._cache[key] = {
+                "data": feature_vector,
+                "cached_at": time.time(),
+            }
+            logger.debug("Feature vector cached", key=key, cache_size=len(self._cache))
+
     async def invalidate(self, symbol: str) -> None:
         """
         Invalidate cached feature vector for a symbol.

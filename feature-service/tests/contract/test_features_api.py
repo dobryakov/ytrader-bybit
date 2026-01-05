@@ -110,4 +110,27 @@ class TestFeaturesAPI:
                 else:
                     # Re-raise if it's a different exception
                     raise
+    
+    def test_get_latest_features_with_version_parameter(self, client, feature_computer, sample_orderbook_snapshot):
+        """Test GET /features/latest with feature_registry_version parameter (backward compatible)."""
+        with patch("src.api.middleware.auth.config") as mock_config:
+            mock_config.feature_service_api_key = "test-api-key"
+            
+            # Setup orderbook
+            feature_computer._orderbook_manager.apply_snapshot(sample_orderbook_snapshot)
+            
+            # Request without version (backward compatible)
+            response = client.get(
+                "/features/latest?symbol=BTCUSDT",
+                headers={"X-API-Key": "test-api-key"},
+            )
+            assert response.status_code in [200, 404]
+            
+            # Request with version parameter (should work the same way in legacy mode)
+            response_with_version = client.get(
+                "/features/latest?symbol=BTCUSDT&feature_registry_version=1.0.0",
+                headers={"X-API-Key": "test-api-key"},
+            )
+            # Should return same status (may be 200 or 404 depending on data availability)
+            assert response_with_version.status_code in [200, 404]
 

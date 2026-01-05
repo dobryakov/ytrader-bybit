@@ -27,6 +27,7 @@ class FeatureScheduler:
         symbols: Optional[list] = None,
         feature_registry_loader: Optional["FeatureRegistryLoader"] = None,
         target_registry_version_manager: Optional["TargetRegistryVersionManager"] = None,
+        publish_features: bool = False,
     ):
         """
         Initialize feature scheduler.
@@ -37,12 +38,14 @@ class FeatureScheduler:
             symbols: List of symbols to schedule
             feature_registry_loader: Optional FeatureRegistryLoader for dynamic interval computation
             target_registry_version_manager: Optional TargetRegistryVersionManager for dynamic interval computation
+            publish_features: Whether to publish computed features to queue (default: False)
         """
         self._feature_computer = feature_computer
         self._feature_publisher = feature_publisher
         self._symbols = set(symbols or [])
         self._feature_registry_loader = feature_registry_loader
         self._target_registry_version_manager = target_registry_version_manager
+        self._publish_features = publish_features
         # Default intervals (will be updated dynamically if loaders are provided)
         self._intervals = {
             "1s": 1,
@@ -342,15 +345,23 @@ class FeatureScheduler:
                     )
                     continue
                 
-                # Publish features
-                await self._feature_publisher.publish(feature_vector)
-                
-                logger.info(
-                    "features_computed_and_published",
-                    symbol=symbol,
-                    interval=interval_name,
-                    features_count=len(feature_vector.features),
-                )
+                # Publish features only if enabled
+                if self._publish_features:
+                    await self._feature_publisher.publish(feature_vector)
+                    logger.info(
+                        "features_computed_and_published",
+                        symbol=symbol,
+                        interval=interval_name,
+                        features_count=len(feature_vector.features),
+                    )
+                else:
+                    logger.debug(
+                        "features_computed_not_published",
+                        symbol=symbol,
+                        interval=interval_name,
+                        features_count=len(feature_vector.features),
+                        message="Feature publishing disabled, features computed but not published to queue",
+                    )
             
             except Exception as e:
                 logger.error(

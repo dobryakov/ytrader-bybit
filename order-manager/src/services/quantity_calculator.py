@@ -65,13 +65,17 @@ class QuantityCalculator:
         if order_value < min_order_value:
             # Increase quantity to meet minOrderValue requirement
             min_quantity_by_value = min_order_value / snapshot_price
-            # Round up to next effective step
-            effective_step = symbol_info.get("lot_size", Decimal("0.001"))
-            min_order_qty = symbol_info.get("min_order_qty", Decimal("0.001"))
-            effective_step = min(effective_step, min_order_qty) if effective_step > 0 and min_order_qty > 0 else (effective_step or min_order_qty)
+            # Round up to next lot_size step (always use lot_size, not min_order_qty)
+            lot_size = symbol_info.get("lot_size", Decimal("0.001"))
             
-            if effective_step > 0:
-                min_quantity_by_value = ((min_quantity_by_value / effective_step).quantize(Decimal("1"), rounding=ROUND_UP) * effective_step)
+            if lot_size > 0:
+                # Round up to next lot_size multiple
+                min_quantity_by_value = ((min_quantity_by_value / lot_size).quantize(Decimal("1"), rounding=ROUND_UP) * lot_size)
+            else:
+                # Fallback: use min_order_qty if lot_size is not available
+                min_order_qty = symbol_info.get("min_order_qty", Decimal("0.001"))
+                if min_order_qty > 0:
+                    min_quantity_by_value = ((min_quantity_by_value / min_order_qty).quantize(Decimal("1"), rounding=ROUND_UP) * min_order_qty)
             
             quantity = max(quantity, min_quantity_by_value)
             
@@ -184,6 +188,10 @@ class QuantityCalculator:
         """Apply lot size precision to quantity.
 
         Note: tick_size is for price precision, not quantity. Only lot_size (qtyStep) is used for quantity.
+        
+        IMPORTANT: Always use lot_size (qtyStep) for rounding, not min_order_qty. Bybit requires
+        quantity to be a multiple of qtyStep. Using min_order_qty for rounding can result in
+        quantities that are not multiples of qtyStep, causing "Qty invalid" errors.
 
         Args:
             quantity: Raw quantity value
@@ -191,25 +199,36 @@ class QuantityCalculator:
             trace_id: Trace ID for logging
 
         Returns:
-            Rounded quantity
+            Rounded quantity (always a multiple of lot_size)
         """
+        # Save original quantity for logging
+        original_quantity = quantity
+        
         # Use lot_size (qtyStep) for quantity precision - this is the step size for order quantity
+        # CRITICAL: Always use lot_size, not min_order_qty, for rounding
+        # lot_size (qtyStep) is the step size that Bybit requires for quantity
         lot_size = symbol_info.get("lot_size", Decimal("0.001"))
         min_order_qty = symbol_info.get("min_order_qty", Decimal("0.001"))
         
-        # Use the smaller of qtyStep and minQty to avoid rounding small quantities to zero
-        # If qtyStep is larger than minQty, we'll use minQty to ensure we can place small orders
-        effective_step = min(lot_size, min_order_qty) if lot_size > 0 and min_order_qty > 0 else (lot_size or min_order_qty)
-        
-        # Round down to nearest effective step multiple
-        if effective_step > 0:
-            quantity = (quantity / effective_step).quantize(Decimal("1"), rounding=ROUND_DOWN) * effective_step
+        # Always use lot_size for rounding to ensure quantity is a multiple of qtyStep
+        # This is required by Bybit API - quantity must be a multiple of qtyStep
+        if lot_size > 0:
+            # Round down to nearest lot_size multiple
+            quantity = (quantity / lot_size).quantize(Decimal("1"), rounding=ROUND_DOWN) * lot_size
+        elif min_order_qty > 0:
+            # Fallback: if lot_size is not available, use min_order_qty
+            # This should rarely happen, but provides a fallback
+            quantity = (quantity / min_order_qty).quantize(Decimal("1"), rounding=ROUND_DOWN) * min_order_qty
+        else:
+            # Last resort: round to 0.001 precision
+            quantity = quantity.quantize(Decimal("0.001"), rounding=ROUND_DOWN)
 
         logger.debug(
             "quantity_precision_applied",
-            before_rounding=float(quantity),
-            lot_size=float(lot_size),
+            before_rounding=float(original_quantity),
             after_rounding=float(quantity),
+            lot_size=float(lot_size),
+            min_order_qty=float(min_order_qty),
             trace_id=trace_id,
         )
 

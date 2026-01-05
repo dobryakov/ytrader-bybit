@@ -149,16 +149,7 @@ class IntelligentSignalGenerator:
                 return None
             logger.info("Model loaded successfully", asset=asset, strategy_id=strategy_id, model_version=model_version, trace_id=trace_id)
 
-            # Get feature vector from Feature Service (via cache or REST API)
-            logger.info("Getting feature vector", asset=asset, strategy_id=strategy_id, trace_id=trace_id)
-            feature_vector = await self._get_feature_vector(asset, trace_id)
-            if not feature_vector:
-                logger.warning("Features unavailable, skipping signal generation", asset=asset, strategy_id=strategy_id, trace_id=trace_id)
-                return None
-            logger.info("Feature vector retrieved", asset=asset, strategy_id=strategy_id, feature_count=len(feature_vector.features) if feature_vector else 0, trace_id=trace_id)
-
-            # Validate feature registry version compatibility
-            # Get model's training config to check versions
+            # Get model's training config to get feature registry version
             model_feature_registry_version = None
             model_target_registry_version = None
             training_config = None
@@ -169,24 +160,19 @@ class IntelligentSignalGenerator:
                 model_feature_registry_version = training_config.get("feature_registry_version")
                 model_target_registry_version = training_config.get("target_registry_version")
 
-            if model_feature_registry_version and model_feature_registry_version != feature_vector.feature_registry_version:
-                logger.warning(
-                    "Feature registry version mismatch - model was trained on different version",
-                    asset=asset,
-                    strategy_id=strategy_id,
-                    model_feature_registry_version=model_feature_registry_version,
-                    feature_vector_registry_version=feature_vector.feature_registry_version,
-                    recommendation="Model should be retrained on current feature registry version for optimal performance",
-                    trace_id=trace_id,
-                )
-            elif model_feature_registry_version:
-                logger.debug(
-                    "Feature registry versions match",
-                    asset=asset,
-                    strategy_id=strategy_id,
-                    feature_registry_version=model_feature_registry_version,
-                    trace_id=trace_id,
-                )
+            # Get feature vector from Feature Service (via cache or REST API) with model's version
+            logger.info("Getting feature vector", asset=asset, strategy_id=strategy_id, feature_registry_version=model_feature_registry_version, trace_id=trace_id)
+            feature_vector = await self._get_feature_vector(
+                asset, 
+                feature_registry_version=model_feature_registry_version,
+                trace_id=trace_id
+            )
+            if not feature_vector:
+                logger.warning("Features unavailable, skipping signal generation", asset=asset, strategy_id=strategy_id, trace_id=trace_id)
+                return None
+            logger.info("Feature vector retrieved", asset=asset, strategy_id=strategy_id, feature_count=len(feature_vector.features) if feature_vector else 0, feature_registry_version=feature_vector.feature_registry_version, trace_id=trace_id)
+
+            # Version mismatch check is no longer needed - we always request the correct version
 
             # Prepare features from FeatureVector
             logger.info("Preparing features for model", asset=asset, strategy_id=strategy_id, trace_id=trace_id)
@@ -962,7 +948,12 @@ class IntelligentSignalGenerator:
 
         return round(amount, 2)
 
-    async def _get_feature_vector(self, asset: str, trace_id: Optional[str] = None) -> Optional[FeatureVector]:
+    async def _get_feature_vector(
+        self, 
+        asset: str, 
+        feature_registry_version: Optional[str] = None,
+        trace_id: Optional[str] = None
+    ) -> Optional[FeatureVector]:
         """
         Get feature vector from Feature Service (via cache or REST API with fallback).
 
@@ -971,26 +962,34 @@ class IntelligentSignalGenerator:
 
         Args:
             asset: Trading pair symbol
+            feature_registry_version: Feature Registry version to request (None = active version)
             trace_id: Optional trace ID for request flow tracking
 
         Returns:
             FeatureVector or None if unavailable
         """
+        # Cache key includes version to avoid mixing different versions
+        cache_key = f"{asset}:{feature_registry_version or 'active'}"
+        
         # Always try cache first (cache can be populated from queue or previous REST API calls)
-        cached_feature = await feature_cache.get(asset, max_age_seconds=settings.feature_service_feature_cache_ttl_seconds)
+        cached_feature = await feature_cache.get_by_key(cache_key, max_age_seconds=settings.feature_service_feature_cache_ttl_seconds)
         if cached_feature:
-            logger.debug("Using cached feature vector", asset=asset, trace_id=trace_id)
+            logger.debug("Using cached feature vector", asset=asset, feature_registry_version=feature_registry_version, trace_id=trace_id)
             return cached_feature
 
         # Cache miss - fallback to REST API
-        logger.debug("Cache miss, fetching from REST API", asset=asset, trace_id=trace_id)
-        feature_vector = await feature_service_client.get_latest_features(asset, trace_id=trace_id)
+        logger.debug("Cache miss, fetching from REST API", asset=asset, feature_registry_version=feature_registry_version, trace_id=trace_id)
+        feature_vector = await feature_service_client.get_latest_features(
+            asset, 
+            feature_registry_version=feature_registry_version,
+            trace_id=trace_id
+        )
         
         if feature_vector:
             # Always cache the result for future use (regardless of queue setting)
             # This allows cache to work even if queue is disabled
-            await feature_cache.set(asset, feature_vector)
-            logger.debug("Retrieved feature vector from REST API and cached", asset=asset, trace_id=trace_id)
+            await feature_cache.set_by_key(cache_key, feature_vector)
+            logger.debug("Retrieved feature vector from REST API and cached", asset=asset, feature_registry_version=feature_registry_version, trace_id=trace_id)
         
         return feature_vector
 

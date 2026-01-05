@@ -31,12 +31,18 @@ class FeatureServiceClient:
         self.dataset_metadata_timeout = settings.feature_service_dataset_metadata_timeout_seconds
         self.dataset_download_timeout = settings.feature_service_dataset_download_timeout_seconds
 
-    async def get_latest_features(self, symbol: str, trace_id: Optional[str] = None) -> Optional[FeatureVector]:
+    async def get_latest_features(
+        self, 
+        symbol: str, 
+        feature_registry_version: Optional[str] = None,
+        trace_id: Optional[str] = None
+    ) -> Optional[FeatureVector]:
         """
         Get latest computed features for a symbol from Feature Service.
 
         Args:
             symbol: Trading pair symbol (e.g., 'BTCUSDT')
+            feature_registry_version: Optional Feature Registry version to request
             trace_id: Optional trace ID for request flow tracking
 
         Returns:
@@ -48,6 +54,9 @@ class FeatureServiceClient:
             "Content-Type": "application/json",
         }
         params = {"symbol": symbol}
+        
+        if feature_registry_version:
+            params["feature_registry_version"] = feature_registry_version
 
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
@@ -64,6 +73,7 @@ class FeatureServiceClient:
                     "Retrieved latest features from Feature Service",
                     symbol=symbol,
                     feature_count=len(feature_vector.features),
+                    feature_registry_version=feature_registry_version,
                     trace_id=trace_id,
                 )
                 return feature_vector

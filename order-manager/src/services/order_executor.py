@@ -3524,8 +3524,17 @@ class OrderExecutor:
                     error=str(e),
                     trace_id=trace_id,
                 )
-                # Fallback to simple rounding
-                reduced_quantity = reduced_quantity.quantize(Decimal("0.000001"), rounding="ROUND_DOWN")
+                # Fallback: round to lot_size if available
+                try:
+                    lot_size = Decimal(str(symbol_info.get("lot_size", "0.001")))
+                    if lot_size > 0:
+                        reduced_quantity = (reduced_quantity / lot_size).quantize(Decimal("1"), rounding=ROUND_DOWN) * lot_size
+                    else:
+                        # Last resort: round to 0.000001 precision
+                        reduced_quantity = reduced_quantity.quantize(Decimal("0.000001"), rounding=ROUND_DOWN)
+                except Exception:
+                    # Final fallback: simple rounding
+                    reduced_quantity = reduced_quantity.quantize(Decimal("0.000001"), rounding=ROUND_DOWN)
             
             logger.info(
                 "order_reduction_attempt",
@@ -3610,11 +3619,41 @@ class OrderExecutor:
                         reduced_quantity=float(reduced_quantity),
                         ret_code=ret_code,
                         ret_msg=ret_msg,
+                        max_quantity=float(max_quantity),
                         has_more_attempts=(attempt < max_reduction_attempts - 1),
                         trace_id=trace_id,
                     )
-                    # Continue to next attempt if available
+                    # If still insufficient balance, try more aggressive reduction
+                    # Recalculate max_quantity with more conservative safety margin for next attempt
                     if attempt < max_reduction_attempts - 1:
+                        # For next attempt, use more aggressive reduction
+                        # Reduce max_quantity by additional 20% to account for margin calculation errors
+                        # or price changes between calculation and order creation
+                        max_quantity = max_quantity * Decimal("0.8")
+                        
+                        # Check if adjusted max_quantity is still above minimum
+                        if max_quantity < min_order_qty:
+                            logger.info(
+                                "order_reduction_impossible_even_with_aggressive_reduction",
+                                signal_id=str(signal_id),
+                                asset=asset,
+                                adjusted_max_quantity=float(max_quantity),
+                                min_order_qty=float(min_order_qty),
+                                reason="Even with aggressive reduction, max_quantity is below minimum order size",
+                                trace_id=trace_id,
+                            )
+                            return None
+                        
+                        logger.info(
+                            "order_reduction_adjusting_max_quantity",
+                            signal_id=str(signal_id),
+                            asset=asset,
+                            next_attempt=attempt + 2,
+                            adjusted_max_quantity=float(max_quantity),
+                            min_order_qty=float(min_order_qty),
+                            reason="Previous attempt failed with 110007, using more conservative margin (80% of previous max)",
+                            trace_id=trace_id,
+                        )
                         continue
                     # Last attempt failed, return None
                     return None

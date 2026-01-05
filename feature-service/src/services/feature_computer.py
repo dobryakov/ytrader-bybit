@@ -36,6 +36,7 @@ class FeatureComputer:
         orderbook_manager: OrderbookManager,
         feature_registry_version: str = "1.0.0",
         feature_registry_loader: Optional["FeatureRegistryLoader"] = None,
+        shared_rolling_windows: Optional[Dict[str, RollingWindows]] = None,
     ):
         """
         Initialize feature computer.
@@ -44,9 +45,15 @@ class FeatureComputer:
             orderbook_manager: OrderbookManager instance
             feature_registry_version: Feature Registry version string
             feature_registry_loader: Optional FeatureRegistryLoader for filtering features
+            shared_rolling_windows: Optional shared rolling windows dict (shared across versions)
         """
         self._orderbook_manager = orderbook_manager
-        self._rolling_windows: Dict[str, RollingWindows] = {}
+        if shared_rolling_windows is not None:
+            self._rolling_windows = shared_rolling_windows  # Use shared windows
+            self._uses_shared_windows = True
+        else:
+            self._rolling_windows: Dict[str, RollingWindows] = {}  # Local windows (legacy)
+            self._uses_shared_windows = False
         self._feature_registry_version = feature_registry_version
         self._feature_registry_loader = feature_registry_loader
         self._latest_funding_rate: Dict[str, Optional[float]] = {}
@@ -271,54 +278,64 @@ class FeatureComputer:
     
     def get_rolling_windows(self, symbol: str) -> RollingWindows:
         """Get or create rolling windows for symbol."""
-        if symbol not in self._rolling_windows:
-            from datetime import datetime, timezone
-            import pandas as pd
+        if symbol in self._rolling_windows:
+            return self._rolling_windows[symbol]
+        
+        # Create rolling windows (works for both shared and local modes)
+        from datetime import datetime, timezone
+        import pandas as pd
 
-            # Если по какой-то причине требования ещё не посчитаны — посчитаем здесь
-            if self._window_requirements is None:
-                self._update_window_requirements()
+        # Если по какой-то причине требования ещё не посчитаны — посчитаем здесь
+        if self._window_requirements is None:
+            self._update_window_requirements()
 
-            trade_intervals = (
-                self._window_requirements.trade_intervals
-                if self._window_requirements is not None
-                else {"1m"}
-            )
+        trade_intervals = (
+            self._window_requirements.trade_intervals
+            if self._window_requirements is not None
+            else {"1m"}
+        )
 
-            windows: Dict[str, "pd.DataFrame"] = {}
-            for interval in trade_intervals:
+        windows: Dict[str, "pd.DataFrame"] = {}
+        for interval in trade_intervals:
+            if interval == "1m":
+                # Klines window
+                windows[interval] = pd.DataFrame(
+                    columns=["timestamp", "open", "high", "low", "close", "volume"]
+                )
+            else:
                 # трейдовые окна содержат price/volume/side
                 windows[interval] = pd.DataFrame(
                     columns=["timestamp", "price", "volume", "side"]
                 )
 
-            # 1m окно для клайнов всегда нужно (add_kline пишет именно туда)
-            if "1m" not in windows:
-                windows["1m"] = pd.DataFrame(
-                    columns=["timestamp", "open", "high", "low", "close", "volume"]
-                )
+        # 1m окно для клайнов всегда нужно (add_kline пишет именно туда)
+        if "1m" not in windows:
+            windows["1m"] = pd.DataFrame(
+                columns=["timestamp", "open", "high", "low", "close", "volume"]
+            )
 
-            max_lookback = (
-                self._window_requirements.max_lookback_minutes_1m
-                if self._window_requirements is not None
-                else None
-            )
-            
-            logger.info(
-                "rolling_windows_created",
-                symbol=symbol,
-                trade_intervals=sorted(trade_intervals),
-                max_lookback_minutes_1m=max_lookback,
-                feature_registry_version=self._feature_registry_version,
-            )
-            
-            self._rolling_windows[symbol] = RollingWindows(
-                symbol=symbol,
-                windows=windows,
-                last_update=datetime.now(timezone.utc),
-                window_intervals=trade_intervals,
-                max_lookback_minutes_1m=max_lookback,
-            )
+        max_lookback = (
+            self._window_requirements.max_lookback_minutes_1m
+            if self._window_requirements is not None
+            else 30  # Default
+        )
+        
+        logger.info(
+            "rolling_windows_created",
+            symbol=symbol,
+            trade_intervals=sorted(trade_intervals),
+            max_lookback_minutes_1m=max_lookback,
+            feature_registry_version=self._feature_registry_version,
+            uses_shared_windows=self._uses_shared_windows,
+        )
+        
+        self._rolling_windows[symbol] = RollingWindows(
+            symbol=symbol,
+            windows=windows,
+            last_update=datetime.now(timezone.utc),
+            window_intervals=trade_intervals,
+            max_lookback_minutes_1m=max_lookback,
+        )
 
         return self._rolling_windows[symbol]
     

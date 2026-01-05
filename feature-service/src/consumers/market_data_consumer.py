@@ -114,6 +114,13 @@ class MarketDataConsumer:
         for channel_config in channels:
             await self._create_single_subscription(channel_config)
     
+    def _get_expected_subscription_count(self) -> int:
+        """Get expected number of subscriptions based on configured channels."""
+        # Count actual channel types being created (not commented out)
+        # Currently only "kline" is active
+        active_channel_types = ["kline"]  # Update when uncommenting other channels
+        return len(self._symbols) * len(active_channel_types)
+    
     async def _create_single_subscription(
         self, 
         channel_config: Dict, 
@@ -221,7 +228,7 @@ class MarketDataConsumer:
                     continue
                 
                 # Check if we have all expected subscriptions
-                expected_count = len(self._symbols) * 5  # 5 channel types per symbol
+                expected_count = self._get_expected_subscription_count()
                 if len(self._subscriptions) < expected_count:
                     logger.info(
                         "retrying_failed_subscriptions",

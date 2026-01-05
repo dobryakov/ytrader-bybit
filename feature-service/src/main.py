@@ -5,12 +5,13 @@ Initializes FastAPI application with basic routing and health check.
 """
 
 import asyncio
+from typing import Dict
 from fastapi import FastAPI, Depends, Request, status
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import Response
 from src.api.health import router as health_router
-from src.api.features import router as features_router, set_feature_computer
+from src.api.features import router as features_router, set_feature_computer, set_feature_computer_manager
 from src.api.dataset import (
     router as dataset_router,
     set_metadata_storage,
@@ -47,6 +48,8 @@ from src.http.client import HTTPClient
 from src.services.orderbook_manager import OrderbookManager
 from src.services.feature_computer import FeatureComputer
 from src.services.feature_registry import FeatureRegistryLoader
+from src.services.feature_computer_manager import FeatureComputerManager
+from src.models.rolling_windows import RollingWindows
 from src.services.feature_registry_version_manager import FeatureRegistryVersionManager
 from src.services.target_registry_version_manager import TargetRegistryVersionManager
 from src.consumers.market_data_consumer import MarketDataConsumer
@@ -76,6 +79,8 @@ mq_manager: MQConnectionManager = None
 http_client: HTTPClient = None
 orderbook_manager: OrderbookManager = None
 feature_computer: FeatureComputer = None
+feature_computer_manager: FeatureComputerManager = None
+shared_rolling_windows: Dict[str, RollingWindows] = {}  # Shared across all versions
 feature_registry_loader: FeatureRegistryLoader = None
 feature_registry_version_manager: FeatureRegistryVersionManager = None
 target_registry_version_manager: TargetRegistryVersionManager = None
@@ -204,6 +209,7 @@ async def general_exception_handler(request: Request, exc: Exception):
 async def startup():
     """Application startup event."""
     global mq_manager, http_client, orderbook_manager, feature_computer
+    global feature_computer_manager, shared_rolling_windows
     global feature_registry_loader, feature_registry_version_manager, target_registry_version_manager
     global market_data_consumer, feature_publisher, feature_scheduler
     global metadata_storage, dataset_builder, data_storage, backfilling_service
@@ -315,15 +321,42 @@ async def startup():
                 path=str(config.feature_registry_path),
             )
         
-        # Initialize Feature Computer
-        feature_computer = FeatureComputer(
-            orderbook_manager=orderbook_manager,
-            feature_registry_version=registry_version,
-            feature_registry_loader=feature_registry_loader,
-        )
-        
-        # Set feature computer for API
-        set_feature_computer(feature_computer)
+        # Initialize Feature Computer (with versioning support if DB mode enabled)
+        if use_db_mode and feature_registry_version_manager:
+            # New architecture: use FeatureComputerManager with shared rolling windows
+            shared_rolling_windows = {}
+            feature_computer_manager = FeatureComputerManager(
+                orderbook_manager=orderbook_manager,
+                feature_registry_version_manager=feature_registry_version_manager,
+                shared_rolling_windows=shared_rolling_windows,
+            )
+            
+            # Get active FeatureComputer through manager (creates it with shared windows)
+            feature_computer = await feature_computer_manager.get_or_create_computer(
+                feature_registry_version=None  # None = active version
+            )
+            
+            # Set manager for API (for versioned requests)
+            set_feature_computer_manager(feature_computer_manager)
+            # Also set feature_computer for backward compatibility
+            set_feature_computer(feature_computer)
+            
+            logger.info(
+                "FeatureComputerManager initialized",
+                active_version=registry_version,
+            )
+        else:
+            # Legacy mode: create FeatureComputer directly (without shared windows)
+            feature_computer = FeatureComputer(
+                orderbook_manager=orderbook_manager,
+                feature_registry_version=registry_version,
+                feature_registry_loader=feature_registry_loader,
+            )
+            
+            # Set feature computer for API
+            set_feature_computer(feature_computer)
+            feature_computer_manager = None
+            shared_rolling_windows = {}
         
         # Set Feature Registry components for API
         set_feature_registry_loader(feature_registry_loader)

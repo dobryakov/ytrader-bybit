@@ -28,7 +28,9 @@ class TestFeatureComputer:
         computer = FeatureComputer(orderbook_manager)
         
         assert computer._orderbook_manager == orderbook_manager
-        assert computer._rolling_windows == {}
+        # In legacy mode (no shared_rolling_windows), _rolling_windows should be empty dict
+        assert isinstance(computer._rolling_windows, dict)
+        assert computer._uses_shared_windows is False
     
     def test_get_rolling_windows(self, feature_computer):
         """Test getting rolling windows."""
