@@ -60,11 +60,11 @@ class FeatureRequirementsAnalyzer:
         # Price features
         "price": [
             "mid_price", "spread_abs", "spread_rel",
-            "returns_1s", "returns_3s", "returns_1m", "returns_3m", "returns_5m",
+            "returns_1s", "returns_3s", "returns_1m", "returns_3m", "returns_5m", "returns_45m",
             "vwap_3s", "vwap_15s", "vwap_1m", "vwap_3m", "vwap_5m",
             "volume_3s", "volume_15s", "volume_1m", "volume_3m", "volume_5m",
-            "volatility_1m", "volatility_5m", "volatility_10m", "volatility_15m",
-            "price_ema21_ratio",
+            "volatility_1m", "volatility_5m", "volatility_10m", "volatility_15m", "volatility_45m",
+            "price_ema21_ratio", "price_ema_ratio",
         ],
         # Technical indicators
         "technical": [

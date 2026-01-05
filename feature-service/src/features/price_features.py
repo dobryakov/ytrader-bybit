@@ -442,6 +442,41 @@ def compute_price_ema21_ratio(
     return float(current_price / ema_21)
 
 
+def compute_price_ema_ratio(
+    rolling_windows: RollingWindows,
+    current_price: Optional[float],
+    ema_period: int,
+) -> Optional[float]:
+    """
+    Compute price to EMA ratio with dynamic period.
+    
+    Computes EMA(period) using technical_indicators.compute_ema() and
+    computes ratio as current_price / ema.
+    
+    Args:
+        rolling_windows: RollingWindows instance with kline data
+        current_price: Current price (from latest kline close or provided parameter)
+        ema_period: EMA period (e.g., 21 for EMA21)
+        
+    Returns:
+        Ratio value or None if EMA is None or zero
+    """
+    if current_price is None:
+        return None
+    
+    # Import here to avoid circular dependency
+    from src.features.technical_indicators import compute_ema
+    
+    # Compute EMA with specified period
+    ema = compute_ema(rolling_windows, period=ema_period)
+    
+    if ema is None or ema == 0:
+        return None
+    
+    # Compute ratio: current_price / ema
+    return float(current_price / ema)
+
+
 def compute_volume_ratio_20(
     rolling_windows: RollingWindows,
     current_volume: Optional[float],
@@ -517,17 +552,54 @@ def _should_compute(name: str, allowed: Opt[Iterable[str]]) -> bool:
     return name in allowed
 
 
+def _parse_lookback_window_to_minutes(lookback_window: str) -> Optional[int]:
+    """
+    Parse lookback_window string to minutes.
+    
+    Supports formats: "21m", "45m", "1h", etc.
+    
+    Args:
+        lookback_window: Lookback window string (e.g., "21m", "45m")
+        
+    Returns:
+        Minutes as integer or None if invalid
+    """
+    if not lookback_window:
+        return None
+    
+    try:
+        unit = lookback_window[-1]
+        value = int(lookback_window[:-1])
+        
+        if unit == "m":
+            return value
+        elif unit == "h":
+            return value * 60
+        elif unit == "d":
+            return value * 24 * 60
+        elif unit == "s":
+            return max(1, value // 60)  # Convert seconds to minutes (min 1 minute)
+        else:
+            return None
+    except (ValueError, IndexError):
+        return None
+
+
 def compute_all_price_features(
     orderbook: Optional[OrderbookState],
     rolling_windows: RollingWindows,
     current_price: Optional[float],
     allowed_feature_names: Opt[Iterable[str]] = None,
+    feature_lookback_windows: Opt[Dict[str, str]] = None,
 ) -> Dict[str, Optional[float]]:
     """
     Compute all price features.
 
     allowed_feature_names — опциональный список имён фич из Feature Registry.
     Если он передан, мы не только фильтруем по нему, но и не считаем лишние фичи.
+    
+    feature_lookback_windows — опциональный словарь feature_name -> lookback_window
+    для динамических фич (например, price_ema_ratio).
     """
     features = {}
     
@@ -582,6 +654,24 @@ def compute_all_price_features(
                 value=result_5m,
                 current_price=current_price,
                 value_type=type(result_5m).__name__,
+            )
+    if _should_compute("returns_45m", allowed_feature_names):
+        result_45m = compute_returns(rolling_windows, 2700, current_price)  # 45 minutes = 2700 seconds
+        features["returns_45m"] = result_45m
+        import structlog
+        logger = structlog.get_logger(__name__)
+        if result_45m is None:
+            logger.warning(
+                "returns_45m_computed_as_none",
+                current_price=current_price,
+                total_klines=len(rolling_windows.get_window_data("1m")),
+            )
+        else:
+            logger.info(
+                "returns_45m_computed_success",
+                value=result_45m,
+                current_price=current_price,
+                value_type=type(result_45m).__name__,
             )
     
     # VWAP
@@ -648,12 +738,53 @@ def compute_all_price_features(
                 value=result_15m,
                 value_type=type(result_15m).__name__,
             )
+    if _should_compute("volatility_45m", allowed_feature_names):
+        result_45m = compute_volatility(rolling_windows, 2700)  # 45 minutes = 2700 seconds
+        features["volatility_45m"] = result_45m
+        import structlog
+        logger = structlog.get_logger(__name__)
+        if result_45m is None:
+            logger.warning(
+                "volatility_45m_computed_as_none",
+                total_klines=len(rolling_windows.get_window_data("1m")),
+            )
+        else:
+            logger.info(
+                "volatility_45m_computed_success",
+                value=result_45m,
+                value_type=type(result_45m).__name__,
+            )
     
-    # Price to EMA21 ratio
+    # Price to EMA21 ratio (legacy, fixed period)
     if _should_compute("price_ema21_ratio", allowed_feature_names):
         features["price_ema21_ratio"] = compute_price_ema21_ratio(
             rolling_windows, current_price
         )
+    
+    # Price to EMA ratio (dynamic period from lookback_window)
+    if _should_compute("price_ema_ratio", allowed_feature_names):
+        if feature_lookback_windows and "price_ema_ratio" in feature_lookback_windows:
+            lookback_window = feature_lookback_windows["price_ema_ratio"]
+            # Parse lookback_window (e.g., "21m" -> 21)
+            ema_period = _parse_lookback_window_to_minutes(lookback_window)
+            if ema_period is not None and ema_period > 0:
+                features["price_ema_ratio"] = compute_price_ema_ratio(
+                    rolling_windows, current_price, ema_period
+                )
+            else:
+                import structlog
+                logger = structlog.get_logger(__name__)
+                logger.warning(
+                    "price_ema_ratio_invalid_lookback_window",
+                    lookback_window=lookback_window,
+                    parsed_period=ema_period,
+                )
+                features["price_ema_ratio"] = None
+        else:
+            # Fallback: use default period 21 if lookback_window not provided
+            features["price_ema_ratio"] = compute_price_ema_ratio(
+                rolling_windows, current_price, 21
+            )
     
     # Note: rsi_14 and ema_21 are computed in compute_all_technical_indicators()
     # to avoid duplication. They will be added separately.

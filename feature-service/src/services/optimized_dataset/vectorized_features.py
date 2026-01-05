@@ -241,11 +241,13 @@ def compute_price_features_vectorized(
     result = pd.DataFrame({"timestamp": timestamps})
     
     # Initialize columns
+    # Note: price_ema21_ratio and price_ema_ratio are computed in HybridFeatureComputer
+    # because they depend on EMA which is computed separately
     price_feature_columns = [
-        "returns_1s", "returns_3s", "returns_1m", "returns_3m", "returns_5m",
+        "returns_1s", "returns_3s", "returns_1m", "returns_3m", "returns_5m", "returns_45m",
         "vwap_3s", "vwap_15s", "vwap_1m", "vwap_3m", "vwap_5m",
         "volume_3s", "volume_15s", "volume_1m", "volume_3m", "volume_5m",
-        "volatility_1m", "volatility_5m", "volatility_10m", "volatility_15m",
+        "volatility_1m", "volatility_5m", "volatility_10m", "volatility_15m", "volatility_45m",
     ]
     
     for col in price_feature_columns:
@@ -288,7 +290,7 @@ def compute_price_features_vectorized(
                 continue
             
             # Compute returns for different windows
-            for window_seconds in [1, 3, 60, 180, 300]:
+            for window_seconds in [1, 3, 60, 180, 300, 2700]:  # 2700 = 45 minutes
                 window_start = ts - timedelta(seconds=window_seconds)
                 window_klines = klines_before[klines_before["timestamp"] > window_start]
                 
@@ -307,9 +309,11 @@ def compute_price_features_vectorized(
                             result.at[idx, "returns_3m"] = returns
                         elif window_seconds == 300:
                             result.at[idx, "returns_5m"] = returns
+                        elif window_seconds == 2700:
+                            result.at[idx, "returns_45m"] = returns
             
             # Compute volatility for different windows
-            for window_minutes in [1, 5, 10, 15]:
+            for window_minutes in [1, 5, 10, 15, 45]:
                 window_start = ts - timedelta(minutes=window_minutes)
                 window_klines = klines_before[klines_before["timestamp"] > window_start]
                 
@@ -330,6 +334,8 @@ def compute_price_features_vectorized(
                                 result.at[idx, "volatility_10m"] = volatility
                             elif window_minutes == 15:
                                 result.at[idx, "volatility_15m"] = volatility
+                            elif window_minutes == 45:
+                                result.at[idx, "volatility_45m"] = volatility
     
     # Process trades for VWAP and volume
     if not trades_df.empty and "timestamp" in trades_df.columns:

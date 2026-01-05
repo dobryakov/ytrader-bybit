@@ -1154,33 +1154,36 @@ def compute_all_candle_patterns_45m(
         # and approximate missing 15-minute candles later
         klines_sorted = klines_1m.sort_values("timestamp").reset_index(drop=True)
         
-        if len(klines_sorted) < 15:
-            # Need at least 15 minutes to create 1 fifteen-minute candle
-            first_ts = klines_sorted.iloc[0]["timestamp"].isoformat() if len(klines_sorted) > 0 else None
-            last_ts = klines_sorted.iloc[-1]["timestamp"].isoformat() if len(klines_sorted) > 0 else None
-            
-            # Calculate time span to understand the gap
-            time_span_minutes = 0
-            if first_ts and last_ts:
-                first_dt = pd.to_datetime(first_ts)
-                last_dt = pd.to_datetime(last_ts)
-                time_span_minutes = (last_dt - first_dt).total_seconds() / 60.0
-            
-            logger.warning(
-                "compute_all_candle_patterns_45m_insufficient_1m_klines",
-                klines_1m_count=len(klines_sorted),
-                required_count=15,
-                available_columns=list(klines_sorted.columns),
-                target_timestamp=now.isoformat(),
-                start_time=start_time.isoformat(),
-                end_time=end_time.isoformat(),
-                first_kline_timestamp=first_ts,
-                last_kline_timestamp=last_ts,
-                time_span_minutes=time_span_minutes,
-                time_span_should_be_minutes=45.0,
-                gap_minutes=45.0 - time_span_minutes if time_span_minutes < 45.0 else 0.0,
-            )
-            return _get_empty_features_dict()
+        if len(klines_sorted) < 45:
+            # Need at least 45 minutes to create 3 fifteen-minute candles
+            # But we can work with less if we have at least 15 minutes (1 candle) and approximate the rest
+            if len(klines_sorted) < 15:
+                # Need at least 15 minutes to create 1 fifteen-minute candle
+                first_ts = klines_sorted.iloc[0]["timestamp"].isoformat() if len(klines_sorted) > 0 else None
+                last_ts = klines_sorted.iloc[-1]["timestamp"].isoformat() if len(klines_sorted) > 0 else None
+                
+                # Calculate time span to understand the gap
+                time_span_minutes = 0
+                if first_ts and last_ts:
+                    first_dt = pd.to_datetime(first_ts)
+                    last_dt = pd.to_datetime(last_ts)
+                    time_span_minutes = (last_dt - first_dt).total_seconds() / 60.0
+                
+                logger.warning(
+                    "compute_all_candle_patterns_45m_insufficient_1m_klines",
+                    klines_1m_count=len(klines_sorted),
+                    required_count=15,
+                    available_columns=list(klines_sorted.columns),
+                    target_timestamp=now.isoformat(),
+                    start_time=start_time.isoformat(),
+                    end_time=end_time.isoformat(),
+                    first_kline_timestamp=first_ts,
+                    last_kline_timestamp=last_ts,
+                    time_span_minutes=time_span_minutes,
+                    time_span_should_be_minutes=45.0,
+                    gap_minutes=45.0 - time_span_minutes if time_span_minutes < 45.0 else 0.0,
+                )
+                return _get_empty_features_dict()
         
         if len(klines_sorted) < 45:
             # We have some data but not enough for 3 fifteen-minute candles
@@ -1368,6 +1371,10 @@ def compute_all_candle_patterns_45m(
     features["pattern_all_green"] = 1.0 if (candle_0_features["is_green"] and candle_1_features["is_green"] and candle_2_features["is_green"]) else 0.0
     features["pattern_all_red"] = 1.0 if (candle_0_features["is_red"] and candle_1_features["is_red"] and candle_2_features["is_red"]) else 0.0
     features["pattern_green_red_green"] = 1.0 if (candle_0_features["is_green"] and candle_1_features["is_red"] and candle_2_features["is_green"]) else 0.0
+    
+    # Body size patterns
+    features["pattern_body_increasing"] = 1.0 if (body_size_0 < body_size_1 < body_size_2) else 0.0
+    features["pattern_body_decreasing"] = 1.0 if (body_size_0 > body_size_1 > body_size_2) else 0.0
     
     # Volume patterns
     features["pattern_volume_increasing"] = 1.0 if (volume_0 < volume_1 < volume_2) else 0.0

@@ -239,11 +239,27 @@ class RedisCacheService(CacheService):
         
         try:
             if pattern:
-                # Use SCAN to find matching keys
+                # Use SCAN to find matching keys with batching to avoid connection pool exhaustion
                 deleted_count = 0
-                async for key in self._client.scan_iter(match=pattern):
-                    await self._client.delete(key)
-                    deleted_count += 1
+                batch_size = 100  # Process keys in batches to avoid too many connections
+                batch = []
+                
+                async for key in self._client.scan_iter(match=pattern, count=100):
+                    batch.append(key)
+                    
+                    # When batch is full, delete keys in batch (Redis supports multi-key delete)
+                    if len(batch) >= batch_size:
+                        # Use UNLINK for non-blocking deletion (better for large keys)
+                        # UNLINK accepts multiple keys and deletes them atomically
+                        await self._client.unlink(*batch)
+                        deleted_count += len(batch)
+                        batch.clear()
+                
+                # Delete remaining keys in final batch
+                if batch:
+                    await self._client.unlink(*batch)
+                    deleted_count += len(batch)
+                
                 return deleted_count
             else:
                 # Clear all keys in current database

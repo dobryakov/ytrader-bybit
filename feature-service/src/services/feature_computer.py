@@ -492,12 +492,41 @@ class FeatureComputer:
             # Compute all feature groups
             all_features = {}
             
+            # Build feature_lookback_windows dict for dynamic features
+            feature_lookback_windows = {}
+            if self._feature_registry_loader:
+                try:
+                    registry_model = self._feature_registry_loader._registry_model
+                    if registry_model and registry_model.features:
+                        for feature in registry_model.features:
+                            # Support dynamic features that need lookback_window
+                            if feature.name in ["price_ema_ratio"]:
+                                if feature.lookback_window:
+                                    feature_lookback_windows[feature.name] = feature.lookback_window
+                    else:
+                        # Try config fallback
+                        config = self._feature_registry_loader.get_config()
+                        if config and "features" in config:
+                            for feat in config["features"]:
+                                name = feat.get("name")
+                                if name in ["price_ema_ratio"]:
+                                    lookback = feat.get("lookback_window")
+                                    if lookback:
+                                        feature_lookback_windows[name] = lookback
+                except Exception as e:
+                    logger.debug(
+                        "failed_to_extract_feature_lookback_windows",
+                        error=str(e),
+                        error_type=type(e).__name__,
+                    )
+            
             # Price features
             price_features = compute_all_price_features(
                 orderbook,
                 rolling_windows,
                 current_price,
                 allowed_feature_names=self._allowed_feature_names,
+                feature_lookback_windows=feature_lookback_windows if feature_lookback_windows else None,
             )
             all_features.update(price_features)
             

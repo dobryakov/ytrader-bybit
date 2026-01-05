@@ -79,6 +79,11 @@ class TestCandlePatterns45m:
         assert "pattern_volume_decreasing" in features
         assert "pattern_green_large_volume" in features
         
+        # Check that pattern_body_increasing and pattern_body_decreasing are computed
+        # This was the bug: these features were missing from the returned dictionary
+        assert "pattern_body_increasing" in features, "pattern_body_increasing must be present"
+        assert "pattern_body_decreasing" in features, "pattern_body_decreasing must be present"
+        
         # Verify binary features are 0.0 or 1.0, ratio features are floats
         for key, value in features.items():
             if value is not None:
@@ -148,4 +153,70 @@ class TestCandlePatterns45m:
                     "candle_0_upper_shadow_ratio", "candle_0_lower_shadow_ratio"]:
             if features[key] is not None:
                 assert 0.0 <= features[key] <= 1.0, f"{key} should be between 0 and 1"
+    
+    def test_compute_all_candle_patterns_45m_pattern_body_features(self, sample_rolling_windows_15m_klines):
+        """Test that pattern_body_increasing and pattern_body_decreasing are computed correctly."""
+        rw = RollingWindows(**sample_rolling_windows_15m_klines)
+        
+        features = compute_all_candle_patterns_45m(rw)
+        
+        # These features were missing in the original implementation
+        # The main fix was adding these features to the returned dictionary
+        assert "pattern_body_increasing" in features, "pattern_body_increasing must be present in returned dict"
+        assert "pattern_body_decreasing" in features, "pattern_body_decreasing must be present in returned dict"
+        
+        # Values should be 0.0 or 1.0 (binary features) or None if insufficient data
+        # The key fix is that these features are now in the dictionary (they were missing before)
+        if features["pattern_body_increasing"] is not None:
+            assert features["pattern_body_increasing"] in [0.0, 1.0], \
+                f"pattern_body_increasing should be 0.0 or 1.0, got {features['pattern_body_increasing']}"
+        if features["pattern_body_decreasing"] is not None:
+            assert features["pattern_body_decreasing"] in [0.0, 1.0], \
+                f"pattern_body_decreasing should be 0.0 or 1.0, got {features['pattern_body_decreasing']}"
+        
+        # The main assertion: these features must be in the dictionary
+        # This verifies the fix: these features are now in the returned dictionary
+        # (Before the fix, they were completely missing from the dict)
+    
+    def test_compute_all_candle_patterns_45m_insufficient_data_15_to_45_minutes(self):
+        """Test pattern computation with 15-45 minutes of data (should aggregate 1m klines)."""
+        base_time = datetime.now(timezone.utc)
+        
+        # Create 20 minutes of 1-minute klines (less than 45, but more than 15)
+        klines_1m_data = []
+        base_price = 50000.0
+        for minute in range(20):
+            klines_1m_data.append({
+                "timestamp": base_time - timedelta(minutes=20-minute),
+                "open": base_price + minute * 0.5,
+                "high": base_price + minute * 0.5 + 10.0,
+                "low": base_price + minute * 0.5 - 10.0,
+                "close": base_price + minute * 0.5 + 5.0,
+                "volume": 10.0 + minute,
+            })
+        
+        df_1m = pd.DataFrame(klines_1m_data)
+        
+        rw = RollingWindows(
+            symbol="BTCUSDT",
+            windows={"1m": df_1m},
+            last_update=base_time,
+        )
+        
+        features = compute_all_candle_patterns_45m(rw)
+        
+        # Function should aggregate 1m klines into 15m candles and compute features
+        # Even with less than 45 minutes, it should approximate missing candles
+        assert isinstance(features, dict)
+        assert len(features) > 0
+        
+        # Key features should be present
+        assert "pattern_body_increasing" in features, "pattern_body_increasing should be computed even with insufficient data"
+        assert "pattern_body_decreasing" in features, "pattern_body_decreasing should be computed even with insufficient data"
+        
+        # Values should not be None (function should approximate)
+        assert features["pattern_body_increasing"] is not None, \
+            "pattern_body_increasing should not be None (should use approximation)"
+        assert features["pattern_body_decreasing"] is not None, \
+            "pattern_body_decreasing should not be None (should use approximation)"
 

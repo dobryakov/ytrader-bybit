@@ -18,6 +18,7 @@ from .vectorized_features import (
     compute_orderflow_features_vectorized,
     compute_price_features_vectorized,
 )
+import numpy as np
 from src.features.orderbook_features import compute_all_orderbook_features
 from src.features.perpetual_features import compute_all_perpetual_features
 from src.features.temporal_features import compute_all_temporal_features
@@ -256,7 +257,18 @@ class HybridFeatureComputer:
         result = pd.DataFrame({"timestamp": timestamps})
         
         # Step 1: Vectorized computation for technical indicators
-        if "technical" in self.requirements.feature_groups:
+        # Check if we need technical indicators (either explicitly or for price_ema_ratio)
+        needs_technical = "technical" in self.requirements.feature_groups
+        needs_ema_for_price_ratio = False
+        
+        # Check if price_ema_ratio or price_ema21_ratio are in the registry
+        if self.feature_registry and self.feature_registry.features:
+            for feature in self.feature_registry.features:
+                if feature.name in ["price_ema_ratio", "price_ema21_ratio"]:
+                    needs_ema_for_price_ratio = True
+                    break
+        
+        if needs_technical or needs_ema_for_price_ratio:
             technical_df = compute_technical_indicators_vectorized(
                 klines_df=klines_df,
                 timestamps=timestamps,
@@ -267,6 +279,15 @@ class HybridFeatureComputer:
             for col in ["ema_21", "rsi_14"]:
                 if col in technical_df.columns:
                     result[col] = technical_df[col]
+        
+        # Initialize ema_21 column if needed for price_ema_ratio but not computed above
+        if needs_ema_for_price_ratio and "ema_21" not in result.columns:
+            result["ema_21"] = None
+            logger.debug(
+                "ema_21_initialized_for_price_ema_ratio",
+                needs_ema_for_price_ratio=needs_ema_for_price_ratio,
+                has_technical_group="technical" in self.requirements.feature_groups,
+            )
         
         # Step 2: Vectorized computation for orderflow features
         if "orderflow" in self.requirements.feature_groups and not trades_df.empty:
@@ -295,6 +316,160 @@ class HybridFeatureComputer:
             for col in price_df.columns:
                 if col != "timestamp":
                     result[col] = price_df[col]
+            
+            # Initialize price_ema21_ratio and price_ema_ratio columns
+            result["price_ema21_ratio"] = None
+            result["price_ema_ratio"] = None
+            
+            # Check if we need to compute price_ema_ratio
+            needs_price_ema_ratio = False
+            if self.feature_registry and self.feature_registry.features:
+                for feature in self.feature_registry.features:
+                    if feature.name in ["price_ema_ratio", "price_ema21_ratio"]:
+                        needs_price_ema_ratio = True
+                        break
+            
+            # Compute price_ema21_ratio and price_ema_ratio if ema_21 is available
+            # Check if ema_21 was computed (even if all values are None)
+            has_ema_21_column = "ema_21" in result.columns
+            if has_ema_21_column and current_prices is not None:
+                # price_ema21_ratio = current_price / ema_21
+                for idx in range(len(timestamps)):
+                    if idx >= len(current_prices) or idx >= len(result):
+                        continue
+                    current_price = current_prices.iloc[idx]
+                    ema_21 = result.at[idx, "ema_21"]
+                    if pd.notna(current_price) and current_price > 0:
+                        if pd.notna(ema_21) and ema_21 > 0:
+                            result.at[idx, "price_ema21_ratio"] = float(current_price / ema_21)
+                
+                # price_ema_ratio with dynamic period from feature_registry
+                logger.debug(
+                    "computing_price_ema_ratio",
+                    has_feature_registry=self.feature_registry is not None,
+                    has_ema_21_column=has_ema_21_column,
+                    ema_21_notna_count=result["ema_21"].notna().sum() if has_ema_21_column else 0,
+                    current_prices_notna_count=current_prices.notna().sum() if current_prices is not None else 0,
+                )
+                
+                if self.feature_registry:
+                    try:
+                        # Get lookback_window for price_ema_ratio from registry
+                        ema_period = 21  # default
+                        registry_model = getattr(self.feature_registry, "_registry_model", None)
+                        if registry_model and registry_model.features:
+                            for feature in registry_model.features:
+                                if feature.name == "price_ema_ratio" and feature.lookback_window:
+                                    # Parse lookback_window (e.g., "45m" -> 45)
+                                    lookback = feature.lookback_window
+                                    if lookback.endswith("m"):
+                                        ema_period = int(lookback[:-1])
+                                    break
+                        else:
+                            # Try config fallback
+                            config = self.feature_registry.get_config() if hasattr(self.feature_registry, "get_config") else None
+                            if config and "features" in config:
+                                for feat in config["features"]:
+                                    if feat.get("name") == "price_ema_ratio":
+                                        lookback = feat.get("lookback_window", "21m")
+                                        if lookback.endswith("m"):
+                                            ema_period = int(lookback[:-1])
+                                        break
+                        
+                        # Compute EMA with dynamic period
+                        if ema_period != 21:
+                            # Need to compute EMA with different period
+                            technical_df_custom = compute_technical_indicators_vectorized(
+                                klines_df=klines_df,
+                                timestamps=timestamps,
+                                period_ema=ema_period,
+                                period_rsi=14,  # Not used for price_ema_ratio
+                            )
+                            # Note: compute_technical_indicators_vectorized returns "ema_21" column
+                            # but it actually contains EMA with the specified period
+                            ema_custom_col = "ema_21"  # Column name is fixed, but value is for ema_period
+                            if ema_custom_col in technical_df_custom.columns:
+                                # Store in a temporary column to avoid overwriting ema_21
+                                temp_col = f"_ema_{ema_period}_temp"
+                                result[temp_col] = technical_df_custom[ema_custom_col]
+                                
+                                # Compute price_ema_ratio
+                                for idx in range(len(timestamps)):
+                                    if idx >= len(current_prices) or idx >= len(result) or temp_col not in result.columns:
+                                        continue
+                                    current_price = current_prices.iloc[idx]
+                                    ema_custom = result.at[idx, temp_col]
+                                    if pd.notna(current_price) and current_price > 0:
+                                        if pd.notna(ema_custom) and ema_custom > 0:
+                                            result.at[idx, "price_ema_ratio"] = float(current_price / ema_custom)
+                                # Clean up temporary column
+                                result.drop(columns=[temp_col], inplace=True, errors='ignore')
+                        else:
+                            # Use ema_21 for price_ema_ratio if period is 21
+                            result["price_ema_ratio"] = result["price_ema21_ratio"]
+                    except Exception as e:
+                        logger.warning(
+                            "failed_to_compute_price_ema_ratio",
+                            error=str(e),
+                            error_type=type(e).__name__,
+                            exc_info=True,
+                        )
+                        # Fallback: use price_ema21_ratio
+                        result["price_ema_ratio"] = result.get("price_ema21_ratio")
+                else:
+                    # No feature_registry: use default ema_21
+                    result["price_ema_ratio"] = result.get("price_ema21_ratio")
+            elif needs_price_ema_ratio and current_prices is not None:
+                # price_ema_ratio is in registry but ema_21 was not computed
+                # Try to compute it directly with the period from registry
+                if self.feature_registry:
+                    try:
+                        # Get lookback_window for price_ema_ratio from registry
+                        ema_period = 21  # default
+                        registry_model = getattr(self.feature_registry, "_registry_model", None)
+                        if registry_model and registry_model.features:
+                            for feature in registry_model.features:
+                                if feature.name == "price_ema_ratio" and feature.lookback_window:
+                                    lookback = feature.lookback_window
+                                    if lookback.endswith("m"):
+                                        ema_period = int(lookback[:-1])
+                                    break
+                        else:
+                            # Try config fallback
+                            config = self.feature_registry.get_config() if hasattr(self.feature_registry, "get_config") else None
+                            if config and "features" in config:
+                                for feat in config["features"]:
+                                    if feat.get("name") == "price_ema_ratio":
+                                        lookback = feat.get("lookback_window", "21m")
+                                        if lookback.endswith("m"):
+                                            ema_period = int(lookback[:-1])
+                                        break
+                        
+                        # Compute EMA with dynamic period
+                        technical_df_custom = compute_technical_indicators_vectorized(
+                            klines_df=klines_df,
+                            timestamps=timestamps,
+                            period_ema=ema_period,
+                            period_rsi=14,  # Not used for price_ema_ratio
+                        )
+                        ema_custom_col = "ema_21"  # Column name is fixed, but value is for ema_period
+                        if ema_custom_col in technical_df_custom.columns:
+                            # Compute price_ema_ratio directly
+                            for idx in range(len(timestamps)):
+                                if idx >= len(current_prices) or idx >= len(result):
+                                    continue
+                                current_price = current_prices.iloc[idx]
+                                ema_custom = technical_df_custom.iloc[idx][ema_custom_col]
+                                if pd.notna(current_price) and current_price > 0:
+                                    if pd.notna(ema_custom) and ema_custom > 0:
+                                        result.at[idx, "price_ema_ratio"] = float(current_price / ema_custom)
+                    except Exception as e:
+                        logger.warning(
+                            "failed_to_compute_price_ema_ratio_no_ema21",
+                            error=str(e),
+                            error_type=type(e).__name__,
+                            exc_info=True,
+                        )
         
         # Step 4: Streaming computation for orderbook features (if needed)
         if self.requirements.needs_orderbook and orderbook_states:

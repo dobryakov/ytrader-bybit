@@ -16,6 +16,7 @@ from src.features.price_features import (
     compute_vwap,
     compute_volume,
     compute_volatility,
+    compute_price_ema_ratio,
     compute_all_price_features,
 )
 
@@ -767,4 +768,205 @@ class TestPriceFeatures:
         assert ratio is not None
         expected_ratio = current_volume / expected_ma
         assert abs(ratio - expected_ratio) < 0.01
+    
+    def test_compute_returns_45m(self, sample_rolling_windows_klines):
+        """Test returns_45m computation for 45-minute window."""
+        from src.models.rolling_windows import RollingWindows
+        from src.features.price_features import compute_returns
+        from datetime import timedelta
+        import pandas as pd
+        
+        base_time = datetime.now(timezone.utc)
+        
+        # Create klines covering ~45 minutes
+        klines_data = []
+        for i in range(50):
+            klines_data.append({
+                "timestamp": base_time - timedelta(minutes=50-i),
+                "open": 49900.0 + i * 2.0,
+                "high": 49910.0 + i * 2.0,
+                "low": 49890.0 + i * 2.0,
+                "close": 49900.0 + i * 2.0,
+                "volume": 1.0 + i * 0.1,
+            })
+        
+        klines_df = pd.DataFrame(klines_data)
+        
+        rw = RollingWindows(
+            symbol="BTCUSDT",
+            windows={"1m": klines_df},
+            last_update=base_time,
+        )
+        
+        current_price = 50050.0
+        returns = compute_returns(rw, 2700, current_price)  # 45 minutes = 2700 seconds
+        
+        assert returns is not None
+        assert isinstance(returns, float)
+    
+    def test_compute_volatility_45m(self, sample_rolling_windows_klines):
+        """Test volatility_45m computation for 45-minute window."""
+        from src.models.rolling_windows import RollingWindows
+        from src.features.price_features import compute_volatility
+        from datetime import timedelta
+        
+        rw = RollingWindows(**sample_rolling_windows_klines)
+        base_time = rw.last_update
+        
+        # Add multiple klines for 45-minute period
+        closes = [49900.0 + i * 5.0 + (i % 3) * 10.0 for i in range(50)]
+        for i, close_price in enumerate(closes):
+            kline = {
+                "timestamp": base_time - timedelta(minutes=50-i),
+                "open": close_price - 5.0,
+                "high": close_price + 5.0,
+                "low": close_price - 10.0,
+                "close": close_price,
+                "volume": 5.0 + i,
+            }
+            rw.add_kline(kline)
+        
+        # Use universal function with 2700 seconds (45 minutes)
+        volatility = compute_volatility(rw, 2700)
+        
+        # Should compute volatility as std of returns
+        assert volatility is not None
+        assert isinstance(volatility, float)
+        assert volatility >= 0
+    
+    def test_compute_price_ema_ratio(self, sample_rolling_windows_klines):
+        """Test price_ema_ratio computation with dynamic period."""
+        from src.models.rolling_windows import RollingWindows
+        from src.features.price_features import compute_price_ema_ratio
+        from datetime import timedelta
+        
+        rw = RollingWindows(**sample_rolling_windows_klines)
+        base_time = rw.last_update
+        
+        # Add 45+ klines for EMA(45)
+        closes = [49900.0 + i * 10.0 for i in range(50)]
+        for i, close_price in enumerate(closes):
+            kline = {
+                "timestamp": base_time - timedelta(minutes=50-i),
+                "open": close_price - 5.0,
+                "high": close_price + 5.0,
+                "low": close_price - 10.0,
+                "close": close_price,
+                "volume": 5.0 + i,
+            }
+            rw.add_kline(kline)
+        
+        current_price = 50100.0
+        ratio = compute_price_ema_ratio(rw, current_price, 45)
+        
+        # Should compute ratio as current_price / ema_45
+        assert ratio is not None
+        assert isinstance(ratio, float)
+        assert ratio > 0
+    
+    def test_compute_price_ema_ratio_insufficient_data(self, sample_rolling_windows_klines):
+        """Test price_ema_ratio with insufficient data for EMA."""
+        from src.models.rolling_windows import RollingWindows
+        from src.features.price_features import compute_price_ema_ratio
+        
+        rw = RollingWindows(**sample_rolling_windows_klines)
+        # Only 2 klines, need at least 45 for EMA(45)
+        current_price = 50005.0
+        ratio = compute_price_ema_ratio(rw, current_price, 45)
+        
+        assert ratio is None
+    
+    def test_compute_all_price_features_with_45m_features(self, sample_orderbook_state, sample_rolling_windows_klines):
+        """Test compute_all_price_features includes returns_45m, volatility_45m, and price_ema_ratio."""
+        from src.models.orderbook_state import OrderbookState
+        from src.models.rolling_windows import RollingWindows
+        from datetime import timedelta
+        
+        orderbook = OrderbookState(**sample_orderbook_state)
+        rw = RollingWindows(**sample_rolling_windows_klines)
+        base_time = rw.last_update
+        
+        # Add enough klines for 45m features
+        for i in range(50):
+            kline = {
+                "timestamp": base_time - timedelta(minutes=50-i),
+                "open": 49900.0 + i * 2.0,
+                "high": 49910.0 + i * 2.0,
+                "low": 49890.0 + i * 2.0,
+                "close": 49900.0 + i * 2.0,
+                "volume": 5.0 + i * 0.1,
+            }
+            rw.add_kline(kline)
+        
+        current_price = orderbook.get_mid_price()
+        
+        # Test with feature_lookback_windows for price_ema_ratio
+        feature_lookback_windows = {"price_ema_ratio": "45m"}
+        allowed_features = {"returns_45m", "volatility_45m", "price_ema_ratio"}
+        
+        features = compute_all_price_features(
+            orderbook,
+            rw,
+            current_price,
+            allowed_feature_names=allowed_features,
+            feature_lookback_windows=feature_lookback_windows,
+        )
+        
+        # Check that all three features are computed
+        assert "returns_45m" in features
+        assert "volatility_45m" in features
+        assert "price_ema_ratio" in features
+        
+        # Features should have valid values (not None)
+        assert features["returns_45m"] is not None
+        assert features["volatility_45m"] is not None
+        assert features["price_ema_ratio"] is not None
+    
+    def test_compute_price_ema_ratio_without_technical_group(self):
+        """
+        Test that price_ema_ratio requirements are correctly identified.
+        
+        This tests the fix for the bug where price_ema_ratio was not computed because
+        ema_21 was only computed when "technical" group was in requirements.
+        
+        The fix ensures that HybridFeatureComputer computes ema_21 when price_ema_ratio
+        is in registry, even if technical group is not in requirements.
+        
+        Note: Full computation test is in test_dataset_feature_completeness.py
+        """
+        from src.services.optimized_dataset.requirements_analyzer import FeatureRequirementsAnalyzer
+        from src.models.feature_registry import FeatureRegistry, FeatureDefinition
+        
+        # Create registry with price_ema_ratio but WITHOUT ema_21
+        # This simulates the scenario where technical group is not included
+        features = [
+            FeatureDefinition(
+                name="price_ema_ratio",
+                input_sources=["kline"],
+                lookback_window="45m",
+                lookahead_forbidden=True,
+                max_lookback_days=1,
+            ),
+            FeatureDefinition(
+                name="returns_1m",
+                input_sources=["kline"],
+                lookback_window="1m",
+                lookahead_forbidden=True,
+                max_lookback_days=1,
+            ),
+        ]
+        
+        registry = FeatureRegistry(version="1.7.3", features=features)
+        
+        # Create requirements analyzer
+        analyzer = FeatureRequirementsAnalyzer()
+        requirements = analyzer.analyze(registry)
+        
+        # Verify that technical group is NOT in requirements (since ema_21 is not in registry)
+        assert "technical" not in requirements.feature_groups, \
+            "Technical group should not be in requirements when ema_21 is not in registry"
+        
+        # The fix ensures that HybridFeatureComputer will compute ema_21
+        # when price_ema_ratio is in registry, even if technical group is not in requirements
+        # This is tested in integration tests (test_dataset_feature_completeness.py)
 
