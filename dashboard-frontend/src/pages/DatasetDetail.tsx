@@ -501,6 +501,80 @@ export default function DatasetDetail() {
         </Card>
       )}
 
+      {/* Outlier Detection and Clipping */}
+      {data.target_config?.type === 'regression' && data.split_statistics?.outlier_detection && (
+        <Card className="border-blue-500 bg-blue-50 dark:bg-blue-900/20">
+          <CardHeader>
+            <CardTitle className="text-blue-800 dark:text-blue-200">
+              🔍 Обработка выбросов (Outlier Detection & Clipping)
+            </CardTitle>
+            <CardDescription className="text-blue-700 dark:text-blue-300">
+              Информация о примененной обработке выбросов: обнаружение и подрезка экстремальных значений таргета
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+                <div>
+                  <span className="text-sm text-muted-foreground">Метод:</span>
+                  <div className="font-mono font-semibold text-blue-800 dark:text-blue-200">
+                    {data.split_statistics.outlier_detection.method}
+                  </div>
+                </div>
+                <div>
+                  <span className="text-sm text-muted-foreground">Порог (3σ):</span>
+                  <div className="font-mono font-semibold text-blue-800 dark:text-blue-200">
+                    {data.split_statistics.outlier_detection.threshold.toFixed(6)}
+                  </div>
+                </div>
+                <div>
+                  <span className="text-sm text-muted-foreground">Всего выбросов:</span>
+                  <div className="font-mono font-semibold text-blue-800 dark:text-blue-200">
+                    {data.split_statistics.outlier_detection.total_outliers_detected.toLocaleString()}
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 pt-4 border-t">
+                <div>
+                  <span className="text-sm text-muted-foreground">Train Mean (μ):</span>
+                  <div className="font-mono text-sm">
+                    {data.split_statistics.outlier_detection.train_mean.toFixed(6)}
+                  </div>
+                </div>
+                <div>
+                  <span className="text-sm text-muted-foreground">Train Std (σ):</span>
+                  <div className="font-mono text-sm">
+                    {data.split_statistics.outlier_detection.train_std.toFixed(6)}
+                  </div>
+                </div>
+                <div>
+                  <span className="text-sm text-muted-foreground">Нижняя граница:</span>
+                  <div className="font-mono text-sm">
+                    {data.split_statistics.outlier_detection.lower_bound.toFixed(6)}
+                  </div>
+                </div>
+                <div>
+                  <span className="text-sm text-muted-foreground">Верхняя граница:</span>
+                  <div className="font-mono text-sm">
+                    {data.split_statistics.outlier_detection.upper_bound.toFixed(6)}
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-4 p-3 bg-blue-100 dark:bg-blue-900/30 rounded-md border border-blue-300 dark:border-blue-700">
+                <div className="text-xs text-blue-800 dark:text-blue-200">
+                  <strong>ℹ️ Как это работает:</strong> Порог 3σ вычисляется на train сплите (mean ± 3×std).
+                  Значения таргета, выходящие за эти границы, помечаются как выбросы (is_outlier = 1) и подрезаются
+                  до границ [mean - 3σ, mean + 3σ]. Это помогает стабилизировать обучение модели, сохраняя информацию
+                  о выбросах через флаг is_outlier, который может использоваться моделью как фича.
+                </div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Data Quality - Problematic Periods */}
       {data.data_quality && data.data_quality.problematic_periods_excluded && data.data_quality.problematic_periods_excluded > 0 && (
         <Card>

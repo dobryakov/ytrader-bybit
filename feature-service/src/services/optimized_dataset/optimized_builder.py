@@ -477,6 +477,9 @@ class OptimizedDatasetBuilder:
                     features_df, targets_df, dataset
                 )
             
+            # Step 5.5: Apply outlier detection and clipping
+            outlier_config = self._apply_outlier_detection_and_clipping(splits, target_config)
+            
             # Step 6: Write splits to storage
             storage_path = await self._write_dataset_splits(
                 dataset_id, splits, output_format
@@ -489,6 +492,10 @@ class OptimizedDatasetBuilder:
             
             # Compute statistics for each split
             split_statistics = self._compute_split_statistics(splits, target_config)
+            
+            # Add outlier config to split_statistics for easy access
+            if outlier_config:
+                split_statistics["outlier_detection"] = outlier_config
             
             await self._metadata_storage.update_dataset(
                 dataset_id,
@@ -1758,6 +1765,137 @@ class OptimizedDatasetBuilder:
         test = pd.concat(all_test, ignore_index=True) if all_test else pd.DataFrame()
         
         return {"train": train, "validation": validation, "test": test}
+    
+    def _apply_outlier_detection_and_clipping(
+        self,
+        splits: Dict[str, pd.DataFrame],
+        target_config: TargetConfig,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Apply outlier detection and clipping to all splits.
+        
+        Uses 3σ threshold computed on train split and applies to all splits.
+        Adds 'is_outlier' feature column and clips target values.
+        
+        Args:
+            splits: Dictionary with train/validation/test splits
+            target_config: Target configuration
+            
+        Returns:
+            Dictionary with outlier detection configuration (threshold, mean, std) or None if train is empty
+        """
+        # Only apply to regression targets
+        if target_config.type != "regression":
+            logger.debug(
+                "outlier_detection_skipped",
+                reason="Only applied to regression targets",
+                target_type=target_config.type,
+            )
+            return None
+        
+        train_df = splits.get("train")
+        if train_df is None or train_df.empty or "target" not in train_df.columns:
+            logger.warning(
+                "outlier_detection_skipped",
+                reason="Train split is empty or missing target column",
+            )
+            return None
+        
+        # Compute statistics on train split
+        train_targets = pd.to_numeric(train_df["target"], errors="coerce").dropna()
+        
+        if len(train_targets) == 0:
+            logger.warning(
+                "outlier_detection_skipped",
+                reason="No valid numeric targets in train split",
+            )
+            return None
+        
+        train_mean = float(train_targets.mean())
+        train_std = float(train_targets.std())
+        
+        if train_std == 0:
+            logger.warning(
+                "outlier_detection_skipped",
+                reason="Train target std is zero (no variance)",
+                train_mean=train_mean,
+            )
+            return None
+        
+        # Compute 3σ threshold
+        threshold = 3.0 * train_std
+        lower_bound = train_mean - threshold
+        upper_bound = train_mean + threshold
+        
+        outlier_config = {
+            "threshold": threshold,
+            "train_mean": train_mean,
+            "train_std": train_std,
+            "lower_bound": lower_bound,
+            "upper_bound": upper_bound,
+            "method": "3sigma_clipping",
+        }
+        
+        logger.info(
+            "outlier_detection_config_computed",
+            threshold=threshold,
+            train_mean=train_mean,
+            train_std=train_std,
+            lower_bound=lower_bound,
+            upper_bound=upper_bound,
+            train_samples=len(train_targets),
+        )
+        
+        # Apply to all splits
+        total_outliers = 0
+        for split_name, split_df in splits.items():
+            if split_df.empty or "target" not in split_df.columns:
+                continue
+            
+            # Convert target to numeric
+            target_numeric = pd.to_numeric(split_df["target"], errors="coerce")
+            
+            # Detect outliers: |target - mean| > 3σ
+            # NaN values are not considered outliers (set to 0)
+            is_outlier = (target_numeric - train_mean).abs() > threshold
+            is_outlier = is_outlier.fillna(False).astype(int)
+            
+            # Clip target values to [mean - 3σ, mean + 3σ]
+            # NaN values remain NaN after clipping
+            clipped_target = target_numeric.clip(lower=lower_bound, upper=upper_bound)
+            
+            # Update DataFrame in-place
+            split_df["is_outlier"] = is_outlier
+            split_df["target"] = clipped_target
+            
+            # Count outliers
+            outliers_count = int(is_outlier.sum())
+            outliers_percentage = (
+                float(outliers_count / len(split_df) * 100) if len(split_df) > 0 else 0.0
+            )
+            total_outliers += outliers_count
+            
+            logger.info(
+                "outlier_detection_applied",
+                split=split_name,
+                outliers_count=outliers_count,
+                outliers_percentage=outliers_percentage,
+                total_samples=len(split_df),
+                target_min_before=float(target_numeric.min()) if len(target_numeric.dropna()) > 0 else None,
+                target_max_before=float(target_numeric.max()) if len(target_numeric.dropna()) > 0 else None,
+                target_min_after=float(clipped_target.min()) if len(clipped_target.dropna()) > 0 else None,
+                target_max_after=float(clipped_target.max()) if len(clipped_target.dropna()) > 0 else None,
+            )
+        
+        outlier_config["total_outliers_detected"] = total_outliers
+        
+        logger.info(
+            "outlier_detection_completed",
+            total_outliers=total_outliers,
+            threshold=threshold,
+        )
+        
+        return outlier_config
     
     def _compute_split_statistics(
         self,

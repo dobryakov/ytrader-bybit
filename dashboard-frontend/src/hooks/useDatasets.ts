@@ -134,6 +134,15 @@ export interface Dataset {
         }
       }
     }
+    outlier_detection?: {
+      threshold: number
+      train_mean: number
+      train_std: number
+      lower_bound: number
+      upper_bound: number
+      method: string
+      total_outliers_detected: number
+    }
   }
   feature_registry_version: string
   target_registry_version?: string
