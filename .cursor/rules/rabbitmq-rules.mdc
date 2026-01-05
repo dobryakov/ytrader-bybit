@@ -2,8 +2,4 @@
 alwaysApply: true
 ---
 
-# RabbitMQ Best Practices
-
-## Connecting to Existing Queues
-
-**CRITICAL**: When connecting to queues created by other services, always use `passive=True` without additional parameters.
+When connecting to RabbitMQ queues created by other services, always use `passive=True` without additional parameters.
