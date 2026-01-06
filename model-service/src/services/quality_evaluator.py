@@ -482,6 +482,7 @@ class QualityEvaluator:
         Supports multiple optimization strategies:
         - 'f1': Maximize F1-score (default, recommended for imbalanced datasets)
         - 'pr_auc': Maximize PR-AUC (area under precision-recall curve)
+        - 'roc_auc': Maximize ROC-AUC using Youden's J statistic (TPR - FPR)
         - 'balanced_accuracy': Maximize balanced accuracy
         - 'recall': Achieve target recall (legacy method, fallback)
         
@@ -489,7 +490,7 @@ class QualityEvaluator:
             y_true: True labels
             y_pred_proba: Predicted probabilities (2D array: n_samples, n_classes)
             target_recall: Target recall to achieve (used only for 'recall' method)
-            optimization_metric: Metric to optimize ('f1', 'pr_auc', 'balanced_accuracy', 'recall')
+            optimization_metric: Metric to optimize ('f1', 'pr_auc', 'roc_auc', 'balanced_accuracy', 'recall')
             
         Returns:
             Dictionary mapping class label to optimal threshold
@@ -798,16 +799,30 @@ class QualityEvaluator:
                     optimal_threshold = float(threshold_candidates[best_idx])
                     best_youden_j = float(youden_j[best_idx])
                     
-                    thresholds[class_label] = optimal_threshold
-                    logger.info(
-                        "Threshold optimized by ROC-AUC (Youden's J) for class",
-                        class_label=class_label,
-                        class_idx=class_idx,
-                        optimal_threshold=optimal_threshold,
-                        best_youden_j=best_youden_j,
-                        tpr_at_threshold=float(tpr[best_idx]),
-                        fpr_at_threshold=float(fpr[best_idx]),
-                    )
+                    # Check if threshold is valid (finite and in reasonable range)
+                    if not np.isfinite(optimal_threshold) or optimal_threshold < 0.0 or optimal_threshold > 1.0:
+                        # Fallback: use median threshold
+                        optimal_threshold = float(np.median(threshold_candidates)) if len(threshold_candidates) > 0 else 0.5
+                        if not np.isfinite(optimal_threshold):
+                            optimal_threshold = 0.5
+                        thresholds[class_label] = optimal_threshold
+                        logger.warning(
+                            "Invalid threshold from ROC-AUC optimization, using median fallback",
+                            class_label=class_label,
+                            class_idx=class_idx,
+                            fallback_threshold=optimal_threshold,
+                        )
+                    else:
+                        thresholds[class_label] = optimal_threshold
+                        logger.info(
+                            "Threshold optimized by ROC-AUC (Youden's J) for class",
+                            class_label=class_label,
+                            class_idx=class_idx,
+                            optimal_threshold=optimal_threshold,
+                            best_youden_j=best_youden_j,
+                            tpr_at_threshold=float(tpr[best_idx]) if np.isfinite(tpr[best_idx]) else 0.0,
+                            fpr_at_threshold=float(fpr[best_idx]) if np.isfinite(fpr[best_idx]) else 0.0,
+                        )
                 else:
                     # Fallback: use median threshold
                     optimal_threshold = float(np.median(threshold_candidates)) if len(threshold_candidates) > 0 else 0.5

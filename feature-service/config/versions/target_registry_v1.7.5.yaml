@@ -1,7 +1,7 @@
 version: 1.7.5
 config:
   type: classification
-  horizon: 600
+  horizon: 900
   threshold: 0.001
   computation:
     preset: next_candle_direction

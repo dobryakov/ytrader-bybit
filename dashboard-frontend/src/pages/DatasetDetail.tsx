@@ -967,20 +967,29 @@ export default function DatasetDetail() {
                       </div>
 
                       {/* Classification Metrics */}
-                      {isClassification && metrics && (
-                        <div>
-                          <h4 className="font-semibold mb-4">Метрики классификации</h4>
-                          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                            <MetricCard title="Accuracy" value={formatPercent(metrics.accuracy)} currentValue={metrics.accuracy} previousValue={previousMetrics?.accuracy} isHigherBetter={true} />
-                            <MetricCard title="Precision" value={formatPercent(metrics.precision)} currentValue={metrics.precision} previousValue={previousMetrics?.precision} isHigherBetter={true} />
-                            <MetricCard title="Recall" value={formatPercent(metrics.recall)} currentValue={metrics.recall} previousValue={previousMetrics?.recall} isHigherBetter={true} />
-                            <MetricCard title="F1 Score" value={formatPercent(metrics.f1_score)} currentValue={metrics.f1_score} previousValue={previousMetrics?.f1_score} isHigherBetter={true} />
-                            <MetricCard title="Balanced Accuracy" value={formatPercent(metrics.balanced_accuracy)} currentValue={metrics.balanced_accuracy} previousValue={previousMetrics?.balanced_accuracy} isHigherBetter={true} />
-                            <MetricCard title="ROC AUC" value={formatDecimal(metrics.roc_auc)} currentValue={metrics.roc_auc} previousValue={previousMetrics?.roc_auc} isHigherBetter={true} />
-                            <MetricCard title="PR AUC" value={formatDecimal(metrics.pr_auc)} currentValue={metrics.pr_auc} previousValue={previousMetrics?.pr_auc} isHigherBetter={true} />
+                      {isClassification && metrics && (() => {
+                        // Определяем количество классов для проверки, нужно ли скрывать PR AUC
+                        const classDistribution = data.split_statistics?.train?.class_distribution || 
+                                                  data.split_statistics?.validation?.class_distribution ||
+                                                  data.split_statistics?.test?.class_distribution
+                        const numClasses = classDistribution ? Object.keys(classDistribution).length : null
+                        const isTernaryClassification = numClasses === 3
+                        
+                        return (
+                          <div>
+                            <h4 className="font-semibold mb-4">Метрики классификации</h4>
+                            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                              <MetricCard title="Accuracy" value={formatPercent(metrics.accuracy)} currentValue={metrics.accuracy} previousValue={previousMetrics?.accuracy} isHigherBetter={true} />
+                              <MetricCard title="Precision" value={formatPercent(metrics.precision)} currentValue={metrics.precision} previousValue={previousMetrics?.precision} isHigherBetter={true} />
+                              <MetricCard title="Recall" value={formatPercent(metrics.recall)} currentValue={metrics.recall} previousValue={previousMetrics?.recall} isHigherBetter={true} />
+                              <MetricCard title="F1 Score" value={formatPercent(metrics.f1_score)} currentValue={metrics.f1_score} previousValue={previousMetrics?.f1_score} isHigherBetter={true} />
+                              <MetricCard title="Balanced Accuracy" value={formatPercent(metrics.balanced_accuracy)} currentValue={metrics.balanced_accuracy} previousValue={previousMetrics?.balanced_accuracy} isHigherBetter={true} />
+                              <MetricCard title="ROC AUC" value={formatDecimal(metrics.roc_auc)} currentValue={metrics.roc_auc} previousValue={previousMetrics?.roc_auc} isHigherBetter={true} />
+                              {!isTernaryClassification && <MetricCard title="PR AUC" value={formatDecimal(metrics.pr_auc)} currentValue={metrics.pr_auc} previousValue={previousMetrics?.pr_auc} isHigherBetter={true} />}
+                            </div>
                           </div>
-                        </div>
-                      )}
+                        )
+                      })()}
 
                       {/* Regression Metrics */}
                       {!isClassification && metrics && (
@@ -1011,17 +1020,26 @@ export default function DatasetDetail() {
                                   {metrics.mse !== null && <MetricCard title="MSE" value={formatDecimal(metrics.mse, 6)} currentValue={metrics.mse} previousValue={previousMetrics?.mse} isHigherBetter={false} />}
                                 </>
                               )}
-                              {!isClassification && (
-                                <>
-                                  {metrics.accuracy !== null && <MetricCard title="Accuracy" value={formatPercent(metrics.accuracy)} currentValue={metrics.accuracy} previousValue={previousMetrics?.accuracy} isHigherBetter={true} />}
-                                  {metrics.precision !== null && <MetricCard title="Precision" value={formatPercent(metrics.precision)} currentValue={metrics.precision} previousValue={previousMetrics?.precision} isHigherBetter={true} />}
-                                  {metrics.recall !== null && <MetricCard title="Recall" value={formatPercent(metrics.recall)} currentValue={metrics.recall} previousValue={previousMetrics?.recall} isHigherBetter={true} />}
-                                  {metrics.f1_score !== null && <MetricCard title="F1 Score" value={formatPercent(metrics.f1_score)} currentValue={metrics.f1_score} previousValue={previousMetrics?.f1_score} isHigherBetter={true} />}
-                                  {metrics.balanced_accuracy !== null && <MetricCard title="Balanced Accuracy" value={formatPercent(metrics.balanced_accuracy)} currentValue={metrics.balanced_accuracy} previousValue={previousMetrics?.balanced_accuracy} isHigherBetter={true} />}
-                                  {metrics.roc_auc !== null && <MetricCard title="ROC AUC" value={formatDecimal(metrics.roc_auc)} currentValue={metrics.roc_auc} previousValue={previousMetrics?.roc_auc} isHigherBetter={true} />}
-                                  {metrics.pr_auc !== null && <MetricCard title="PR AUC" value={formatDecimal(metrics.pr_auc)} currentValue={metrics.pr_auc} previousValue={previousMetrics?.pr_auc} isHigherBetter={true} />}
-                                </>
-                              )}
+                              {!isClassification && (() => {
+                                // Определяем количество классов для проверки, нужно ли скрывать PR AUC
+                                const classDistribution = data.split_statistics?.train?.class_distribution || 
+                                                          data.split_statistics?.validation?.class_distribution ||
+                                                          data.split_statistics?.test?.class_distribution
+                                const numClasses = classDistribution ? Object.keys(classDistribution).length : null
+                                const isTernaryClassification = numClasses === 3
+                                
+                                return (
+                                  <>
+                                    {metrics.accuracy !== null && <MetricCard title="Accuracy" value={formatPercent(metrics.accuracy)} currentValue={metrics.accuracy} previousValue={previousMetrics?.accuracy} isHigherBetter={true} />}
+                                    {metrics.precision !== null && <MetricCard title="Precision" value={formatPercent(metrics.precision)} currentValue={metrics.precision} previousValue={previousMetrics?.precision} isHigherBetter={true} />}
+                                    {metrics.recall !== null && <MetricCard title="Recall" value={formatPercent(metrics.recall)} currentValue={metrics.recall} previousValue={previousMetrics?.recall} isHigherBetter={true} />}
+                                    {metrics.f1_score !== null && <MetricCard title="F1 Score" value={formatPercent(metrics.f1_score)} currentValue={metrics.f1_score} previousValue={previousMetrics?.f1_score} isHigherBetter={true} />}
+                                    {metrics.balanced_accuracy !== null && <MetricCard title="Balanced Accuracy" value={formatPercent(metrics.balanced_accuracy)} currentValue={metrics.balanced_accuracy} previousValue={previousMetrics?.balanced_accuracy} isHigherBetter={true} />}
+                                    {metrics.roc_auc !== null && <MetricCard title="ROC AUC" value={formatDecimal(metrics.roc_auc)} currentValue={metrics.roc_auc} previousValue={previousMetrics?.roc_auc} isHigherBetter={true} />}
+                                    {!isTernaryClassification && metrics.pr_auc !== null && <MetricCard title="PR AUC" value={formatDecimal(metrics.pr_auc)} currentValue={metrics.pr_auc} previousValue={previousMetrics?.pr_auc} isHigherBetter={true} />}
+                                  </>
+                                )
+                              })()}
                             </div>
                           </div>
                         )}
@@ -1162,6 +1180,19 @@ export default function DatasetDetail() {
                   <span className="text-sm text-muted-foreground">Тип таргета:</span>
                   <div className="font-medium mt-1">
                     <Badge variant="outline">{data.target_config.type}</Badge>
+                    {(data.target_config.type === 'classification' || data.target_config.type === 'risk_adjusted') && (() => {
+                      // Определяем количество классов из class_distribution
+                      const classDistribution = data.split_statistics?.train?.class_distribution || 
+                                                data.split_statistics?.validation?.class_distribution ||
+                                                data.split_statistics?.test?.class_distribution
+                      const numClasses = classDistribution ? Object.keys(classDistribution).length : null
+                      if (numClasses === 2) {
+                        return <span className="ml-2 text-sm text-muted-foreground">(бинарная)</span>
+                      } else if (numClasses === 3) {
+                        return <span className="ml-2 text-sm text-muted-foreground">(троичная)</span>
+                      }
+                      return null
+                    })()}
                   </div>
                 </div>
                 <div>

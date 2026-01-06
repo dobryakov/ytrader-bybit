@@ -1,5 +1,6 @@
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { useModelAnalysis, usePredictionsData } from '@/hooks/useModels'
+import { useDataset } from '@/hooks/useDatasets'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Badge } from '@/components/ui/badge'
@@ -16,6 +17,10 @@ export default function ModelDetail() {
   const navigate = useNavigate()
   const { data, isLoading, error } = useModelAnalysis(version || '')
   const { data: predictionsData, isLoading: predictionsLoading } = usePredictionsData(version || '', 'test', 1000)
+  
+  // Получаем dataset_id из predictions для определения количества классов
+  const datasetId = data?.predictions?.[0]?.dataset_id || null
+  const { data: datasetData } = useDataset(datasetId || '')
 
   if (isLoading) {
     return (
@@ -73,9 +78,16 @@ export default function ModelDetail() {
                        data.model_metrics.directional_accuracy !== null && data.model_metrics.directional_accuracy !== undefined
 
   // Prepare data for top-k chart (only for classification)
+  // Определяем количество классов для проверки, нужно ли скрывать PR AUC
+  const classDistribution = datasetData?.split_statistics?.train?.class_distribution || 
+                            datasetData?.split_statistics?.validation?.class_distribution ||
+                            datasetData?.split_statistics?.test?.class_distribution
+  const numClasses = classDistribution ? Object.keys(classDistribution).length : null
+  const isTernaryClassification = numClasses === 3
+  
   const topKChartData = data.top_k_metrics.map((tk) => ({
     k: `Top-${tk.k}%`,
-    pr_auc: tk.pr_auc ? tk.pr_auc * 100 : null,
+    pr_auc: !isTernaryClassification && tk.pr_auc ? tk.pr_auc * 100 : null,
     roc_auc: tk.roc_auc ? tk.roc_auc * 100 : null,
     accuracy: tk.accuracy ? tk.accuracy * 100 : null,
     lift: tk.lift ? tk.lift : null, // Lift is already a ratio (e.g., 1.2 = 20% improvement)
@@ -175,12 +187,14 @@ export default function ModelDetail() {
                           : 'N/A'}
                       </div>
                     </div>
-                    <div>
-                      <div className="text-xs text-muted-foreground">PR AUC</div>
-                      <div className="font-semibold">
-                        {formatDecimal(data.top_k_metrics.find(tk => tk.k === data.optimal_top_k_percentage)?.pr_auc)}
+                    {!isTernaryClassification && (
+                      <div>
+                        <div className="text-xs text-muted-foreground">PR AUC</div>
+                        <div className="font-semibold">
+                          {formatDecimal(data.top_k_metrics.find(tk => tk.k === data.optimal_top_k_percentage)?.pr_auc)}
+                        </div>
                       </div>
-                    </div>
+                    )}
                     <div>
                       <div className="text-xs text-muted-foreground">Coverage</div>
                       <div className="font-semibold">
@@ -374,7 +388,7 @@ export default function ModelDetail() {
                 <MetricCard title="F1 Score" value={formatPercent(data.model_metrics.f1_score)} />
                 <MetricCard title="Balanced Accuracy" value={formatPercent(data.model_metrics.balanced_accuracy)} />
                 <MetricCard title="ROC AUC" value={formatDecimal(data.model_metrics.roc_auc)} />
-                <MetricCard title="PR AUC" value={formatDecimal(data.model_metrics.pr_auc)} />
+                {!isTernaryClassification && <MetricCard title="PR AUC" value={formatDecimal(data.model_metrics.pr_auc)} />}
               </div>
             )}
           </CardContent>
@@ -394,7 +408,7 @@ export default function ModelDetail() {
                 <MetricCard title="F1 Score" value={formatPercent(data.baseline_metrics.f1_score)} />
                 <MetricCard title="Balanced Accuracy" value={formatPercent(data.baseline_metrics.balanced_accuracy)} />
                 <MetricCard title="ROC AUC" value={formatDecimal(data.baseline_metrics.roc_auc)} />
-                <MetricCard title="PR AUC" value={formatDecimal(data.baseline_metrics.pr_auc)} />
+                {!isTernaryClassification && <MetricCard title="PR AUC" value={formatDecimal(data.baseline_metrics.pr_auc)} />}
               </div>
             </CardContent>
           </Card>
@@ -410,7 +424,9 @@ export default function ModelDetail() {
           </CardHeader>
           <CardContent>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-              {Object.entries(data.comparison).map(([metric, comp]) => (
+              {Object.entries(data.comparison)
+                .filter(([metric]) => !isTernaryClassification || metric !== 'pr_auc')
+                .map(([metric, comp]) => (
                 <Card key={metric}>
                   <CardHeader className="pb-2">
                     <CardTitle className="text-sm font-medium capitalize">{metric.replace('_', ' ')}</CardTitle>
@@ -462,7 +478,7 @@ export default function ModelDetail() {
                   <YAxis />
                   <Tooltip formatter={(value: any) => value !== null ? `${value.toFixed(2)}%` : 'N/A'} />
                   <Legend />
-                  <Bar dataKey="pr_auc" fill="#8884d8" name="PR AUC (%)" />
+                  {!isTernaryClassification && <Bar dataKey="pr_auc" fill="#8884d8" name="PR AUC (%)" />}
                   <Bar dataKey="roc_auc" fill="#82ca9d" name="ROC AUC (%)" />
                   <Bar dataKey="accuracy" fill="#ffc658" name="Accuracy (%)" />
                 </BarChart>
@@ -482,7 +498,7 @@ export default function ModelDetail() {
                     <TableHead>F1 Score</TableHead>
                     <TableHead>Balanced Acc</TableHead>
                     <TableHead>ROC AUC</TableHead>
-                    <TableHead>PR AUC</TableHead>
+                    {!isTernaryClassification && <TableHead>PR AUC</TableHead>}
                     <TableHead>Lift</TableHead>
                     <TableHead>Precision (class 1)</TableHead>
                     <TableHead>Recall (class 1)</TableHead>
@@ -500,7 +516,7 @@ export default function ModelDetail() {
                       <TableCell>{formatPercent(tk.f1_score)}</TableCell>
                       <TableCell>{formatPercent(tk.balanced_accuracy)}</TableCell>
                       <TableCell>{formatDecimal(tk.roc_auc)}</TableCell>
-                      <TableCell className="font-semibold">{formatDecimal(tk.pr_auc)}</TableCell>
+                      {!isTernaryClassification && <TableCell className="font-semibold">{formatDecimal(tk.pr_auc)}</TableCell>}
                       <TableCell>{tk.lift !== null ? `${tk.lift.toFixed(2)}x` : 'N/A'}</TableCell>
                       <TableCell>{formatPercent(tk.precision_class_1)}</TableCell>
                       <TableCell>{formatPercent(tk.recall_class_1)}</TableCell>
@@ -520,10 +536,12 @@ export default function ModelDetail() {
                   </CardHeader>
                   <CardContent>
                     <div className="space-y-2">
-                      <div className="flex justify-between">
-                        <span className="text-sm text-muted-foreground">PR AUC:</span>
-                        <span className="font-bold text-lg">{formatDecimal(tk.pr_auc)}</span>
-                      </div>
+                      {!isTernaryClassification && (
+                        <div className="flex justify-between">
+                          <span className="text-sm text-muted-foreground">PR AUC:</span>
+                          <span className="font-bold text-lg">{formatDecimal(tk.pr_auc)}</span>
+                        </div>
+                      )}
                       <div className="flex justify-between">
                         <span className="text-sm text-muted-foreground">ROC AUC:</span>
                         <span className="font-medium">{formatDecimal(tk.roc_auc)}</span>
@@ -569,7 +587,9 @@ export default function ModelDetail() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {Object.entries(data.comparison).map(([metric, comp]) => (
+              {Object.entries(data.comparison)
+                .filter(([metric]) => !isTernaryClassification || metric !== 'pr_auc')
+                .map(([metric, comp]) => (
                 <TableRow key={metric}>
                   <TableCell className="font-medium capitalize">{metric.replace('_', ' ')}</TableCell>
                   <TableCell>{formatDecimal(comp.model)}</TableCell>
@@ -930,10 +950,11 @@ export default function ModelDetail() {
                   <ul className="list-disc list-inside space-y-1 text-sm text-muted-foreground">
                     {data.top_k_metrics.map((tk) => (
                       <li key={tk.k}>
-                        <strong>Top-{tk.k}%</strong>: PR-AUC = {formatDecimal(tk.pr_auc)}, 
-                        Lift = {tk.lift !== null ? `${tk.lift.toFixed(2)}x` : 'N/A'}, 
-                        Coverage = {formatPercent(tk.coverage)}
-                        {tk.pr_auc && tk.pr_auc > 0.9 && ' ⭐ Отличный результат!'}
+                        <strong>Top-{tk.k}%</strong>:
+                        {!isTernaryClassification && ` PR-AUC = ${formatDecimal(tk.pr_auc)},`}
+                        {` Lift = ${tk.lift !== null ? `${tk.lift.toFixed(2)}x` : 'N/A'},`}
+                        {` Coverage = ${formatPercent(tk.coverage)}`}
+                        {!isTernaryClassification && tk.pr_auc && tk.pr_auc > 0.9 && ' ⭐ Отличный результат!'}
                       </li>
                     ))}
                   </ul>
@@ -958,10 +979,10 @@ export default function ModelDetail() {
                 <div>
                   <h4 className="font-semibold mb-2">Рекомендации:</h4>
                   <ul className="list-disc list-inside space-y-1 text-sm text-muted-foreground">
-                    {data.top_k_metrics.find(tk => tk.k === 10 && tk.pr_auc && tk.pr_auc > 0.9) && (
+                    {!isTernaryClassification && data.top_k_metrics.find(tk => tk.k === 10 && tk.pr_auc && tk.pr_auc > 0.9) && (
                       <li>Top-10% показывает очень высокий PR-AUC - можно использовать для высокоточных сигналов</li>
                     )}
-                    {data.comparison.pr_auc && data.comparison.pr_auc.difference && data.comparison.pr_auc.difference > 0.5 && (
+                    {!isTernaryClassification && data.comparison.pr_auc && data.comparison.pr_auc.difference && data.comparison.pr_auc.difference > 0.5 && (
                       <li>Модель значительно превосходит baseline по PR-AUC - хороший знак для ранжирования</li>
                     )}
                     {data.top_k_metrics.find(tk => tk.lift && tk.lift > 0.8) && (

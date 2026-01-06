@@ -50,3 +50,32 @@ def test_configuration_validation():
     except ConfigurationError:
         pytest.fail("Configuration validation should pass with valid settings")
 
+
+def test_threshold_optimization_metric_validation():
+    """Test that MODEL_TRAINING_THRESHOLD_OPTIMIZATION_METRIC validation works correctly."""
+    from src.config.settings import Settings
+    
+    # Test valid classification metrics
+    valid_classification_metrics = ["f1", "pr_auc", "roc_auc", "balanced_accuracy", "recall", "accuracy"]
+    for metric in valid_classification_metrics:
+        settings = Settings.model_validate({"MODEL_TRAINING_THRESHOLD_OPTIMIZATION_METRIC": metric})
+        assert settings.model_training_threshold_optimization_metric == metric.lower()
+    
+    # Test valid regression metrics
+    valid_regression_metrics = ["r2_score", "directional_accuracy", "sharpe_ratio", "information_coefficient", "ic", "rmse"]
+    for metric in valid_regression_metrics:
+        settings = Settings.model_validate({"MODEL_TRAINING_THRESHOLD_OPTIMIZATION_METRIC": metric})
+        assert settings.model_training_threshold_optimization_metric == metric.lower()
+    
+    # Test that roc_auc is specifically accepted
+    settings = Settings.model_validate({"MODEL_TRAINING_THRESHOLD_OPTIMIZATION_METRIC": "roc_auc"})
+    assert settings.model_training_threshold_optimization_metric == "roc_auc"
+    
+    # Test that invalid metric raises error
+    with pytest.raises(ValueError, match="MODEL_TRAINING_THRESHOLD_OPTIMIZATION_METRIC must be one of"):
+        Settings.model_validate({"MODEL_TRAINING_THRESHOLD_OPTIMIZATION_METRIC": "invalid_metric"})
+    
+    # Test case insensitivity
+    settings = Settings.model_validate({"MODEL_TRAINING_THRESHOLD_OPTIMIZATION_METRIC": "ROC_AUC"})
+    assert settings.model_training_threshold_optimization_metric == "roc_auc"
+
