@@ -288,9 +288,14 @@ class StreamingDatasetBuilder:
             )
         
         # Step 6: Generate all timestamps from start_date to end_date with configurable step
+        # Timestamps must be aligned to interval boundaries to avoid falling in the middle of candles
         timestamp_interval_minutes = feature_registry.get_timestamp_interval_minutes()
+        
+        # Ensure start_date is aligned to interval boundary
+        start_date_aligned = self._align_to_interval_boundary(start_date, timestamp_interval_minutes)
+        
         timestamps = self._generate_timestamps_for_period(
-            start_date, end_date, all_klines, all_trades, requirements, timestamp_interval_minutes
+            start_date_aligned, end_date, all_klines, all_trades, requirements, timestamp_interval_minutes
         )
         
         if timestamps.empty:
@@ -1065,19 +1070,9 @@ class StreamingDatasetBuilder:
         if end_date.tzinfo is None:
             end_date = end_date.replace(tzinfo=timezone.utc)
         
-        # Align start_date to interval boundary
-        # For 1-minute: round to minute (00:00, 01:00, ...)
-        # For 5-minute: round to 5-minute boundary (00:00, 05:00, 10:00, ...)
-        # For 15-minute: round to 15-minute boundary (00:00, 15:00, 30:00, 45:00, ...)
-        if timestamp_interval_minutes == 1:
-            # Round to minute boundary
-            current = current.replace(second=0, microsecond=0)
-        else:
-            # Round down to nearest interval boundary
-            # Example: 16:42:30 with 5-minute interval -> 16:40:00
-            # Example: 16:47:30 with 5-minute interval -> 16:45:00
-            minutes_aligned = (current.minute // timestamp_interval_minutes) * timestamp_interval_minutes
-            current = current.replace(minute=minutes_aligned, second=0, microsecond=0)
+        # Align start_date to interval boundary using dedicated method
+        # This ensures timestamps fall exactly on interval boundaries, not in the middle of candles
+        current = self._align_to_interval_boundary(current, timestamp_interval_minutes)
         
         # Generate timestamps with specified interval
         while current <= end_date:
@@ -1099,6 +1094,41 @@ class StreamingDatasetBuilder:
         
         # Convert to Series
         return pd.Series(timestamps, name="timestamp", dtype="datetime64[ns, UTC]")
+    
+    def _align_to_interval_boundary(
+        self,
+        timestamp: datetime,
+        interval_minutes: int,
+    ) -> datetime:
+        """
+        Align timestamp to interval boundary.
+        
+        Ensures that timestamps fall exactly on interval boundaries (e.g., 00:00, 00:03, 00:06 for 3-minute intervals),
+        not in the middle of candles. This is critical for proper rolling window switching.
+        
+        Args:
+            timestamp: Timestamp to align
+            interval_minutes: Interval in minutes (e.g., 1, 3, 5, 15)
+            
+        Returns:
+            Aligned timestamp
+        """
+        # Ensure timezone-aware
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        else:
+            timestamp = timestamp.astimezone(timezone.utc)
+        
+        if interval_minutes == 1:
+            # Round down to minute boundary
+            return timestamp.replace(second=0, microsecond=0)
+        else:
+            # Round down to nearest interval boundary
+            # Example: 16:42:30 with 3-minute interval -> 16:42:00 (round down to 3-minute boundary)
+            # Example: 16:43:30 with 3-minute interval -> 16:42:00 (round down to 3-minute boundary)
+            # Example: 16:45:00 with 3-minute interval -> 16:45:00 (already aligned)
+            minutes_aligned = (timestamp.minute // interval_minutes) * interval_minutes
+            return timestamp.replace(minute=minutes_aligned, second=0, microsecond=0)
     
     def _filter_problematic_timestamps(
         self,

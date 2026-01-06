@@ -31,6 +31,10 @@ class TargetComputationOverrides(BaseModel):
         default=None,
         description="Future price source: 'close', 'open', 'high', 'low', 'price'"
     )
+    future_open_source: Optional[str] = Field(
+        default=None,
+        description="Future open price source (for candle_direction formula): 'open', 'close', 'high', 'low', 'price'"
+    )
     lookup_method: Optional[str] = Field(
         default=None,
         description="Lookup method: 'nearest_forward', 'nearest_backward', 'nearest', 'exact'"

@@ -85,14 +85,14 @@ class TargetComputationPresets:
             "volatility_window": 20,
             "description": "Volatility-normalized returns: raw_return / rolling_std(raw_return, window=X)",
         },
-        # Direction of the next candle (binary or multi-class classification)
-        # Base computation is still returns; mapping to classes is done in DatasetBuilder/ModelTrainer.
+        # Price change from current open to future close (binary or multi-class classification)
+        # Predicts price movement from decision moment (timestamp) to future time (timestamp + horizon)
         "next_candle_direction": {
-            "formula": "returns",
-            "price_source": "close",
-            "future_price_source": "close",
+            "formula": "candle_direction",
+            "price_source": "open",  # Used for current_open (at timestamp, moment of decision)
+            "future_price_source": "close",  # Used for future_close (at timestamp + horizon)
             "lookup_method": "nearest_forward",
-            "description": "Direction of next candle based on forward return sign; can be used for binary or 3-class targets.",
+            "description": "Price change from current open (at timestamp) to future close (at timestamp + horizon); can be used for binary or 3-class targets.",
         },
     }
     
@@ -148,6 +148,8 @@ class TargetComputationPresets:
                 config["price_source"] = overrides.price_source
             if overrides.future_price_source:
                 config["future_price_source"] = overrides.future_price_source
+            if overrides.future_open_source:
+                config["future_open_source"] = overrides.future_open_source
             if overrides.lookup_method:
                 config["lookup_method"] = overrides.lookup_method
             if overrides.tolerance_seconds is not None:
@@ -210,6 +212,11 @@ class TargetComputationEngine:
             return TargetComputationEngine._compute_volatility_normalized_std(
                 data, horizon, computation_config, historical_price_data
             )
+        elif formula == "candle_direction":
+            result = TargetComputationEngine._compute_candle_direction(
+                data, horizon, computation_config, historical_price_data
+            )
+            return TargetComputationEngine._postprocess_target(result, computation_config)
         else:
             raise ValueError(f"Unknown formula: {formula}")
     
@@ -279,6 +286,204 @@ class TargetComputationEngine:
         returns_df = returns_df.dropna(subset=["target"])
         
         return returns_df[["timestamp", "target"]]
+    
+    @staticmethod
+    def _compute_candle_direction(
+        data: pd.DataFrame,
+        horizon: int,
+        config: Dict[str, Any],
+        historical_price_data: Optional[pd.DataFrame] = None,
+    ) -> pd.DataFrame:
+        """
+        Compute price change from current open to future close.
+        
+        Formula: (future_close - current_open) / current_open
+        This predicts price movement from the decision moment (timestamp) to future time (timestamp + horizon).
+        
+        Args:
+            data: DataFrame with timestamp, open (current_open), and price columns
+            horizon: Prediction horizon in seconds
+            config: Computation configuration
+            historical_price_data: Optional historical price data for future price lookup
+            
+        Returns:
+            DataFrame with timestamp and target columns
+        """
+        if data.empty:
+            logger.warning("_compute_candle_direction: input data is empty")
+            return pd.DataFrame()
+        
+        # Get configuration
+        future_price_source = config.get("future_price_source", "close")
+        price_source = config.get("price_source", "open")  # Use current_open from data
+        lookup_method = config.get("lookup_method", "nearest_forward")
+        tolerance_seconds = config.get("tolerance_seconds")
+        
+        # Sort by timestamp
+        data = data.sort_values("timestamp").copy()
+        
+        # Get current_open from data (at timestamp, moment of decision)
+        # Try to find open column in data
+        if "open" in data.columns:
+            current_open_col = "open"
+        elif price_source in data.columns:
+            current_open_col = price_source
+        else:
+            logger.error(
+                "_compute_candle_direction: current_open not found in data",
+                available_columns=list(data.columns),
+                requested_source=price_source,
+            )
+            return pd.DataFrame()
+        
+        # Create future timestamps
+        data["future_timestamp"] = data["timestamp"] + pd.Timedelta(seconds=horizon)
+        
+        # Create price lookup DataFrame for future close
+        if historical_price_data is not None and not historical_price_data.empty:
+            # Use historical data for future price lookup
+            if future_price_source in historical_price_data.columns:
+                close_lookup_col = future_price_source
+            elif "close" in historical_price_data.columns:
+                close_lookup_col = "close"
+            else:
+                logger.error(
+                    "_compute_candle_direction: future_price_source not found in historical data",
+                    available_columns=list(historical_price_data.columns),
+                )
+                return pd.DataFrame()
+            
+            close_lookup = historical_price_data[["timestamp", close_lookup_col]].copy()
+            close_lookup = close_lookup[close_lookup[close_lookup_col].notna()].copy()
+            close_lookup = close_lookup.rename(columns={close_lookup_col: "future_close"})
+        else:
+            # Use data itself for future price lookup
+            if future_price_source in data.columns:
+                close_lookup_col = future_price_source
+            elif "close" in data.columns:
+                close_lookup_col = "close"
+            else:
+                logger.error(
+                    "_compute_candle_direction: future_price_source not found in data",
+                    available_columns=list(data.columns),
+                )
+                return pd.DataFrame()
+            
+            close_lookup = data[["timestamp", close_lookup_col]].copy()
+            close_lookup = close_lookup[close_lookup[close_lookup_col].notna()].copy()
+            close_lookup = close_lookup.rename(columns={close_lookup_col: "future_close"})
+        
+        close_lookup = close_lookup.sort_values("timestamp").reset_index(drop=True)
+        
+        if close_lookup.empty:
+            logger.warning("_compute_candle_direction: close_lookup is empty")
+            return pd.DataFrame()
+        
+        # Sort data by future_timestamp for merge_asof
+        data_sorted = data.sort_values("future_timestamp").copy().reset_index(drop=True)
+        
+        # Determine merge direction
+        direction_map = {
+            "nearest_forward": "forward",
+            "nearest_backward": "backward",
+            "nearest": "nearest",
+            "exact": "forward",
+        }
+        direction = direction_map.get(lookup_method, "forward")
+        
+        # Merge to get future close
+        try:
+            data_merged = pd.merge_asof(
+                data_sorted,
+                close_lookup,
+                left_on="future_timestamp",
+                right_on="timestamp",
+                direction=direction,
+                suffixes=("", "_close"),
+            )
+        except Exception as e:
+            logger.error(
+                "_compute_candle_direction_merge_close_error",
+                error=str(e),
+                error_type=type(e).__name__,
+                exc_info=True,
+            )
+            raise
+        
+        # Use current_open from data (already in data_merged)
+        if current_open_col not in data_merged.columns:
+            logger.error(
+                "_compute_candle_direction: current_open not found after merge",
+                merged_columns=list(data_merged.columns),
+                requested_col=current_open_col,
+            )
+            return pd.DataFrame()
+        
+        data_merged["current_open"] = data_merged[current_open_col]
+        
+        # Apply tolerance if specified
+        if tolerance_seconds is not None and not data_merged.empty:
+            if "timestamp_close" in data_merged.columns:
+                time_diff = (data_merged["timestamp_close"] - data_merged["future_timestamp"]).abs()
+                before_tolerance = len(data_merged)
+                data_merged = data_merged[time_diff <= pd.Timedelta(seconds=tolerance_seconds)]
+                after_tolerance = len(data_merged)
+                if before_tolerance != after_tolerance:
+                    logger.debug(
+                        "_compute_candle_direction_tolerance_applied",
+                        before_tolerance=before_tolerance,
+                        after_tolerance=after_tolerance,
+                        tolerance_seconds=tolerance_seconds,
+                    )
+        
+        # Check for valid prices
+        if "future_close" not in data_merged.columns or "current_open" not in data_merged.columns:
+            logger.error(
+                "_compute_candle_direction: future_close or current_open not found after merge",
+                merged_columns=list(data_merged.columns),
+            )
+            return pd.DataFrame()
+        
+        valid_rows = (
+            data_merged["future_close"].notna() & 
+            data_merged["current_open"].notna() &
+            (data_merged["current_open"] > 0)  # Avoid division by zero
+        )
+        
+        if valid_rows.sum() == 0:
+            logger.warning(
+                "_compute_candle_direction: no rows with both future_close and current_open valid",
+                data_merged_rows=len(data_merged),
+                future_close_notna=data_merged["future_close"].notna().sum() if "future_close" in data_merged.columns else 0,
+                current_open_notna=data_merged["current_open"].notna().sum() if "current_open" in data_merged.columns else 0,
+            )
+            return pd.DataFrame()
+        
+        # Compute price change: (future_close - current_open) / current_open
+        data_merged["target"] = (
+            (data_merged["future_close"] - data_merged["current_open"]) / 
+            data_merged["current_open"]
+        )
+        
+        # Drop helper columns
+        data_merged = data_merged.drop(
+            columns=["future_timestamp", "timestamp_close", "current_open"],
+            errors="ignore"
+        )
+        
+        # Remove invalid values
+        data_merged = data_merged.dropna(subset=["target"])
+        data_merged = data_merged[
+            ~data_merged["target"].isin([float("inf"), float("-inf")])
+        ]
+        
+        logger.info(
+            "_compute_candle_direction_final",
+            rows_after_dropna=len(data_merged),
+            target_summary=_get_series_summary(data_merged["target"]) if "target" in data_merged.columns and len(data_merged) > 0 else {},
+        )
+        
+        return data_merged[["timestamp", "target"]]
     
     @staticmethod
     def _compute_volatility_normalized_std(

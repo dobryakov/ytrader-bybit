@@ -1,0 +1,22 @@
+version: 1.7.5
+config:
+  timestamp_interval_minutes: 5
+features:
+- name: pattern_all_green
+  input_sources:
+  - kline
+  lookback_window: 15m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true
+- name: pattern_all_red
+  input_sources:
+  - kline
+  lookback_window: 15m
+  lookahead_forbidden: true
+  max_lookback_days: 1
+  data_sources:
+  - source: kline
+    timestamp_required: true

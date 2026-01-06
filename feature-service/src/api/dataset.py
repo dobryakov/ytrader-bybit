@@ -414,8 +414,8 @@ async def compute_features_at_timestamp(
             )
         
         # Compute target
-        # Merge features with prices for target computation
-        price_for_merge = klines_filtered[["timestamp", "close"]].rename(
+        # Merge features with prices for target computation (include both close and open)
+        price_for_merge = klines_filtered[["timestamp", "close", "open"]].rename(
             columns={"close": "price"}
         )
         merged = features_df.merge(

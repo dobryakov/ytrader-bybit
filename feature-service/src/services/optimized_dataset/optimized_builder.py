@@ -596,8 +596,8 @@ class OptimizedDatasetBuilder:
             logger.warning("no_price_data_for_targets", symbol=symbol)
             return pd.DataFrame()
         
-        # Merge features with prices
-        price_for_merge = price_df[["timestamp", "close"]].rename(
+        # Merge features with prices (include both close and open for target computation)
+        price_for_merge = price_df[["timestamp", "close", "open"]].rename(
             columns={"close": "price"}
         )
         merged = features_df.merge(

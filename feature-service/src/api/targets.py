@@ -223,10 +223,17 @@ async def compute_target(
     import pandas as pd
     import numpy as np
     
+    # Determine which price source to use based on preset
+    # For next_candle_direction, we need open (current_open at prediction timestamp)
+    # For other presets, we use close
+    use_open_for_prediction = (preset == "next_candle_direction")
+    price_source_col = "open" if use_open_for_prediction else "close"
+    
     # Find the closest price to prediction_timestamp in historical_data
     # For klines (1-minute candles), find the candle closest to prediction_timestamp
     price_at_prediction = None
-    if not historical_data.empty and "close" in historical_data.columns:
+    open_at_prediction = None
+    if not historical_data.empty and price_source_col in historical_data.columns:
         # Ensure timestamps are timezone-aware
         if historical_data["timestamp"].dtype == "object":
             historical_data["timestamp"] = pd.to_datetime(historical_data["timestamp"], utc=True)
@@ -257,11 +264,16 @@ async def compute_target(
             time_diff_minutes=time_diff.total_seconds() / 60,
             target_is_historical=target_is_historical,
             max_tolerance_minutes=max_tolerance_minutes,
+            price_source=price_source_col,
+            preset=preset,
         )
         
         # Allow tolerance based on whether target is historical
         if time_diff <= pd.Timedelta(minutes=max_tolerance_minutes):
-            price_at_prediction = float(historical_data.loc[closest_idx, "close"])
+            price_at_prediction = float(historical_data.loc[closest_idx, price_source_col])
+            # Also get open if available (needed for candle_direction)
+            if "open" in historical_data.columns:
+                open_at_prediction = float(historical_data.loc[closest_idx, "open"])
             time_diff_seconds = time_diff.total_seconds()
             
             logger.info(
@@ -271,7 +283,9 @@ async def compute_target(
                 price_timestamp=closest_timestamp.isoformat() if hasattr(closest_timestamp, 'isoformat') else str(closest_timestamp),
                 time_diff_seconds=time_diff_seconds,
                 price_at_prediction=price_at_prediction,
+                open_at_prediction=open_at_prediction,
                 target_is_historical=target_is_historical,
+                price_source=price_source_col,
             )
         else:
             logger.warning(
@@ -292,17 +306,24 @@ async def compute_target(
             historical_data_timestamps_min=historical_data["timestamp"].min().isoformat() if not historical_data.empty else None,
             historical_data_timestamps_max=historical_data["timestamp"].max().isoformat() if not historical_data.empty else None,
             historical_data_rows=len(historical_data),
+            price_source=price_source_col,
         )
         raise HTTPException(
             status_code=404,
             detail=f"Could not find price data at prediction_timestamp {prediction_timestamp.isoformat()}"
         )
     
-    prediction_df = pd.DataFrame({
+    # Create prediction DataFrame with both price and open
+    prediction_df_data = {
         "timestamp": [prediction_timestamp],
         "price": [price_at_prediction],
         "close": [price_at_prediction],  # Also add as 'close' for compatibility
-    })
+    }
+    # Add open if available (needed for candle_direction)
+    if open_at_prediction is not None:
+        prediction_df_data["open"] = [open_at_prediction]
+    
+    prediction_df = pd.DataFrame(prediction_df_data)
     
     # Ensure timestamp is timezone-aware
     if prediction_df["timestamp"].dtype == "object":
