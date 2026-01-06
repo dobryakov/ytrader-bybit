@@ -201,3 +201,44 @@ export function useDataset(datasetId: string) {
   })
 }
 
+export function usePreviousDataset(
+  symbol: string | null | undefined,
+  strategyId: string | null | undefined,
+  currentDatasetId: string | null | undefined,
+) {
+  return useQuery<Dataset | null>({
+    queryKey: ['previousDataset', symbol, strategyId, currentDatasetId],
+    queryFn: async () => {
+      if (!symbol || !strategyId || !currentDatasetId) {
+        return null
+      }
+
+      const params = new URLSearchParams()
+      params.append('symbol', symbol)
+      params.append('status', 'ready')
+      params.append('limit', '100')
+
+      const response = await api.get(`/v1/datasets?${params.toString()}`)
+      const datasets: Dataset[] = response.data
+
+      // Filter by strategy_id and find previous dataset
+      const filtered = datasets.filter(
+        (d) =>
+          d.id !== currentDatasetId &&
+          d.status === 'ready' &&
+          (d.strategy_id === strategyId || (d.strategy_id === null && strategyId === null))
+      )
+
+      // Sort by created_at descending and get the first one (most recent before current)
+      const sorted = filtered.sort((a, b) => {
+        const dateA = new Date(a.created_at).getTime()
+        const dateB = new Date(b.created_at).getTime()
+        return dateB - dateA
+      })
+
+      return sorted.length > 0 ? sorted[0] : null
+    },
+    enabled: !!(symbol && strategyId && currentDatasetId),
+  })
+}
+

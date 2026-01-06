@@ -1,5 +1,5 @@
 import { useParams, useNavigate, Link } from 'react-router-dom'
-import { useDataset } from '@/hooks/useDatasets'
+import { useDataset, usePreviousDataset } from '@/hooks/useDatasets'
 import { useModelsByDataset } from '@/hooks/useModels'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -54,6 +54,8 @@ export default function DatasetDetail() {
   const navigate = useNavigate()
   const { data, isLoading, error } = useDataset(id || '')
   const { data: modelsData, isLoading: isLoadingModels } = useModelsByDataset(id || '')
+  const { data: previousDataset } = usePreviousDataset(data?.symbol, data?.strategy_id, id || '')
+  const { data: previousModelsData } = useModelsByDataset(previousDataset?.id || '')
 
   if (isLoading) {
     return (
@@ -932,6 +934,10 @@ export default function DatasetDetail() {
                   const metrics = modelToShow.metrics
                   const isClassification = data.target_config?.type === 'classification' || data.target_config?.type === 'risk_adjusted'
 
+                  // Get previous model metrics if available
+                  const previousModel = previousModelsData?.models?.find(m => m.is_active) || previousModelsData?.models?.[0]
+                  const previousMetrics = previousModel?.metrics || null
+
                   return (
                     <>
                       {/* Model Info */}
@@ -965,13 +971,13 @@ export default function DatasetDetail() {
                         <div>
                           <h4 className="font-semibold mb-4">Метрики классификации</h4>
                           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                            <MetricCard title="Accuracy" value={formatPercent(metrics.accuracy)} />
-                            <MetricCard title="Precision" value={formatPercent(metrics.precision)} />
-                            <MetricCard title="Recall" value={formatPercent(metrics.recall)} />
-                            <MetricCard title="F1 Score" value={formatPercent(metrics.f1_score)} />
-                            <MetricCard title="Balanced Accuracy" value={formatPercent(metrics.balanced_accuracy)} />
-                            <MetricCard title="ROC AUC" value={formatDecimal(metrics.roc_auc)} />
-                            <MetricCard title="PR AUC" value={formatDecimal(metrics.pr_auc)} />
+                            <MetricCard title="Accuracy" value={formatPercent(metrics.accuracy)} currentValue={metrics.accuracy} previousValue={previousMetrics?.accuracy} isHigherBetter={true} />
+                            <MetricCard title="Precision" value={formatPercent(metrics.precision)} currentValue={metrics.precision} previousValue={previousMetrics?.precision} isHigherBetter={true} />
+                            <MetricCard title="Recall" value={formatPercent(metrics.recall)} currentValue={metrics.recall} previousValue={previousMetrics?.recall} isHigherBetter={true} />
+                            <MetricCard title="F1 Score" value={formatPercent(metrics.f1_score)} currentValue={metrics.f1_score} previousValue={previousMetrics?.f1_score} isHigherBetter={true} />
+                            <MetricCard title="Balanced Accuracy" value={formatPercent(metrics.balanced_accuracy)} currentValue={metrics.balanced_accuracy} previousValue={previousMetrics?.balanced_accuracy} isHigherBetter={true} />
+                            <MetricCard title="ROC AUC" value={formatDecimal(metrics.roc_auc)} currentValue={metrics.roc_auc} previousValue={previousMetrics?.roc_auc} isHigherBetter={true} />
+                            <MetricCard title="PR AUC" value={formatDecimal(metrics.pr_auc)} currentValue={metrics.pr_auc} previousValue={previousMetrics?.pr_auc} isHigherBetter={true} />
                           </div>
                         </div>
                       )}
@@ -981,10 +987,10 @@ export default function DatasetDetail() {
                         <div>
                           <h4 className="font-semibold mb-4">Метрики регрессии</h4>
                           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                            <MetricCard title="MAE" value={formatDecimal(metrics.mae, 6)} />
-                            <MetricCard title="RMSE" value={formatDecimal(metrics.rmse, 6)} />
-                            <MetricCard title="R² Score" value={formatDecimal(metrics.r2_score, 4)} />
-                            <MetricCard title="MSE" value={formatDecimal(metrics.mse, 6)} />
+                            <MetricCard title="MAE" value={formatDecimal(metrics.mae, 6)} currentValue={metrics.mae} previousValue={previousMetrics?.mae} isHigherBetter={false} />
+                            <MetricCard title="RMSE" value={formatDecimal(metrics.rmse, 6)} currentValue={metrics.rmse} previousValue={previousMetrics?.rmse} isHigherBetter={false} />
+                            <MetricCard title="R² Score" value={formatDecimal(metrics.r2_score, 4)} currentValue={metrics.r2_score} previousValue={previousMetrics?.r2_score} isHigherBetter={true} />
+                            <MetricCard title="MSE" value={formatDecimal(metrics.mse, 6)} currentValue={metrics.mse} previousValue={previousMetrics?.mse} isHigherBetter={false} />
                           </div>
                         </div>
                       )}
@@ -999,21 +1005,21 @@ export default function DatasetDetail() {
                             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                               {isClassification && (
                                 <>
-                                  {metrics.mae !== null && <MetricCard title="MAE" value={formatDecimal(metrics.mae, 6)} />}
-                                  {metrics.rmse !== null && <MetricCard title="RMSE" value={formatDecimal(metrics.rmse, 6)} />}
-                                  {metrics.r2_score !== null && <MetricCard title="R² Score" value={formatDecimal(metrics.r2_score, 4)} />}
-                                  {metrics.mse !== null && <MetricCard title="MSE" value={formatDecimal(metrics.mse, 6)} />}
+                                  {metrics.mae !== null && <MetricCard title="MAE" value={formatDecimal(metrics.mae, 6)} currentValue={metrics.mae} previousValue={previousMetrics?.mae} isHigherBetter={false} />}
+                                  {metrics.rmse !== null && <MetricCard title="RMSE" value={formatDecimal(metrics.rmse, 6)} currentValue={metrics.rmse} previousValue={previousMetrics?.rmse} isHigherBetter={false} />}
+                                  {metrics.r2_score !== null && <MetricCard title="R² Score" value={formatDecimal(metrics.r2_score, 4)} currentValue={metrics.r2_score} previousValue={previousMetrics?.r2_score} isHigherBetter={true} />}
+                                  {metrics.mse !== null && <MetricCard title="MSE" value={formatDecimal(metrics.mse, 6)} currentValue={metrics.mse} previousValue={previousMetrics?.mse} isHigherBetter={false} />}
                                 </>
                               )}
                               {!isClassification && (
                                 <>
-                                  {metrics.accuracy !== null && <MetricCard title="Accuracy" value={formatPercent(metrics.accuracy)} />}
-                                  {metrics.precision !== null && <MetricCard title="Precision" value={formatPercent(metrics.precision)} />}
-                                  {metrics.recall !== null && <MetricCard title="Recall" value={formatPercent(metrics.recall)} />}
-                                  {metrics.f1_score !== null && <MetricCard title="F1 Score" value={formatPercent(metrics.f1_score)} />}
-                                  {metrics.balanced_accuracy !== null && <MetricCard title="Balanced Accuracy" value={formatPercent(metrics.balanced_accuracy)} />}
-                                  {metrics.roc_auc !== null && <MetricCard title="ROC AUC" value={formatDecimal(metrics.roc_auc)} />}
-                                  {metrics.pr_auc !== null && <MetricCard title="PR AUC" value={formatDecimal(metrics.pr_auc)} />}
+                                  {metrics.accuracy !== null && <MetricCard title="Accuracy" value={formatPercent(metrics.accuracy)} currentValue={metrics.accuracy} previousValue={previousMetrics?.accuracy} isHigherBetter={true} />}
+                                  {metrics.precision !== null && <MetricCard title="Precision" value={formatPercent(metrics.precision)} currentValue={metrics.precision} previousValue={previousMetrics?.precision} isHigherBetter={true} />}
+                                  {metrics.recall !== null && <MetricCard title="Recall" value={formatPercent(metrics.recall)} currentValue={metrics.recall} previousValue={previousMetrics?.recall} isHigherBetter={true} />}
+                                  {metrics.f1_score !== null && <MetricCard title="F1 Score" value={formatPercent(metrics.f1_score)} currentValue={metrics.f1_score} previousValue={previousMetrics?.f1_score} isHigherBetter={true} />}
+                                  {metrics.balanced_accuracy !== null && <MetricCard title="Balanced Accuracy" value={formatPercent(metrics.balanced_accuracy)} currentValue={metrics.balanced_accuracy} previousValue={previousMetrics?.balanced_accuracy} isHigherBetter={true} />}
+                                  {metrics.roc_auc !== null && <MetricCard title="ROC AUC" value={formatDecimal(metrics.roc_auc)} currentValue={metrics.roc_auc} previousValue={previousMetrics?.roc_auc} isHigherBetter={true} />}
+                                  {metrics.pr_auc !== null && <MetricCard title="PR AUC" value={formatDecimal(metrics.pr_auc)} currentValue={metrics.pr_auc} previousValue={previousMetrics?.pr_auc} isHigherBetter={true} />}
                                 </>
                               )}
                             </div>
@@ -1028,29 +1034,47 @@ export default function DatasetDetail() {
                             <MetricCard
                               title="Sharpe Ratio"
                               value={formatDecimal(metrics.sharpe_ratio)}
+                              currentValue={metrics.sharpe_ratio}
+                              previousValue={previousMetrics?.sharpe_ratio}
+                              isHigherBetter={true}
                             />
                             <MetricCard
                               title="Win Rate"
                               value={formatPercent(metrics.win_rate)}
+                              currentValue={metrics.win_rate}
+                              previousValue={previousMetrics?.win_rate}
+                              isHigherBetter={true}
                             />
                             <MetricCard
                               title="Total PnL"
                               value={metrics.total_pnl !== null ? metrics.total_pnl.toFixed(2) : 'N/A'}
                               className={metrics.total_pnl !== null ? (metrics.total_pnl >= 0 ? 'border-green-500' : 'border-red-500') : ''}
+                              currentValue={metrics.total_pnl}
+                              previousValue={previousMetrics?.total_pnl}
+                              isHigherBetter={true}
                             />
                             <MetricCard
                               title="Profit Factor"
                               value={formatDecimal(metrics.profit_factor)}
+                              currentValue={metrics.profit_factor}
+                              previousValue={previousMetrics?.profit_factor}
+                              isHigherBetter={true}
                             />
                             <MetricCard
                               title="Avg PnL"
                               value={metrics.avg_pnl !== null ? metrics.avg_pnl.toFixed(2) : 'N/A'}
                               className={metrics.avg_pnl !== null ? (metrics.avg_pnl >= 0 ? 'border-green-500' : 'border-red-500') : ''}
+                              currentValue={metrics.avg_pnl}
+                              previousValue={previousMetrics?.avg_pnl}
+                              isHigherBetter={true}
                             />
                             <MetricCard
                               title="Max Drawdown"
                               value={formatDecimal(metrics.max_drawdown)}
                               className="border-red-500"
+                              currentValue={metrics.max_drawdown}
+                              previousValue={previousMetrics?.max_drawdown}
+                              isHigherBetter={false}
                             />
                           </div>
                         </div>
