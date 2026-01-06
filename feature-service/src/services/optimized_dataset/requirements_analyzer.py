@@ -87,6 +87,8 @@ class FeatureRequirementsAnalyzer:
         # Temporal features
         "temporal": [
             "time_of_day_sin", "time_of_day_cos",
+            "dow_sin", "dow_cos",
+            "is_asia_session", "is_london_session", "is_ny_session",
         ],
         # Candle pattern features
         "candle_patterns": [
@@ -106,6 +108,8 @@ class FeatureRequirementsAnalyzer:
             "pattern_bullish_engulfing", "pattern_bearish_engulfing",
             "pattern_morning_star", "pattern_evening_star",
             "pattern_inside_bar_bullish", "pattern_inside_bar_bearish",
+            "pattern_red_green_large_body", "pattern_green_red_large_body",
+            "pattern_candle_color_sequence_ternary",
         ],
     }
     

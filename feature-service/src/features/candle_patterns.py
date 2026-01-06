@@ -383,6 +383,52 @@ def compute_all_candle_patterns_3m(
     features["pattern_bearish_engulfing"] = 1.0 if bearish_engulfing else 0.0
     
     # ============================================================================
+    # 7.1. TWO-CANDLE COLOR REVERSAL WITH LARGE BODY (2 features)
+    # ============================================================================
+    
+    # Bullish reversal pattern: red candle 1 → green candle 2, where candle 2 body is significantly larger
+    # "Significantly larger" means body_size_2 > body_size_1 * 1.5 (50% larger)
+    # This pattern indicates a potential bullish reversal (bearish → bullish momentum shift)
+    pattern_red_green_large_body = (
+        is_green_1 == 0.0 and  # Candle 1 is red (bearish)
+        is_green_2 == 1.0 and  # Candle 2 is green (bullish)
+        body_size_1 > 0 and  # Candle 1 has a body (not doji)
+        body_size_2 > body_size_1 * 1.5  # Candle 2 body is at least 50% larger
+    )
+    features["pattern_red_green_large_body"] = 1.0 if pattern_red_green_large_body else 0.0
+    
+    # Bearish reversal pattern: green candle 1 → red candle 2, where candle 2 body is significantly larger
+    # This pattern indicates a potential bearish reversal (bullish → bearish momentum shift)
+    pattern_green_red_large_body = (
+        is_green_1 == 1.0 and  # Candle 1 is green (bullish)
+        is_green_2 == 0.0 and  # Candle 2 is red (bearish)
+        body_size_1 > 0 and  # Candle 1 has a body (not doji)
+        body_size_2 > body_size_1 * 1.5  # Candle 2 body is at least 50% larger
+    )
+    features["pattern_green_red_large_body"] = 1.0 if pattern_green_red_large_body else 0.0
+    
+    # ============================================================================
+    # 7.2. TERNARY COLOR SEQUENCE ENCODING (1 feature: 0-26)
+    # ============================================================================
+    
+    # Encode all combinations of three candle colors using ternary code
+    # green = 2, red = 0, neutral (doji) = 1
+    # Formula: candle_0 * 9 + candle_1 * 3 + candle_2 * 1
+    # Range: 0-26 (27 combinations)
+    
+    # Determine color code for each candle
+    color_code_0 = 2.0 if (is_green_0 == 1.0) else (1.0 if candle_0_features["is_doji"] else 0.0)
+    color_code_1 = 2.0 if (is_green_1 == 1.0) else (1.0 if candle_1_features["is_doji"] else 0.0)
+    color_code_2 = 2.0 if (is_green_2 == 1.0) else (1.0 if candle_2_features["is_doji"] else 0.0)
+    
+    # Ternary encoding: candle_0 * 9 + candle_1 * 3 + candle_2 * 1
+    features["pattern_candle_color_sequence_ternary"] = (
+        color_code_0 * 9.0 + 
+        color_code_1 * 3.0 + 
+        color_code_2 * 1.0
+    )
+    
+    # ============================================================================
     # 8. SHADOW TREND PATTERNS (2 features)
     # ============================================================================
     
@@ -538,6 +584,8 @@ def _get_empty_features_dict_3m() -> Dict[str, Optional[float]]:
         "pattern_green_large_volume", "pattern_red_large_volume",
         "pattern_green_small_volume", "pattern_red_small_volume",
         "pattern_bullish_engulfing", "pattern_bearish_engulfing",
+        "pattern_red_green_large_body", "pattern_green_red_large_body",
+        "pattern_candle_color_sequence_ternary",
         "pattern_upper_shadows_increasing", "pattern_lower_shadows_increasing",
         "pattern_evening_star", "pattern_morning_star", "pattern_doji_star",
         "pattern_bullish_harami", "pattern_bearish_harami",
@@ -576,6 +624,10 @@ def _get_empty_features_dict() -> Dict[str, Optional[float]]:
         "pattern_bullish_engulfing", "pattern_bearish_engulfing",
         "pattern_morning_star", "pattern_evening_star",
         "pattern_inside_bar_bullish", "pattern_inside_bar_bearish",
+        # Двухсвечные паттерны с большим телом (2)
+        "pattern_red_green_large_body", "pattern_green_red_large_body",
+        # Троичное кодирование последовательности цветов (1)
+        "pattern_candle_color_sequence_ternary",
     ]
     return {name: None for name in feature_names}
 
@@ -1035,6 +1087,40 @@ def compute_all_candle_patterns_15m(
         open_1 > close_0 and close_1 < open_0
     ) else 0.0
     
+    # Two-candle color reversal with large body (2 features)
+    # Bullish reversal pattern: red candle 0 → green candle 1, where candle 1 body is significantly larger
+    # This pattern indicates a potential bullish reversal (bearish → bullish momentum shift)
+    pattern_red_green_large_body_15m = (
+        candle_0_features["is_red"] and  # Candle 0 is red (bearish)
+        candle_1_features["is_green"] and  # Candle 1 is green (bullish)
+        body_size_0 > 0 and
+        body_size_1 > body_size_0 * 1.5  # Candle 1 body is at least 50% larger
+    )
+    features["pattern_red_green_large_body"] = 1.0 if pattern_red_green_large_body_15m else 0.0
+    
+    # Bearish reversal pattern: green candle 0 → red candle 1, where candle 1 body is significantly larger
+    # This pattern indicates a potential bearish reversal (bullish → bearish momentum shift)
+    pattern_green_red_large_body_15m = (
+        candle_0_features["is_green"] and  # Candle 0 is green (bullish)
+        candle_1_features["is_red"] and  # Candle 1 is red (bearish)
+        body_size_0 > 0 and
+        body_size_1 > body_size_0 * 1.5  # Candle 1 body is at least 50% larger
+    )
+    features["pattern_green_red_large_body"] = 1.0 if pattern_green_red_large_body_15m else 0.0
+    
+    # Ternary color sequence encoding (1 feature: 0-26)
+    # Encode all combinations of three candle colors using ternary code
+    # green = 2, red = 0, neutral (doji) = 1
+    # Formula: candle_0 * 9 + candle_1 * 3 + candle_2 * 1
+    color_code_0 = 2.0 if candle_0_features["is_green"] else (1.0 if candle_0_features["is_doji"] else 0.0)
+    color_code_1 = 2.0 if candle_1_features["is_green"] else (1.0 if candle_1_features["is_doji"] else 0.0)
+    color_code_2 = 2.0 if candle_2_features["is_green"] else (1.0 if candle_2_features["is_doji"] else 0.0)
+    features["pattern_candle_color_sequence_ternary"] = (
+        color_code_0 * 9.0 + 
+        color_code_1 * 3.0 + 
+        color_code_2 * 1.0
+    )
+    
     # Star patterns
     features["pattern_morning_star"] = 1.0 if (
         candle_0_features["is_red"] and candle_1_features["body_size"] < body_threshold * 0.3 and candle_2_features["is_green"] and
@@ -1380,5 +1466,40 @@ def compute_all_candle_patterns_45m(
     features["pattern_volume_increasing"] = 1.0 if (volume_0 < volume_1 < volume_2) else 0.0
     features["pattern_volume_decreasing"] = 1.0 if (volume_0 > volume_1 > volume_2) else 0.0
     features["pattern_green_large_volume"] = 1.0 if (candle_2_features["is_green"] and volume_2 > volume_threshold * 1.5) else 0.0
+    features["pattern_red_large_volume"] = 1.0 if (candle_2_features["is_red"] and volume_2 > volume_threshold * 1.5) else 0.0
+    
+    # Two-candle color reversal with large body (2 features)
+    # Bullish reversal pattern: red candle 1 → green candle 2, where candle 2 body is significantly larger
+    # This pattern indicates a potential bullish reversal (bearish → bullish momentum shift)
+    pattern_red_green_large_body_45m = (
+        candle_1_features["is_red"] and  # Candle 1 is red (bearish)
+        candle_2_features["is_green"] and  # Candle 2 is green (bullish)
+        body_size_1 > 0 and
+        body_size_2 > body_size_1 * 1.5  # Candle 2 body is at least 50% larger
+    )
+    features["pattern_red_green_large_body"] = 1.0 if pattern_red_green_large_body_45m else 0.0
+    
+    # Bearish reversal pattern: green candle 1 → red candle 2, where candle 2 body is significantly larger
+    # This pattern indicates a potential bearish reversal (bullish → bearish momentum shift)
+    pattern_green_red_large_body_45m = (
+        candle_1_features["is_green"] and  # Candle 1 is green (bullish)
+        candle_2_features["is_red"] and  # Candle 2 is red (bearish)
+        body_size_1 > 0 and
+        body_size_2 > body_size_1 * 1.5  # Candle 2 body is at least 50% larger
+    )
+    features["pattern_green_red_large_body"] = 1.0 if pattern_green_red_large_body_45m else 0.0
+    
+    # Ternary color sequence encoding (1 feature: 0-26)
+    # Encode all combinations of three candle colors using ternary code
+    # green = 2, red = 0, neutral (doji) = 1
+    # Formula: candle_0 * 9 + candle_1 * 3 + candle_2 * 1
+    color_code_0 = 2.0 if candle_0_features["is_green"] else (1.0 if candle_0_features["is_doji"] else 0.0)
+    color_code_1 = 2.0 if candle_1_features["is_green"] else (1.0 if candle_1_features["is_doji"] else 0.0)
+    color_code_2 = 2.0 if candle_2_features["is_green"] else (1.0 if candle_2_features["is_doji"] else 0.0)
+    features["pattern_candle_color_sequence_ternary"] = (
+        color_code_0 * 9.0 + 
+        color_code_1 * 3.0 + 
+        color_code_2 * 1.0
+    )
     
     return features
