@@ -520,6 +520,8 @@ class QualityEvaluator:
                 thresholds = self._optimize_thresholds_by_f1(y_true, y_pred_proba, unique_labels)
             elif optimization_metric == "pr_auc":
                 thresholds = self._optimize_thresholds_by_pr_auc(y_true, y_pred_proba, unique_labels)
+            elif optimization_metric == "roc_auc":
+                thresholds = self._optimize_thresholds_by_roc_auc(y_true, y_pred_proba, unique_labels)
             elif optimization_metric == "balanced_accuracy":
                 thresholds = self._optimize_thresholds_by_balanced_accuracy(y_true, y_pred_proba, unique_labels)
             elif optimization_metric == "recall":
@@ -742,6 +744,83 @@ class QualityEvaluator:
             except Exception as e:
                 logger.warning(
                     "Failed to optimize threshold by balanced accuracy for class",
+                    class_label=class_label,
+                    class_idx=class_idx,
+                    error=str(e),
+                )
+                # Fallback: use default threshold
+                class_freq = (y_true == class_label).sum() / len(y_true)
+                default_threshold = max(0.1, min(0.5, class_freq * 2))
+                thresholds[class_label] = default_threshold
+        
+        return thresholds
+    
+    def _optimize_thresholds_by_roc_auc(
+        self,
+        y_true: pd.Series,
+        y_pred_proba: np.ndarray,
+        unique_labels: List[int],
+    ) -> Dict[int, float]:
+        """
+        Optimize thresholds by maximizing ROC-AUC for each class.
+        
+        Uses Youden's J statistic (TPR - FPR) to find optimal threshold.
+        This maximizes the distance from the diagonal in ROC space.
+        
+        Args:
+            y_true: True labels
+            y_pred_proba: Predicted probabilities (2D array)
+            unique_labels: List of unique class labels
+            
+        Returns:
+            Dictionary mapping class label to optimal threshold
+        """
+        thresholds = {}
+        
+        for class_idx, class_label in enumerate(unique_labels):
+            try:
+                # Create binary labels: 1 for this class, 0 for others
+                y_binary = (y_true == class_label).astype(int)
+                
+                # Get probabilities for this class
+                class_probs = y_pred_proba[:, class_idx]
+                
+                # Calculate ROC curve
+                fpr, tpr, threshold_candidates = roc_curve(y_binary, class_probs)
+                
+                # Find threshold that maximizes Youden's J statistic (TPR - FPR)
+                # This is equivalent to maximizing the distance from the diagonal
+                # Youden's J = TPR - FPR = sensitivity + specificity - 1
+                youden_j = tpr - fpr
+                best_idx = np.argmax(youden_j)
+                
+                if best_idx < len(threshold_candidates):
+                    optimal_threshold = float(threshold_candidates[best_idx])
+                    best_youden_j = float(youden_j[best_idx])
+                    
+                    thresholds[class_label] = optimal_threshold
+                    logger.info(
+                        "Threshold optimized by ROC-AUC (Youden's J) for class",
+                        class_label=class_label,
+                        class_idx=class_idx,
+                        optimal_threshold=optimal_threshold,
+                        best_youden_j=best_youden_j,
+                        tpr_at_threshold=float(tpr[best_idx]),
+                        fpr_at_threshold=float(fpr[best_idx]),
+                    )
+                else:
+                    # Fallback: use median threshold
+                    optimal_threshold = float(np.median(threshold_candidates)) if len(threshold_candidates) > 0 else 0.5
+                    thresholds[class_label] = optimal_threshold
+                    logger.warning(
+                        "Failed to find optimal threshold by ROC-AUC, using median",
+                        class_label=class_label,
+                        class_idx=class_idx,
+                        fallback_threshold=optimal_threshold,
+                    )
+            except Exception as e:
+                logger.warning(
+                    "Failed to optimize threshold by ROC-AUC for class",
                     class_label=class_label,
                     class_idx=class_idx,
                     error=str(e),

@@ -112,7 +112,7 @@ class Settings(BaseSettings):
     model_training_threshold_optimization_metric: str = Field(
         default="f1",
         alias="MODEL_TRAINING_THRESHOLD_OPTIMIZATION_METRIC",
-        description="Metric to optimize for threshold calibration. For classification: 'f1', 'pr_auc', 'balanced_accuracy', 'recall', 'accuracy'. For regression: 'r2_score', 'directional_accuracy', 'sharpe_ratio', 'information_coefficient', 'rmse' (lower is better). Default: 'f1'"
+        description="Metric to optimize for threshold calibration. For classification: 'f1', 'pr_auc', 'roc_auc', 'balanced_accuracy', 'recall', 'accuracy'. For regression: 'r2_score', 'directional_accuracy', 'sharpe_ratio', 'information_coefficient', 'rmse' (lower is better). Default: 'f1'"
     )
     
     # Time-Based Retraining Configuration (for market-data-only training)
@@ -472,7 +472,7 @@ class Settings(BaseSettings):
     def validate_threshold_optimization_metric(cls, v: str) -> str:
         """Validate threshold optimization metric is one of the supported options."""
         # Classification metrics
-        classification_metrics = {"f1", "pr_auc", "balanced_accuracy", "recall", "accuracy"}
+        classification_metrics = {"f1", "pr_auc", "roc_auc", "balanced_accuracy", "recall", "accuracy"}
         # Regression metrics
         regression_metrics = {"r2_score", "directional_accuracy", "sharpe_ratio", "information_coefficient", "ic", "rmse"}
         valid_metrics = classification_metrics | regression_metrics

@@ -2,7 +2,7 @@ version: 1.7.5
 config:
   type: classification
   horizon: 600
-  threshold: null
+  threshold: 0.001
   computation:
     preset: next_candle_direction
     overrides:
@@ -16,7 +16,7 @@ config:
       neutral_label: 0
       min_positive_support: 0.05
       min_negative_support: 0.05
-      task_variant: binary_classification
+      task_variant: triple_classification
       clip_method: quantile
       clip_q_low: 0.01
       clip_q_high: 0.99

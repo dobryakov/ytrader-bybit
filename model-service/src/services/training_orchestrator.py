@@ -806,6 +806,16 @@ class TrainingOrchestrator:
                 task_type=task_type,  # Use task_type from dataset target_config
             )
 
+            # Transfer label mapping from ModelTrainer to model object for inference
+            label_mapping_for_inference = getattr(model_trainer, "_label_mapping_for_inference", None)
+            if label_mapping_for_inference is not None:
+                setattr(model, "_label_mapping_for_inference", label_mapping_for_inference)
+                logger.debug(
+                    "Transferred label mapping to model object",
+                    training_id=training_id,
+                    label_mapping=label_mapping_for_inference,
+                )
+
             if self._training_cancelled:
                 logger.info("Training cancelled during model training", training_id=training_id)
                 return
@@ -979,10 +989,41 @@ class TrainingOrchestrator:
                         trace_id=trace_id,
                     )
 
-            y_pred = model.predict(eval_features)
-            # For multi-class classification, pass all class probabilities (2D array)
-            # For binary classification, this will still work correctly
-            y_pred_proba = model.predict_proba(eval_features) if hasattr(model, "predict_proba") else None
+            # For classification, use probabilities and apply reverse mapping if needed
+            if task_type == "classification":
+                y_pred_proba = model.predict_proba(eval_features) if hasattr(model, "predict_proba") else None
+                if y_pred_proba is not None:
+                    # Use argmax to get predicted class indices, then map back to semantic labels
+                    argmax_pred = np.argmax(y_pred_proba, axis=1) if y_pred_proba.ndim > 1 else np.array([np.argmax(y_pred_proba)])
+                    # Map back to semantic labels if label mapping exists
+                    label_mapping = getattr(model, "_label_mapping_for_inference", None)
+                    if label_mapping and isinstance(label_mapping, dict):
+                        # label_mapping is already {model_class_idx -> semantic_label}
+                        y_pred = np.array([label_mapping.get(int(pred), pred) for pred in argmax_pred])
+                        logger.debug(
+                            "Applied label mapping for validation predictions",
+                            split=eval_split,
+                            training_id=training_id,
+                            label_mapping=label_mapping,
+                            argmax_pred_sample=argmax_pred[:5].tolist() if len(argmax_pred) > 5 else argmax_pred.tolist(),
+                            mapped_pred_sample=y_pred[:5].tolist() if len(y_pred) > 5 else y_pred.tolist(),
+                        )
+                    else:
+                        y_pred = argmax_pred
+                        logger.warning(
+                            "No label mapping found for validation predictions",
+                            split=eval_split,
+                            training_id=training_id,
+                            has_label_mapping=label_mapping is not None,
+                            label_mapping_type=type(label_mapping).__name__ if label_mapping is not None else None,
+                        )
+                else:
+                    # Fallback to predict if predict_proba is not available
+                    y_pred = model.predict(eval_features)
+            else:
+                # For regression, use standard predict
+                y_pred = model.predict(eval_features)
+                y_pred_proba = None
 
             # Log prediction statistics before evaluation (only for classification)
             if task_type == "classification" and y_pred_proba is not None:
@@ -2078,8 +2119,9 @@ class TrainingOrchestrator:
             # Map back to semantic labels if label mapping exists
             label_mapping = getattr(model, "_label_mapping_for_inference", None)
             if label_mapping and isinstance(label_mapping, dict):
-                reverse_mapping = {v: k for k, v in label_mapping.items()}
-                return np.array([reverse_mapping.get(int(pred), pred) for pred in argmax_pred])
+                # label_mapping is already {model_class_idx -> semantic_label}
+                # So we can use it directly to map predicted class indices to semantic labels
+                return np.array([label_mapping.get(int(pred), pred) for pred in argmax_pred])
             return argmax_pred
         
         # Get label mapping if available (for remapped labels like {-1,1} -> {0,1})
@@ -2149,11 +2191,10 @@ class TrainingOrchestrator:
             # No thresholds or not binary classification - use argmax
             # Map back to semantic labels if label mapping exists
             if label_mapping and isinstance(label_mapping, dict):
-                # Reverse mapping: semantic_label -> class_idx
-                reverse_mapping = {v: k for k, v in label_mapping.items()}
+                # label_mapping is already {model_class_idx -> semantic_label}
                 argmax_predictions = np.argmax(probabilities, axis=1)
-                # Convert class indices to semantic labels
-                semantic_predictions = np.array([reverse_mapping.get(int(pred), pred) for pred in argmax_predictions])
+                # Convert class indices to semantic labels using label_mapping directly
+                semantic_predictions = np.array([label_mapping.get(int(pred), pred) for pred in argmax_predictions])
                 return semantic_predictions
             else:
                 return np.argmax(probabilities, axis=1)
