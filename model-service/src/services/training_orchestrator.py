@@ -1679,6 +1679,7 @@ class TrainingOrchestrator:
                 metric_key_map = {
                     "f1": "f1_score",
                     "pr_auc": "pr_auc",
+                    "roc_auc": "roc_auc",
                     "balanced_accuracy": "balanced_accuracy",
                     "recall": "recall",
                     "accuracy": "accuracy",  # fallback for backward compatibility
