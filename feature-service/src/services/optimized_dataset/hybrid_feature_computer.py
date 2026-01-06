@@ -699,6 +699,11 @@ class HybridFeatureComputer:
         result = pd.DataFrame({"timestamp": timestamps})
         result["time_of_day_sin"] = None
         result["time_of_day_cos"] = None
+        result["dow_sin"] = None
+        result["dow_cos"] = None
+        result["is_asia_session"] = None
+        result["is_london_session"] = None
+        result["is_ny_session"] = None
         
         for idx, ts in enumerate(timestamps):
             if isinstance(ts, datetime):

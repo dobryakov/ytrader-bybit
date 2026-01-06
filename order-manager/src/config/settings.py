@@ -120,6 +120,10 @@ class Settings(BaseSettings):
         default=60, alias="ORDERMANAGER_PENDING_ORDER_CHECK_INTERVAL",
         description="Interval in seconds for checking pending orders that exceed timeout"
     )
+    order_manager_order_sync_interval: int = Field(
+        default=120, alias="ORDERMANAGER_ORDER_SYNC_INTERVAL",
+        description="Interval in seconds for periodic order state synchronization with Bybit exchange"
+    )
     order_manager_signal_processing_timeout_seconds: float = Field(
         default=300.0, alias="ORDERMANAGER_SIGNAL_PROCESSING_TIMEOUT_SECONDS",
         description="Timeout in seconds for signal processing in FIFO queue. Signals exceeding this timeout will raise OrderExecutionError."

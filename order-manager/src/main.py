@@ -26,6 +26,7 @@ from .services.instrument_info_manager import InstrumentInfoRefreshTask
 from .services.fee_rate_manager import FeeRateRefreshTask
 from .services.order_executor import OrderExecutor
 from .services.target_horizon_close_task import TargetHorizonCloseTask
+from .services.order_state_sync_task import OrderStateSyncTask
 
 # Configure logging first
 configure_logging()
@@ -281,6 +282,16 @@ async def lifespan(app: FastAPI):
             trace_id=trace_id,
         )
 
+        # Start background task for periodic order state synchronization
+        order_sync_task = OrderStateSyncTask()
+        await order_sync_task.start()
+        app.state.order_sync_task = order_sync_task
+        logger.info(
+            "order_state_sync_task_started",
+            interval=settings.order_manager_order_sync_interval,
+            trace_id=trace_id,
+        )
+
         logger.info("application_started", port=settings.order_manager_port, trace_id=trace_id)
     except Exception as e:
         logger.error(
@@ -317,6 +328,11 @@ async def lifespan(app: FastAPI):
         if hasattr(app.state, "target_horizon_task"):
             await app.state.target_horizon_task.stop()
             logger.info("target_horizon_close_task_stopped")
+
+        # Stop order state sync task
+        if hasattr(app.state, "order_sync_task"):
+            await app.state.order_sync_task.stop()
+            logger.info("order_state_sync_task_stopped")
 
         # Stop event subscriber
         if hasattr(app.state, "event_subscriber") and app.state.event_subscriber is not None:
