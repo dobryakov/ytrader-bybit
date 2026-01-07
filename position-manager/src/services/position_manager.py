@@ -562,8 +562,15 @@ class PositionManager:
                         # Price and PnL updates
                         current_price = mark_price or position.current_price
 
-                        # Refresh price if stale
-                        if current_price is not None and self._is_price_stale(position.last_updated):
+                        # If current_price is NULL, try to fetch it from API
+                        if current_price is None:
+                            refreshed = await self._get_current_price_from_api(
+                                asset, trace_id=trace_id
+                            )
+                            if refreshed is not None:
+                                current_price = refreshed
+                        # Otherwise, refresh price if stale
+                        elif self._is_price_stale(position.last_updated):
                             refreshed = await self._get_current_price_from_api(
                                 asset, trace_id=trace_id
                             )

@@ -18,7 +18,7 @@ from datetime import datetime
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.linear_model import LogisticRegression, SGDClassifier
 from sklearn.utils.class_weight import compute_class_weight
-from sklearn.model_selection import GridSearchCV, train_test_split
+from sklearn.model_selection import GridSearchCV
 from sklearn.metrics import f1_score, make_scorer
 from xgboost import XGBClassifier, XGBRegressor
 from itertools import product
@@ -92,6 +92,8 @@ class ModelTrainer:
     def train_model(
         self,
         dataset: TrainingDataset,
+        validation_features: pd.DataFrame,
+        validation_labels: pd.Series,
         model_type: Literal["xgboost", "random_forest", "logistic_regression", "sgd_classifier"],
         task_type: Literal["classification", "regression"] = "classification",
         hyperparameters: Optional[Dict[str, Any]] = None,
@@ -101,6 +103,8 @@ class ModelTrainer:
 
         Args:
             dataset: TrainingDataset with features and labels
+            validation_features: Validation features DataFrame (from Feature Service)
+            validation_labels: Validation labels Series (from Feature Service)
             model_type: Type of model to train
             task_type: Type of task ('classification' or 'regression')
             hyperparameters: Optional hyperparameters for the model
@@ -724,6 +728,8 @@ class ModelTrainer:
             hyperparameters = self._optimize_hyperparameters(
                 X=X,
                 y=y,
+                validation_features=validation_features,
+                validation_labels=validation_labels,
                 model_type=model_type,
                 task_type=task_type,
                 base_hyperparameters=base_hyperparameters,
@@ -741,17 +747,10 @@ class ModelTrainer:
             early_stopping_rounds = hyperparameters.pop("early_stopping_rounds", None)
             eval_set = None
             eval_metric = None
-            X_val = None
             
             if early_stopping_rounds is not None and model_type == "xgboost":
-                # Create validation set (20% of training data)
-                from sklearn.model_selection import train_test_split
-                X_train, X_val, y_train, y_val = train_test_split(
-                    X, y, test_size=0.2, random_state=42, shuffle=True
-                )
-                
-                # Prepare validation set for XGBoost
-                eval_set = [(X_val, y_val)]
+                # Use validation split from Feature Service for early stopping
+                eval_set = [(validation_features, validation_labels)]
                 
                 # Set eval_metric based on task type
                 if task_type == "classification":
@@ -759,23 +758,12 @@ class ModelTrainer:
                 else:  # regression
                     eval_metric = "rmse"
                 
-                # Update X, y to use training split (not validation!)
-                X = X_train
-                y = y_train
-                
-                # Also update sample_weight if provided
-                if sample_weight is not None:
-                    sample_weight_train, sample_weight_val = train_test_split(
-                        sample_weight, test_size=0.2, random_state=42, shuffle=True
-                    )
-                    sample_weight = sample_weight_train
-                
                 logger.info(
-                    "Using early stopping for XGBoost training",
+                    "Using early stopping for XGBoost training with validation split from Feature Service",
                     early_stopping_rounds=early_stopping_rounds,
                     eval_metric=eval_metric,
                     train_size=len(X),
-                    validation_size=len(X_val),
+                    validation_size=len(validation_features),
                 )
             
             # For XGBoost: pass eval_metric via constructor, not via fit()
@@ -843,7 +831,8 @@ class ModelTrainer:
                 task_type=task_type,
                 dataset_size=dataset.get_record_count(),
                 training_samples=len(X),
-                validation_samples=len(X_val) if X_val is not None else 0,
+                validation_samples=len(validation_features),
+                validation_source="Feature Service",
                 early_stopping_used=early_stopping_rounds is not None,
                 hyperparameter_optimization=hyperparameter_info,
             )
@@ -1079,6 +1068,8 @@ class ModelTrainer:
         self,
         X: pd.DataFrame,
         y: pd.Series,
+        validation_features: pd.DataFrame,
+        validation_labels: pd.Series,
         model_type: str,
         task_type: Literal["classification", "regression"],
         base_hyperparameters: Dict[str, Any],
@@ -1088,8 +1079,10 @@ class ModelTrainer:
         Optimize hyperparameters using Grid Search or Bayesian Optimization.
 
         Args:
-            X: Feature matrix
-            y: Target labels
+            X: Training feature matrix
+            y: Training target labels
+            validation_features: Validation features DataFrame (from Feature Service)
+            validation_labels: Validation labels Series (from Feature Service)
             model_type: Type of model
             task_type: Type of task ('classification' or 'regression')
             base_hyperparameters: Base hyperparameters to start from
@@ -1114,12 +1107,14 @@ class ModelTrainer:
             )
 
         logger.info(
-            "Starting hyperparameter optimization",
+            "Starting hyperparameter optimization using validation split from Feature Service",
             tuning_method=tuning_method,
             max_iterations=max_iterations,
             model_type=model_type,
             task_type=task_type,
             optimization_metric=optimization_metric if task_type == "regression" else None,
+            train_samples=len(X),
+            validation_samples=len(validation_features),
         )
 
         if tuning_method == "grid_search":
@@ -1172,19 +1167,9 @@ class ModelTrainer:
                     reduced_grid=param_grid,
                 )
 
-            # Split data for cross-validation
-            X_train, X_val, y_train, y_val = train_test_split(
-                X, y, test_size=0.2, random_state=42, stratify=y if task_type == "classification" else None
-            )
-
-            # Prepare sample weights for validation split if provided
-            train_sample_weight = None
-            val_sample_weight = None
-            if sample_weight is not None:
-                train_indices = X_train.index
-                val_indices = X_val.index
-                train_sample_weight = sample_weight[X.index.isin(train_indices)]
-                val_sample_weight = sample_weight[X.index.isin(val_indices)]
+            # Use validation split from Feature Service (no internal split needed)
+            # Prepare sample weights for validation if provided
+            # Note: sample_weight is for training data only, validation doesn't need sample weights
 
             # Get model class
             model_classes = self.supported_model_types[model_type]
@@ -1251,19 +1236,19 @@ class ModelTrainer:
 
                 # Create and train model
                 model = model_class(**test_params)
-                if train_sample_weight is not None:
-                    model.fit(X_train, y_train, sample_weight=train_sample_weight)
+                if sample_weight is not None:
+                    model.fit(X, y, sample_weight=sample_weight)
                 else:
-                    model.fit(X_train, y_train)
+                    model.fit(X, y)
 
-                # Evaluate on validation set
-                y_pred = model.predict(X_val)
+                # Evaluate on validation set from Feature Service
+                y_pred = model.predict(validation_features)
                 if task_type == "classification":
-                    score = f1_score(y_val, y_pred, average="macro")
+                    score = f1_score(validation_labels, y_pred, average="macro")
                 else:
                     # Use optimization metric from settings for regression
                     score = self._calculate_regression_metric(
-                        y_true=y_val,
+                        y_true=validation_labels,
                         y_pred=y_pred,
                         metric_name=optimization_metric or "r2_score",
                     )

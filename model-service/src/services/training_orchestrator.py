@@ -797,11 +797,137 @@ class TrainingOrchestrator:
                 logger.info("Training cancelled during dataset loading", training_id=training_id)
                 return
 
+            # Download validation split BEFORE training (needed for hyperparameter tuning and early stopping)
+            validation_file_path = await feature_service_client.download_dataset(
+                dataset_id, split="validation", trace_id=trace_id
+            )
+            if not validation_file_path:
+                logger.error(
+                    "Validation split not available, cannot train model",
+                    training_id=training_id,
+                    dataset_id=str(dataset_id),
+                    trace_id=trace_id,
+                )
+                return
+
+            # Load and prepare validation split
+            try:
+                val_df = pd.read_parquet(validation_file_path)
+                if target_column not in val_df.columns:
+                    logger.error(
+                        "Target column not found in validation dataset",
+                        training_id=training_id,
+                        dataset_id=str(dataset_id),
+                        available_columns=list(val_df.columns),
+                        trace_id=trace_id,
+                    )
+                    return
+
+                # Exclude non-numeric columns (symbol, timestamp) and target column from features
+                exclude_cols = [target_column, "symbol", "timestamp"]
+                validation_features = val_df.drop(columns=[col for col in exclude_cols if col in val_df.columns])
+                # Keep only numeric columns for features
+                validation_features = validation_features.select_dtypes(include=[np.number])
+                validation_labels = val_df[target_column]
+
+                # Align validation features with training features (before drop_zero_class)
+                # Use training feature names for initial alignment
+                train_feature_names = list(features_df.columns)
+                # Ensure validation has same features as training
+                missing_features = set(train_feature_names) - set(validation_features.columns)
+                extra_features = set(validation_features.columns) - set(train_feature_names)
+                
+                if missing_features:
+                    # Add missing features with zeros
+                    for feat in missing_features:
+                        validation_features[feat] = 0.0
+                    logger.warning(
+                        "Added missing features to validation split",
+                        training_id=training_id,
+                        missing_features=list(missing_features),
+                        trace_id=trace_id,
+                    )
+                
+                if extra_features:
+                    # Remove extra features
+                    validation_features = validation_features.drop(columns=list(extra_features))
+                    logger.warning(
+                        "Removed extra features from validation split",
+                        training_id=training_id,
+                        extra_features=list(extra_features),
+                        trace_id=trace_id,
+                    )
+                
+                # Reorder columns to match training features
+                validation_features = validation_features[train_feature_names]
+
+                # Optionally drop zero-class samples from validation split for
+                # binary_classification tasks when configured via drop_zero_class.
+                if (
+                    task_type == "classification"
+                    and drop_zero_from_splits
+                    and validation_labels is not None
+                    and not validation_labels.empty
+                ):
+                    val_mask = validation_labels != 0
+                    removed_val = int((~val_mask).sum())
+                    kept_val = int(val_mask.sum())
+                    if kept_val > 0 and removed_val > 0:
+                        validation_features = validation_features.loc[val_mask].reset_index(drop=True)
+                        validation_labels = validation_labels.loc[val_mask].reset_index(drop=True)
+                        logger.info(
+                            "Dropped zero-target samples from validation split",
+                            training_id=training_id,
+                            dataset_id=str(dataset_id),
+                            removed_zero_samples=removed_val,
+                            kept_samples=kept_val,
+                            drop_zero_class=drop_zero_from_splits,
+                            remaining_labels=sorted(
+                                map(int, validation_labels.unique().tolist())
+                            ),
+                            trace_id=trace_id,
+                        )
+
+                # Validate that validation split is not empty
+                if validation_features.empty or validation_labels.empty:
+                    logger.error(
+                        "Validation split is empty after processing",
+                        training_id=training_id,
+                        dataset_id=str(dataset_id),
+                        trace_id=trace_id,
+                    )
+                    return
+
+                logger.info(
+                    "Validation split loaded for training",
+                    training_id=training_id,
+                    dataset_id=str(dataset_id),
+                    validation_samples=len(validation_features),
+                    trace_id=trace_id,
+                )
+
+            except Exception as e:
+                logger.error(
+                    "Failed to load validation dataset",
+                    training_id=training_id,
+                    dataset_id=str(dataset_id),
+                    error=str(e),
+                    trace_id=trace_id,
+                    exc_info=True,
+                )
+                return
+
+            if self._training_cancelled:
+                logger.info("Training cancelled during validation split loading", training_id=training_id)
+                return
+
             # Pass task_variant to ModelTrainer so it can select appropriate
             # hyperparameter profile (binary vs triple classification).
-            # Train model
+            # Train model with validation split
             model = model_trainer.train_model(
                 dataset=dataset,
+                validation_features=validation_features,
+                validation_labels=validation_labels,
                 model_type="xgboost",  # Default to XGBoost, could be configurable
                 task_type=task_type,  # Use task_type from dataset target_config
             )
@@ -840,154 +966,57 @@ class TrainingOrchestrator:
                 trace_id=trace_id,
             )
 
-            # Download validation split for evaluation
-            validation_file_path = await feature_service_client.download_dataset(
-                dataset_id, split="validation", trace_id=trace_id
+            # Align validation features with model's expected features (after model training)
+            validation_features = self._align_features_with_model(
+                features=validation_features,
+                model_feature_names=model_feature_names,
+                split_name="validation",
+                training_id=training_id,
+                trace_id=trace_id,
             )
-            validation_features = None
-            validation_labels = None
 
-            if validation_file_path:
-                try:
-                    val_df = pd.read_parquet(validation_file_path)
-                    if target_column in val_df.columns:
-                        # Exclude non-numeric columns (symbol, timestamp) and target column from features
-                        exclude_cols = [target_column, "symbol", "timestamp"]
-                        validation_features = val_df.drop(columns=[col for col in exclude_cols if col in val_df.columns])
-                        # Keep only numeric columns for features
-                        validation_features = validation_features.select_dtypes(include=[np.number])
-                        validation_labels = val_df[target_column]
-                        
-                        # Align validation features with model's expected features
-                        validation_features = self._align_features_with_model(
-                            features=validation_features,
-                            model_feature_names=model_feature_names,
-                            split_name="validation",
-                            training_id=training_id,
-                            trace_id=trace_id,
-                        )
+            # Log distribution for validation split (class distribution for classification, statistics for regression)
+            if task_type == "classification" and not validation_labels.empty:
+                val_class_dist = validation_labels.value_counts().to_dict()
+                val_class_dist_pct = {k: (v / len(validation_labels) * 100) for k, v in val_class_dist.items()}
+                logger.info(
+                    "Validation dataset ready for evaluation",
+                    training_id=training_id,
+                    record_count=len(validation_features),
+                    class_distribution=val_class_dist,
+                    class_distribution_percentage={k: round(v, 2) for k, v in val_class_dist_pct.items()},
+                    unique_labels=sorted(validation_labels.unique().tolist()),
+                    trace_id=trace_id,
+                )
+            elif task_type == "regression" and not validation_labels.empty:
+                # Calculate additional statistics for regression targets
+                val_target_skew = float(validation_labels.skew()) if len(validation_labels) > 2 else 0.0
+                val_target_kurtosis = float(validation_labels.kurtosis()) if len(validation_labels) > 2 else 0.0
+                val_target_q25 = float(validation_labels.quantile(0.25))
+                val_target_q75 = float(validation_labels.quantile(0.75))
+                val_target_iqr = val_target_q75 - val_target_q25
+                
+                logger.info(
+                    "Validation dataset ready for evaluation",
+                    training_id=training_id,
+                    record_count=len(validation_features),
+                    target_mean=float(validation_labels.mean()),
+                    target_std=float(validation_labels.std()),
+                    target_min=float(validation_labels.min()),
+                    target_max=float(validation_labels.max()),
+                    target_median=float(validation_labels.median()),
+                    target_q25=val_target_q25,
+                    target_q75=val_target_q75,
+                    target_iqr=val_target_iqr,
+                    target_skew=val_target_skew,
+                    target_kurtosis=val_target_kurtosis,
+                    trace_id=trace_id,
+                )
 
-                        # Log original distribution for validation split BEFORE drop_zero_class
-                        if task_type == "classification" and not validation_labels.empty:
-                            val_class_dist_original = validation_labels.value_counts().to_dict()
-                            val_class_dist_pct_original = {k: (v / len(validation_labels) * 100) for k, v in val_class_dist_original.items()}
-                            logger.info(
-                                "Validation dataset loaded (original, before drop_zero_class)",
-                                training_id=training_id,
-                                dataset_id=str(dataset_id),
-                                record_count=len(validation_features),
-                                class_distribution=val_class_dist_original,
-                                class_distribution_percentage={k: round(v, 2) for k, v in val_class_dist_pct_original.items()},
-                                unique_labels=sorted(validation_labels.unique().tolist()),
-                                trace_id=trace_id,
-                            )
-
-                        # Optionally drop zero-class samples from validation split for
-                        # binary_classification tasks when configured via drop_zero_class.
-                        if (
-                            task_type == "classification"
-                            and drop_zero_from_splits
-                            and validation_labels is not None
-                            and not validation_labels.empty
-                        ):
-                            val_mask = validation_labels != 0
-                            removed_val = int((~val_mask).sum())
-                            kept_val = int(val_mask.sum())
-                            if kept_val > 0 and removed_val > 0:
-                                validation_features = validation_features.loc[val_mask].reset_index(drop=True)
-                                validation_labels = validation_labels.loc[val_mask].reset_index(drop=True)
-                                logger.info(
-                                    "Dropped zero-target samples from validation split",
-                                    training_id=training_id,
-                                    dataset_id=str(dataset_id),
-                                    removed_zero_samples=removed_val,
-                                    kept_samples=kept_val,
-                                    drop_zero_class=drop_zero_from_splits,
-                                    remaining_labels=sorted(
-                                        map(int, validation_labels.unique().tolist())
-                                    ),
-                                    trace_id=trace_id,
-                                )
-                        
-                        # Log distribution for validation split AFTER drop_zero_class (class distribution for classification, statistics for regression)
-                        if not validation_labels.empty:
-                            if task_type == "classification":
-                                val_class_dist = validation_labels.value_counts().to_dict()
-                                val_class_dist_pct = {k: (v / len(validation_labels) * 100) for k, v in val_class_dist.items()}
-                                logger.info(
-                                    "Validation dataset loaded",
-                                    training_id=training_id,
-                                    record_count=len(validation_features),
-                                    class_distribution=val_class_dist,
-                                    class_distribution_percentage={k: round(v, 2) for k, v in val_class_dist_pct.items()},
-                                    unique_labels=sorted(validation_labels.unique().tolist()),
-                                    trace_id=trace_id,
-                                )
-                            else:  # regression
-                                # Calculate additional statistics for regression targets
-                                val_target_skew = float(validation_labels.skew()) if len(validation_labels) > 2 else 0.0
-                                val_target_kurtosis = float(validation_labels.kurtosis()) if len(validation_labels) > 2 else 0.0
-                                val_target_q25 = float(validation_labels.quantile(0.25))
-                                val_target_q75 = float(validation_labels.quantile(0.75))
-                                val_target_iqr = val_target_q75 - val_target_q25
-                                
-                                logger.info(
-                                    "Validation dataset loaded",
-                                    training_id=training_id,
-                                    record_count=len(validation_features),
-                                    target_mean=float(validation_labels.mean()),
-                                    target_std=float(validation_labels.std()),
-                                    target_min=float(validation_labels.min()),
-                                    target_max=float(validation_labels.max()),
-                                    target_median=float(validation_labels.median()),
-                                    target_q25=val_target_q25,
-                                    target_q75=val_target_q75,
-                                    target_iqr=val_target_iqr,
-                                    target_skew=val_target_skew,
-                                    target_kurtosis=val_target_kurtosis,
-                                    trace_id=trace_id,
-                                )
-                        else:
-                            logger.info(
-                                "Validation dataset loaded",
-                                training_id=training_id,
-                                record_count=len(validation_features),
-                                trace_id=trace_id,
-                            )
-                except Exception as e:
-                    logger.warning(
-                        "Failed to load validation dataset, using train set for evaluation",
-                        training_id=training_id,
-                        error=str(e),
-                        trace_id=trace_id,
-                    )
-
-            # Evaluate model quality on validation set
-            # Use validation set if available and not empty, otherwise use training set
-            if validation_features is not None and validation_labels is not None and not validation_labels.empty:
-                eval_features = validation_features
-                eval_labels = validation_labels
-                eval_split = "validation"
-            else:
-                # Fallback to train set
-                eval_features = dataset.features
-                eval_labels = dataset.labels
-                eval_split = "train"
-                if validation_features is None or validation_labels is None:
-                    logger.warning(
-                        "Validation split not available, using train set for evaluation",
-                        training_id=training_id,
-                        dataset_id=str(dataset_id),
-                        trace_id=trace_id,
-                    )
-                elif validation_labels.empty:
-                    logger.warning(
-                        "Validation split is empty, using train set for evaluation",
-                        training_id=training_id,
-                        dataset_id=str(dataset_id),
-                        validation_was_empty=True,
-                        trace_id=trace_id,
-                    )
+            # Evaluate model quality on validation set (validation split is always available)
+            eval_features = validation_features
+            eval_labels = validation_labels
+            eval_split = "validation"
 
             # For classification, use probabilities and apply reverse mapping if needed
             if task_type == "classification":
