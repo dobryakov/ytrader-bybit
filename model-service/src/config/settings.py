@@ -58,7 +58,17 @@ class Settings(BaseSettings):
     model_optimal_top_k_selection_strategy: str = Field(
         default="lift_then_accuracy",
         alias="MODEL_OPTIMAL_TOP_K_SELECTION_STRATEGY",
-        description="Strategy for selecting optimal top-k percentage for each model. Options: 'lift_then_accuracy' (default - requires lift > 1.0, then maximizes accuracy), 'accuracy_only' (maximizes accuracy), 'lift_only' (maximizes lift), 'balanced' (maximizes accuracy * lift)."
+        description=(
+            "Strategy for selecting optimal top-k percentage for each model. "
+            "Options: "
+            "'lift_then_accuracy' (default - requires lift > 1.0, then maximizes accuracy, "
+            "fallback to max accuracy if no candidate has lift > 1.0); "
+            "'accuracy_only' (maximizes accuracy); "
+            "'lift_only' (maximizes lift); "
+            "'balanced' (maximizes accuracy * lift); "
+            "'coverage_first' (prefers higher coverage k among candidates whose accuracy "
+            "is at least 50% of the best accuracy)."
+        ),
     )
     
     model_activation_threshold: float = Field(

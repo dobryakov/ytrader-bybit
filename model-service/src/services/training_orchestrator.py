@@ -2530,11 +2530,18 @@ class TrainingOrchestrator:
         
         Args:
             top_k_results: Dictionary with top-k metrics (keys like 'top_k_10_accuracy', 'top_k_10_lift', etc.)
-            strategy: Selection strategy ('lift_then_accuracy', 'accuracy_only', 'lift_only', 'balanced')
-            trace_id: Trace ID for logging
+            strategy: Selection strategy. Supported values:
+                - 'lift_then_accuracy' (default): require lift > 1.0, then maximize accuracy,
+                  fallback to maximum accuracy if no candidate has lift > 1.0.
+                - 'accuracy_only': maximize accuracy.
+                - 'lift_only': maximize lift.
+                - 'balanced': maximize accuracy * lift.
+                - 'coverage_first': maximize coverage (k) among candidates whose accuracy
+                  is reasonably close to the best one (>= 50% of max accuracy).
+            trace_id: Trace ID for logging.
             
         Returns:
-            Optimal k value (10, 20, 30, or 50) or None if no valid option found
+            Optimal k value (10, 20, 30, or 50) or None if no valid option found.
         """
         k_values = [10, 20, 30, 50]
         candidates = []
@@ -2630,6 +2637,28 @@ class TrainingOrchestrator:
                 accuracy=optimal['accuracy'],
                 lift=optimal['lift'],
                 score=optimal['score'],
+                trace_id=trace_id,
+            )
+            return optimal['k']
+        
+        elif strategy == "coverage_first":
+            # Prefer higher coverage (larger k), but avoid candidates with
+            # extremely low accuracy compared to the best one.
+            max_accuracy = max(c['accuracy'] for c in candidates)
+            # Allow candidates with accuracy at least 50% of the best.
+            min_allowed_accuracy = 0.5 * max_accuracy if max_accuracy > 0 else 0.0
+            valid_candidates = [c for c in candidates if c['accuracy'] >= min_allowed_accuracy]
+            if not valid_candidates:
+                valid_candidates = candidates
+
+            optimal = max(valid_candidates, key=lambda x: x['k'])
+            logger.info(
+                "Optimal top-k selected (coverage_first strategy)",
+                optimal_k=optimal['k'],
+                accuracy=optimal['accuracy'],
+                lift=optimal['lift'],
+                max_accuracy=max_accuracy,
+                min_allowed_accuracy=min_allowed_accuracy,
                 trace_id=trace_id,
             )
             return optimal['k']
