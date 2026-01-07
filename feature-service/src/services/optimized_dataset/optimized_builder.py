@@ -746,6 +746,7 @@ class OptimizedDatasetBuilder:
         end_date: datetime,
         feature_registry: FeatureRegistry,
         dataset_id: str,
+        backfill_attempted: bool = False,
     ) -> None:
         """
         Validate that all required data is available before starting dataset build.
@@ -862,6 +863,40 @@ class OptimizedDatasetBuilder:
         
         # If missing data found, try automatic backfill if service is available
         if missing_data:
+            # If backfill was already attempted and data is still missing, fail immediately
+            if backfill_attempted:
+                logger.error(
+                    "dataset_data_availability_backfill_failed_no_data",
+                    dataset_id=dataset_id,
+                    symbol=symbol,
+                    missing_days_count=len(set(day for days_dict in missing_data.values() for day in days_dict.keys())),
+                    message="Backfill was attempted but no data was loaded. Failing dataset build immediately.",
+                )
+                # Build error message and raise immediately
+                error_parts = [
+                    f"Missing required data for dataset build (symbol: {symbol}, period: {start_date.date()} to {end_date.date()}):"
+                ]
+                
+                for storage_type_name, days_dict in sorted(missing_data.items()):
+                    missing_days = sorted(days_dict.keys())
+                    all_features = set()
+                    for day_features in days_dict.values():
+                        all_features.update(day_features)
+                    error_parts.append(
+                        f"  - {storage_type_name}: missing for {len(missing_days)} day(s) "
+                        f"({', '.join(str(d) for d in missing_days[:5])}"
+                        + (f", ... ({len(missing_days) - 5} more)" if len(missing_days) > 5 else "")
+                        + f"), required by {len(all_features)} feature(s): {', '.join(sorted(all_features)[:5])}"
+                        + (f", ... ({len(all_features) - 5} more)" if len(all_features) > 5 else "")
+                    )
+                
+                error_parts.append(
+                    "\n  Automatic backfill was attempted but no data was loaded. "
+                    "This usually means the symbol does not exist or has no historical data for the requested period."
+                )
+                
+                raise ValueError("\n".join(error_parts))
+            
             # Try automatic backfill if backfilling_service is available
             if self._backfilling_service:
                 # Map storage types to backfill data types
@@ -938,7 +973,7 @@ class OptimizedDatasetBuilder:
                                     message="Backfill completed successfully, re-checking data availability",
                                 )
                                 # Re-check data availability after backfill
-                                # Recursively call this method to validate again
+                                # Recursively call this method to validate again, marking that backfill was attempted
                                 try:
                                     await self._validate_data_availability(
                                         symbol=symbol,
@@ -946,6 +981,7 @@ class OptimizedDatasetBuilder:
                                         end_date=end_date,
                                         feature_registry=feature_registry,
                                         dataset_id=dataset_id,
+                                        backfill_attempted=True,
                                     )
                                     # If we get here, data is now available
                                     logger.info(
@@ -956,16 +992,10 @@ class OptimizedDatasetBuilder:
                                         message="Data availability restored after backfill, continuing dataset build",
                                     )
                                     return
-                                except ValueError:
-                                    # Still missing data after backfill
-                                    logger.warning(
-                                        "dataset_data_availability_still_missing_after_backfill",
-                                        dataset_id=dataset_id,
-                                        symbol=symbol,
-                                        job_id=job_id,
-                                        message="Data still missing after backfill, will raise error",
-                                    )
-                                    break
+                                except ValueError as e:
+                                    # Still missing data after backfill - this will raise immediately
+                                    # The recursive call with backfill_attempted=True will fail fast
+                                    raise e
                             elif job_status and job_status.get("status") == "failed":
                                 logger.error(
                                     "dataset_data_availability_backfill_failed",
@@ -973,19 +1003,31 @@ class OptimizedDatasetBuilder:
                                     symbol=symbol,
                                     job_id=job_id,
                                     error_message=job_status.get("error_message"),
-                                    message="Backfill job failed",
+                                    message="Backfill job failed, failing dataset build immediately",
                                 )
-                                break
+                                # Backfill failed - fail immediately without retry
+                                raise ValueError(
+                                    f"Backfill job failed for dataset build (symbol: {symbol}, period: {start_date.date()} to {end_date.date()}): "
+                                    f"{job_status.get('error_message', 'Unknown error')}"
+                                )
                         
                         if waited >= max_wait_seconds:
-                            logger.warning(
+                            logger.error(
                                 "dataset_data_availability_backfill_timeout",
                                 dataset_id=dataset_id,
                                 symbol=symbol,
                                 job_id=job_id,
                                 wait_seconds=waited,
-                                message="Backfill job did not complete within timeout, will raise error",
+                                message="Backfill job did not complete within timeout, failing dataset build immediately",
                             )
+                            # Backfill timeout - fail immediately
+                            raise ValueError(
+                                f"Backfill job timed out for dataset build (symbol: {symbol}, period: {start_date.date()} to {end_date.date()}): "
+                                f"Backfill did not complete within {max_wait_seconds} seconds"
+                            )
+                    except ValueError:
+                        # Re-raise ValueError (from backfill failure/timeout or recursive validation failure)
+                        raise
                     except Exception as e:
                         logger.error(
                             "dataset_data_availability_backfill_error",
@@ -993,7 +1035,11 @@ class OptimizedDatasetBuilder:
                             symbol=symbol,
                             error=str(e),
                             exc_info=True,
-                            message="Failed to trigger or wait for backfill",
+                            message="Failed to trigger or wait for backfill, failing dataset build immediately",
+                        )
+                        # Backfill error - fail immediately
+                        raise ValueError(
+                            f"Backfill error for dataset build (symbol: {symbol}, period: {start_date.date()} to {end_date.date()}): {str(e)}"
                         )
             
             # Build error message

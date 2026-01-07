@@ -332,10 +332,16 @@ class FeatureScheduler:
         for symbol in list(self._symbols):  # Copy list to avoid modification during iteration
             try:
                 # Compute features
-                feature_vector = self._feature_computer.compute_features(
+                result = self._feature_computer.compute_features(
                     symbol=symbol,
                     timestamp=timestamp,
                 )
+                
+                if result is None:
+                    feature_vector = None
+                    market_data = None
+                else:
+                    feature_vector, market_data = result
                 
                 if feature_vector is None:
                     logger.warning(

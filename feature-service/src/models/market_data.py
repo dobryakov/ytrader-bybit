@@ -1,5 +1,7 @@
 """
-Base models for market data events.
+Market data models.
+
+Contains both event models (OrderbookSnapshot, Trade, etc.) and snapshot model (MarketData).
 """
 from datetime import datetime
 from typing import List, Optional, Dict, Any
@@ -89,3 +91,19 @@ class MarketDataEvent(BaseModel):
     internal_timestamp: Optional[datetime] = None
     exchange_timestamp: Optional[datetime] = None
 
+
+class MarketData(BaseModel):
+    """
+    Market data snapshot at a specific timestamp.
+    
+    Represents current market data (price, spread, volume, etc.) at a specific timestamp.
+    This is separate from feature vector and contains reference market information.
+    """
+    price: float = Field(..., description="Current market price", gt=0)
+    spread: float = Field(default=0.0, description="Bid-ask spread", ge=0)
+    volume_24h: Optional[float] = Field(default=None, description="24-hour trading volume", ge=0)
+    volatility: Optional[float] = Field(default=None, description="Current volatility measure", ge=0)
+    orderbook_depth: Optional[Dict[str, float]] = Field(
+        default=None, description="Order book depth (bid_depth, ask_depth)"
+    )
+    timestamp: datetime = Field(..., description="Timestamp when market data was captured")

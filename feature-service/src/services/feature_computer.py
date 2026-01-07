@@ -10,6 +10,7 @@ if TYPE_CHECKING:
     from src.services.feature_registry import FeatureRegistryLoader
 
 from src.models.feature_vector import FeatureVector
+from src.models.market_data import MarketData
 from src.models.orderbook_state import OrderbookState
 from src.models.rolling_windows import RollingWindows
 from src.services.orderbook_manager import OrderbookManager
@@ -23,7 +24,13 @@ from src.features.orderflow_features import compute_all_orderflow_features
 from src.features.orderbook_features import compute_all_orderbook_features
 from src.features.perpetual_features import compute_all_perpetual_features
 from src.features.temporal_features import compute_all_temporal_features
-from src.features.candle_patterns import compute_all_candle_patterns_3m, compute_all_candle_patterns_5m, compute_all_candle_patterns_15m, compute_all_candle_patterns_45m
+from src.features.candle_patterns import (
+    compute_all_candle_patterns_3m,
+    compute_all_candle_patterns_5m,
+    compute_all_candle_patterns_15m,
+    compute_all_candle_patterns_45m,
+    compute_all_candle_patterns_dynamic,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -213,9 +220,12 @@ class FeatureComputer:
                     version=self._feature_registry_version,
                     has_returns_3m="returns_3m" in self._allowed_feature_names,
                     has_returns_5m="returns_5m" in self._allowed_feature_names,
+                    has_returns_45m="returns_45m" in self._allowed_feature_names,
                     has_volatility_10m="volatility_10m" in self._allowed_feature_names,
                     has_volatility_15m="volatility_15m" in self._allowed_feature_names,
+                    has_price_ema_ratio="price_ema_ratio" in self._allowed_feature_names,
                     sample_features=sorted(list(self._allowed_feature_names))[:10],
+                    all_features=sorted(list(self._allowed_feature_names)),
                 )
             else:
                 # Try to load config
@@ -231,8 +241,11 @@ class FeatureComputer:
                             version=config.get("version"),
                             has_returns_3m="returns_3m" in self._allowed_feature_names,
                             has_returns_5m="returns_5m" in self._allowed_feature_names,
+                            has_returns_45m="returns_45m" in self._allowed_feature_names,
                             has_volatility_10m="volatility_10m" in self._allowed_feature_names,
                             has_volatility_15m="volatility_15m" in self._allowed_feature_names,
+                            has_price_ema_ratio="price_ema_ratio" in self._allowed_feature_names,
+                            all_features=sorted(list(self._allowed_feature_names)),
                         )
                     else:
                         logger.warning(
@@ -348,34 +361,33 @@ class FeatureComputer:
     
     def _get_candle_pattern_function(self):
         """
-        Определить функцию для вычисления паттернов на основе lookback_window.
+        Получить функцию для вычисления свечных паттернов на основе Feature Registry.
         
-        Returns:
-            Функция для вычисления паттернов
+        Возвращает функцию, принимающую RollingWindows и считающую только те
+        candle/pattern-фичи, которые объявлены в Feature Registry.
         """
-        # Определить lookback_window паттернов
-        if self._pattern_lookback_window is None:
-            self._update_pattern_lookback_window()
-        
-        lookback = self._pattern_lookback_window
-        
-        # Выбрать функцию на основе lookback_window
-        if lookback == "45m":
-            return compute_all_candle_patterns_45m
-        elif lookback == "15m":
-            return compute_all_candle_patterns_15m
-        elif lookback == "5m":
-            return compute_all_candle_patterns_5m
-        elif lookback == "3m":
-            return compute_all_candle_patterns_3m
-        else:
-            # Fallback: использовать версию на основе версии Feature Registry (для обратной совместимости)
-            if self._feature_registry_version and self._feature_registry_version >= "1.5.0":
-                return compute_all_candle_patterns_15m
-            elif self._feature_registry_version and self._feature_registry_version >= "1.4.0":
-                return compute_all_candle_patterns_5m
+        feature_definitions = None
+        if self._feature_registry_loader is not None:
+            # Предпочитаем pydantic-модель
+            registry_model = getattr(self._feature_registry_loader, "_registry_model", None)
+            if registry_model and getattr(registry_model, "features", None):
+                feature_definitions = registry_model.features
             else:
-                return compute_all_candle_patterns_3m
+                # Fallback к dict-конфигу, если модель недоступна
+                config = self._feature_registry_loader.get_config()
+                if config and "features" in config:
+                    feature_definitions = config["features"]
+
+        def _compute(rolling_windows: "RollingWindows"):
+            if feature_definitions is None:
+                # Нет реестра — для безопасности возвращаем пустой словарь
+                return {}
+            return compute_all_candle_patterns_dynamic(
+                rolling_windows,
+                feature_definitions=feature_definitions,
+            )
+
+        return _compute
     
     def get_rolling_windows(self, symbol: str) -> RollingWindows:
         """Get or create rolling windows for symbol."""
@@ -445,13 +457,99 @@ class FeatureComputer:
         self._latest_funding_rate[symbol] = funding_rate
         self._latest_next_funding_time[symbol] = next_funding_time
     
+    def compute_market_data(
+        self,
+        symbol: str,
+        orderbook: Optional[OrderbookState],
+        rolling_windows: RollingWindows,
+        timestamp: datetime,
+    ) -> MarketData:
+        """
+        Compute market data snapshot (price, spread, volume, etc.).
+        
+        Args:
+            symbol: Trading pair symbol
+            orderbook: Current orderbook state
+            rolling_windows: Rolling windows for accessing historical data
+            timestamp: Timestamp for market data
+            
+        Returns:
+            MarketData instance
+            
+        Raises:
+            ValueError: If price cannot be determined
+        """
+        # Get current price - try orderbook first, then fallback to latest kline
+        current_price = orderbook.get_mid_price() if orderbook else None
+        if current_price is None:
+            # Fallback: get price from latest kline
+            now = datetime.now(timezone.utc)
+            klines = rolling_windows.get_klines_for_window("1m", now - timedelta(minutes=1), now)
+            if len(klines) > 0 and "close" in klines.columns:
+                klines_sorted = klines.sort_values("timestamp")
+                latest_close = klines_sorted.iloc[-1]["close"]
+                try:
+                    current_price = float(latest_close)
+                except (ValueError, TypeError):
+                    current_price = None
+        
+        if current_price is None or current_price <= 0:
+            raise ValueError(
+                f"Cannot determine current price for {symbol}. "
+                f"Orderbook available: {orderbook is not None}, "
+                f"Klines available: {len(rolling_windows.get_klines_for_window('1m', datetime.now(timezone.utc) - timedelta(minutes=1), datetime.now(timezone.utc))) > 0}"
+            )
+        
+        # Get spread from orderbook
+        spread = 0.0
+        if orderbook:
+            spread_abs = orderbook.get_spread_abs()
+            if spread_abs is not None:
+                spread = float(spread_abs)
+        
+        # Get volume (try to get from rolling windows if available)
+        volume_24h = None
+        # Note: 24h volume would require aggregating trades/klines over 24h
+        # For now, leave as None if not easily available
+        
+        # Get volatility (if available in features, could extract here)
+        volatility = None
+        
+        # Get orderbook depth if available
+        orderbook_depth = None
+        if orderbook:
+            bid_depth = orderbook.get_depth_bid_top5()
+            ask_depth = orderbook.get_depth_ask_top5()
+            if bid_depth is not None and ask_depth is not None:
+                orderbook_depth = {
+                    "bid_depth": float(bid_depth),
+                    "ask_depth": float(ask_depth),
+                }
+        
+        return MarketData(
+            price=current_price,
+            spread=spread,
+            volume_24h=volume_24h,
+            volatility=volatility,
+            orderbook_depth=orderbook_depth,
+            timestamp=timestamp,
+        )
+    
     def compute_features(
         self,
         symbol: str,
         timestamp: Optional[datetime] = None,
         trace_id: Optional[str] = None,
-    ) -> Optional[FeatureVector]:
-        """Compute all features for symbol at timestamp."""
+    ) -> tuple[FeatureVector, MarketData]:
+        """
+        Compute all features and market data for symbol at timestamp.
+        
+        Returns:
+            Tuple of (FeatureVector, MarketData)
+            
+        Raises:
+            ValueError: If market data cannot be computed (e.g., price unavailable)
+        """
         start_time = time.time()
         
         if timestamp is None:
@@ -474,20 +572,6 @@ class FeatureComputer:
             
             # Get rolling windows
             rolling_windows = self.get_rolling_windows(symbol)
-            
-            # Get current price - try orderbook first, then fallback to latest kline
-            current_price = orderbook.get_mid_price() if orderbook else None
-            if current_price is None:
-                # Fallback: get price from latest kline
-                now = datetime.now(timezone.utc)
-                klines = rolling_windows.get_klines_for_window("1m", now - timedelta(minutes=1), now)
-                if len(klines) > 0 and "close" in klines.columns:
-                    klines_sorted = klines.sort_values("timestamp")
-                    latest_close = klines_sorted.iloc[-1]["close"]
-                    try:
-                        current_price = float(latest_close)
-                    except (ValueError, TypeError):
-                        current_price = None
             
             # Compute all feature groups
             all_features = {}
@@ -520,27 +604,23 @@ class FeatureComputer:
                         error_type=type(e).__name__,
                     )
             
-            # Price features
+            # Compute market data (must be done before price features to get current_price)
+            market_data = self.compute_market_data(
+                symbol=symbol,
+                orderbook=orderbook,
+                rolling_windows=rolling_windows,
+                timestamp=timestamp,
+            )
+            
+            # Price features (use price from market_data)
             price_features = compute_all_price_features(
                 orderbook,
                 rolling_windows,
-                current_price,
+                market_data.price,
                 allowed_feature_names=self._allowed_feature_names,
                 feature_lookback_windows=feature_lookback_windows if feature_lookback_windows else None,
             )
             all_features.update(price_features)
-            
-            # Always add price feature explicitly (model-service expects it)
-            # Use mid_price if available, otherwise use current_price from kline
-            if current_price is not None:
-                all_features["price"] = current_price
-            else:
-                logger.warning(
-                    "current_price_unavailable",
-                    symbol=symbol,
-                    has_orderbook=orderbook is not None,
-                    has_klines=len(rolling_windows.get_klines_for_window("1m", datetime.now(timezone.utc) - timedelta(minutes=1), datetime.now(timezone.utc))) > 0,
-                )
             
             # Orderflow features
             orderflow_features = compute_all_orderflow_features(rolling_windows)
@@ -583,7 +663,7 @@ class FeatureComputer:
             # Log target features before filtering
             target_features_before = {
                 k: v for k, v in all_features.items()
-                if k in ["returns_3m", "returns_5m", "volatility_10m", "volatility_15m"]
+                if k in ["returns_3m", "returns_5m", "returns_45m", "volatility_10m", "volatility_15m", "price_ema_ratio"]
             }
             if target_features_before:
                 logger.info(
@@ -620,7 +700,7 @@ class FeatureComputer:
             # Log target features after None/NaN/Inf filtering
             target_features_after = {
                 k: v for k, v in filtered_features.items()
-                if k in ["returns_3m", "returns_5m", "volatility_10m", "volatility_15m"]
+                if k in ["returns_3m", "returns_5m", "returns_45m", "volatility_10m", "volatility_15m", "price_ema_ratio"]
             }
             if target_features_before and len(target_features_after) < len(target_features_before):
                 logger.warning(
@@ -637,7 +717,7 @@ class FeatureComputer:
                 # Log target features before registry filtering
                 target_before_registry = {
                     k: v for k, v in filtered_features.items()
-                    if k in ["returns_3m", "returns_5m", "volatility_10m", "volatility_15m"]
+                    if k in ["returns_3m", "returns_5m", "returns_45m", "volatility_10m", "volatility_15m", "price_ema_ratio"]
                 }
                 
                 registry_filtered_features = {
@@ -648,7 +728,7 @@ class FeatureComputer:
                 # Log target features after registry filtering
                 target_after_registry = {
                     k: v for k, v in registry_filtered_features.items()
-                    if k in ["returns_3m", "returns_5m", "volatility_10m", "volatility_15m"]
+                    if k in ["returns_3m", "returns_5m", "returns_45m", "volatility_10m", "volatility_15m", "price_ema_ratio"]
                 }
                 
                 if len(registry_filtered_features) < len(filtered_features):
@@ -664,8 +744,10 @@ class FeatureComputer:
                         target_features_removed={
                             "returns_3m": "returns_3m" in removed_features,
                             "returns_5m": "returns_5m" in removed_features,
+                            "returns_45m": "returns_45m" in removed_features,
                             "volatility_10m": "volatility_10m" in removed_features,
                             "volatility_15m": "volatility_15m" in removed_features,
+                            "price_ema_ratio": "price_ema_ratio" in removed_features,
                         },
                         allowed_features_count=len(self._allowed_feature_names),
                     )
@@ -732,7 +814,7 @@ class FeatureComputer:
             # Store last computed features for resilience (T078)
             self._last_features[symbol] = feature_vector
             
-            return feature_vector
+            return feature_vector, market_data
         
         except Exception as e:
             logger.error(
@@ -744,16 +826,8 @@ class FeatureComputer:
                 exc_info=True,
             )
             
-            # Handle ws-gateway unavailability (T078): return last available features
-            if symbol in self._last_features:
-                logger.warning(
-                    "using_last_available_features",
-                    symbol=symbol,
-                    message="ws-gateway unavailable, using last computed features",
-                )
-                return self._last_features[symbol]
-            
-            return None
+            # Re-raise exception - no fallback for market_data
+            raise
     
     def get_last_features(self, symbol: str) -> Optional[FeatureVector]:
         """Get last computed features for symbol (for resilience)."""

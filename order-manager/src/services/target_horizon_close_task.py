@@ -206,6 +206,68 @@ class TargetHorizonCloseTask:
             True if position was closed successfully, False otherwise
         """
         try:
+            # Check if there's already an active close order for this asset
+            # This prevents creating duplicate close orders
+            # For long position (size > 0), close order should be SELL
+            # For short position (size < 0), close order should be Buy
+            expected_close_side = "SELL" if position.size > 0 else "Buy"
+            
+            pool = await DatabaseConnection.get_pool()
+            
+            # First check: Look for existing close order for this specific original_order_id
+            # by checking signals with metadata containing original_order_id
+            check_specific_query = """
+                SELECT o.id, o.status, o.created_at, o.side
+                FROM orders o
+                JOIN signal_order_relationships sor ON sor.order_id = o.id
+                JOIN trading_signals ts ON ts.signal_id = sor.signal_id
+                WHERE o.asset = $1
+                    AND o.side = $2
+                    AND ts.metadata->>'original_order_id' = $3
+                    AND o.status IN ('pending', 'partially_filled')
+                ORDER BY o.created_at DESC
+                LIMIT 1
+            """
+            existing_specific_order = await pool.fetchrow(check_specific_query, asset, expected_close_side, order_id)
+            
+            if existing_specific_order:
+                logger.info(
+                    "target_horizon_skip_existing_close_order_for_original",
+                    asset=asset,
+                    original_order_id=order_id,
+                    existing_close_order_id=str(existing_specific_order["id"]),
+                    existing_close_order_status=existing_specific_order["status"],
+                    existing_close_order_side=existing_specific_order["side"],
+                    existing_close_order_created_at=existing_specific_order["created_at"].isoformat() if existing_specific_order["created_at"] else None,
+                    trace_id=trace_id,
+                )
+                return True  # Consider it successful since close order already exists for this original_order_id
+            
+            # Second check: Look for any active close order for this asset (broader check)
+            check_general_query = """
+                SELECT id, status, created_at, side
+                FROM orders
+                WHERE asset = $1
+                    AND side = $2
+                    AND status IN ('pending', 'partially_filled')
+                ORDER BY created_at DESC
+                LIMIT 1
+            """
+            existing_order = await pool.fetchrow(check_general_query, asset, expected_close_side)
+            
+            if existing_order:
+                logger.info(
+                    "target_horizon_skip_existing_close_order",
+                    asset=asset,
+                    original_order_id=order_id,
+                    existing_close_order_id=str(existing_order["id"]),
+                    existing_close_order_status=existing_order["status"],
+                    existing_close_order_side=existing_order["side"],
+                    existing_close_order_created_at=existing_order["created_at"].isoformat() if existing_order["created_at"] else None,
+                    trace_id=trace_id,
+                )
+                return True  # Consider it successful since close order already exists
+            
             # Initialize SignalProcessor if not already initialized
             if self._signal_processor is None:
                 self._signal_processor = SignalProcessor()
@@ -216,12 +278,27 @@ class TargetHorizonCloseTask:
             from decimal import Decimal
             from uuid import uuid4
             
-            # Create a minimal signal for closing (reuse position data)
-            # We need to create a signal-like object for the close operation
-            # The actual close happens through OrderExecutor with force_reduce_only=True
+            # Use SignalProcessor's internal method to close position
+            # We'll call the close position method directly
+            from ..services.order_executor import OrderExecutor
+            from ..services.instrument_info_manager import InstrumentInfoManager
             
-            # Get current price for the close signal
-            current_price = Decimal(str(position.average_entry_price)) if position.average_entry_price else Decimal("50000")
+            order_executor = OrderExecutor()
+            instrument_info_manager = InstrumentInfoManager()
+            close_quantity = abs(position.size)
+            
+            # Get current price for balance check (use position entry price or fetch current price)
+            current_price = Decimal(str(position.average_entry_price)) if position.average_entry_price else None
+            if current_price is None:
+                # Fallback: try to get current price from instrument info
+                try:
+                    instrument_info = await instrument_info_manager.get_instrument(asset)
+                    if instrument_info and instrument_info.last_price:
+                        current_price = instrument_info.last_price
+                    else:
+                        current_price = Decimal("50000")  # Fallback price
+                except Exception:
+                    current_price = Decimal("50000")  # Fallback price
             
             # Create a minimal market data snapshot
             market_data_snapshot = MarketDataSnapshot(
@@ -256,21 +333,105 @@ class TargetHorizonCloseTask:
                 },
             )
             
-            # Use SignalProcessor's internal method to close position
-            # We'll call the close position method directly
-            from ..services.order_executor import OrderExecutor
-            
-            order_executor = OrderExecutor()
-            close_quantity = abs(position.size)
-            
             logger.info(
                 "creating_close_order_target_horizon",
                 asset=asset,
                 order_id=order_id,
                 close_side=close_side,
                 close_quantity=float(close_quantity),
+                current_price=float(current_price),
+                position_size=float(position.size),
                 trace_id=trace_id,
             )
+            
+            # Check balance for commission even for reduce-only orders
+            # Reduce-only orders don't require margin but still need balance for commission
+            if not settings.order_manager_enable_dry_run and settings.order_manager_enable_balance_check:
+                from ..services.risk_manager import RiskManager
+                risk_manager = RiskManager()
+                try:
+                    await risk_manager.check_balance(
+                        signal=close_signal,
+                        order_quantity=close_quantity,
+                        order_price=current_price,
+                        is_reduce_only=True,
+                    )
+                    logger.info(
+                        "balance_check_passed_target_horizon_reduce_only",
+                        asset=asset,
+                        order_id=order_id,
+                        position_size=float(position.size),
+                        close_quantity=float(close_quantity),
+                        current_price=float(current_price),
+                        reason="Reduce-only order: commission balance sufficient",
+                        trace_id=trace_id,
+                    )
+                except Exception as e:
+                    logger.error(
+                        "balance_check_failed_target_horizon_reduce_only",
+                        asset=asset,
+                        order_id=order_id,
+                        position_size=float(position.size),
+                        close_quantity=float(close_quantity),
+                        current_price=float(current_price),
+                        error=str(e),
+                        reason="Insufficient balance for commission on reduce-only order",
+                        trace_id=trace_id,
+                    )
+                    raise
+            else:
+                skip_reason = "dry_run" if settings.order_manager_enable_dry_run else "balance_check_disabled"
+                logger.info(
+                    "balance_check_skipped_target_horizon_reduce_only",
+                    asset=asset,
+                    order_id=order_id,
+                    position_size=float(position.size),
+                    reason=f"Balance check skipped: {skip_reason}",
+                    trace_id=trace_id,
+                )
+            
+            # Verify position still exists before creating order
+            # Position might have been closed between check and order creation
+            try:
+                current_position = await self._position_manager_client.get_position(
+                    asset=asset,
+                    mode="one-way",
+                    trace_id=trace_id,
+                )
+                
+                if not current_position or abs(current_position.size) < Decimal("0.00000001"):
+                    # Position already closed - success
+                    logger.info(
+                        "target_horizon_position_already_closed",
+                        asset=asset,
+                        order_id=order_id,
+                        trace_id=trace_id,
+                        reason="Position already closed before creating close order",
+                    )
+                    return True
+                
+                # Update close_quantity if position size changed
+                if abs(current_position.size) != close_quantity:
+                    logger.info(
+                        "target_horizon_position_size_changed",
+                        asset=asset,
+                        order_id=order_id,
+                        original_quantity=float(close_quantity),
+                        current_position_size=float(current_position.size),
+                        trace_id=trace_id,
+                        reason="Position size changed, updating close quantity",
+                    )
+                    close_quantity = abs(current_position.size)
+            except Exception as e:
+                logger.warning(
+                    "target_horizon_position_check_failed",
+                    asset=asset,
+                    order_id=order_id,
+                    error=str(e),
+                    trace_id=trace_id,
+                    reason="Failed to verify position before creating order, proceeding anyway",
+                )
+                # Continue with order creation anyway
             
             # Create close order with reduceOnly=True
             close_order = await order_executor.create_order(
@@ -281,6 +442,17 @@ class TargetHorizonCloseTask:
                 trace_id=trace_id,
                 force_reduce_only=True,
             )
+            
+            # None means position was already closed (success case for reduce-only)
+            if close_order is None:
+                logger.info(
+                    "target_horizon_position_closed_during_order",
+                    asset=asset,
+                    order_id=order_id,
+                    trace_id=trace_id,
+                    reason="Position was closed during order creation (reduce-only order returned None)",
+                )
+                return True
             
             if close_order:
                 logger.info(

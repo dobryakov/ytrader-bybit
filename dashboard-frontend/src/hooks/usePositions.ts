@@ -17,6 +17,7 @@ export interface Position {
   last_updated: string
   created_at: string
   closed_at: string | null
+  opened_at: string | null
 }
 
 export interface PositionsResponse {
@@ -48,11 +49,11 @@ export function usePositions(filters?: {
   })
 }
 
-export function usePosition(asset: string) {
+export function usePosition(asset: string, mode: string = 'one-way') {
   return useQuery<Position>({
-    queryKey: ['position', asset],
+    queryKey: ['position', asset, mode],
     queryFn: async () => {
-      const response = await api.get(`/v1/positions/${asset}`)
+      const response = await api.get(`/v1/positions/${asset}?mode=${mode}`)
       return response.data
     },
     enabled: !!asset,
@@ -104,6 +105,55 @@ export function useClosedPositions(filters?: {
       return response.data
     },
     refetchInterval: 30000, // Refetch every 30 seconds (closed positions change less frequently)
+  })
+}
+
+export interface PositionOrder {
+  id: string
+  order_id: string
+  bybit_order_id?: string
+  signal_id: string | null
+  asset: string
+  side: string
+  order_type: string
+  quantity: string
+  price: string | null
+  status: string
+  filled_quantity: string
+  average_price: string | null
+  fees: string | null
+  created_at: string
+  updated_at: string
+  executed_at: string | null
+  relationship_type: 'opened' | 'increased' | 'decreased' | 'closed' | 'reversed'
+  size_delta: string
+  execution_price: string
+  po_executed_at: string | null
+}
+
+export interface PositionOrdersResponse {
+  orders: PositionOrder[]
+  count: number
+  position_id: string
+}
+
+export function usePositionOrders(
+  asset: string,
+  mode: string = 'one-way',
+  relationshipType?: 'opened' | 'increased' | 'decreased' | 'closed' | 'reversed'
+) {
+  return useQuery<PositionOrdersResponse>({
+    queryKey: ['position-orders', asset, mode, relationshipType],
+    queryFn: async () => {
+      const params = new URLSearchParams()
+      params.append('mode', mode)
+      if (relationshipType) params.append('relationship_type', relationshipType)
+
+      const response = await api.get(`/v1/positions/${asset}/orders?${params.toString()}`)
+      return response.data
+    },
+    enabled: !!asset,
+    refetchInterval: 10000, // Refetch every 10 seconds
   })
 }
 

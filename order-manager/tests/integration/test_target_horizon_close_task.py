@@ -322,3 +322,407 @@ async def test_target_horizon_close_task_close_position_with_open_position():
             # Verify close_position was called
             mock_close.assert_called_once()
 
+
+@pytest.mark.asyncio
+async def test_target_horizon_close_task_skip_existing_close_order_for_original():
+    """Test that target_horizon_close_task skips creating duplicate close order for specific original_order_id."""
+    try:
+        await DatabaseConnection.close_pool()
+        pool = await DatabaseConnection.create_pool()
+        
+        task = TargetHorizonCloseTask()
+        
+        # Create original order
+        original_signal_id = uuid4()
+        original_order_id = uuid4()
+        original_bybit_order_id = f"test-bybit-{uuid4()}"
+        
+        # Create close signal and order (simulating existing close order)
+        close_signal_id = uuid4()
+        close_order_id = uuid4()
+        close_bybit_order_id = f"test-bybit-{uuid4()}"
+        
+        # Insert original order
+        insert_original_query = """
+            INSERT INTO orders (
+                id, order_id, signal_id, asset, side, order_type, quantity, price,
+                status, filled_quantity, average_price, fees, created_at, updated_at,
+                trace_id, is_dry_run, target_timestamp
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), NOW(), $13, $14, $15)
+        """
+        
+        target_ts = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=60)
+        
+        await pool.execute(
+            insert_original_query,
+            str(original_order_id),
+            original_bybit_order_id,
+            str(original_signal_id),
+            "BTCUSDT",
+            "Buy",
+            "Market",
+            "0.01",
+            None,
+            "filled",
+            "0.01",
+            "50000.0",
+            None,
+            "test-trace",
+            False,
+            target_ts,
+        )
+        
+        # Insert close signal with metadata containing original_order_id
+        insert_signal_query = """
+            INSERT INTO trading_signals (
+                id, signal_id, strategy_id, asset, side, price, confidence,
+                timestamp, model_version, is_warmup, market_data_snapshot,
+                metadata, trace_id, created_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW())
+        """
+        
+        import json
+        metadata = json.dumps({"original_order_id": original_bybit_order_id, "reason": "target_horizon_reached"})
+        
+        await pool.execute(
+            insert_signal_query,
+            uuid4(),
+            str(close_signal_id),
+            "target_horizon_close",
+            "BTCUSDT",
+            "sell",
+            "50000.0",
+            "1.0",
+            datetime.now(timezone.utc).replace(tzinfo=None),
+            None,
+            False,
+            None,
+            metadata,
+            "test-trace",
+        )
+        
+        # Insert close order (pending status - active)
+        insert_close_query = """
+            INSERT INTO orders (
+                id, order_id, signal_id, asset, side, order_type, quantity, price,
+                status, filled_quantity, average_price, fees, created_at, updated_at,
+                trace_id, is_dry_run
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), NOW(), $13, $14)
+        """
+        
+        await pool.execute(
+            insert_close_query,
+            str(close_order_id),
+            close_bybit_order_id,
+            str(close_signal_id),
+            "BTCUSDT",
+            "SELL",
+            "Market",
+            "0.01",
+            None,
+            "pending",
+            "0",
+            None,
+            None,
+            "test-trace",
+            False,
+        )
+        
+        # Insert signal-order relationship
+        insert_rel_query = """
+            INSERT INTO signal_order_relationships (
+                id, signal_id, order_id, relationship_type, created_at
+            ) VALUES ($1, $2, $3, $4, NOW())
+        """
+        
+        await pool.execute(
+            insert_rel_query,
+            uuid4(),
+            str(close_signal_id),
+            str(close_order_id),
+            "one_to_one",
+        )
+        
+        # Create mock position
+        mock_position = Position(
+            id=uuid4(),
+            asset="BTCUSDT",
+            size=Decimal("0.01"),
+            average_entry_price=Decimal("50000.0"),
+            unrealized_pnl=Decimal("50.0"),
+            realized_pnl=Decimal("0.0"),
+            mode="one-way",
+            last_updated=datetime.now(timezone.utc),
+        )
+        
+        # Mock position manager
+        with patch.object(task._position_manager_client, 'get_position', new_callable=AsyncMock) as mock_get_position:
+            mock_get_position.return_value = mock_position
+            
+            # Mock order executor to track if create_order was called
+            # OrderExecutor is imported inside _close_position_for_order, so we patch it at the import location
+            with patch('src.services.order_executor.OrderExecutor') as mock_order_executor_class:
+                mock_order_executor = AsyncMock()
+                mock_order_executor_class.return_value = mock_order_executor
+                
+                # Call _close_position_for_order
+                result = await task._close_position_for_order(
+                    asset="BTCUSDT",
+                    position=mock_position,
+                    order_id=original_bybit_order_id,
+                    trace_id="test-trace",
+                )
+                
+                # Should return True (success) because existing close order was found
+                assert result is True
+                
+                # Verify that create_order was NOT called (duplicate was skipped)
+                mock_order_executor.create_order.assert_not_called()
+        
+        # Cleanup
+        await pool.execute("DELETE FROM signal_order_relationships WHERE order_id = $1", str(close_order_id))
+        await pool.execute("DELETE FROM orders WHERE id IN ($1, $2)", str(original_order_id), str(close_order_id))
+        await pool.execute("DELETE FROM trading_signals WHERE signal_id = $1", str(close_signal_id))
+    finally:
+        await DatabaseConnection.close_pool()
+
+
+@pytest.mark.asyncio
+async def test_target_horizon_close_task_skip_existing_close_order_general():
+    """Test that target_horizon_close_task skips creating duplicate close order when any active close order exists for asset."""
+    try:
+        await DatabaseConnection.close_pool()
+        pool = await DatabaseConnection.create_pool()
+        
+        task = TargetHorizonCloseTask()
+        
+        # Create original order
+        original_order_id = uuid4()
+        original_bybit_order_id = f"test-bybit-{uuid4()}"
+        
+        # Create existing close order (not for this specific original_order_id, but for same asset)
+        existing_close_order_id = uuid4()
+        existing_close_bybit_order_id = f"test-bybit-{uuid4()}"
+        existing_close_signal_id = uuid4()
+        
+        # Insert original order
+        insert_original_query = """
+            INSERT INTO orders (
+                id, order_id, signal_id, asset, side, order_type, quantity, price,
+                status, filled_quantity, average_price, fees, created_at, updated_at,
+                trace_id, is_dry_run, target_timestamp
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), NOW(), $13, $14, $15)
+        """
+        
+        target_ts = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=60)
+        
+        await pool.execute(
+            insert_original_query,
+            str(original_order_id),
+            original_bybit_order_id,
+            str(uuid4()),
+            "BTCUSDT",
+            "Buy",
+            "Market",
+            "0.01",
+            None,
+            "filled",
+            "0.01",
+            "50000.0",
+            None,
+            "test-trace",
+            False,
+            target_ts,
+        )
+        
+        # Insert existing close order (pending status - active) for same asset
+        insert_close_query = """
+            INSERT INTO orders (
+                id, order_id, signal_id, asset, side, order_type, quantity, price,
+                status, filled_quantity, average_price, fees, created_at, updated_at,
+                trace_id, is_dry_run
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), NOW(), $13, $14)
+        """
+        
+        await pool.execute(
+            insert_close_query,
+            str(existing_close_order_id),
+            existing_close_bybit_order_id,
+            str(existing_close_signal_id),
+            "BTCUSDT",
+            "SELL",
+            "Market",
+            "0.01",
+            None,
+            "pending",
+            "0",
+            None,
+            None,
+            "test-trace",
+            False,
+        )
+        
+        # Create mock position
+        mock_position = Position(
+            id=uuid4(),
+            asset="BTCUSDT",
+            size=Decimal("0.01"),
+            average_entry_price=Decimal("50000.0"),
+            unrealized_pnl=Decimal("50.0"),
+            realized_pnl=Decimal("0.0"),
+            mode="one-way",
+            last_updated=datetime.now(timezone.utc),
+        )
+        
+        # Mock position manager
+        with patch.object(task._position_manager_client, 'get_position', new_callable=AsyncMock) as mock_get_position:
+            mock_get_position.return_value = mock_position
+            
+            # Mock order executor to track if create_order was called
+            # OrderExecutor is imported inside _close_position_for_order, so we patch it at the import location
+            with patch('src.services.order_executor.OrderExecutor') as mock_order_executor_class:
+                mock_order_executor = AsyncMock()
+                mock_order_executor_class.return_value = mock_order_executor
+                
+                # Call _close_position_for_order
+                result = await task._close_position_for_order(
+                    asset="BTCUSDT",
+                    position=mock_position,
+                    order_id=original_bybit_order_id,
+                    trace_id="test-trace",
+                )
+                
+                # Should return True (success) because existing close order was found
+                assert result is True
+                
+                # Verify that create_order was NOT called (duplicate was skipped)
+                mock_order_executor.create_order.assert_not_called()
+        
+        # Cleanup
+        await pool.execute("DELETE FROM orders WHERE id IN ($1, $2)", str(original_order_id), str(existing_close_order_id))
+    finally:
+        await DatabaseConnection.close_pool()
+
+
+@pytest.mark.asyncio
+async def test_target_horizon_close_task_create_close_order_when_no_duplicate():
+    """Test that target_horizon_close_task creates close order when no duplicate exists."""
+    try:
+        await DatabaseConnection.close_pool()
+        pool = await DatabaseConnection.create_pool()
+        
+        task = TargetHorizonCloseTask()
+        
+        # Use unique asset to avoid conflicts with other tests
+        test_asset = "ETHUSDT"
+        
+        # Clean up any existing orders for this asset from previous tests
+        await pool.execute("DELETE FROM orders WHERE asset = $1 AND status IN ('pending', 'partially_filled')", test_asset)
+        
+        # Create original order
+        original_order_id = uuid4()
+        original_bybit_order_id = f"test-bybit-{uuid4()}"
+        
+        # Insert original order
+        insert_original_query = """
+            INSERT INTO orders (
+                id, order_id, signal_id, asset, side, order_type, quantity, price,
+                status, filled_quantity, average_price, fees, created_at, updated_at,
+                trace_id, is_dry_run, target_timestamp
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), NOW(), $13, $14, $15)
+        """
+        
+        target_ts = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=60)
+        
+        await pool.execute(
+            insert_original_query,
+            str(original_order_id),
+            original_bybit_order_id,
+            str(uuid4()),
+            test_asset,
+            "Buy",
+            "Market",
+            "0.01",
+            None,
+            "filled",
+            "0.01",
+            "3000.0",
+            None,
+            "test-trace",
+            False,
+            target_ts,
+        )
+        
+        # Create mock position
+        mock_position = Position(
+            id=uuid4(),
+            asset=test_asset,
+            size=Decimal("0.01"),
+            average_entry_price=Decimal("3000.0"),
+            unrealized_pnl=Decimal("30.0"),
+            realized_pnl=Decimal("0.0"),
+            mode="one-way",
+            last_updated=datetime.now(timezone.utc),
+        )
+        
+        # Mock position manager
+        with patch.object(task._position_manager_client, 'get_position', new_callable=AsyncMock) as mock_get_position:
+            mock_get_position.return_value = mock_position
+            
+            # Mock order executor to return a successful order
+            # OrderExecutor is imported inside _close_position_for_order, so we patch it at the import location
+            with patch('src.services.order_executor.OrderExecutor') as mock_order_executor_class:
+                from src.models.order import Order
+                mock_order_executor = AsyncMock()
+                mock_order_executor_class.return_value = mock_order_executor
+                
+                # Create mock order response
+                mock_close_order = Order(
+                    id=uuid4(),
+                    order_id=f"test-bybit-{uuid4()}",
+                    signal_id=uuid4(),
+                    asset=test_asset,
+                    side="SELL",
+                    order_type="Market",
+                    quantity=Decimal("0.01"),
+                    price=None,
+                    status="pending",
+                    filled_quantity=Decimal("0"),
+                    average_price=None,
+                    fees=None,
+                    created_at=datetime.now(timezone.utc),
+                    updated_at=datetime.now(timezone.utc),
+                    executed_at=None,
+                    trace_id="test-trace",
+                    is_dry_run=False,
+                    rejection_reason=None,
+                    target_timestamp=None,
+                )
+                
+                mock_order_executor.create_order.return_value = mock_close_order
+                
+                # Call _close_position_for_order
+                result = await task._close_position_for_order(
+                    asset=test_asset,
+                    position=mock_position,
+                    order_id=original_bybit_order_id,
+                    trace_id="test-trace",
+                )
+                
+                # Should return True (success) because order was created
+                assert result is True
+                
+                # Verify that create_order WAS called (no duplicate found)
+                mock_order_executor.create_order.assert_called_once()
+                
+                # Verify call arguments
+                call_args = mock_order_executor.create_order.call_args
+                assert call_args.kwargs['order_type'] == "Market"
+                assert call_args.kwargs['quantity'] == Decimal("0.01")
+                assert call_args.kwargs['force_reduce_only'] is True
+        
+        # Cleanup
+        await pool.execute("DELETE FROM orders WHERE id = $1", str(original_order_id))
+    finally:
+        await DatabaseConnection.close_pool()
+

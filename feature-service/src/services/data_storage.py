@@ -312,44 +312,63 @@ class DataStorageService:
                 # Extract and normalize kline fields
                 # Bybit format: "start" = timestamp (ms), "open"/"high"/"low"/"close" = prices, "volume" = volume, "interval" = "1"
                 # Note: payload from ws-gateway contains kline data directly (not wrapped in "data")
-                normalized_kline_event = {
-                    **event,
-                    "event_type": "kline",
+                # Use normalize_kline_data for proper normalization instead of manual extraction
+                from src.storage.data_normalizer import normalize_kline_data
+                
+                # Prepare data for normalizer (it expects keys like "open", "high", "low", "close", "start", "symbol", "interval")
+                kline_for_normalizer = {
+                    **kline_data,
                     "symbol": kline_data.get("s") or kline_data.get("symbol") or symbol,
                     "interval": kline_data.get("interval") or event.get("interval", "1m"),
-                    "open": kline_data.get("open"),
-                    "high": kline_data.get("high"),
-                    "low": kline_data.get("low"),
-                    "close": kline_data.get("close"),
-                    "volume": kline_data.get("volume"),
                     "timestamp": kline_data.get("start") or kline_data.get("timestamp") or event.get("timestamp") or event.get("exchange_timestamp"),
                 }
                 
-                # Convert prices and volume to float if they are strings
-                for field in ["open", "high", "low", "close", "volume"]:
-                    if normalized_kline_event.get(field) is not None:
-                        try:
-                            normalized_kline_event[field] = float(normalized_kline_event[field])
-                        except (ValueError, TypeError):
-                            logger.warning(
-                                "kline_field_conversion_failed",
-                                field=field,
-                                value=normalized_kline_event.get(field),
-                                symbol=symbol,
-                            )
-                            normalized_kline_event[field] = 0.0
-                    else:
-                        # If field is None, set to 0.0 but log warning
-                        logger.warning(
-                            "kline_field_missing",
-                            field=field,
-                            symbol=symbol,
-                            payload_keys=list(payload.keys()) if isinstance(payload, dict) else None,
-                        )
-                        normalized_kline_event[field] = 0.0
+                # Normalize using the proper normalizer function
+                normalized_kline_event = normalize_kline_data(
+                    kline_for_normalizer,
+                    source="websocket",
+                    internal_timestamp=self._parse_timestamp(event.get("internal_timestamp")) if event.get("internal_timestamp") else None,
+                    exchange_timestamp=self._parse_timestamp(event.get("exchange_timestamp")) if event.get("exchange_timestamp") else None,
+                )
+                
+                # Merge with event metadata
+                normalized_kline_event = {
+                    **event,
+                    **normalized_kline_event,
+                    "event_type": "kline",
+                }
                 
                 # Validate that we have at least some data before storing
                 if normalized_kline_event.get("timestamp") and normalized_kline_event.get("symbol"):
+                    # Skip confirm events with zero volume that would overwrite valid kline data
+                    # Bybit sends confirm events at the end of each minute with confirm=true
+                    # These events may have zero volume and identical OHLC, which would overwrite
+                    # the actual kline data with accumulated OHLC values
+                    confirm = kline_data.get("confirm", False)
+                    volume = normalized_kline_event.get("volume", 0.0)
+                    open_price = normalized_kline_event.get("open", 0.0)
+                    high_price = normalized_kline_event.get("high", 0.0)
+                    low_price = normalized_kline_event.get("low", 0.0)
+                    close_price = normalized_kline_event.get("close", 0.0)
+                    
+                    # Check if this is a confirm event with zero volume and identical OHLC
+                    # Such events should not overwrite valid kline data
+                    is_confirm_with_zero_volume = confirm and volume == 0.0
+                    has_identical_ohlc = (
+                        abs(open_price - high_price) < 0.01 and
+                        abs(high_price - low_price) < 0.01 and
+                        abs(low_price - close_price) < 0.01
+                    )
+                    
+                    if is_confirm_with_zero_volume and has_identical_ohlc:
+                        logger.debug(
+                            "kline_confirm_event_skipped",
+                            symbol=normalized_kline_event.get("symbol"),
+                            timestamp=normalized_kline_event.get("timestamp"),
+                            reason="confirm event with zero volume and identical OHLC would overwrite valid data",
+                        )
+                        return
+                    
                     # Log normalized event for debugging (info level to track)
                     logger.info(
                         "kline_event_normalized",
@@ -360,6 +379,7 @@ class DataStorageService:
                         low=normalized_kline_event.get("low"),
                         close=normalized_kline_event.get("close"),
                         volume=normalized_kline_event.get("volume"),
+                        confirm=confirm,
                     )
                     
                     await self.store_kline(normalized_kline_event)

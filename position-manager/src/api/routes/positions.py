@@ -104,7 +104,14 @@ async def get_position_by_asset(
             )
 
         data = serialize_position_with_features(position, position_manager)
-        logger.info("position_get_completed", asset=asset, mode=mode, trace_id=trace_id)
+        logger.info(
+            "position_get_completed",
+            asset=asset,
+            mode=mode,
+            opened_at=data.get("opened_at"),
+            position_opened_at=str(position.opened_at) if position.opened_at else None,
+            trace_id=trace_id,
+        )
         return JSONResponse(status_code=200, content=data)
     except HTTPException:
         raise
@@ -417,6 +424,7 @@ def serialize_position_with_features(
         "version": position.version,
         "last_updated": position.last_updated.isoformat() + "Z",
         "closed_at": position.closed_at.isoformat() + "Z" if position.closed_at else None,
+        "opened_at": position.opened_at.isoformat() + "Z" if position.opened_at else None,
         "created_at": position.created_at.isoformat() + "Z",
         # ML features
         "unrealized_pnl_pct": str(unrealized_pct) if unrealized_pct is not None else None,

@@ -153,7 +153,7 @@ class PositionManager:
                 SELECT id, asset, mode, size, average_entry_price, current_price,
                        unrealized_pnl, realized_pnl,
                        long_size, short_size, version,
-                       last_updated, closed_at, created_at
+                       last_updated, closed_at, opened_at, created_at
                 FROM positions
                 WHERE asset = $1 AND mode = $2
             """
@@ -163,6 +163,16 @@ class PositionManager:
                 return None
 
             position_dict = dict(row)
+            # Debug: log opened_at value from database
+            opened_at_raw = position_dict.get("opened_at")
+            logger.debug(
+                "position_opened_at_from_db",
+                asset=asset,
+                mode=mode,
+                opened_at_raw=opened_at_raw,
+                opened_at_type=type(opened_at_raw).__name__ if opened_at_raw else None,
+                opened_at_is_none=opened_at_raw is None,
+            )
             position_size = Decimal(str(position_dict["size"]))
             closed_at = position_dict.get("closed_at")
             
@@ -179,12 +189,14 @@ class PositionManager:
                     closed_at=closed_at.isoformat() if hasattr(closed_at, 'isoformat') else str(closed_at),
                     action="clearing_closed_at",
                 )
-                # Clear closed_at and reset total_fees to 0 for new position cycle
+                # Clear closed_at, set opened_at to current time, and reset total_fees to 0 for new position cycle
                 # This ensures total_fees only accumulates for the current open position
+                # opened_at tracks when position was last opened (size changed from 0 to non-zero)
                 await pool.execute(
                     """
                     UPDATE positions
                     SET closed_at = NULL,
+                        opened_at = NOW(),
                         total_fees = 0,
                         version = version + 1,
                         last_updated = NOW()
@@ -194,12 +206,14 @@ class PositionManager:
                     mode.lower(),
                 )
                 position_dict["closed_at"] = None
+                position_dict["opened_at"] = datetime.utcnow()
                 position_dict["total_fees"] = Decimal("0")
                 logger.info(
                     "position_closed_at_cleared_after_reopen",
                     asset=asset,
                     mode=mode,
                     size=str(position_size),
+                    opened_at_set=True,
                     total_fees_reset=True,
                 )
             elif closed_at is not None and position_size == 0:
@@ -379,18 +393,21 @@ class PositionManager:
                     unreal = unrealized_pnl or Decimal("0")
                     realized = realized_pnl or Decimal("0")
 
-                    insert_query = """
+                    # Set opened_at if position size is non-zero (position is being opened)
+                    opened_at_value = "NOW()" if new_size != 0 else "NULL"
+                    
+                    insert_query = f"""
                         INSERT INTO positions (
                             asset, mode, size, average_entry_price,
                             unrealized_pnl, realized_pnl, total_fees,
-                            current_price, version, last_updated, created_at
+                            current_price, version, last_updated, opened_at, created_at
                         )
-                        VALUES ($1, $2, $3, $4, $5, $6, 0, $7, 1, NOW(), NOW())
+                        VALUES ($1, $2, $3, $4, $5, $6, 0, $7, 1, NOW(), {opened_at_value}, NOW())
                         ON CONFLICT (asset, mode) DO NOTHING
                         RETURNING id, asset, mode, size, average_entry_price, current_price,
                                   unrealized_pnl, realized_pnl,
                                   long_size, short_size, version,
-                                  last_updated, closed_at, created_at
+                                  last_updated, closed_at, opened_at, created_at
                     """
                     row = await pool.fetchrow(
                         insert_query,
@@ -671,7 +688,21 @@ class PositionManager:
                             trace_id=trace_id,
                         )
 
-                    update_query = """
+                    # Track position opening: if size changes from 0 to non-zero, set opened_at
+                    # This happens when position.size == 0 and resolved_size != 0
+                    opened_at_update = ""
+                    if position.size == 0 and resolved_size != 0:
+                        opened_at_update = ", opened_at = NOW()"
+                        logger.info(
+                            "position_opening_tracked",
+                            asset=asset,
+                            mode=mode,
+                            old_size=str(position.size),
+                            new_size=str(resolved_size),
+                            trace_id=trace_id,
+                        )
+                    
+                    update_query = f"""
                         UPDATE positions
                         SET size = CAST($1 AS numeric),
                             current_price = CASE 
@@ -695,14 +726,14 @@ class PositionManager:
                             closed_at = CASE 
                                 WHEN CAST($1 AS numeric) = 0 THEN NOW() 
                                 ELSE NULL 
-                            END
+                            END{opened_at_update}
                         WHERE asset = $6
                           AND mode = $7
                           AND version = $8
                         RETURNING id, asset, mode, size, average_entry_price, current_price,
                                   unrealized_pnl, realized_pnl,
                                   long_size, short_size, version,
-                                  last_updated, closed_at, created_at
+                                  last_updated, closed_at, opened_at, created_at
                     """
                     # Always pass string for $2 and $5 to help asyncpg determine parameter type
                     # Pass empty string instead of None to avoid type inference issues
@@ -1454,7 +1485,14 @@ class PositionManager:
             if existing:
                 # SQL logic: if avg_price_param is empty string and size != 0, preserve existing value
                 # Otherwise, use new value or set NULL if size == 0
-                upsert_query = """
+                # Track position opening: if size changes from 0 to non-zero, set opened_at
+                # Check if position was closed (size == 0) and is now being opened
+                existing_size = existing.size if existing else Decimal("0")
+                opened_at_update = ""
+                if existing_size == 0 and computed_size != 0:
+                    opened_at_update = ", opened_at = NOW()"
+                
+                upsert_query = f"""
                     UPDATE positions
                     SET size = $1,
                         average_entry_price = CASE 
@@ -1464,12 +1502,12 @@ class PositionManager:
                         END,
                         closed_at = CASE WHEN CAST($1 AS numeric) = 0 THEN closed_at ELSE NULL END,
                         last_updated = NOW(),
-                        version = version + 1
+                        version = version + 1{opened_at_update}
                     WHERE asset = $3 AND mode = $4
                     RETURNING id, asset, mode, size, average_entry_price, current_price,
                               unrealized_pnl, realized_pnl,
                               long_size, short_size, version,
-                              last_updated, closed_at, created_at
+                              last_updated, closed_at, opened_at, created_at
                 """
                 # Always pass string for $2 to help asyncpg determine parameter type
                 # Pass empty string instead of None to avoid type inference issues
@@ -1489,15 +1527,18 @@ class PositionManager:
                         f"Cannot create position: size={computed_size} is non-zero but average_entry_price is None"
                     )
                 
-                upsert_query = """
+                # Set opened_at if position size is non-zero (position is being opened)
+                opened_at_value = "NOW()" if computed_size != 0 else "NULL"
+                
+                upsert_query = f"""
                     INSERT INTO positions (
-                        asset, mode, size, average_entry_price, version, last_updated, created_at
+                        asset, mode, size, average_entry_price, version, last_updated, opened_at, created_at
                     )
-                    VALUES ($1, $2, $3, $4, 1, NOW(), NOW())
+                    VALUES ($1, $2, $3, $4, 1, NOW(), {opened_at_value}, NOW())
                     RETURNING id, asset, mode, size, average_entry_price, current_price,
                               unrealized_pnl, realized_pnl,
                               long_size, short_size, version,
-                              last_updated, closed_at, created_at
+                              last_updated, closed_at, opened_at, created_at
                 """
                 row = await pool.fetchrow(
                     upsert_query,

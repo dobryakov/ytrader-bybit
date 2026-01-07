@@ -70,6 +70,19 @@ class Settings(BaseSettings):
             "is at least 50% of the best accuracy)."
         ),
     )
+    model_top_k_confidence_threshold_multiplier: float = Field(
+        default=1.0,
+        alias="MODEL_TOP_K_CONFIDENCE_THRESHOLD_MULTIPLIER",
+        description=(
+            "Multiplier to apply to top-k confidence threshold. "
+            "Default: 1.0 (no adjustment). "
+            "Values < 1.0 lower the threshold (more lenient, more signals pass). "
+            "Values > 1.0 raise the threshold (more strict, fewer signals pass). "
+            "Example: 0.9 means threshold is reduced by 10%, allowing more signals. "
+            "Range: 0.0-2.0 (clamped to [0.0, 1.0] for final threshold). "
+            "Useful for triple classification where confidence values are naturally lower."
+        ),
+    )
     
     model_activation_threshold: float = Field(
         default=0.75, 

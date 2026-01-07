@@ -71,12 +71,9 @@ class AccountBalance:
             True if validation passes, False otherwise.
 
         Validation rules:
-        - All balance values must be non-negative
+        - Negative balances are allowed (for margin trading)
         - wallet_balance must equal available_balance + frozen
         """
-        if self.wallet_balance < 0 or self.available_balance < 0 or self.frozen < 0:
-            return False
-
         # Check sum consistency (allow small floating point differences)
         expected_sum = self.available_balance + self.frozen
         difference = abs(self.wallet_balance - expected_sum)

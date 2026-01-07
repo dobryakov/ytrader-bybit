@@ -89,7 +89,9 @@ export default function Signals() {
                     <TableCell className="font-mono text-xs">{signal.signal_id.slice(0, 8)}...</TableCell>
                     <TableCell>
                       <div className="flex items-center gap-2">
-                        {signal.rejection_reason === 'regression_hold_prediction' ? (
+                        {signal.rejection_reason === 'regression_hold_prediction' || 
+                         signal.rejection_reason === 'classification_hold_prediction_hysteresis' ||
+                         signal.rejection_reason === 'classification_hold_prediction_calibrated_thresholds' ? (
                           <Badge variant="outline" className="border-orange-500 text-orange-600 dark:border-orange-400 dark:text-orange-400">
                             HOLD
                           </Badge>
@@ -98,7 +100,10 @@ export default function Signals() {
                             {signal.signal_type.toUpperCase()}
                           </Badge>
                         )}
-                        {signal.is_rejected && signal.rejection_reason !== 'regression_hold_prediction' && (
+                        {signal.is_rejected && 
+                         signal.rejection_reason !== 'regression_hold_prediction' && 
+                         signal.rejection_reason !== 'classification_hold_prediction_hysteresis' &&
+                         signal.rejection_reason !== 'classification_hold_prediction_calibrated_thresholds' && (
                           <Badge variant="outline" className="border-red-500 text-red-600 dark:border-red-400 dark:text-red-400">
                             REJECTED
                           </Badge>

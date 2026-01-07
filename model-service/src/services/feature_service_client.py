@@ -14,6 +14,7 @@ import httpx
 from ..config.settings import settings
 from ..config.logging import get_logger
 from ..models.feature_vector import FeatureVector
+from ..models.features_response import FeaturesResponse
 from ..models.dataset import Dataset, DatasetBuildRequest
 
 logger = get_logger(__name__)
@@ -36,9 +37,9 @@ class FeatureServiceClient:
         symbol: str, 
         feature_registry_version: Optional[str] = None,
         trace_id: Optional[str] = None
-    ) -> Optional[FeatureVector]:
+    ) -> Optional[FeaturesResponse]:
         """
-        Get latest computed features for a symbol from Feature Service.
+        Get latest computed features and market data for a symbol from Feature Service.
 
         Args:
             symbol: Trading pair symbol (e.g., 'BTCUSDT')
@@ -46,7 +47,7 @@ class FeatureServiceClient:
             trace_id: Optional trace ID for request flow tracking
 
         Returns:
-            FeatureVector or None if features unavailable or error
+            FeaturesResponse with feature_vector and market_data, or None if error
         """
         url = f"{self.base_url}/features/latest"
         headers = {
@@ -64,19 +65,20 @@ class FeatureServiceClient:
                 response.raise_for_status()
                 data = response.json()
                 
-                # Parse FeatureVector from response
-                feature_vector = FeatureVector(**data)
+                # Parse FeaturesResponse from response
+                features_response = FeaturesResponse(**data)
                 if trace_id:
-                    feature_vector.trace_id = trace_id
+                    features_response.feature_vector.trace_id = trace_id
                 
                 logger.debug(
-                    "Retrieved latest features from Feature Service",
+                    "Retrieved latest features and market data from Feature Service",
                     symbol=symbol,
-                    feature_count=len(feature_vector.features),
+                    feature_count=len(features_response.feature_vector.features),
+                    price=features_response.market_data.price,
                     feature_registry_version=feature_registry_version,
                     trace_id=trace_id,
                 )
-                return feature_vector
+                return features_response
 
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 404:

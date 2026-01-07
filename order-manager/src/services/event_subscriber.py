@@ -388,21 +388,41 @@ class EventSubscriber:
             if new_status == "filled" and order.status != "filled":
                 executed_at = datetime.utcnow()
 
-            # Set cancellation reason if order was cancelled via WebSocket event
+            # Set cancellation/rejection reason from Bybit event
+            # Extract rejectReason from payload if available (for cancelled/rejected orders)
             cancellation_reason = None
-            if new_status == "cancelled" and order.status != "cancelled":
-                cancellation_reason = "Cancelled by exchange via WebSocket event"
+            if new_status in ("cancelled", "rejected") and order.status != new_status:
+                # Try to get specific reason from Bybit payload
+                reject_reason = payload.get("rejectReason") or payload.get("reject_reason")
+                if reject_reason:
+                    # Map Bybit reject reason codes to human-readable messages
+                    reason_map = {
+                        "EC_NoImmediateQtyToFill": "Insufficient liquidity for immediate execution (IOC order)",
+                        "EC_NoCancel": "Order cannot be cancelled",
+                        "EC_NoReducePosition": "Cannot reduce position",
+                    }
+                    cancellation_reason = reason_map.get(reject_reason, f"Cancelled by exchange: {reject_reason}")
+                else:
+                    # Fallback to generic message if no specific reason provided
+                    cancellation_reason = f"Cancelled by exchange via WebSocket event (status: {bybit_status})"
 
+            # Use explicit type casting to avoid ambiguous parameter type error
+            # when $1 is used both in SET and CASE expressions
+            # Fix: Use separate parameter for CASE expression to avoid type conflict
             update_query = """
                 UPDATE orders
-                SET status = $1,
+                SET status = $1::text,
                     filled_quantity = $2,
                     average_price = $3,
                     fees = $4,
                     updated_at = NOW(),
                     executed_at = $5,
-                    rejection_reason = CASE WHEN $1 = 'cancelled' AND rejection_reason IS NULL THEN $7 ELSE rejection_reason END
-                WHERE id = $6
+                    rejection_reason = CASE 
+                        WHEN $1::text IN ('cancelled'::text, 'rejected'::text) AND rejection_reason IS NULL 
+                        THEN $7::text 
+                        ELSE rejection_reason 
+                    END
+                WHERE id = $6::uuid
             """
             await pool.execute(
                 update_query,

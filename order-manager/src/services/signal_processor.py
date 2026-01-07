@@ -1182,7 +1182,11 @@ class SignalProcessor:
         asset: str,
         trace_id: Optional[str],
     ) -> Optional[Position]:
-        """Handle position closure when signal arrives (any direction).
+        """Handle position closure when signal arrives (only for opposite signals with expired target_timestamp).
+
+        Position is closed only if:
+        1. New signal is opposite to position direction (long -> sell, short -> buy)
+        2. Target timestamp of the order that opened the position has expired
 
         Args:
             signal: Trading signal
@@ -1223,13 +1227,89 @@ class SignalProcessor:
         signal_type = signal.signal_type.lower()
         position_side = "long" if current_position.size > 0 else "short"
 
+        # Condition 1: Check if signal direction is opposite to position
+        is_opposite_signal = False
+        if position_side == "long" and signal_type == "sell":
+            is_opposite_signal = True
+        elif position_side == "short" and signal_type == "buy":
+            is_opposite_signal = True
+
+        if not is_opposite_signal:
+            logger.debug(
+                "position_not_closed_same_direction_signal",
+                asset=asset,
+                signal_type=signal_type,
+                position_side=position_side,
+                position_size=float(current_position.size),
+                trace_id=trace_id,
+                reason="Signal direction is same as position, position will not be closed",
+            )
+            return current_position
+
+        # Condition 2: Check if target_timestamp of the order that opened position has expired
+        entry_order = await self._find_order_that_opened_position(
+            asset=asset,
+            position=current_position,
+            trace_id=trace_id,
+        )
+
+        if not entry_order:
+            logger.debug(
+                "position_not_closed_no_entry_order",
+                asset=asset,
+                position_side=position_side,
+                position_size=float(current_position.size),
+                trace_id=trace_id,
+                reason="Could not find order that opened position, position will not be closed",
+            )
+            return current_position
+
+        if not entry_order.target_timestamp:
+            logger.debug(
+                "position_not_closed_no_target_timestamp",
+                asset=asset,
+                position_side=position_side,
+                position_size=float(current_position.size),
+                entry_order_id=entry_order.order_id,
+                trace_id=trace_id,
+                reason="Entry order has no target_timestamp, position will not be closed",
+            )
+            return current_position
+
+        # Check if target_timestamp has expired
+        from datetime import datetime, timezone
+        now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+        
+        # Normalize target_timestamp to timezone-naive UTC for comparison
+        target_ts = entry_order.target_timestamp
+        if target_ts.tzinfo is not None:
+            target_ts = target_ts.astimezone(timezone.utc).replace(tzinfo=None)
+
+        if target_ts > now_utc:
+            logger.debug(
+                "position_not_closed_target_timestamp_not_expired",
+                asset=asset,
+                position_side=position_side,
+                position_size=float(current_position.size),
+                entry_order_id=entry_order.order_id,
+                target_timestamp=target_ts.isoformat(),
+                current_time=now_utc.isoformat(),
+                trace_id=trace_id,
+                reason="Target timestamp has not expired yet, position will not be closed",
+            )
+            return current_position
+
         logger.info(
             "signal_detected_closing_position",
             asset=asset,
             signal_type=signal_type,
             position_side=position_side,
             position_size=float(current_position.size),
+            entry_order_id=entry_order.order_id,
+            target_timestamp=target_ts.isoformat(),
+            current_time=now_utc.isoformat(),
             trace_id=trace_id,
+            reason="Opposite signal and target_timestamp expired, closing position",
         )
 
         # Close position
@@ -1471,6 +1551,92 @@ class SignalProcessor:
         )
 
         return close_signal
+
+    async def _find_order_that_opened_position(
+        self,
+        asset: str,
+        position: Position,
+        trace_id: Optional[str],
+    ) -> Optional[Order]:
+        """Find the order that opened the current position.
+
+        Looks for the most recent filled order with side matching position direction:
+        - Long position (size > 0) -> Buy order
+        - Short position (size < 0) -> Sell order
+
+        Args:
+            asset: Trading pair symbol
+            position: Current position
+            trace_id: Trace ID for logging
+
+        Returns:
+            Order that opened the position, or None if not found
+        """
+        try:
+            from ..config.database import DatabaseConnection
+            from datetime import datetime, timezone
+
+            # Determine expected order side based on position direction
+            if position.size > 0:
+                # Long position - opened by Buy order
+                expected_side = "Buy"
+            else:
+                # Short position - opened by SELL order
+                expected_side = "SELL"
+
+            pool = await DatabaseConnection.get_pool()
+            
+            # Find the most recent filled/partially_filled order that matches position direction
+            # This should be the order that opened or contributed to opening the position
+            query = """
+                SELECT id, order_id, signal_id, asset, side, order_type, quantity, price,
+                       status, filled_quantity, average_price, fees, created_at, updated_at,
+                       executed_at, trace_id, is_dry_run, rejection_reason, target_timestamp
+                FROM orders
+                WHERE asset = $1
+                    AND side = $2
+                    AND status IN ('filled', 'partially_filled')
+                ORDER BY created_at DESC
+                LIMIT 1
+            """
+            
+            row = await pool.fetchrow(query, asset, expected_side)
+            
+            if row is None:
+                logger.debug(
+                    "entry_order_not_found",
+                    asset=asset,
+                    expected_side=expected_side,
+                    position_size=float(position.size),
+                    trace_id=trace_id,
+                )
+                return None
+
+            order = Order.from_dict(dict(row))
+            
+            logger.debug(
+                "entry_order_found",
+                asset=asset,
+                entry_order_id=order.order_id,
+                entry_order_side=order.side,
+                entry_order_status=order.status,
+                entry_order_target_timestamp=order.target_timestamp.isoformat() if order.target_timestamp else None,
+                position_size=float(position.size),
+                trace_id=trace_id,
+            )
+            
+            return order
+
+        except Exception as e:
+            logger.error(
+                "find_entry_order_error",
+                asset=asset,
+                position_size=float(position.size),
+                error=str(e),
+                trace_id=trace_id,
+                exc_info=True,
+            )
+            return None
 
     async def _close_position_before_new_order(
         self,

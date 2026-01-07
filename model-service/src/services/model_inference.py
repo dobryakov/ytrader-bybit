@@ -247,9 +247,11 @@ class ModelInference:
                 raise ModelInferenceError(error_msg)
             
             # Check if model requires legacy features (old model trained before Feature Service integration)
-            legacy_feature_patterns = ["spread_percent", "volume_24h", "volatility", "price"]
+            # Legacy features are specific exact names, not patterns
+            # These are features that existed before Feature Service integration
+            legacy_feature_names = {"spread_percent", "volume_24h", "volatility", "price"}
             has_legacy_features = any(
-                any(pattern in feature_name.lower() for pattern in legacy_feature_patterns)
+                feature_name in legacy_feature_names
                 for feature_name in missing_features
             )
             

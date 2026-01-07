@@ -343,12 +343,26 @@ class OrderStateSync:
         if not needs_update:
             return None
 
+        # Extract rejection reason from Bybit order if status is cancelled/rejected
+        rejection_reason = None
+        if mapped_status in ("cancelled", "rejected"):
+            reject_reason = bybit_order.get("rejectReason") or bybit_order.get("reject_reason")
+            if reject_reason:
+                # Map Bybit reject reason codes to human-readable messages
+                reason_map = {
+                    "EC_NoImmediateQtyToFill": "Insufficient liquidity for immediate execution (IOC order)",
+                    "EC_NoCancel": "Order cannot be cancelled",
+                    "EC_NoReducePosition": "Cannot reduce position",
+                }
+                rejection_reason = reason_map.get(reject_reason, f"Cancelled by exchange: {reject_reason}")
+
         # Update database order
         await self._update_order_from_bybit(
             db_order.id,
             mapped_status,
             bybit_filled_qty,
             bybit_avg_price,
+            rejection_reason=rejection_reason,
             trace_id=trace_id,
         )
 
@@ -375,6 +389,7 @@ class OrderStateSync:
         status: str,
         filled_quantity: Decimal,
         average_price: Optional[Decimal],
+        rejection_reason: Optional[str] = None,
         trace_id: Optional[str] = None,
     ) -> None:
         """
@@ -385,6 +400,7 @@ class OrderStateSync:
             status: New order status
             filled_quantity: Filled quantity from Bybit
             average_price: Average execution price from Bybit
+            rejection_reason: Optional rejection/cancellation reason
             trace_id: Optional trace ID
         """
         try:
@@ -395,23 +411,45 @@ class OrderStateSync:
             if status == "filled":
                 executed_at = datetime.utcnow()
 
-            update_query = """
-                UPDATE orders
-                SET status = $1,
-                    filled_quantity = $2,
-                    average_price = $3,
-                    updated_at = NOW(),
-                    executed_at = $4
-                WHERE id = $5
-            """
-            await pool.execute(
-                update_query,
-                status,
-                str(filled_quantity),
-                str(average_price) if average_price else None,
-                executed_at,
-                str(order_id),
-            )
+            # Update rejection_reason if provided and status is cancelled/rejected
+            if rejection_reason is not None and status in ("cancelled", "rejected"):
+                update_query = """
+                    UPDATE orders
+                    SET status = $1,
+                        filled_quantity = $2,
+                        average_price = $3,
+                        updated_at = NOW(),
+                        executed_at = $4,
+                        rejection_reason = CASE WHEN rejection_reason IS NULL THEN $6 ELSE rejection_reason END
+                    WHERE id = $5
+                """
+                await pool.execute(
+                    update_query,
+                    status,
+                    str(filled_quantity),
+                    str(average_price) if average_price else None,
+                    executed_at,
+                    str(order_id),
+                    rejection_reason,
+                )
+            else:
+                update_query = """
+                    UPDATE orders
+                    SET status = $1,
+                        filled_quantity = $2,
+                        average_price = $3,
+                        updated_at = NOW(),
+                        executed_at = $4
+                    WHERE id = $5
+                """
+                await pool.execute(
+                    update_query,
+                    status,
+                    str(filled_quantity),
+                    str(average_price) if average_price else None,
+                    executed_at,
+                    str(order_id),
+                )
 
             logger.debug(
                 "order_updated_from_bybit",

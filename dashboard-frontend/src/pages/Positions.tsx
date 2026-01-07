@@ -178,13 +178,22 @@ export default function Positions() {
                     </TableCell>
                     <TableCell>{position.last_updated ? format(parseISO(position.last_updated), 'dd.MM.yyyy HH:mm:ss') : 'N/A'}</TableCell>
                     <TableCell>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => handleViewOrders(position.id)}
-                      >
-                        Ордера
-                      </Button>
+                      <div className="flex gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => navigate(`/positions/${position.asset}?mode=${position.mode}`)}
+                        >
+                          Детали
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => handleViewOrders(position.id)}
+                        >
+                          Ордера
+                        </Button>
+                      </div>
                     </TableCell>
                   </TableRow>
                 )

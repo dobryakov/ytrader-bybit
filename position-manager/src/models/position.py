@@ -8,6 +8,9 @@ from typing import Any, Dict, Optional
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, field_validator, computed_field
+from ..config.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 class Position(BaseModel):
@@ -72,6 +75,10 @@ class Position(BaseModel):
         None,
         description="Timestamp when position was closed (size == 0)",
     )
+    opened_at: Optional[datetime] = Field(
+        None,
+        description="Timestamp when position was last opened (size changed from 0 to non-zero)",
+    )
     created_at: datetime = Field(
         default_factory=datetime.utcnow,
         description="Position creation timestamp",
@@ -133,9 +140,11 @@ class Position(BaseModel):
     @computed_field
     @property
     def time_held_minutes(self) -> Optional[int]:
-        """Approximate time held in minutes based on last_updated vs created_at."""
+        """Approximate time held in minutes based on opened_at (if available) or created_at."""
         try:
-            delta = self.last_updated - self.created_at
+            # Use opened_at if available (more accurate), otherwise fall back to created_at
+            start_time = self.opened_at if self.opened_at is not None else self.created_at
+            delta = self.last_updated - start_time
             return int(delta.total_seconds() // 60)
         except Exception:
             return None
@@ -158,6 +167,7 @@ class Position(BaseModel):
             "version": self.version,
             "last_updated": self.last_updated,
             "closed_at": self.closed_at,
+            "opened_at": self.opened_at,
             "created_at": self.created_at,
         }
 
@@ -200,6 +210,32 @@ class Position(BaseModel):
         # Handle datetime fields with defaults
         if "created_at" in data and data["created_at"] is None:
             data.pop("created_at", None)  # Remove to use default_factory
+        
+        # Ensure datetime fields are properly converted from asyncpg/timestamp types
+        # asyncpg returns datetime objects directly, but handle edge cases
+        for datetime_field in ["opened_at", "closed_at", "last_updated", "created_at"]:
+            if datetime_field in data and data[datetime_field] is not None:
+                if not isinstance(data[datetime_field], datetime):
+                    # Try to convert string or other types to datetime
+                    try:
+                        if isinstance(data[datetime_field], str):
+                            # Handle ISO format strings
+                            data[datetime_field] = datetime.fromisoformat(
+                                data[datetime_field].replace("Z", "+00:00")
+                            )
+                        else:
+                            # For other types, try str conversion first
+                            data[datetime_field] = datetime.fromisoformat(
+                                str(data[datetime_field]).replace("Z", "+00:00")
+                            )
+                    except (ValueError, AttributeError):
+                        # If conversion fails, keep original value or set to None
+                        logger.warning(
+                            f"Failed to convert {datetime_field} to datetime",
+                            value=data[datetime_field],
+                            value_type=type(data[datetime_field]),
+                        )
+                        # Keep original value - Pydantic will validate
 
         return cls(**data)
 

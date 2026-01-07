@@ -279,9 +279,10 @@ class ParquetStorage:
                         combined_df = combined_df.drop_duplicates(subset=['sequence'], keep='last')
                     else:
                         # For klines and other data types, use timestamp
-                        # Keep 'first' to preserve original data and avoid overwriting correct data with incorrect
-                        # This is important because if data arrives out of order, we want to keep the first (correct) entry
-                        combined_df = combined_df.drop_duplicates(subset=['timestamp'], keep='first')
+                        # Keep 'last' for klines because Bybit sends multiple updates per minute
+                        # and the last update contains the final OHLC values for that minute
+                        # This ensures we have the most up-to-date kline data
+                        combined_df = combined_df.drop_duplicates(subset=['timestamp'], keep='last')
                         
                         # Log duplicate detection for monitoring
                         if len(combined_df) < len(pd.concat([existing_df, data], ignore_index=True)):

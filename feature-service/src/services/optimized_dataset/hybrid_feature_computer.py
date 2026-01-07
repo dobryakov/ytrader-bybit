@@ -27,6 +27,7 @@ from src.features.candle_patterns import (
     compute_all_candle_patterns_5m,
     compute_all_candle_patterns_15m,
     compute_all_candle_patterns_45m,
+    compute_all_candle_patterns_dynamic,
 )
 
 logger = structlog.get_logger(__name__)
@@ -1243,56 +1244,34 @@ class HybridFeatureComputer:
     
     def _get_candle_pattern_function(self):
         """
-        Определить функцию для вычисления паттернов на основе lookback_window.
+        Получить функцию для вычисления свечных паттернов на основе Feature Registry.
         
-        Returns:
-            Функция для вычисления паттернов
+        Возвращает функцию, принимающую RollingWindows и считающую только те
+        candle/pattern-фичи, которые объявлены в Feature Registry.
         """
-        if not self.feature_registry or not self.feature_registry.features:
-            # Fallback: использовать версию на основе версии Feature Registry
-            if self.feature_registry_version and self.feature_registry_version >= "1.5.0":
-                return compute_all_candle_patterns_15m
-            elif self.feature_registry_version and self.feature_registry_version >= "1.4.0":
-                return compute_all_candle_patterns_5m
+        feature_definitions = None
+        if self.feature_registry is not None:
+            # Если передали pydantic-модель FeatureRegistry
+            features = getattr(self.feature_registry, "features", None)
+            if features:
+                feature_definitions = features
             else:
-                return compute_all_candle_patterns_3m
-        
-        # Найти все паттерны и определить их lookback_window
-        pattern_lookbacks = set()
-        for feature in self.feature_registry.features:
-            if feature.name.startswith(("candle_", "pattern_")):
-                if feature.lookback_window:
-                    pattern_lookbacks.add(feature.lookback_window)
-        
-        if not pattern_lookbacks:
-            # Fallback: использовать версию на основе версии Feature Registry
-            if self.feature_registry_version and self.feature_registry_version >= "1.5.0":
-                return compute_all_candle_patterns_15m
-            elif self.feature_registry_version and self.feature_registry_version >= "1.4.0":
-                return compute_all_candle_patterns_5m
-            else:
-                return compute_all_candle_patterns_3m
-        
-        # Используем наиболее часто встречающийся lookback_window
-        from collections import Counter
-        counter = Counter(pattern_lookbacks)
-        most_common = counter.most_common(1)[0][0]
-        
-        # Выбрать функцию на основе lookback_window
-        if most_common == "45m":
-            return compute_all_candle_patterns_45m
-        elif most_common == "15m":
-            return compute_all_candle_patterns_15m
-        elif most_common == "5m":
-            return compute_all_candle_patterns_5m
-        elif most_common == "3m":
-            return compute_all_candle_patterns_3m
-        else:
-            # Fallback: использовать версию на основе версии Feature Registry
-            if self.feature_registry_version and self.feature_registry_version >= "1.5.0":
-                return compute_all_candle_patterns_15m
-            elif self.feature_registry_version and self.feature_registry_version >= "1.4.0":
-                return compute_all_candle_patterns_5m
-            else:
-                return compute_all_candle_patterns_3m
+                # Возможен объект-обёртка с методом get_config()
+                config = (
+                    self.feature_registry.get_config()
+                    if hasattr(self.feature_registry, "get_config")
+                    else None
+                )
+                if config and "features" in config:
+                    feature_definitions = config["features"]
+
+        def _compute(rolling_windows: "RollingWindows"):
+            if feature_definitions is None:
+                return {}
+            return compute_all_candle_patterns_dynamic(
+                rolling_windows,
+                feature_definitions=feature_definitions,
+            )
+
+        return _compute
 

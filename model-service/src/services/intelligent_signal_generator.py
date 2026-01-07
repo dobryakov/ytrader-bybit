@@ -14,6 +14,8 @@ import asyncio
 from ..models.signal import TradingSignal, MarketDataSnapshot
 from ..models.position_state import OrderPositionState
 from ..models.feature_vector import FeatureVector
+from ..models.features_response import FeaturesResponse
+from ..models.market_data import MarketData
 from ..services.model_loader import model_loader
 from ..services.model_inference import model_inference
 from ..services.signal_validator import signal_validator
@@ -32,6 +34,7 @@ from ..services.signal_skip_metrics import signal_skip_metrics
 from ..services.target_registry_client import target_registry_client
 from ..database.repositories.prediction_target_repo import PredictionTargetRepository
 from ..services.version_mismatch_handler import version_mismatch_handler
+from ..services.instrument_info_client import instrument_info_client
 from uuid import UUID
 
 logger = get_logger(__name__)
@@ -160,17 +163,21 @@ class IntelligentSignalGenerator:
                 model_feature_registry_version = training_config.get("feature_registry_version")
                 model_target_registry_version = training_config.get("target_registry_version")
 
-            # Get feature vector from Feature Service (via cache or REST API) with model's version
-            logger.info("Getting feature vector", asset=asset, strategy_id=strategy_id, feature_registry_version=model_feature_registry_version, trace_id=trace_id)
-            feature_vector = await self._get_feature_vector(
+            # Get feature vector and market data from Feature Service with model's version
+            logger.info("Getting feature vector and market data", asset=asset, strategy_id=strategy_id, feature_registry_version=model_feature_registry_version, trace_id=trace_id)
+            features_response = await self._get_features_response(
                 asset, 
                 feature_registry_version=model_feature_registry_version,
                 trace_id=trace_id
             )
-            if not feature_vector:
-                logger.warning("Features unavailable, skipping signal generation", asset=asset, strategy_id=strategy_id, trace_id=trace_id)
+            if not features_response:
+                logger.warning("Features response unavailable, skipping signal generation", asset=asset, strategy_id=strategy_id, trace_id=trace_id)
                 return None
-            logger.info("Feature vector retrieved", asset=asset, strategy_id=strategy_id, feature_count=len(feature_vector.features) if feature_vector else 0, feature_registry_version=feature_vector.feature_registry_version, trace_id=trace_id)
+            
+            feature_vector = features_response.feature_vector
+            market_data = features_response.market_data
+            
+            logger.info("Feature vector and market data retrieved", asset=asset, strategy_id=strategy_id, feature_count=len(feature_vector.features), price=market_data.price, feature_registry_version=feature_vector.feature_registry_version, trace_id=trace_id)
 
             # Version mismatch check is no longer needed - we always request the correct version
 
@@ -377,30 +384,72 @@ class IntelligentSignalGenerator:
                     rejection_reason="confidence_below_threshold",
                     prediction_result=prediction_result,
                     feature_vector=feature_vector,
+                    market_data=market_data,
                     active_model=active_model,
                     raw_prediction_metadata=raw_prediction_metadata,
                     trace_id=trace_id,
                 )
             
-            # If regression model returned None (HOLD), create rejected signal
+            # If model returned None (HOLD), create rejected signal
+            # Determine rejection reason based on model type
             if signal_type is None:
-                logger.debug(
-                    "Regression model predicted HOLD (return within threshold range) - creating rejected signal",
-                    asset=asset,
-                    strategy_id=strategy_id,
-                    predicted_return=prediction_result.get("prediction"),
-                    threshold=settings.model_regression_threshold,
-                    trace_id=trace_id,
-                )
+                if is_regression:
+                    # Regression model: HOLD due to predicted return within threshold range
+                    logger.debug(
+                        "Regression model predicted HOLD (return within threshold range) - creating rejected signal",
+                        asset=asset,
+                        strategy_id=strategy_id,
+                        predicted_return=prediction_result.get("prediction"),
+                        threshold=settings.model_regression_threshold,
+                        trace_id=trace_id,
+                    )
+                    rejection_reason = "regression_hold_prediction"
+                else:
+                    # Classification model: HOLD due to hysteresis (min_probability_diff) or calibrated thresholds
+                    buy_prob = prediction_result.get("buy_probability", 0.0)
+                    sell_prob = prediction_result.get("sell_probability", 0.0)
+                    probability_diff = abs(buy_prob - sell_prob)
+                    has_calibrated_thresholds = prediction_result.get("_used_calibrated_thresholds", False)
+                    
+                    if has_calibrated_thresholds:
+                        # Model has calibrated thresholds but none passed
+                        logger.debug(
+                            "Classification model predicted HOLD (calibrated thresholds not met) - creating rejected signal",
+                            asset=asset,
+                            strategy_id=strategy_id,
+                            buy_probability=buy_prob,
+                            sell_probability=sell_prob,
+                            confidence=confidence,
+                            threshold=effective_threshold,
+                            trace_id=trace_id,
+                        )
+                        rejection_reason = "classification_hold_prediction_calibrated_thresholds"
+                    else:
+                        # HOLD due to insufficient probability difference (hysteresis)
+                        logger.debug(
+                            "Classification model predicted HOLD (insufficient probability difference) - creating rejected signal",
+                            asset=asset,
+                            strategy_id=strategy_id,
+                            buy_probability=buy_prob,
+                            sell_probability=sell_prob,
+                            probability_diff=probability_diff,
+                            min_probability_diff=settings.model_min_probability_diff,
+                            confidence=confidence,
+                            threshold=effective_threshold,
+                            trace_id=trace_id,
+                        )
+                        rejection_reason = "classification_hold_prediction_hysteresis"
+                
                 return await self._create_rejected_signal(
                     asset=asset,
                     strategy_id=strategy_id,
                     model_version=model_version,
                     confidence=confidence,
                     effective_threshold=effective_threshold,
-                    rejection_reason="regression_hold_prediction",
+                    rejection_reason=rejection_reason,
                     prediction_result=prediction_result,
                     feature_vector=feature_vector,
+                    market_data=market_data,
                     active_model=active_model,
                     raw_prediction_metadata=raw_prediction_metadata,
                     trace_id=trace_id,
@@ -478,22 +527,127 @@ class IntelligentSignalGenerator:
                     )
                     return None
 
-            # Extract price from feature vector for calculations
-            current_price = float(feature_vector.features.get("mid_price", feature_vector.features.get("price", 0.0)))
+            # Extract price from market data
+            current_price = market_data.price
             if current_price <= 0:
-                logger.warning("Invalid price in feature vector, skipping signal generation", asset=asset, strategy_id=strategy_id, price=current_price)
+                logger.error(
+                    "Invalid price in market data, skipping signal generation",
+                    asset=asset,
+                    strategy_id=strategy_id,
+                    price=current_price,
+                    trace_id=trace_id,
+                )
                 return None
+            
+            logger.debug(
+                "Price extracted from market data",
+                asset=asset,
+                strategy_id=strategy_id,
+                price=current_price,
+                trace_id=trace_id,
+            )
 
-            # Calculate order amount from model
+            # Get minimum order value from instrument_info table (with fallback to settings)
+            # This ensures we use the actual exchange requirement, not a hardcoded value
+            min_order_value_db = await instrument_info_client.get_min_order_value(asset)
+            effective_min_amount = float(min_order_value_db) if min_order_value_db is not None else self.min_amount
+            min_amount_source = "instrument_info" if min_order_value_db is not None else "settings"
+            
+            logger.debug(
+                "Using minimum order amount",
+                asset=asset,
+                min_amount=effective_min_amount,
+                source=min_amount_source,
+                fallback_min_amount=self.min_amount,
+                trace_id=trace_id,
+            )
+
+            # Get available resources (balance for BUY, position size for SELL) before calculating amount
+            # This allows the model to calculate amount that respects available resources
+            available_resource: Optional[float] = None
+            if signal_type.lower() == "buy":
+                available_resource = await balance_calculator.get_available_balance_for_buy(
+                    trading_pair=asset,
+                    current_price=current_price,
+                )
+                if available_resource is None:
+                    logger.warning(
+                        "Cannot get available balance for buy order, skipping signal generation",
+                        asset=asset,
+                        strategy_id=strategy_id,
+                        trace_id=trace_id,
+                    )
+                    return None
+                logger.info(
+                    "Available balance for buy order",
+                    asset=asset,
+                    available_balance=available_resource,
+                    min_amount=effective_min_amount,
+                    min_amount_source=min_amount_source,
+                    max_amount=self.max_amount,
+                    trace_id=trace_id,
+                )
+            else:  # sell
+                available_resource = await balance_calculator.get_available_position_for_sell(
+                    trading_pair=asset,
+                    current_price=current_price,
+                )
+                if available_resource is None:
+                    logger.warning(
+                        "Cannot get available position for sell order, skipping signal generation",
+                        asset=asset,
+                        strategy_id=strategy_id,
+                        trace_id=trace_id,
+                    )
+                    return None
+                logger.info(
+                    "Available position for sell order",
+                    asset=asset,
+                    available_position_usdt=available_resource,
+                    min_amount=effective_min_amount,
+                    min_amount_source=min_amount_source,
+                    max_amount=self.max_amount,
+                    current_price=current_price,
+                    trace_id=trace_id,
+                )
+
+            # Calculate order amount from model, considering available resources
             # Pass prediction_result for regression models to use predicted_return for position sizing
+            # Pass available_resource to limit amount by available balance/position
+            # Use effective_min_amount (from instrument_info or settings) instead of self.min_amount
             model_amount = self._calculate_amount(
                 current_price, 
                 confidence,
-                prediction_result=prediction_result
+                prediction_result=prediction_result,
+                available_resource=available_resource,
+                min_amount=effective_min_amount,
             )
             
-            # Check available balance and adapt amount
-            # For SELL signals, pass current_price to convert quote currency to base currency
+            # Check if amount calculation failed due to insufficient balance
+            if model_amount is None:
+                logger.warning(
+                    "Cannot calculate signal amount: available resource is less than minimum amount",
+                    asset=asset,
+                    strategy_id=strategy_id,
+                    signal_type=signal_type,
+                    available_resource=available_resource,
+                    min_amount=effective_min_amount,
+                    min_amount_source=min_amount_source,
+                    current_price=current_price,
+                    trace_id=trace_id,
+                )
+                # Record skip metrics
+                signal_skip_metrics.record_skip(
+                    asset=asset,
+                    strategy_id=strategy_id,
+                    reason="insufficient_balance",
+                )
+                return None
+            
+            # Final check: verify that calculated amount is still affordable
+            # This is a safety check in case of race conditions or price changes
+            # Note: calculate_affordable_amount may use different balance source than get_available_balance_for_buy
+            # (e.g., account-level vs coin-level), so this check is important
             adapted_amount = await balance_calculator.calculate_affordable_amount(
                 trading_pair=asset,
                 signal_type=signal_type,
@@ -502,12 +656,22 @@ class IntelligentSignalGenerator:
             )
             
             if adapted_amount is None:
+                # Get more details about why balance is insufficient
+                # For SELL signals, this is usually due to insufficient position size
+                # For BUY signals, this is due to insufficient quote currency balance
+                # This can happen if:
+                # 1. Balance changed between get_available_balance_for_buy and calculate_affordable_amount
+                # 2. Different balance sources are used (account-level vs coin-level)
+                # 3. Safety margin is applied differently in the two methods
                 logger.warning(
                     "Insufficient balance, skipping signal generation",
                     asset=asset,
                     strategy_id=strategy_id,
                     signal_type=signal_type,
                     original_model_amount=model_amount,
+                    available_resource=available_resource,
+                    current_price=current_price,
+                    note="Check balance_calculator logs above for detailed position/balance information. This may indicate balance changed between checks or different balance sources were used.",
                     trace_id=trace_id,
                 )
                 # Record skip metrics
@@ -531,8 +695,8 @@ class IntelligentSignalGenerator:
                 )
 
             # active_model and model_version are already defined above
-            # Create market data snapshot from feature vector for signal metadata
-            market_data_snapshot = self._create_market_data_snapshot_from_features(feature_vector)
+            # Create market data snapshot from market data for signal metadata
+            market_data_snapshot = self._create_market_data_snapshot_from_market_data(market_data)
 
             # Get target registry info for metadata
             # Use target_registry_version from model's training_config if available (model was trained on specific target)
@@ -886,24 +1050,34 @@ class IntelligentSignalGenerator:
         current_price: float,
         confidence: float,
         prediction_result: Optional[Dict[str, Any]] = None,
-    ) -> float:
+        available_resource: Optional[float] = None,
+        min_amount: Optional[float] = None,
+    ) -> Optional[float]:
         """
-        Calculate order amount based on confidence.
+        Calculate order amount based on confidence and available resources.
 
         For regression models, can use predicted_return for more sophisticated position sizing.
+        For BUY signals, available_resource is available balance in quote currency.
+        For SELL signals, available_resource is available position size in quote currency.
 
         Args:
             current_price: Current market price
             confidence: Signal confidence score
             prediction_result: Optional prediction result (for regression models)
+            available_resource: Optional available balance/position size in quote currency
+            min_amount: Optional minimum order amount (uses self.min_amount if not provided)
 
         Returns:
-            Order amount in quote currency
+            Order amount in quote currency, limited by available resources if provided.
+            Returns None if available_resource is provided and is less than min_amount.
         """
         from ..config.settings import settings
         
+        # Use provided min_amount or fallback to self.min_amount
+        effective_min_amount = min_amount if min_amount is not None else self.min_amount
+        
         # Base amount
-        base_amount = (self.min_amount + self.max_amount) / 2
+        base_amount = (effective_min_amount + self.max_amount) / 2
 
         # For regression models, can use predicted_return for position sizing
         # This allows larger positions for stronger predicted movements
@@ -933,6 +1107,7 @@ class IntelligentSignalGenerator:
                     return_based_multiplier=return_based_multiplier,
                     confidence=confidence,
                     confidence_multiplier=confidence_multiplier,
+                    available_resource=available_resource,
                 )
             else:
                 # Classification model: use confidence only
@@ -942,101 +1117,82 @@ class IntelligentSignalGenerator:
             confidence_multiplier = 0.5 + (confidence * 0.5)  # Range: 0.5 to 1.0
 
         amount = base_amount * confidence_multiplier
+        calculated_amount_before_limit = amount
 
-        # Clamp to valid range
-        amount = max(self.min_amount, min(self.max_amount, amount))
+        # Limit by available resources first (if provided)
+        # This ensures we don't calculate amount that exceeds available balance/position
+        if available_resource is not None:
+            # Check if available resource is sufficient before limiting
+            if available_resource < effective_min_amount:
+                logger.debug(
+                    "Available resource is less than minimum amount, cannot generate signal",
+                    calculated_amount_before_limit=calculated_amount_before_limit,
+                    available_resource=available_resource,
+                    min_amount=effective_min_amount,
+                )
+                return None
+            
+            amount = min(amount, available_resource)
+            logger.debug(
+                "Amount limited by available resources",
+                calculated_amount_before_limit=calculated_amount_before_limit,
+                available_resource=available_resource,
+                amount_after_limit=amount,
+            )
+        
+        # Clamp to valid range (min_amount, max_amount)
+        # If available_resource was provided and is >= min_amount, we've already limited amount by it
+        # But we still need to ensure amount meets minimum requirement (min_amount)
+        # If the calculated amount is less than min_amount, clamp it to min_amount
+        # The final balance check will reject the signal if min_amount exceeds available balance
+        amount = max(effective_min_amount, min(self.max_amount, amount))
 
         return round(amount, 2)
 
-    async def _get_feature_vector(
+    async def _get_features_response(
         self, 
         asset: str, 
         feature_registry_version: Optional[str] = None,
         trace_id: Optional[str] = None
-    ) -> Optional[FeatureVector]:
+    ) -> Optional[FeaturesResponse]:
         """
-        Get feature vector from Feature Service (via cache or REST API with fallback).
-
-        Always checks local cache first, regardless of FEATURE_SERVICE_USE_QUEUE setting.
-        Cache can be populated either from queue (if enabled) or from previous REST API calls.
+        Get features response (feature vector + market data) from Feature Service.
 
         Args:
             asset: Trading pair symbol
-            feature_registry_version: Feature Registry version to request (None = active version)
-            trace_id: Optional trace ID for request flow tracking
+            feature_registry_version: Optional Feature Registry version
+            trace_id: Optional trace ID
 
         Returns:
-            FeatureVector or None if unavailable
+            FeaturesResponse or None if unavailable
         """
-        # Cache key includes version to avoid mixing different versions
-        cache_key = f"{asset}:{feature_registry_version or 'active'}"
-        
-        # Always try cache first (cache can be populated from queue or previous REST API calls)
-        cached_feature = await feature_cache.get_by_key(cache_key, max_age_seconds=settings.feature_service_feature_cache_ttl_seconds)
-        if cached_feature:
-            logger.debug("Using cached feature vector", asset=asset, feature_registry_version=feature_registry_version, trace_id=trace_id)
-            return cached_feature
-
-        # Cache miss - fallback to REST API
-        logger.debug("Cache miss, fetching from REST API", asset=asset, feature_registry_version=feature_registry_version, trace_id=trace_id)
-        feature_vector = await feature_service_client.get_latest_features(
+        # Fetch from REST API (market_data is always needed, so no caching for now)
+        logger.debug("Fetching features response from Feature Service API", asset=asset, trace_id=trace_id)
+        features_response = await feature_service_client.get_latest_features(
             asset, 
             feature_registry_version=feature_registry_version,
             trace_id=trace_id
         )
         
-        if feature_vector:
-            # Always cache the result for future use (regardless of queue setting)
-            # This allows cache to work even if queue is disabled
-            await feature_cache.set_by_key(cache_key, feature_vector)
-            logger.debug("Retrieved feature vector from REST API and cached", asset=asset, feature_registry_version=feature_registry_version, trace_id=trace_id)
-        
-        return feature_vector
+        return features_response
 
-    def _create_market_data_snapshot_from_features(self, feature_vector: FeatureVector) -> MarketDataSnapshot:
+    def _create_market_data_snapshot_from_market_data(self, market_data: MarketData) -> MarketDataSnapshot:
         """
-        Create MarketDataSnapshot from FeatureVector for signal metadata.
+        Create MarketDataSnapshot from MarketData for signal metadata.
 
         Args:
-            feature_vector: FeatureVector from Feature Service
+            market_data: MarketData from Feature Service
 
         Returns:
-            MarketDataSnapshot created from feature vector
+            MarketDataSnapshot created from market data
         """
-        features = feature_vector.features
-        
-        # Extract price (mid_price is the standard name in Feature Service)
-        price = features.get("mid_price", features.get("price", 0.0))
-        
-        # Extract spread
-        spread = features.get("spread_abs", features.get("spread", 0.0))
-        
-        # Extract volume
-        volume_24h = features.get("volume_1m", features.get("volume_24h", 0.0))
-        
-        # Extract volatility
-        volatility = features.get("volatility_1m", features.get("volatility", 0.0))
-        
-        # Extract orderbook depth if available
-        orderbook_depth = None
-        if "depth_bid_top5" in features or "depth_ask_top5" in features:
-            orderbook_depth = {
-                "bid_depth": features.get("depth_bid_top5", 0.0),
-                "ask_depth": features.get("depth_ask_top5", 0.0),
-            }
-        
-        # Extract technical indicators if available
-        technical_indicators = None
-        # Note: Feature Service may not include all technical indicators in feature vector
-        # This is a simplified extraction - can be enhanced based on actual feature names
-        
         return MarketDataSnapshot(
-            price=float(price),
-            spread=float(spread),
-            volume_24h=float(volume_24h),
-            volatility=float(volatility),
-            orderbook_depth=orderbook_depth,
-            technical_indicators=technical_indicators,
+            price=market_data.price,
+            spread=market_data.spread,
+            volume_24h=market_data.volume_24h or 0.0,
+            volatility=market_data.volatility or 0.0,
+            orderbook_depth=market_data.orderbook_depth,
+            technical_indicators=None,  # Not available in MarketData
         )
 
     async def _save_prediction_target(
@@ -1467,6 +1623,7 @@ class IntelligentSignalGenerator:
         rejection_reason: str,
         prediction_result: Dict[str, Any],
         feature_vector: FeatureVector,
+        market_data: MarketData,
         active_model: Optional[Dict[str, Any]],
         raw_prediction_metadata: Dict[str, Any],
         trace_id: Optional[str] = None,
@@ -1507,21 +1664,33 @@ class IntelligentSignalGenerator:
             target_config=target_config,
             training_config=training_config,
         )
-        # If signal_type is None (HOLD), use 'buy' as default for rejected signal structure
+        # If signal_type is None (HOLD), try to infer from prediction value
+        # This ensures rejected signals reflect model's actual prediction direction
         if signal_type is None:
-            signal_type = "buy"  # Default, won't be used for trading
+            prediction = prediction_result.get("prediction")
+            if prediction == -1:
+                signal_type = "sell"  # Model predicted DOWN/SELL
+            elif prediction == 1:
+                signal_type = "buy"  # Model predicted UP/BUY
+            else:
+                # Fallback: use buy_probability vs sell_probability comparison
+                buy_prob = prediction_result.get("buy_probability", 0.0)
+                sell_prob = prediction_result.get("sell_probability", 0.0)
+                if sell_prob > buy_prob:
+                    signal_type = "sell"
+                else:
+                    signal_type = "buy"  # Default fallback
         
         # Extract price from feature vector
-        current_price = float(feature_vector.features.get("mid_price", feature_vector.features.get("price", 0.0)))
-        if current_price <= 0:
-            logger.warning("Invalid price in feature vector for rejected signal", asset=asset, strategy_id=strategy_id, price=current_price)
-            current_price = 0.0
+        # For rejected signals, we don't have market_data, so skip price extraction
+        # This is only used for logging, so 0.0 is acceptable
+        current_price = 0.0
         
         # Use minimum amount for rejected signals (won't be traded anyway)
         amount = self.min_amount
         
-        # Create market data snapshot from feature vector
-        market_data_snapshot = self._create_market_data_snapshot_from_features(feature_vector)
+        # Create market data snapshot from market data
+        market_data_snapshot = self._create_market_data_snapshot_from_market_data(market_data)
         
         # Get target registry info for metadata
         target_registry_version = None

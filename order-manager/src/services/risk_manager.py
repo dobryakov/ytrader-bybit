@@ -10,6 +10,7 @@ from ..models.trading_signal import TradingSignal
 from ..models.position import Position
 from ..services.position_manager_client import PositionManagerClient
 from ..services.instrument_info_manager import InstrumentInfoManager
+from ..services.fee_rate_manager import FeeRateManager
 from ..exceptions import RiskLimitError, OrderExecutionError
 from decimal import ROUND_DOWN
 import httpx
@@ -32,6 +33,7 @@ class RiskManager:
         self.max_order_size_ratio = Decimal(str(settings.order_manager_max_order_size_ratio))
         self.position_manager_client = PositionManagerClient()
         self.instrument_info_manager = InstrumentInfoManager()
+        self.fee_rate_manager = FeeRateManager()
         self._last_sync_at: Optional[datetime] = None
 
     @property
@@ -125,33 +127,92 @@ class RiskManager:
 
     async def _get_latest_usdt_balance_from_db(self, trace_id: Optional[str]) -> Optional[Decimal]:
         """
-        Read latest USDT available balance from account_balances table.
+        Read latest USDT available balance from database.
+        
+        For unified accounts, tries account-level balance first (from account_margin_balances),
+        which is more accurate when there are borrowed funds. Falls back to coin-level balance
+        (from account_balances) if account-level is not available.
+        
+        This ensures consistency with model-service balance checks.
 
         This assumes ws-gateway has already persisted fresh snapshots either
         via WebSocket wallet events or via sync_from_rest().
         """
         try:
             pool = await DatabaseConnection.get_pool()
-            query = """
+            
+            # Try account-level balance first (more accurate for unified accounts)
+            account_query = """
+                SELECT total_available_balance, base_currency, received_at
+                FROM account_margin_balances
+                ORDER BY received_at DESC
+                LIMIT 1
+            """
+            account_row = await pool.fetchrow(account_query)
+            
+            if account_row is not None:
+                account_balance = Decimal(str(account_row["total_available_balance"]))
+                base_currency = str(account_row["base_currency"]) or "USDT"
+                received_at = account_row["received_at"]
+                
+                # If base currency is USDT, use account-level balance directly
+                if base_currency.upper() == "USDT":
+                    logger.info(
+                        "order_manager_balance_db_account_level_usdt",
+                        available_balance=str(account_balance),
+                        balance_source="account-level",
+                        received_at=received_at.isoformat() if received_at else None,
+                        trace_id=trace_id,
+                    )
+                    return account_balance
+                else:
+                    # Base currency is not USDT, but we can still use it as it represents total available margin
+                    # For unified accounts, this is the actual available margin for trading
+                    logger.info(
+                        "order_manager_balance_db_account_level_non_usdt",
+                        available_balance=str(account_balance),
+                        base_currency=base_currency,
+                        balance_source="account-level",
+                        received_at=received_at.isoformat() if received_at else None,
+                        trace_id=trace_id,
+                        note="Using account-level balance even though base_currency is not USDT (unified account margin)",
+                    )
+                    return account_balance
+            
+            # Fallback to coin-level balance if account-level is not available
+            coin_query = """
                 SELECT available_balance, received_at
                 FROM account_balances
                 WHERE coin = 'USDT'
                 ORDER BY received_at DESC
                 LIMIT 1
             """
-            row = await pool.fetchrow(query)
-            if row is None:
+            coin_row = await pool.fetchrow(coin_query)
+            if coin_row is None:
                 logger.warning(
                     "order_manager_balance_db_no_usdt",
                     trace_id=trace_id,
                 )
                 return None
 
-            available = Decimal(str(row["available_balance"]))
-            received_at = row["received_at"]
+            available = Decimal(str(coin_row["available_balance"]))
+            received_at = coin_row["received_at"]
+            
+            # Warn if coin-level balance is negative (indicates borrowed funds)
+            if available < 0:
+                logger.warning(
+                    "order_manager_balance_db_negative_coin_level",
+                    available_balance=str(available),
+                    received_at=received_at.isoformat() if received_at else None,
+                    balance_source="coin-level",
+                    trace_id=trace_id,
+                    note="Coin-level balance is negative (likely due to borrowed funds). Consider using account-level balance from account_margin_balances.",
+                )
+            
             logger.info(
                 "order_manager_balance_db_latest_usdt",
                 available_balance=str(available),
+                balance_source="coin-level",
                 received_at=received_at.isoformat() if received_at else None,
                 trace_id=trace_id,
             )
@@ -164,13 +225,80 @@ class RiskManager:
             )
             return None
 
-    async def check_balance(self, signal: TradingSignal, order_quantity: Decimal, order_price: Decimal) -> bool:
+    async def _calculate_required_commission(
+        self,
+        signal: TradingSignal,
+        order_quantity: Decimal,
+        order_price: Decimal,
+        trace_id: Optional[str] = None,
+    ) -> Decimal:
+        """Calculate required commission for an order.
+        
+        Args:
+            signal: Trading signal
+            order_quantity: Order quantity in base currency
+            order_price: Order price
+            trace_id: Optional trace ID for logging
+            
+        Returns:
+            Required commission in USDT (quote currency)
+        """
+        try:
+            notional = order_quantity * order_price
+            if notional <= 0:
+                return Decimal("0")
+            
+            # Get fee rate from fee_rate_manager
+            fee_info = await self.fee_rate_manager.get_fee_rate(
+                symbol=signal.asset,
+                market_type=settings.bybit_market_category,
+                trace_id=trace_id,
+                allow_api_fallback=True,
+            )
+            
+            if fee_info is not None:
+                fee_rate = fee_info.taker_fee_rate
+            else:
+                # Fallback: use conservative max fee rate from settings
+                fee_rate = Decimal(str(settings.order_manager_max_fallback_fee_rate))
+            
+            if fee_rate <= 0:
+                return Decimal("0")
+            
+            required_commission = notional * fee_rate
+            
+            logger.debug(
+                "commission_calculated",
+                signal_id=str(signal.signal_id),
+                asset=signal.asset,
+                notional=float(notional),
+                fee_rate=float(fee_rate),
+                required_commission=float(required_commission),
+                trace_id=trace_id,
+            )
+            
+            return required_commission
+        except Exception as e:
+            logger.warning(
+                "commission_calculation_failed",
+                signal_id=str(signal.signal_id),
+                asset=signal.asset,
+                error=str(e),
+                trace_id=trace_id,
+                reason="Failed to calculate commission, using conservative estimate",
+            )
+            # Fallback: use conservative estimate (0.1% of notional)
+            notional = order_quantity * order_price
+            return notional * Decimal("0.001")
+
+    async def check_balance(self, signal: TradingSignal, order_quantity: Decimal, order_price: Decimal, is_reduce_only: bool = False) -> bool:
         """Check if sufficient balance is available for order.
 
         Args:
             signal: Trading signal
             order_quantity: Order quantity in base currency
             order_price: Order price (for limit orders) or current market price (for market orders)
+            is_reduce_only: Whether this is a reduce-only order (still requires commission balance)
             trace_id: Trace ID for logging
 
         Returns:
@@ -200,8 +328,74 @@ class RiskManager:
 
             # Calculate required balance and check against appropriate currency
             if signal.signal_type.lower() == "buy":
-                # Buy orders need USDT (quote currency)
-                required_balance = order_quantity * order_price
+                # Buy orders: check position first (for reduce-only with short position)
+                position = await self.position_manager_client.get_position(signal.asset, mode="one-way", trace_id=trace_id)
+                has_position = position is not None
+                position_size = position.size if position else Decimal("0")
+                has_short_position = has_position and position_size < 0
+                
+                if is_reduce_only:
+                    # Reduce-only order - check commission balance only
+                    required_commission = await self._calculate_required_commission(
+                        signal=signal,
+                        order_quantity=order_quantity,
+                        order_price=order_price,
+                        trace_id=trace_id,
+                    )
+                    
+                    # Add safety margin (10% buffer for commission calculation errors)
+                    required_balance_with_buffer = required_commission * Decimal("1.1")
+                    
+                    if required_balance_with_buffer > usdt_balance:
+                        shortfall = required_balance_with_buffer - usdt_balance
+                        shortfall_percentage = (shortfall / required_balance_with_buffer) * 100 if required_balance_with_buffer > 0 else 0
+                        error_msg = (
+                            f"Insufficient balance for commission: required={required_balance_with_buffer} USDT "
+                            f"(commission={required_commission} USDT + 10% buffer), "
+                            f"available={usdt_balance} USDT, shortfall={shortfall} USDT ({shortfall_percentage:.2f}%)"
+                        )
+                        logger.error(
+                            "balance_check_failed_commission",
+                            signal_id=str(signal.signal_id),
+                            asset=signal.asset,
+                            signal_type=signal.signal_type,
+                            is_reduce_only=is_reduce_only,
+                            required_commission=float(required_commission),
+                            required_balance_with_buffer=float(required_balance_with_buffer),
+                            available=float(usdt_balance),
+                            shortfall=float(shortfall),
+                            shortfall_percentage=float(shortfall_percentage),
+                            order_quantity=float(order_quantity),
+                            order_price=float(order_price),
+                            currency="USDT",
+                            error_type="RiskLimitError",
+                            trace_id=trace_id,
+                        )
+                        raise RiskLimitError(error_msg)
+                    
+                    logger.info(
+                        "balance_check_passed_reduce_only_commission",
+                        signal_id=str(signal.signal_id),
+                        asset=signal.asset,
+                        position_size=float(position_size) if has_short_position else 0.0,
+                        is_reduce_only=is_reduce_only,
+                        required_commission=float(required_commission),
+                        available_balance=float(usdt_balance),
+                        reason="Reduce-only order: commission balance sufficient",
+                        trace_id=trace_id,
+                    )
+                    return True
+                
+                # Not reduce-only: need USDT (quote currency) for buy order (requires margin + commission)
+                required_margin = order_quantity * order_price
+                required_commission = await self._calculate_required_commission(
+                    signal=signal,
+                    order_quantity=order_quantity,
+                    order_price=order_price,
+                    trace_id=trace_id,
+                )
+                # Total required = margin + commission (with 10% buffer for commission)
+                required_balance = required_margin + (required_commission * Decimal("1.1"))
                 available_balance = usdt_balance
                 currency = "USDT"
                 
@@ -209,7 +403,8 @@ class RiskManager:
                     shortfall = required_balance - available_balance
                     shortfall_percentage = (shortfall / required_balance) * 100 if required_balance > 0 else 0
                     error_msg = (
-                        f"Insufficient balance: required={required_balance} {currency}, "
+                        f"Insufficient balance: required={required_balance} {currency} "
+                        f"(margin={required_margin} + commission={required_commission * Decimal('1.1')}), "
                         f"available={available_balance} {currency}, shortfall={shortfall} {currency} ({shortfall_percentage:.2f}%)"
                     )
                     logger.error(
@@ -218,6 +413,8 @@ class RiskManager:
                         asset=signal.asset,
                         signal_type=signal.signal_type,
                         required=float(required_balance),
+                        required_margin=float(required_margin),
+                        required_commission=float(required_commission),
                         available=float(available_balance),
                         shortfall=float(shortfall),
                         shortfall_percentage=float(shortfall_percentage),
@@ -235,19 +432,59 @@ class RiskManager:
                 position_size = position.size if position else Decimal("0")
                 has_long_position = has_position and position_size > 0
                 
-                if has_long_position:
-                    # Have long position - can use reduce_only (no margin needed)
+                if is_reduce_only:
+                    # Reduce-only order - check commission balance only
+                    required_commission = await self._calculate_required_commission(
+                        signal=signal,
+                        order_quantity=order_quantity,
+                        order_price=order_price,
+                        trace_id=trace_id,
+                    )
+                    
+                    # Add safety margin (10% buffer for commission calculation errors)
+                    required_balance_with_buffer = required_commission * Decimal("1.1")
+                    
+                    if required_balance_with_buffer > usdt_balance:
+                        shortfall = required_balance_with_buffer - usdt_balance
+                        shortfall_percentage = (shortfall / required_balance_with_buffer) * 100 if required_balance_with_buffer > 0 else 0
+                        error_msg = (
+                            f"Insufficient balance for commission: required={required_balance_with_buffer} USDT "
+                            f"(commission={required_commission} USDT + 10% buffer), "
+                            f"available={usdt_balance} USDT, shortfall={shortfall} USDT ({shortfall_percentage:.2f}%)"
+                        )
+                        logger.error(
+                            "balance_check_failed_commission",
+                            signal_id=str(signal.signal_id),
+                            asset=signal.asset,
+                            signal_type=signal.signal_type,
+                            is_reduce_only=is_reduce_only,
+                            required_commission=float(required_commission),
+                            required_balance_with_buffer=float(required_balance_with_buffer),
+                            available=float(usdt_balance),
+                            shortfall=float(shortfall),
+                            shortfall_percentage=float(shortfall_percentage),
+                            order_quantity=float(order_quantity),
+                            order_price=float(order_price),
+                            currency="USDT",
+                            error_type="RiskLimitError",
+                            trace_id=trace_id,
+                        )
+                        raise RiskLimitError(error_msg)
+                    
                     logger.info(
-                        "balance_check_passed_sell_with_long_position",
+                        "balance_check_passed_reduce_only_commission",
                         signal_id=str(signal.signal_id),
                         asset=signal.asset,
-                        position_size=float(position_size),
-                        reason="Long position exists, can use reduce_only, margin not required",
+                        position_size=float(position_size) if has_long_position else 0.0,
+                        is_reduce_only=is_reduce_only,
+                        required_commission=float(required_commission),
+                        available_balance=float(usdt_balance),
+                        reason="Reduce-only order: commission balance sufficient",
                         trace_id=trace_id,
                     )
                     return True
                 
-                # No long position - need margin in base currency (usually USDT)
+                # Not reduce-only: need margin in base currency (usually USDT) for sell order
                 # Get margin from database
                 try:
                     pool = await DatabaseConnection.get_pool()
@@ -301,14 +538,55 @@ class RiskManager:
                         available_margin = Decimal(str(row["total_available_balance"]))
                         base_currency_margin = str(row["base_currency"]) or "USDT"
                     
-                    # Calculate required margin: order value in base currency
-                    required_margin = order_quantity * order_price
+                    # Calculate required margin: order value in base currency + commission
+                    required_margin_base = order_quantity * order_price
+                    required_commission = await self._calculate_required_commission(
+                        signal=signal,
+                        order_quantity=order_quantity,
+                        order_price=order_price,
+                        trace_id=trace_id,
+                    )
+                    # Total required = margin + commission (with 10% buffer for commission)
+                    # Commission is in USDT, but we need to check if base currency is USDT
+                    if base_currency_margin == "USDT":
+                        required_margin = required_margin_base + (required_commission * Decimal("1.1"))
+                    else:
+                        # For non-USDT base currency, commission is still paid in USDT
+                        # Check commission against USDT balance separately
+                        required_commission_with_buffer = required_commission * Decimal("1.1")
+                        if required_commission_with_buffer > usdt_balance:
+                            shortfall = required_commission_with_buffer - usdt_balance
+                            shortfall_percentage = (shortfall / required_commission_with_buffer) * 100 if required_commission_with_buffer > 0 else 0
+                            error_msg = (
+                                f"Insufficient USDT balance for commission: required={required_commission_with_buffer} USDT "
+                                f"(commission={required_commission} USDT + 10% buffer), "
+                                f"available={usdt_balance} USDT, shortfall={shortfall} USDT ({shortfall_percentage:.2f}%)"
+                            )
+                            logger.error(
+                                "balance_check_failed_commission",
+                                signal_id=str(signal.signal_id),
+                                asset=signal.asset,
+                                signal_type=signal.signal_type,
+                                required_commission=float(required_commission),
+                                required_commission_with_buffer=float(required_commission_with_buffer),
+                                available=float(usdt_balance),
+                                shortfall=float(shortfall),
+                                shortfall_percentage=float(shortfall_percentage),
+                                order_quantity=float(order_quantity),
+                                order_price=float(order_price),
+                                currency="USDT",
+                                error_type="RiskLimitError",
+                                trace_id=trace_id,
+                            )
+                            raise RiskLimitError(error_msg)
+                        required_margin = required_margin_base
                     
                     if required_margin > available_margin:
                         shortfall = required_margin - available_margin
                         shortfall_percentage = (shortfall / required_margin) * 100 if required_margin > 0 else 0
                         error_msg = (
-                            f"Insufficient margin: required={required_margin} {base_currency_margin}, "
+                            f"Insufficient margin: required={required_margin} {base_currency_margin} "
+                            f"(base={required_margin_base}" + (f" + commission={required_commission * Decimal('1.1')}" if base_currency_margin == "USDT" else "") + f"), "
                             f"available={available_margin} {base_currency_margin}, "
                             f"shortfall={shortfall} {base_currency_margin} ({shortfall_percentage:.2f}%)"
                         )
@@ -318,6 +596,8 @@ class RiskManager:
                             asset=signal.asset,
                             signal_type=signal.signal_type,
                             required=float(required_margin),
+                            required_margin_base=float(required_margin_base),
+                            required_commission=float(required_commission) if base_currency_margin == "USDT" else None,
                             available=float(available_margin),
                             shortfall=float(shortfall),
                             shortfall_percentage=float(shortfall_percentage),
@@ -333,8 +613,11 @@ class RiskManager:
                         "balance_check_passed",
                         signal_id=str(signal.signal_id),
                         required=float(required_margin),
+                        required_margin_base=float(required_margin_base),
+                        required_commission=float(required_commission) if base_currency_margin == "USDT" else None,
                         available=float(available_margin),
                         currency=base_currency_margin,
+                        reason="Margin and commission balance sufficient" if base_currency_margin == "USDT" else "Margin sufficient, commission checked separately",
                         trace_id=trace_id,
                     )
                     return True
@@ -352,14 +635,23 @@ class RiskManager:
                     # For sell orders without position, we need margin, but if we can't get it,
                     # we'll use the USDT balance as a conservative estimate
                     available_balance = usdt_balance
-                    required_balance = order_quantity * order_price
+                    required_margin = order_quantity * order_price
+                    required_commission = await self._calculate_required_commission(
+                        signal=signal,
+                        order_quantity=order_quantity,
+                        order_price=order_price,
+                        trace_id=trace_id,
+                    )
+                    # Total required = margin + commission (with 10% buffer for commission)
+                    required_balance = required_margin + (required_commission * Decimal("1.1"))
                     currency = "USDT"
                     
                     if required_balance > available_balance:
                         shortfall = required_balance - available_balance
                         shortfall_percentage = (shortfall / required_balance) * 100 if required_balance > 0 else 0
                         error_msg = (
-                            f"Insufficient balance: required={required_balance} {currency}, "
+                            f"Insufficient balance: required={required_balance} {currency} "
+                            f"(margin={required_margin} + commission={required_commission * Decimal('1.1')}), "
                             f"available={available_balance} {currency}, shortfall={shortfall} {currency} ({shortfall_percentage:.2f}%)"
                         )
                         logger.error(
@@ -368,6 +660,8 @@ class RiskManager:
                             asset=signal.asset,
                             signal_type=signal.signal_type,
                             required=float(required_balance),
+                            required_margin=float(required_margin),
+                            required_commission=float(required_commission),
                             available=float(available_balance),
                             shortfall=float(shortfall),
                             shortfall_percentage=float(shortfall_percentage),
@@ -383,8 +677,11 @@ class RiskManager:
                 "balance_check_passed",
                 signal_id=str(signal.signal_id),
                 required=float(required_balance),
+                required_margin=float(required_margin),
+                required_commission=float(required_commission),
                 available=float(available_balance),
                 currency=currency,
+                reason="Margin and commission balance sufficient",
                 trace_id=trace_id,
             )
 

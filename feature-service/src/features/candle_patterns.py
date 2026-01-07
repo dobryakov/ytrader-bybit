@@ -4,7 +4,7 @@ Candlestick pattern features computation module.
 Computes categorical and pattern-based features from the last 3 minutes of kline data.
 All features are computed using relative thresholds (averages over 3 candles).
 """
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Sequence, Tuple
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta, timezone
@@ -631,6 +631,103 @@ def _get_empty_features_dict() -> Dict[str, Optional[float]]:
     ]
     return {name: None for name in feature_names}
 
+
+def _parse_lookback_window_to_minutes(lookback_window: str) -> int:
+    """
+    Parse lookback_window string like '45m', '3m', '0s' into minutes.
+
+    Returns:
+        Integer number of minutes (seconds and sub-minute windows are floored to 0).
+    """
+    if not lookback_window:
+        return 0
+
+    try:
+        unit = lookback_window[-1]
+        value = int(lookback_window[:-1])
+    except (ValueError, IndexError):
+        return 0
+
+    if unit == "s":
+        return value // 60
+    if unit == "m":
+        return value
+    if unit == "h":
+        return value * 60
+    if unit == "d":
+        return value * 24 * 60
+    return 0
+
+
+def compute_all_candle_patterns_dynamic(
+    rolling_windows: RollingWindows,
+    feature_definitions: Optional[Sequence[Any]] = None,
+) -> Dict[str, Optional[float]]:
+    """
+    Compute candlestick pattern features based on Feature Registry definitions.
+
+    Uses new dynamic pattern architecture that supports arbitrary lookback windows.
+    Each pattern determines its own requirements (window, segments) dynamically.
+    
+    Args:
+        rolling_windows: RollingWindows instance with kline data
+        feature_definitions: List of FeatureDefinition objects (or dicts) from Registry
+        
+    Returns:
+        Dictionary of feature_name -> value (only candle/pattern features from Registry)
+    """
+    from src.features.market_patterns import compute_all_patterns_dynamic
+    
+    if not feature_definitions:
+        return {}
+    
+    # Use new dynamic pattern system
+    return compute_all_patterns_dynamic(
+        rolling_windows=rolling_windows,
+        feature_definitions=feature_definitions,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Legacy fixed-timeframe pattern functions (3m/5m/15m/45m) are deprecated.
+# They are kept only as guards that explicitly fail if someone tries to use
+# them, to ensure that all code paths go through the new dynamic API.
+# ---------------------------------------------------------------------------
+
+def compute_all_candle_patterns_3m(
+    rolling_windows: RollingWindows,
+) -> Dict[str, Optional[float]]:
+    raise RuntimeError(
+        "compute_all_candle_patterns_3m is removed. "
+        "Use compute_all_candle_patterns_dynamic / compute_all_patterns_dynamic with Feature Registry."
+    )
+
+
+def compute_all_candle_patterns_5m(
+    rolling_windows: RollingWindows,
+) -> Dict[str, Optional[float]]:
+    raise RuntimeError(
+        "compute_all_candle_patterns_5m is removed. "
+        "Use compute_all_candle_patterns_dynamic / compute_all_patterns_dynamic with Feature Registry."
+    )
+
+
+def compute_all_candle_patterns_15m(
+    rolling_windows: RollingWindows,
+) -> Dict[str, Optional[float]]:
+    raise RuntimeError(
+        "compute_all_candle_patterns_15m is removed. "
+        "Use compute_all_candle_patterns_dynamic / compute_all_patterns_dynamic with Feature Registry."
+    )
+
+
+def compute_all_candle_patterns_45m(
+    rolling_windows: RollingWindows,
+) -> Dict[str, Optional[float]]:
+    raise RuntimeError(
+        "compute_all_candle_patterns_45m is removed. "
+        "Use compute_all_candle_patterns_dynamic / compute_all_patterns_dynamic with Feature Registry."
+    )
 
 
 def compute_all_candle_patterns_5m(

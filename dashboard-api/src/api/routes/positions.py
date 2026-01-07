@@ -32,7 +32,7 @@ async def list_positions(
             SELECT 
                 id, asset, size, average_entry_price, current_price,
                 unrealized_pnl, realized_pnl, mode, long_size, short_size,
-                long_avg_price, short_avg_price, last_updated, created_at, closed_at
+                long_avg_price, short_avg_price, last_updated, created_at, closed_at, opened_at
             FROM positions
             WHERE 1=1
         """
@@ -88,6 +88,7 @@ async def list_positions(
                 "last_updated": row["last_updated"].isoformat() + "Z" if row["last_updated"] else None,
                 "created_at": row["created_at"].isoformat() + "Z" if row["created_at"] else None,
                 "closed_at": row["closed_at"].isoformat() + "Z" if row["closed_at"] else None,
+                "opened_at": row["opened_at"].isoformat() + "Z" if row["opened_at"] else None,
             }
             positions_data.append(position_dict)
 
@@ -197,25 +198,185 @@ async def list_closed_positions(
         raise HTTPException(status_code=500, detail=f"Failed to retrieve closed positions: {str(e)}")
 
 
-@router.get("/positions/{asset}")
-async def get_position_by_asset(asset: str):
-    """Get position details for specific asset."""
+@router.get("/positions/{asset}/orders")
+async def get_position_orders(
+    asset: str,
+    mode: Optional[str] = Query("one-way", description="Trading mode (one-way, hedge)"),
+    relationship_type: Optional[str] = Query(None, description="Filter by relationship type (opened, increased, decreased, closed, reversed)"),
+):
+    """Get orders for a position with relationship information from position_orders table."""
     trace_id = get_or_create_trace_id()
-    logger.info("position_get_request", asset=asset, trace_id=trace_id)
+    logger.info("position_orders_get_request", asset=asset, mode=mode, relationship_type=relationship_type, trace_id=trace_id)
 
     try:
+        mode_lower = mode.lower() if mode else None
+        if mode_lower and mode_lower not in {"one-way", "hedge"}:
+            raise HTTPException(status_code=400, detail="Invalid mode. Must be 'one-way' or 'hedge'")
+
+        # First, get position ID
+        position_query = """
+            SELECT id, opened_at
+            FROM positions
+            WHERE asset = $1
+        """
+        position_params = [asset]
+        
+        if mode_lower:
+            position_query += " AND mode = $2"
+            position_params.append(mode_lower)
+        
+        position_query += " ORDER BY last_updated DESC LIMIT 1"
+
+        position_row = await DatabaseConnection.fetchrow(position_query, *position_params)
+
+        if not position_row:
+            raise HTTPException(status_code=404, detail=f"Position not found for asset: {asset}")
+
+        position_id = position_row["id"]
+        opened_at = position_row.get("opened_at")
+
+        # Build query to get orders with position_orders relationship info
+        # Handle both cases: when order_id is set and when only bybit_order_id is available
+        # Filter by opened_at to show only orders from current position cycle (since last opening)
+        query = """
+            SELECT 
+                COALESCE(o.id, o2.id) as id,
+                COALESCE(o.order_id, o2.order_id, po.bybit_order_id) as order_id,
+                COALESCE(o.signal_id, o2.signal_id) as signal_id,
+                COALESCE(o.asset, o2.asset) as asset,
+                COALESCE(o.side, o2.side) as side,
+                COALESCE(o.order_type, o2.order_type) as order_type,
+                COALESCE(o.quantity, o2.quantity) as quantity,
+                COALESCE(o.price, o2.price) as price,
+                COALESCE(o.status, o2.status) as status,
+                COALESCE(o.filled_quantity, o2.filled_quantity) as filled_quantity,
+                COALESCE(o.average_price, o2.average_price) as average_price,
+                COALESCE(o.fees, o2.fees) as fees,
+                COALESCE(o.created_at, o2.created_at) as created_at,
+                COALESCE(o.updated_at, o2.updated_at) as updated_at,
+                COALESCE(o.executed_at, o2.executed_at) as executed_at,
+                po.relationship_type, po.size_delta, po.execution_price, po.executed_at as po_executed_at,
+                po.bybit_order_id
+            FROM position_orders po
+            LEFT JOIN orders o ON o.id = po.order_id
+            LEFT JOIN orders o2 ON po.order_id IS NULL AND o2.order_id = po.bybit_order_id
+            WHERE po.position_id = $1
+              AND (po.order_id IS NOT NULL OR po.bybit_order_id IS NOT NULL)
+        """
+        params = [position_id]
+        param_idx = 2
+
+        # Filter by opened_at to show only orders from current position cycle
+        # Show only orders executed at or after the last opening/reopening (opened_at)
+        # This excludes historical orders from previous position cycles
+        if opened_at:
+            # Include orders executed at or after opened_at (with 1 minute window before for safety)
+            # to catch orders that opened the position
+            query += f" AND po.executed_at >= ${param_idx}::timestamptz - INTERVAL '1 minute'"
+            params.append(opened_at)
+            param_idx += 1
+        else:
+            # If opened_at is NULL, position might be old or never properly opened
+            # In this case, show only orders with relationship_type 'opened' or 'reversed'
+            # to avoid showing all historical orders
+            query += f" AND po.relationship_type IN ('opened', 'reversed')"
+
+        if relationship_type:
+            valid_types = {"opened", "increased", "decreased", "closed", "reversed"}
+            if relationship_type.lower() not in valid_types:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid relationship_type. Must be one of: {', '.join(valid_types)}"
+                )
+            query += f" AND po.relationship_type = ${param_idx}"
+            params.append(relationship_type.lower())
+            param_idx += 1
+
+        query += " ORDER BY po.executed_at DESC"
+
+        rows = await DatabaseConnection.fetch(query, *params)
+
+        orders_data = []
+        for row in rows:
+            # Handle case when order is not yet created in DB (order_id is NULL)
+            # In this case, use data from position_orders
+            order_id = row.get("order_id") or row.get("bybit_order_id")
+            if not order_id:
+                continue  # Skip if no order identifier available
+            
+            order_dict = {
+                "id": str(row["id"]) if row["id"] else None,
+                "order_id": order_id,
+                "bybit_order_id": row.get("bybit_order_id"),
+                "signal_id": str(row["signal_id"]) if row["signal_id"] else None,
+                "asset": row["asset"] or asset,  # Fallback to asset from URL if not in order
+                "side": row["side"] or "Unknown",
+                "order_type": row["order_type"] or "Market",
+                "quantity": str(row["quantity"]) if row["quantity"] else "0",
+                "price": str(row["price"]) if row["price"] else None,
+                "status": row["status"] or "unknown",
+                "filled_quantity": str(row["filled_quantity"]) if row["filled_quantity"] else str(row.get("size_delta", "0")),
+                "average_price": str(row["average_price"]) if row["average_price"] else str(row["execution_price"]),
+                "fees": str(row["fees"]) if row["fees"] else None,
+                "created_at": row["created_at"].isoformat() + "Z" if row["created_at"] else None,
+                "updated_at": row["updated_at"].isoformat() + "Z" if row["updated_at"] else None,
+                "executed_at": row["executed_at"].isoformat() + "Z" if row["executed_at"] else None,
+                "relationship_type": row["relationship_type"],
+                "size_delta": str(row["size_delta"]),
+                "execution_price": str(row["execution_price"]),
+                "po_executed_at": row["po_executed_at"].isoformat() + "Z" if row["po_executed_at"] else None,
+            }
+            orders_data.append(order_dict)
+
+        logger.info("position_orders_get_completed", asset=asset, count=len(orders_data), trace_id=trace_id)
+
+        return JSONResponse(
+            status_code=200,
+            content={
+                "orders": orders_data,
+                "count": len(orders_data),
+                "position_id": str(position_id),
+            },
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("position_orders_get_failed", asset=asset, error=str(e), trace_id=trace_id, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve position orders: {str(e)}")
+
+
+@router.get("/positions/{asset}")
+async def get_position_by_asset(
+    asset: str,
+    mode: Optional[str] = Query("one-way", description="Trading mode (one-way, hedge)"),
+):
+    """Get position details for specific asset."""
+    trace_id = get_or_create_trace_id()
+    logger.info("position_get_request", asset=asset, mode=mode, trace_id=trace_id)
+
+    try:
+        mode_lower = mode.lower() if mode else None
+        if mode_lower and mode_lower not in {"one-way", "hedge"}:
+            raise HTTPException(status_code=400, detail="Invalid mode. Must be 'one-way' or 'hedge'")
+
         query = """
             SELECT 
                 id, asset, size, average_entry_price, current_price,
                 unrealized_pnl, realized_pnl, mode, long_size, short_size,
-                long_avg_price, short_avg_price, last_updated, created_at, closed_at
+                long_avg_price, short_avg_price, last_updated, created_at, closed_at, opened_at
             FROM positions
             WHERE asset = $1
-            ORDER BY last_updated DESC
-            LIMIT 1
         """
+        params = [asset]
+        
+        if mode_lower:
+            query += " AND mode = $2"
+            params.append(mode_lower)
+        
+        query += " ORDER BY last_updated DESC LIMIT 1"
 
-        row = await DatabaseConnection.fetchrow(query, asset)
+        row = await DatabaseConnection.fetchrow(query, *params)
 
         if not row:
             raise HTTPException(status_code=404, detail=f"Position not found for asset: {asset}")
@@ -236,6 +397,7 @@ async def get_position_by_asset(asset: str):
             "last_updated": row["last_updated"].isoformat() + "Z" if row["last_updated"] else None,
             "created_at": row["created_at"].isoformat() + "Z" if row["created_at"] else None,
             "closed_at": row["closed_at"].isoformat() + "Z" if row["closed_at"] else None,
+            "opened_at": row["opened_at"].isoformat() + "Z" if row["opened_at"] else None,
         }
 
         logger.info("position_get_completed", asset=asset, trace_id=trace_id)

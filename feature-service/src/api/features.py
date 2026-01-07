@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException, Query
 import structlog
 
 from src.models.feature_vector import FeatureVector
+from src.models.features_response import FeaturesResponse
 from src.services.feature_computer import FeatureComputer
 
 if TYPE_CHECKING:
@@ -38,7 +39,7 @@ def set_feature_computer_manager(manager: "FeatureComputerManager") -> None:
 async def get_latest_features(
     symbol: str = Query(..., description="Trading pair symbol (e.g., BTCUSDT)"),
     feature_registry_version: Optional[str] = Query(None, description="Feature Registry version (default: active version)"),
-) -> FeatureVector:
+) -> FeaturesResponse:
     """
     Get latest computed features for a symbol.
     
@@ -55,18 +56,15 @@ async def get_latest_features(
                 feature_registry_version=feature_registry_version
             )
             
-            feature_vector = feature_computer.compute_features(
+            feature_vector, market_data = feature_computer.compute_features(
                 symbol=symbol,
                 timestamp=datetime.now(timezone.utc),
             )
             
-            if feature_vector is None:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Features not available for symbol: {symbol}",
-                )
-            
-            return feature_vector
+            return FeaturesResponse(
+                feature_vector=feature_vector,
+                market_data=market_data,
+            )
         
         except ValueError as e:
             # Version not found
@@ -106,18 +104,15 @@ async def get_latest_features(
         )
     
     try:
-        feature_vector = _feature_computer.compute_features(
+        feature_vector, market_data = _feature_computer.compute_features(
             symbol=symbol,
             timestamp=datetime.now(timezone.utc),
         )
         
-        if feature_vector is None:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Features not available for symbol: {symbol}",
-            )
-        
-        return feature_vector
+        return FeaturesResponse(
+            feature_vector=feature_vector,
+            market_data=market_data,
+        )
     
     except HTTPException:
         raise

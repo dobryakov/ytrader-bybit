@@ -1007,7 +1007,7 @@ class QualityEvaluator:
         Returns:
             Dictionary with metrics for each k value, keys like:
             - 'top_k_{k}_accuracy': Accuracy for top-k% predictions
-            - 'top_k_{k}_confidence_threshold': Minimum confidence threshold for top-k%
+            - 'top_k_{k}_confidence_threshold': Minimum confidence threshold for top-k% (may be adjusted by multiplier)
             - Other metrics: f1_score, precision, recall, coverage, etc.
         """
         if len(y_true) == 0:
@@ -1099,7 +1099,27 @@ class QualityEvaluator:
             # Threshold is the minimum confidence among top-k% samples
             # This threshold can be used in production to filter predictions
             top_k_confidence_values = confidence[top_k_indices]
-            confidence_threshold = float(np.min(top_k_confidence_values)) if len(top_k_confidence_values) > 0 else 0.0
+            if len(top_k_confidence_values) > 0:
+                # Calculate threshold as minimum confidence
+                confidence_threshold = float(np.min(top_k_confidence_values))
+                
+                # Apply multiplier if configured (allows manual adjustment of threshold)
+                from ..config.settings import settings
+                multiplier = getattr(settings, "model_top_k_confidence_threshold_multiplier", 1.0)
+                if multiplier != 1.0:
+                    original_threshold = confidence_threshold
+                    confidence_threshold = confidence_threshold * multiplier
+                    # Clamp to valid range [0.0, 1.0]
+                    confidence_threshold = max(0.0, min(1.0, confidence_threshold))
+                    logger.debug(
+                        f"Top-{k}% confidence threshold adjusted with multiplier",
+                        k=k,
+                        original_threshold=round(original_threshold, 4),
+                        multiplier=multiplier,
+                        adjusted_threshold=round(confidence_threshold, 4),
+                    )
+            else:
+                confidence_threshold = 0.0
             top_k_metrics["confidence_threshold"] = confidence_threshold
             
             # Add prefix to all metrics

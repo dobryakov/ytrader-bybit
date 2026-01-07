@@ -62,20 +62,18 @@ class SignalValidator:
             errors.append(f"Invalid asset: {signal.asset}. Must be a valid trading pair")
 
         # Validate amount
+        # NOTE: amount is always in quote currency (USDT) for both BUY and SELL signals
+        # This is consistent with TradingSignal model definition and order-manager expectations
         if signal.amount <= 0:
             errors.append(f"Invalid amount: {signal.amount}. Must be positive")
         else:
-            # For SELL signals, amount is in base currency (e.g., ETH), need to convert to USDT for validation
-            # For BUY signals, amount is already in quote currency (USDT)
+            # Amount is already in quote currency (USDT), validate directly
             amount_to_validate = signal.amount
-            if signal.signal_type.lower() == "sell" and signal.market_data_snapshot:
-                # Convert base currency amount to USDT using current price
-                amount_to_validate = signal.amount * signal.market_data_snapshot.price
             
             if amount_to_validate < self.min_amount:
-                errors.append(f"Amount {signal.amount} ({amount_to_validate:.2f} USDT) below minimum {self.min_amount}")
+                errors.append(f"Amount {amount_to_validate:.2f} USDT below minimum {self.min_amount}")
             elif amount_to_validate > self.max_amount:
-                errors.append(f"Amount {signal.amount} ({amount_to_validate:.2f} USDT) above maximum {self.max_amount}")
+                errors.append(f"Amount {amount_to_validate:.2f} USDT above maximum {self.max_amount}")
 
         # Validate confidence
         if not 0.0 <= signal.confidence <= 1.0:

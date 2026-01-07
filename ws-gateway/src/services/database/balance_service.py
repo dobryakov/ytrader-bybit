@@ -195,6 +195,19 @@ class BalanceService:
                 locked = coin_data.get("locked", 0) or 0
                 frozen = locked  # locked is the frozen amount
                 
+                # Log raw data for USDT to debug negative balance issue
+                if coin == "USDT":
+                    logger.info(
+                        "balance_parse_usdt_raw_data",
+                        coin=coin,
+                        wallet_balance=wallet_balance,
+                        locked=locked,
+                        available_to_withdraw=coin_data.get("availableToWithdraw"),
+                        available_balance=coin_data.get("availableBalance"),
+                        coin_data_keys=list(coin_data.keys()) if isinstance(coin_data, dict) else [],
+                        trace_id=event.trace_id,
+                    )
+                
                 # Get available balance - availableToWithdraw can be empty string in Bybit messages
                 available_balance = coin_data.get("availableToWithdraw")
                 if available_balance == "" or available_balance is None:
@@ -612,6 +625,42 @@ class BalanceService:
 
         try:
             raw = await BalanceService._fetch_wallet_balance_rest()
+            
+            # Log full response structure for debugging
+            result = raw.get("result") or {}
+            account_list = result.get("list") or []
+            if account_list:
+                account_data = account_list[0]
+                logger.info(
+                    "balance_sync_rest_raw_response",
+                    account_type=account_data.get("accountType"),
+                    total_equity=account_data.get("totalEquity"),
+                    total_wallet_balance=account_data.get("totalWalletBalance"),
+                    total_available_balance=account_data.get("totalAvailableBalance"),
+                    total_margin_balance=account_data.get("totalMarginBalance"),
+                    coins_count=len(account_data.get("coin", [])),
+                    trace_id="balance-sync",
+                )
+                # Log USDT coin data specifically
+                coins = account_data.get("coin", [])
+                for coin_data in coins:
+                    if coin_data.get("coin") == "USDT":
+                        logger.info(
+                            "balance_sync_rest_usdt_coin_data",
+                            coin=coin_data.get("coin"),
+                            wallet_balance=coin_data.get("walletBalance"),
+                            available_to_withdraw=coin_data.get("availableToWithdraw"),
+                            available_balance=coin_data.get("availableBalance"),
+                            equity=coin_data.get("equity"),
+                            usd_value=coin_data.get("usdValue"),
+                            locked=coin_data.get("locked"),
+                            borrow_amount=coin_data.get("borrowAmount"),
+                            spot_borrow=coin_data.get("spotBorrow"),
+                            unrealised_pnl=coin_data.get("unrealisedPnl"),
+                            cum_realised_pnl=coin_data.get("cumRealisedPnl"),
+                            all_fields=list(coin_data.keys()) if isinstance(coin_data, dict) else [],
+                            trace_id="balance-sync",
+                        )
         except Exception as exc:
             logger.error(
                 "balance_sync_rest_fetch_error",

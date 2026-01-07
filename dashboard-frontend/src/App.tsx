@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route, Link, useLocation } from 'react-router-dom'
 import Overview from './pages/Overview'
 import Positions from './pages/Positions'
+import PositionDetail from './pages/PositionDetail'
 import Orders from './pages/Orders'
 import Signals from './pages/Signals'
 import Models from './pages/Models'
@@ -41,6 +42,7 @@ function App() {
           <Routes>
             <Route path="/" element={<Overview />} />
             <Route path="/positions" element={<Positions />} />
+            <Route path="/positions/:asset" element={<PositionDetail />} />
             <Route path="/orders" element={<Orders />} />
             <Route path="/signals" element={<Signals />} />
             <Route path="/models" element={<Models />} />

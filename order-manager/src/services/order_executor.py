@@ -17,7 +17,7 @@ from ..services.position_manager_client import PositionManagerClient
 from ..services.instrument_info_manager import InstrumentInfoManager
 from ..services.fee_rate_manager import FeeRateManager
 from ..utils.bybit_client import get_bybit_client
-from ..exceptions import OrderExecutionError, BybitAPIError
+from ..exceptions import OrderExecutionError, BybitAPIError, RiskLimitError
 
 logger = get_logger(__name__)
 
@@ -243,96 +243,223 @@ class OrderExecutor:
             # Handle specific error codes
             if ret_code != 0:
                 # Error 110007: Insufficient balance
-                # Try to reduce order size and retry
+                # For reduce-only orders, this might mean position is already closed
                 if ret_code == 110007:
-                    logger.warning(
-                        "order_creation_insufficient_balance_error",
-                        signal_id=str(signal_id),
-                        asset=asset,
-                        ret_code=ret_code,
-                        ret_msg=ret_msg,
-                        original_quantity=float(quantity),
-                        order_price=float(price) if price else None,
-                        trace_id=trace_id,
-                    )
-                    
-                    # Try to reduce order size based on available balance (if enabled)
-                    reduced_order = None
-                    if settings.order_manager_enable_order_size_reduction:
+                    # Special handling for force_reduce_only orders
+                    if force_reduce_only:
+                        logger.warning(
+                            "order_creation_110007_with_reduce_only",
+                            signal_id=str(signal_id),
+                            asset=asset,
+                            ret_code=ret_code,
+                            ret_msg=ret_msg,
+                            trace_id=trace_id,
+                            reason="Error 110007 for reduce-only order, checking if position is still open",
+                        )
+                        
+                        # Fetch fresh position from Bybit to check actual state
+                        from ..services.position_manager_client import PositionManagerClient
+                        position_client = PositionManagerClient()
                         try:
-                            reduced_order = await self._handle_insufficient_balance(
-                                signal=signal,
-                                order_type=order_type,
-                                original_quantity=quantity,
-                                price=price,
-                                ret_msg=ret_msg,
+                            fresh_position = await position_client.get_position_from_bybit(
+                                asset=asset,
                                 trace_id=trace_id,
                             )
                             
-                            if reduced_order:
-                                # Successfully created reduced order
+                            if fresh_position is None or abs(fresh_position.size) < Decimal("0.00000001"):
+                                # Position is closed - this is actually success (position already closed)
                                 logger.info(
-                                    "order_creation_success_with_reduced_size",
+                                    "order_creation_110007_position_already_closed",
                                     signal_id=str(signal_id),
                                     asset=asset,
-                                    original_quantity=float(quantity),
-                                    reduced_quantity=float(reduced_order.quantity),
-                                    reduction_percentage=float((1 - reduced_order.quantity / quantity) * 100) if quantity > 0 else 0,
-                                    order_id=str(reduced_order.id),
-                                    bybit_order_id=reduced_order.order_id,
                                     trace_id=trace_id,
+                                    reason="Position already closed, reduce-only order not needed",
                                 )
-                                return reduced_order
+                                # Return None to indicate position is already closed (success case)
+                                return None
+                            else:
+                                # Position exists but order failed - check if it's due to insufficient commission balance
+                                position_size_abs = abs(fresh_position.size)
+                                order_quantity_abs = abs(quantity)
+                                
+                                # Check balance for commission
+                                try:
+                                    from ..services.risk_manager import RiskManager
+                                    risk_manager = RiskManager()
+                                    
+                                    # Get current price for commission calculation
+                                    effective_price = price
+                                    if effective_price is None and signal.market_data_snapshot and signal.market_data_snapshot.price:
+                                        effective_price = signal.market_data_snapshot.price
+                                    
+                                    if effective_price and effective_price > 0:
+                                        # Check commission balance
+                                        await risk_manager.check_balance(
+                                            signal=signal,
+                                            order_quantity=quantity,
+                                            order_price=effective_price,
+                                            is_reduce_only=True,
+                                        )
+                                        # If check passed, this is unexpected - log and raise
+                                        logger.error(
+                                            "order_creation_110007_reduce_only_unexpected",
+                                            signal_id=str(signal_id),
+                                            asset=asset,
+                                            position_size=float(fresh_position.size),
+                                            order_quantity=float(quantity),
+                                            quantity_exceeds_position=order_quantity_abs > position_size_abs,
+                                            trace_id=trace_id,
+                                            reason="Position exists, commission balance sufficient, but order still failed with 110007",
+                                        )
+                                        error_msg = (
+                                            f"Bybit API error: {ret_msg} (code: {ret_code}). "
+                                            f"Reduce-only order failed even though position exists and commission balance is sufficient. "
+                                            f"This may indicate a Bybit API issue or account restriction."
+                                        )
+                                        raise OrderExecutionError(error_msg)
+                                except RiskLimitError as e:
+                                    # Commission balance insufficient - this is the expected cause
+                                    logger.error(
+                                        "order_creation_110007_reduce_only_insufficient_commission",
+                                        signal_id=str(signal_id),
+                                        asset=asset,
+                                        position_size=float(fresh_position.size),
+                                        order_quantity=float(quantity),
+                                        error=str(e),
+                                        trace_id=trace_id,
+                                        reason="Position exists but insufficient balance for commission on reduce-only order",
+                                    )
+                                    error_msg = (
+                                        f"Bybit API error: {ret_msg} (code: {ret_code}). "
+                                        f"Reduce-only order failed: insufficient balance for commission. {str(e)}"
+                                    )
+                                    raise OrderExecutionError(error_msg) from e
+                                except Exception as e:
+                                    # Balance check failed for other reasons - log and continue with normal error handling
+                                    logger.warning(
+                                        "order_creation_110007_commission_check_failed",
+                                        signal_id=str(signal_id),
+                                        asset=asset,
+                                        error=str(e),
+                                        trace_id=trace_id,
+                                        reason="Failed to check commission balance, continuing with normal error handling",
+                                    )
+                                    # Continue with normal error handling
                         except Exception as e:
-                            logger.error(
-                                "order_creation_balance_reduction_error",
+                            logger.warning(
+                                "order_creation_110007_position_check_failed",
                                 signal_id=str(signal_id),
                                 asset=asset,
                                 error=str(e),
                                 trace_id=trace_id,
-                                exc_info=True,
+                                reason="Failed to check position, continuing with normal error handling",
                             )
-                            # Continue to rejection flow
-                    else:
-                        logger.info(
-                            "order_size_reduction_disabled",
+                            # Continue with normal error handling
+                    
+                    # Try to reduce order size and retry (for non-reduce-only or if position check didn't help)
+                    if not force_reduce_only:
+                        logger.warning(
+                            "order_creation_insufficient_balance_error",
                             signal_id=str(signal_id),
                             asset=asset,
-                            reason="ORDERMANAGER_ENABLE_ORDER_SIZE_REDUCTION is disabled",
+                            ret_code=ret_code,
+                            ret_msg=ret_msg,
+                            original_quantity=float(quantity),
+                            order_price=float(price) if price else None,
                             trace_id=trace_id,
                         )
-                    
-                    # If reduction failed, wasn't possible, or was disabled, reject the order
-                    error_msg = f"Bybit API error: {ret_msg} (code: {ret_code}). Order size reduction attempted but failed."
-                    logger.error(
-                        "order_creation_api_error_after_reduction",
-                        signal_id=str(signal_id),
-                        asset=asset,
-                        ret_code=ret_code,
-                        ret_msg=ret_msg,
-                        trace_id=trace_id,
-                    )
-                    
-                    # Save rejected order to database
-                    rejected_order = await self._save_rejected_order(
-                        signal=signal,
-                        order_type=order_type,
-                        quantity=quantity,
-                        price=price,
-                        rejection_reason=f"Bybit API error 110007: {ret_msg}. Order size reduction attempted but failed.",
-                        trace_id=trace_id,
-                    )
-                    
-                    # Publish rejection event
-                    if rejected_order:
-                        await self.event_publisher.publish_order_event(
-                            order=rejected_order,
-                            event_type="rejected",
+                        
+                        # Try to reduce order size based on available balance (if enabled)
+                        reduced_order = None
+                        if settings.order_manager_enable_order_size_reduction:
+                            try:
+                                reduced_order = await self._handle_insufficient_balance(
+                                    signal=signal,
+                                    order_type=order_type,
+                                    original_quantity=quantity,
+                                    price=price,
+                                    ret_msg=ret_msg,
+                                    trace_id=trace_id,
+                                )
+                                
+                                if reduced_order:
+                                    # Successfully created reduced order
+                                    logger.info(
+                                        "order_creation_success_with_reduced_size",
+                                        signal_id=str(signal_id),
+                                        asset=asset,
+                                        original_quantity=float(quantity),
+                                        reduced_quantity=float(reduced_order.quantity),
+                                        reduction_percentage=float((1 - reduced_order.quantity / quantity) * 100) if quantity > 0 else 0,
+                                        order_id=str(reduced_order.id),
+                                        bybit_order_id=reduced_order.order_id,
+                                        trace_id=trace_id,
+                                    )
+                                    return reduced_order
+                            except Exception as e:
+                                logger.error(
+                                    "order_creation_balance_reduction_error",
+                                    signal_id=str(signal_id),
+                                    asset=asset,
+                                    error=str(e),
+                                    trace_id=trace_id,
+                                    exc_info=True,
+                                )
+                                # Continue to rejection flow
+                        else:
+                            logger.info(
+                                "order_size_reduction_disabled",
+                                signal_id=str(signal_id),
+                                asset=asset,
+                                reason="ORDERMANAGER_ENABLE_ORDER_SIZE_REDUCTION is disabled",
+                                trace_id=trace_id,
+                            )
+                        
+                        # If reduction failed, wasn't possible, or was disabled, reject the order
+                        error_msg = f"Bybit API error: {ret_msg} (code: {ret_code}). Order size reduction attempted but failed."
+                        logger.error(
+                            "order_creation_api_error_after_reduction",
+                            signal_id=str(signal_id),
+                            asset=asset,
+                            ret_code=ret_code,
+                            ret_msg=ret_msg,
                             trace_id=trace_id,
-                            rejection_reason=f"Bybit API error 110007: {ret_msg}",
                         )
-                    
-                    raise OrderExecutionError(error_msg)
+                        
+                        # Save rejected order to database
+                        rejected_order = await self._save_rejected_order(
+                            signal=signal,
+                            order_type=order_type,
+                            quantity=quantity,
+                            price=price,
+                            rejection_reason=f"Bybit API error 110007: {ret_msg}. Order size reduction attempted but failed.",
+                            trace_id=trace_id,
+                        )
+                        
+                        # Publish rejection event
+                        if rejected_order:
+                            await self.event_publisher.publish_order_event(
+                                order=rejected_order,
+                                event_type="rejected",
+                                trace_id=trace_id,
+                                rejection_reason=f"Bybit API error 110007: {ret_msg}",
+                            )
+                        
+                        raise OrderExecutionError(error_msg)
+                    else:
+                        # For reduce-only orders that failed with 110007 and position still exists
+                        # This is an unexpected error - log and raise
+                        error_msg = f"Bybit API error: {ret_msg} (code: {ret_code}). Reduce-only order failed even though position exists."
+                        logger.error(
+                            "order_creation_110007_reduce_only_failed",
+                            signal_id=str(signal_id),
+                            asset=asset,
+                            ret_code=ret_code,
+                            ret_msg=ret_msg,
+                            trace_id=trace_id,
+                            reason="Reduce-only order failed with 110007, position exists but order creation failed",
+                        )
+                        raise OrderExecutionError(error_msg)
                 
                 # Error 30208: "The order price is higher than the maximum buying price"
                 # This can happen for Market orders if account settings reject orders outside price limits
@@ -977,14 +1104,68 @@ class OrderExecutor:
                                 reason="Bybit confirms position is closed, retrying without reduceOnly",
                             )
                         else:
+                            # Check if position direction matches order side for reduceOnly
+                            # For reduceOnly to work:
+                            # - Sell order should reduce long position (size > 0)
+                            # - Buy order should reduce short position (size < 0)
+                            order_side_api = "Buy" if signal.signal_type.lower() == "buy" else "Sell"
+                            position_size = fresh_position.size
+                            is_long_position = position_size > 0
+                            is_short_position = position_size < 0
+                            
+                            # Check if order direction matches position direction for reduceOnly
+                            can_reduce_long = order_side_api == "Sell" and is_long_position
+                            can_reduce_short = order_side_api == "Buy" and is_short_position
+                            
+                            # Check if order quantity exceeds position size
+                            order_quantity_abs = abs(quantity)
+                            position_size_abs = abs(position_size)
+                            quantity_exceeds_position = order_quantity_abs > position_size_abs
+                            
                             logger.warning(
                                 "order_creation_position_discrepancy",
                                 signal_id=str(signal_id),
                                 asset=asset,
-                                bybit_position_size=float(fresh_position.size),
+                                bybit_position_size=float(position_size),
+                                order_side=order_side_api,
+                                order_quantity=float(quantity),
+                                can_reduce_long=can_reduce_long,
+                                can_reduce_short=can_reduce_short,
+                                quantity_exceeds_position=quantity_exceeds_position,
                                 trace_id=trace_id,
-                                reason="Bybit shows position exists but reduceOnly failed, possible data inconsistency",
+                                reason=(
+                                    f"Bybit shows position exists (size={float(position_size)}) but reduceOnly failed. "
+                                    f"Order side: {order_side_api}, Position: {'long' if is_long_position else 'short' if is_short_position else 'zero'}. "
+                                    f"Can reduce: {can_reduce_long or can_reduce_short}. "
+                                    f"Quantity exceeds position: {quantity_exceeds_position}"
+                                ),
                             )
+                            
+                            # If order direction doesn't match position direction, this is a configuration error
+                            if not can_reduce_long and not can_reduce_short:
+                                logger.error(
+                                    "order_creation_reduce_only_direction_mismatch",
+                                    signal_id=str(signal_id),
+                                    asset=asset,
+                                    order_side=order_side_api,
+                                    position_size=float(position_size),
+                                    position_direction="long" if is_long_position else "short" if is_short_position else "zero",
+                                    trace_id=trace_id,
+                                    reason=f"Cannot use reduceOnly: {order_side_api} order cannot reduce {'long' if is_long_position else 'short'} position",
+                                )
+                            
+                            # If quantity exceeds position size, log warning
+                            if quantity_exceeds_position:
+                                logger.warning(
+                                    "order_creation_quantity_exceeds_position",
+                                    signal_id=str(signal_id),
+                                    asset=asset,
+                                    order_quantity=float(quantity),
+                                    position_size=float(position_size),
+                                    excess=float(order_quantity_abs - position_size_abs),
+                                    trace_id=trace_id,
+                                    reason=f"Order quantity ({float(quantity)}) exceeds position size ({float(position_size)}), reduceOnly may fail",
+                                )
                         
                         # Trigger async sync to update Position Manager database
                         if settings.order_manager_auto_sync_position_after_bybit_fetch:
@@ -1012,6 +1193,76 @@ class OrderExecutor:
                             asset=asset,
                             trace_id=trace_id,
                         )
+                        
+                        # Check balance before retrying without reduceOnly
+                        # Without reduceOnly, this becomes a regular order that requires margin
+                        if not settings.order_manager_enable_dry_run and settings.order_manager_enable_balance_check:
+                            try:
+                                from ..services.risk_manager import RiskManager
+                                risk_manager = RiskManager()
+                                
+                                # Get effective price for balance check
+                                effective_price = price
+                                if effective_price is None and signal.market_data_snapshot and signal.market_data_snapshot.price:
+                                    effective_price = signal.market_data_snapshot.price
+                                
+                                if effective_price and effective_price > 0:
+                                    # Check balance for regular order (not reduce-only)
+                                    await risk_manager.check_balance(
+                                        signal=signal,
+                                        order_quantity=quantity,
+                                        order_price=effective_price,
+                                        is_reduce_only=False,  # This is now a regular order
+                                    )
+                                    logger.info(
+                                        "order_creation_balance_check_passed_after_110017",
+                                        signal_id=str(signal_id),
+                                        asset=asset,
+                                        order_quantity=float(quantity),
+                                        order_price=float(effective_price),
+                                        trace_id=trace_id,
+                                        reason="Balance sufficient for order without reduceOnly",
+                                    )
+                                else:
+                                    logger.warning(
+                                        "order_creation_balance_check_skipped_no_price_after_110017",
+                                        signal_id=str(signal_id),
+                                        asset=asset,
+                                        trace_id=trace_id,
+                                        reason="Cannot check balance: no price available",
+                                    )
+                            except RiskLimitError as e:
+                                logger.error(
+                                    "order_creation_balance_check_failed_after_110017",
+                                    signal_id=str(signal_id),
+                                    asset=asset,
+                                    error=str(e),
+                                    trace_id=trace_id,
+                                    reason="Insufficient balance for order without reduceOnly",
+                                )
+                                # Save rejected order
+                                rejected_order = await self._save_rejected_order(
+                                    signal=signal,
+                                    order_type=order_type,
+                                    quantity=quantity,
+                                    price=price,
+                                    rejection_reason=f"Insufficient balance for order without reduceOnly after 110017: {str(e)}",
+                                    trace_id=trace_id,
+                                )
+                                raise OrderExecutionError(
+                                    f"Cannot retry order without reduceOnly: insufficient balance. {str(e)}"
+                                ) from e
+                            except Exception as e:
+                                logger.warning(
+                                    "order_creation_balance_check_error_after_110017",
+                                    signal_id=str(signal_id),
+                                    asset=asset,
+                                    error=str(e),
+                                    trace_id=trace_id,
+                                    reason="Balance check failed, proceeding with retry anyway",
+                                )
+                                # Continue with retry even if balance check failed
+                        
                         try:
                             response = await bybit_client.post(endpoint, json_data=bybit_params, authenticated=True)
                             ret_code = response.get("retCode", 0)
@@ -2087,7 +2338,7 @@ class OrderExecutor:
                 exc_info=True,
             )
             # Do not fail order creation because trailing stop failed
-            return price
+            return
 
     async def _validate_and_adjust_price_for_limit_ratio(
         self,

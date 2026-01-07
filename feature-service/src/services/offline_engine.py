@@ -20,7 +20,13 @@ from src.features.orderflow_features import compute_all_orderflow_features
 from src.features.orderbook_features import compute_all_orderbook_features
 from src.features.perpetual_features import compute_all_perpetual_features
 from src.features.temporal_features import compute_all_temporal_features
-from src.features.candle_patterns import compute_all_candle_patterns_3m, compute_all_candle_patterns_5m, compute_all_candle_patterns_15m, compute_all_candle_patterns_45m
+from src.features.candle_patterns import (
+    compute_all_candle_patterns_3m,
+    compute_all_candle_patterns_5m,
+    compute_all_candle_patterns_15m,
+    compute_all_candle_patterns_45m,
+    compute_all_candle_patterns_dynamic,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -229,55 +235,30 @@ class OfflineEngine:
     
     def _get_candle_pattern_function(self):
         """
-        Определить функцию для вычисления паттернов на основе lookback_window.
+        Получить функцию для вычисления свечных паттернов на основе Feature Registry.
         
-        Returns:
-            Функция для вычисления паттернов
+        Возвращает функцию, принимающую RollingWindows и считающую только те
+        candle/pattern-фичи, которые объявлены в Feature Registry.
         """
-        if self._feature_registry_loader is None:
-            # Fallback: использовать версию на основе версии Feature Registry
-            if self._feature_registry_version and self._feature_registry_version >= "1.5.0":
-                return compute_all_candle_patterns_15m
-            elif self._feature_registry_version and self._feature_registry_version >= "1.4.0":
-                return compute_all_candle_patterns_5m
+        feature_definitions = None
+        if self._feature_registry_loader is not None:
+            registry_model = getattr(self._feature_registry_loader, "_registry_model", None)
+            if registry_model and getattr(registry_model, "features", None):
+                feature_definitions = registry_model.features
             else:
-                return compute_all_candle_patterns_3m
-        
-        try:
-            registry_model = self._feature_registry_loader._registry_model
-            if registry_model and registry_model.features:
-                # Найти все паттерны и определить их lookback_window
-                pattern_lookbacks = set()
-                for feature in registry_model.features:
-                    if feature.name.startswith(("candle_", "pattern_")):
-                        if feature.lookback_window:
-                            pattern_lookbacks.add(feature.lookback_window)
-                
-                if pattern_lookbacks:
-                    # Используем наиболее часто встречающийся lookback_window
-                    from collections import Counter
-                    counter = Counter(pattern_lookbacks)
-                    most_common = counter.most_common(1)[0][0]
-                    
-                    # Выбрать функцию на основе lookback_window
-                    if most_common == "45m":
-                        return compute_all_candle_patterns_45m
-                    elif most_common == "15m":
-                        return compute_all_candle_patterns_15m
-                    elif most_common == "5m":
-                        return compute_all_candle_patterns_5m
-                    elif most_common == "3m":
-                        return compute_all_candle_patterns_3m
-        except Exception:
-            pass
-        
-        # Fallback: использовать версию на основе версии Feature Registry
-        if self._feature_registry_version and self._feature_registry_version >= "1.5.0":
-            return compute_all_candle_patterns_15m
-        elif self._feature_registry_version and self._feature_registry_version >= "1.4.0":
-            return compute_all_candle_patterns_5m
-        else:
-            return compute_all_candle_patterns_3m
+                config = self._feature_registry_loader.get_config()
+                if config and "features" in config:
+                    feature_definitions = config["features"]
+
+        def _compute(rolling_windows: "RollingWindows"):
+            if feature_definitions is None:
+                return {}
+            return compute_all_candle_patterns_dynamic(
+                rolling_windows,
+                feature_definitions=feature_definitions,
+            )
+
+        return _compute
     
     async def compute_features_at_timestamp(
         self,
