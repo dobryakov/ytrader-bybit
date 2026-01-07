@@ -575,6 +575,15 @@ class OrderExecutor:
                                             bybit_order_id=bybit_order_id,
                                             trace_id=trace_id,
                                         )
+                                        # Set trailing stop after order creation
+                                        await self._set_trailing_stop_after_order_creation(
+                                            signal=signal,
+                                            order_type=order_type,
+                                            price=adjusted_price,
+                                            side=side,
+                                            asset=asset,
+                                            trace_id=trace_id,
+                                        )
                                         return order
                                 else:
                                     logger.warning(
@@ -653,6 +662,15 @@ class OrderExecutor:
                                     asset=asset,
                                     order_id=str(order.id),
                                     bybit_order_id=bybit_order_id,
+                                    trace_id=trace_id,
+                                )
+                                # Set trailing stop after order creation
+                                await self._set_trailing_stop_after_order_creation(
+                                    signal=signal,
+                                    order_type=order_type,
+                                    price=price,
+                                    side=side,
+                                    asset=asset,
                                     trace_id=trace_id,
                                 )
                                 return order
@@ -734,6 +752,15 @@ class OrderExecutor:
                                             asset=asset,
                                             order_id=str(order.id),
                                             bybit_order_id=limit_order_id,
+                                            trace_id=trace_id,
+                                        )
+                                        # Set trailing stop after order creation
+                                        await self._set_trailing_stop_after_order_creation(
+                                            signal=signal,
+                                            order_type="Limit",
+                                            price=limit_price,
+                                            side=side,
+                                            asset=asset,
                                             trace_id=trace_id,
                                         )
                                         return order
@@ -1089,21 +1116,46 @@ class OrderExecutor:
                     # Fetch fresh position from Bybit to verify actual state
                     from ..services.position_manager_client import PositionManagerClient
                     position_client = PositionManagerClient()
+                    position_exists = False  # Track if position actually exists
                     try:
                         fresh_position = await position_client.get_position_from_bybit(
                             asset=asset,
                             trace_id=trace_id,
                         )
                         
-                        if fresh_position is None:
+                        # Check if position is actually closed (None or zero size)
+                        position_is_closed = (
+                            fresh_position is None 
+                            or abs(fresh_position.size) < Decimal("0.00000001")
+                        )
+                        
+                        if position_is_closed:
+                            # Position is closed - this is actually success (position already closed)
+                            # For force_reduce_only orders, returning None indicates success
                             logger.info(
-                                "order_creation_position_confirmed_closed",
+                                "order_creation_110017_position_already_closed",
                                 signal_id=str(signal_id),
                                 asset=asset,
                                 trace_id=trace_id,
-                                reason="Bybit confirms position is closed, retrying without reduceOnly",
+                                reason="Position already closed, reduce-only order not needed. This is success.",
                             )
+                            # Return None to indicate position is already closed (success case)
+                            # This matches the behavior for 110007 error with force_reduce_only
+                            if force_reduce_only:
+                                return None
+                            # For non-force_reduce_only orders, we still need to handle this case
+                            # but since position is closed, we can't retry without reduceOnly
+                            logger.warning(
+                                "order_creation_110017_cannot_retry_position_closed",
+                                signal_id=str(signal_id),
+                                asset=asset,
+                                trace_id=trace_id,
+                                reason="Position is closed, cannot retry without reduceOnly. Treating as success.",
+                            )
+                            return None
                         else:
+                            # Position exists - mark it and continue with retry logic
+                            position_exists = True
                             # Check if position direction matches order side for reduceOnly
                             # For reduceOnly to work:
                             # - Sell order should reduce long position (size > 0)
@@ -1181,10 +1233,40 @@ class OrderExecutor:
                             asset=asset,
                             error=str(e),
                             trace_id=trace_id,
-                            reason="Failed to fetch position from Bybit, proceeding with retry",
+                            reason="Failed to fetch position from Bybit, cannot verify if position exists",
                         )
+                        # If we can't verify position, we don't know if it exists
+                        # In this case, we should not retry without reduceOnly to avoid balance issues
+                        # Log error and raise exception
+                        error_msg = (
+                            f"Cannot retry order without reduceOnly: failed to verify position existence. "
+                            f"Position fetch failed: {str(e)}"
+                        )
+                        logger.error(
+                            "order_creation_110017_cannot_verify_position",
+                            signal_id=str(signal_id),
+                            asset=asset,
+                            error=str(e),
+                            trace_id=trace_id,
+                            reason="Cannot verify position existence, cannot safely retry without reduceOnly",
+                        )
+                        raise OrderExecutionError(error_msg) from e
                     
-                    # Remove reduceOnly from params and retry
+                    # Only retry without reduceOnly if position actually exists
+                    # If position is closed, we already returned None above
+                    if not position_exists:
+                        # This should not happen if position check succeeded, but add safety check
+                        error_msg = "Cannot retry order without reduceOnly: position does not exist"
+                        logger.error(
+                            "order_creation_110017_position_not_exists",
+                            signal_id=str(signal_id),
+                            asset=asset,
+                            trace_id=trace_id,
+                            reason="Position does not exist, cannot retry without reduceOnly",
+                        )
+                        raise OrderExecutionError(error_msg)
+                    
+                    # Remove reduceOnly from params and retry (position exists, so retry is safe)
                     if "reduceOnly" in bybit_params:
                         del bybit_params["reduceOnly"]
                         logger.info(
@@ -1464,6 +1546,17 @@ class OrderExecutor:
                 asset=asset,
                 order_id=str(order.id),
                 bybit_order_id=bybit_order_id,
+                trace_id=trace_id,
+            )
+
+            # Set exchange-level trailing stop AFTER order creation
+            # This ensures position exists before attempting to set trailing stop
+            await self._set_trailing_stop_after_order_creation(
+                signal=signal,
+                order_type=order_type,
+                price=price,
+                side=side,
+                asset=asset,
                 trace_id=trace_id,
             )
 
@@ -1943,37 +2036,8 @@ class OrderExecutor:
                     params["stopLoss"] = str(sl_price)
                     params["slTriggerBy"] = settings.order_manager_tp_sl_trigger_by
 
-        # Optionally configure exchange-level trailing stop via Set Trading Stop.
-        # IMPORTANT: This must not affect order parameters used in TP/SL tests,
-        # so it only runs when explicitly enabled in settings (disabled by default).
-        if settings.order_manager_exchange_trailing_stop_enabled:
-            try:
-                # Use same entry price we used for TP/SL calculation if available.
-                # For Market orders, this is current market price; for Limit orders, limit price.
-                if order_type == "Market" and price is None:
-                    entry_price_for_trailing = await selector._get_current_market_price(
-                        asset=asset,
-                        fallback_price=signal.market_data_snapshot.price,
-                        trace_id=signal.trace_id,
-                    )
-                else:
-                    entry_price_for_trailing = price if price else signal.market_data_snapshot.price
-
-                await self._maybe_set_exchange_trailing_stop(
-                    asset=asset,
-                    side_api=side_api,
-                    entry_price=entry_price_for_trailing,
-                    trace_id=signal.trace_id,
-                )
-            except Exception as e:
-                logger.error(
-                    "exchange_trailing_stop_configuration_failed",
-                    asset=asset,
-                    side=side_api,
-                    error=str(e),
-                    trace_id=signal.trace_id,
-                    exc_info=True,
-                )
+        # Note: Exchange-level trailing stop is now set AFTER order creation
+        # to ensure position exists. See create_order() method.
 
         return params
 
@@ -2208,6 +2272,64 @@ class OrderExecutor:
 
         return params
 
+    async def _set_trailing_stop_after_order_creation(
+        self,
+        signal: TradingSignal,
+        order_type: str,
+        price: Optional[Decimal],
+        side: str,
+        asset: str,
+        trace_id: Optional[str] = None,
+    ) -> None:
+        """
+        Set exchange-level trailing stop after order creation.
+        
+        This is a helper method to be called after successful order creation.
+        It determines the entry price and calls _maybe_set_exchange_trailing_stop.
+        
+        Args:
+            signal: Trading signal that triggered the order
+            order_type: Order type ('Market' or 'Limit')
+            price: Order price (None for market orders)
+            side: Order side ('Buy' or 'SELL')
+            asset: Trading pair symbol
+            trace_id: Optional trace ID
+        """
+        if not settings.order_manager_exchange_trailing_stop_enabled:
+            return
+
+        try:
+            # Determine entry price for trailing stop calculation
+            # For Market orders, use current market price; for Limit orders, use limit price
+            from ..services.order_type_selector import OrderTypeSelector
+            selector = OrderTypeSelector()
+            if order_type == "Market" and price is None:
+                entry_price_for_trailing = await selector._get_current_market_price(
+                    asset=asset,
+                    fallback_price=signal.market_data_snapshot.price,
+                    trace_id=trace_id,
+                )
+            else:
+                entry_price_for_trailing = price if price else signal.market_data_snapshot.price
+
+            # Set trailing stop (position check is done inside)
+            await self._maybe_set_exchange_trailing_stop(
+                asset=asset,
+                side_api=side,
+                entry_price=entry_price_for_trailing,
+                trace_id=trace_id,
+            )
+        except Exception as e:
+            logger.error(
+                "exchange_trailing_stop_configuration_failed_after_order_creation",
+                asset=asset,
+                side=side,
+                error=str(e),
+                trace_id=trace_id,
+                exc_info=True,
+            )
+            # Do not fail order creation if trailing stop setup fails
+
     async def _maybe_set_exchange_trailing_stop(
         self,
         asset: str,
@@ -2220,6 +2342,9 @@ class OrderExecutor:
 
         This uses ORDERMANAGER_EXCHANGE_TRAILING_STOP_ENABLED and related settings to
         compute activePrice and trailingStop from entry_price.
+        
+        IMPORTANT: This method should be called AFTER order creation to ensure position exists.
+        It checks position existence before attempting to set trailing stop.
         """
         if not settings.order_manager_exchange_trailing_stop_enabled:
             return
@@ -2251,6 +2376,45 @@ class OrderExecutor:
                 trace_id=trace_id,
             )
             return
+
+        # Check if position exists before setting trailing stop
+        # This prevents "can not set tp/sl/ts for zero position" errors
+        try:
+            from ..services.position_manager_client import PositionManagerClient
+            position_client = PositionManagerClient()
+            position = await position_client.get_position_from_bybit(
+                asset=asset,
+                trace_id=trace_id,
+            )
+            
+            if position is None or abs(position.size) < Decimal("0.00000001"):
+                logger.debug(
+                    "exchange_trailing_stop_skipped_no_position",
+                    asset=asset,
+                    side=side_api,
+                    trace_id=trace_id,
+                    reason="Position does not exist or is zero, skipping trailing stop setup",
+                )
+                return
+                
+            logger.debug(
+                "exchange_trailing_stop_position_check_passed",
+                asset=asset,
+                side=side_api,
+                position_size=float(abs(position.size)),
+                trace_id=trace_id,
+            )
+        except Exception as e:
+            logger.warning(
+                "exchange_trailing_stop_position_check_failed",
+                asset=asset,
+                side=side_api,
+                error=str(e),
+                trace_id=trace_id,
+                reason="Failed to check position, will attempt trailing stop setup anyway",
+            )
+            # Continue with trailing stop setup even if position check failed
+            # (position might exist but check failed due to network/API issues)
 
         activation_pct = settings.order_manager_trailing_stop_activation_pct
         distance_pct = settings.order_manager_trailing_stop_distance_pct
