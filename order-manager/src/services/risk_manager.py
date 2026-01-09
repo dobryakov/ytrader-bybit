@@ -129,9 +129,13 @@ class RiskManager:
         """
         Read latest USDT available balance from database.
         
-        For unified accounts, tries account-level balance first (from account_margin_balances),
-        which is more accurate when there are borrowed funds. Falls back to coin-level balance
-        (from account_balances) if account-level is not available.
+        For unified accounts, uses total_equity minus locked margin to get available balance.
+        This gives the actual available equity that can be used for new positions.
+        
+        Formula: available_balance = total_equity - total_initial_margin - total_order_im
+        
+        Falls back to total_available_balance if total_equity is not available,
+        then to coin-level balance (from account_balances) if account-level is not available.
         
         This ensures consistency with model-service balance checks.
 
@@ -142,8 +146,10 @@ class RiskManager:
             pool = await DatabaseConnection.get_pool()
             
             # Try account-level balance first (more accurate for unified accounts)
+            # Use total_equity minus locked margin to get available balance
             account_query = """
-                SELECT total_available_balance, base_currency, received_at
+                SELECT total_equity, total_initial_margin, total_order_im, 
+                       total_available_balance, base_currency, received_at
                 FROM account_margin_balances
                 ORDER BY received_at DESC
                 LIMIT 1
@@ -151,16 +157,32 @@ class RiskManager:
             account_row = await pool.fetchrow(account_query)
             
             if account_row is not None:
-                account_balance = Decimal(str(account_row["total_available_balance"]))
+                total_equity = Decimal(str(account_row["total_equity"])) if account_row["total_equity"] is not None else Decimal("0")
+                total_initial_margin = Decimal(str(account_row["total_initial_margin"])) if account_row["total_initial_margin"] is not None else Decimal("0")
+                total_order_im = Decimal(str(account_row["total_order_im"])) if account_row["total_order_im"] is not None else Decimal("0")
+                total_available_balance = Decimal(str(account_row["total_available_balance"])) if account_row["total_available_balance"] is not None else Decimal("0")
                 base_currency = str(account_row["base_currency"]) or "USDT"
                 received_at = account_row["received_at"]
                 
-                # If base currency is USDT, use account-level balance directly
+                # Calculate available balance as equity minus locked margin
+                # This gives the actual available equity for new positions
+                available_balance_from_equity = total_equity - total_initial_margin - total_order_im
+                
+                # Use the maximum of calculated balance and total_available_balance for safety
+                # This ensures we don't exceed what's actually available
+                account_balance = max(available_balance_from_equity, total_available_balance)
+                
+                # If base currency is USDT, use calculated balance
                 if base_currency.upper() == "USDT":
                     logger.info(
                         "order_manager_balance_db_account_level_usdt",
-                        available_balance=str(account_balance),
-                        balance_source="account-level",
+                        total_equity=str(total_equity),
+                        total_initial_margin=str(total_initial_margin),
+                        total_order_im=str(total_order_im),
+                        total_available_balance=str(total_available_balance),
+                        calculated_available_balance=str(available_balance_from_equity),
+                        used_available_balance=str(account_balance),
+                        balance_source="account-level-equity",
                         received_at=received_at.isoformat() if received_at else None,
                         trace_id=trace_id,
                     )
@@ -170,12 +192,17 @@ class RiskManager:
                     # For unified accounts, this is the actual available margin for trading
                     logger.info(
                         "order_manager_balance_db_account_level_non_usdt",
-                        available_balance=str(account_balance),
+                        total_equity=str(total_equity),
+                        total_initial_margin=str(total_initial_margin),
+                        total_order_im=str(total_order_im),
+                        total_available_balance=str(total_available_balance),
+                        calculated_available_balance=str(available_balance_from_equity),
+                        used_available_balance=str(account_balance),
                         base_currency=base_currency,
-                        balance_source="account-level",
+                        balance_source="account-level-equity",
                         received_at=received_at.isoformat() if received_at else None,
                         trace_id=trace_id,
-                        note="Using account-level balance even though base_currency is not USDT (unified account margin)",
+                        note="Using account-level balance calculated from equity even though base_currency is not USDT (unified account margin)",
                     )
                     return account_balance
             
@@ -387,7 +414,10 @@ class RiskManager:
                     return True
                 
                 # Not reduce-only: need USDT (quote currency) for buy order (requires margin + commission)
-                required_margin = order_quantity * order_price
+                # Calculate notional value and divide by leverage to get required margin
+                notional_value = order_quantity * order_price
+                leverage = Decimal(str(settings.order_manager_default_leverage))
+                required_margin = notional_value / leverage
                 required_commission = await self._calculate_required_commission(
                     signal=signal,
                     order_quantity=order_quantity,
@@ -404,7 +434,7 @@ class RiskManager:
                     shortfall_percentage = (shortfall / required_balance) * 100 if required_balance > 0 else 0
                     error_msg = (
                         f"Insufficient balance: required={required_balance} {currency} "
-                        f"(margin={required_margin} + commission={required_commission * Decimal('1.1')}), "
+                        f"(notional={notional_value}, leverage={leverage}x, margin={required_margin} + commission={required_commission * Decimal('1.1')}), "
                         f"available={available_balance} {currency}, shortfall={shortfall} {currency} ({shortfall_percentage:.2f}%)"
                     )
                     logger.error(
@@ -538,8 +568,10 @@ class RiskManager:
                         available_margin = Decimal(str(row["total_available_balance"]))
                         base_currency_margin = str(row["base_currency"]) or "USDT"
                     
-                    # Calculate required margin: order value in base currency + commission
-                    required_margin_base = order_quantity * order_price
+                    # Calculate required margin: order value in base currency / leverage + commission
+                    notional_value = order_quantity * order_price
+                    leverage = Decimal(str(settings.order_manager_default_leverage))
+                    required_margin_base = notional_value / leverage
                     required_commission = await self._calculate_required_commission(
                         signal=signal,
                         order_quantity=order_quantity,
@@ -635,7 +667,10 @@ class RiskManager:
                     # For sell orders without position, we need margin, but if we can't get it,
                     # we'll use the USDT balance as a conservative estimate
                     available_balance = usdt_balance
-                    required_margin = order_quantity * order_price
+                    # Calculate required margin with leverage
+                    notional_value = order_quantity * order_price
+                    leverage = Decimal(str(settings.order_manager_default_leverage))
+                    required_margin = notional_value / leverage
                     required_commission = await self._calculate_required_commission(
                         signal=signal,
                         order_quantity=order_quantity,
@@ -651,7 +686,7 @@ class RiskManager:
                         shortfall_percentage = (shortfall / required_balance) * 100 if required_balance > 0 else 0
                         error_msg = (
                             f"Insufficient balance: required={required_balance} {currency} "
-                            f"(margin={required_margin} + commission={required_commission * Decimal('1.1')}), "
+                            f"(notional={notional_value}, leverage={leverage}x, margin={required_margin} + commission={required_commission * Decimal('1.1')}), "
                             f"available={available_balance} {currency}, shortfall={shortfall} {currency} ({shortfall_percentage:.2f}%)"
                         )
                         logger.error(

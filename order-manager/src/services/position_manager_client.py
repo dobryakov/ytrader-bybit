@@ -310,7 +310,11 @@ class PositionManagerClient:
     async def get_position_from_bybit(
         self, asset: str, trace_id: Optional[str] = None
     ) -> Optional[Position]:
-        """Get position directly from Bybit API (fallback when Position Manager data is stale).
+        """Trigger sync with Bybit API through Position Manager and get position.
+
+        This method triggers position synchronization with Bybit API through
+        Position Manager service, then retrieves the position via API.
+        This ensures all position updates go through Position Manager.
 
         Args:
             asset: Trading pair symbol (e.g., 'BTCUSDT')
@@ -322,95 +326,59 @@ class PositionManagerClient:
         Raises:
             OrderExecutionError: If API call fails
         """
-        from ..utils.bybit_client import get_bybit_client
-
         try:
             logger.info(
-                "bybit_position_fetch_request",
+                "bybit_position_sync_request",
                 asset=asset,
                 trace_id=trace_id,
-                reason="Fetching position directly from Bybit API",
+                reason="Triggering sync with Bybit through Position Manager API",
             )
 
-            bybit_client = get_bybit_client()
-            from ..config.settings import settings
-            response = await bybit_client.get(
-                "/v5/position/list",
-                params={"category": settings.bybit_market_category, "symbol": asset},
-                authenticated=True,
-            )
-
-            ret_code = response.get("retCode", 0)
-            if ret_code != 0:
-                ret_msg = response.get("retMsg", "Unknown error")
-                if ret_code == 10001:  # Position not found
-                    logger.debug(
-                        "bybit_position_not_found",
+            client = await self._get_client()
+            
+            # First, trigger sync with Bybit
+            sync_url = "/api/v1/positions/sync-bybit"
+            sync_params = {"force": "true", "asset": asset}
+            
+            try:
+                sync_response = await client.post(sync_url, params=sync_params, timeout=10.0)
+                if sync_response.status_code == 200:
+                    sync_report = sync_response.json()
+                    logger.info(
+                        "bybit_position_sync_completed",
                         asset=asset,
-                        ret_code=ret_code,
-                        ret_msg=ret_msg,
+                        updated_count=len(sync_report.get("updated", [])),
+                        created_count=len(sync_report.get("created", [])),
+                        errors_count=len(sync_report.get("errors", [])),
                         trace_id=trace_id,
                     )
-                    return None
-
-                error_msg = f"Bybit API error: {ret_msg} (code: {ret_code})"
-                logger.error(
-                    "bybit_position_fetch_failed",
+                else:
+                    logger.warning(
+                        "bybit_position_sync_failed",
                     asset=asset,
-                    ret_code=ret_code,
-                    ret_msg=ret_msg,
+                        status_code=sync_response.status_code,
+                        response_text=sync_response.text[:200],
                     trace_id=trace_id,
-                )
-                raise OrderExecutionError(error_msg)
-
-            positions = response.get("result", {}).get("list", [])
-            if not positions:
-                logger.debug(
-                    "bybit_position_not_found",
+                        reason="Sync request failed, but will try to get position anyway",
+                    )
+            except Exception as e:
+                logger.warning(
+                    "bybit_position_sync_error",
                     asset=asset,
+                    error=str(e),
                     trace_id=trace_id,
+                    reason="Sync request failed, but will try to get position anyway",
                 )
-                return None
-
-            bybit_position = positions[0]
-            size_str = bybit_position.get("size", "0")
-            size = Decimal(str(size_str))
-
-            if size == Decimal("0"):
-                logger.debug(
-                    "bybit_position_size_zero",
-                    asset=asset,
-                    trace_id=trace_id,
-                )
-                return None
-
-            # Convert Bybit position to Order Manager Position model
-            # Bybit returns size as string, positive for long, negative for short
-            position = Position(
-                id=uuid4(),  # Generate new ID since we don't have it from Bybit
-                asset=asset,
-                size=size,
-                average_entry_price=Decimal(str(bybit_position.get("avgPrice", "0"))) if bybit_position.get("avgPrice") else None,
-                unrealized_pnl=Decimal(str(bybit_position.get("unrealisedPnl", "0"))) if bybit_position.get("unrealisedPnl") else None,
-                mode="one-way",  # Bybit linear positions are one-way
-                last_updated=datetime.utcnow(),  # Mark as fresh since we just fetched it
-            )
-
-            logger.info(
-                "bybit_position_fetch_success",
-                asset=asset,
-                size=float(size),
-                trace_id=trace_id,
-            )
-
-            return position
+            
+            # Then, get position through API
+            return await self.get_position(asset, mode="one-way", trace_id=trace_id)
 
         except OrderExecutionError:
             raise
         except Exception as e:
-            error_msg = f"Failed to get position from Bybit: {e}"
+            error_msg = f"Failed to sync and get position from Bybit: {e}"
             logger.error(
-                "bybit_position_fetch_error",
+                "bybit_position_sync_and_get_error",
                 asset=asset,
                 error=str(e),
                 trace_id=trace_id,

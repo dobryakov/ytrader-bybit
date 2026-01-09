@@ -69,6 +69,10 @@ class Settings(BaseSettings):
     order_manager_max_position_size: float = Field(default=1.0, alias="ORDERMANAGER_MAX_POSITION_SIZE")
     order_manager_max_exposure: float = Field(default=50000.0, alias="ORDERMANAGER_MAX_EXPOSURE")
     order_manager_max_order_size_ratio: float = Field(default=0.1, alias="ORDERMANAGER_MAX_ORDER_SIZE_RATIO")
+    order_manager_default_leverage: float = Field(
+        default=10.0, alias="ORDERMANAGER_DEFAULT_LEVERAGE",
+        description="Default leverage for margin calculations. Used to calculate required margin as notional/leverage. Default: 10.0 (10x leverage)"
+    )
 
     # Bybit API Retry Configuration
     order_manager_bybit_api_retry_max_attempts: int = Field(default=3, alias="ORDERMANAGER_BYBIT_API_RETRY_MAX_ATTEMPTS")

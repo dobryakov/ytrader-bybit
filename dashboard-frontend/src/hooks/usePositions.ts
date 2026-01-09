@@ -17,7 +17,6 @@ export interface Position {
   last_updated: string
   created_at: string
   closed_at: string | null
-  opened_at: string | null
 }
 
 export interface PositionsResponse {
@@ -31,6 +30,7 @@ export function usePositions(filters?: {
   size_min?: number
   size_max?: number
   position_id?: string
+  closed?: boolean // Filter by closed status: true = closed, false = active, undefined = all
 }) {
   return useQuery<PositionsResponse>({
     queryKey: ['positions', filters],
@@ -42,7 +42,19 @@ export function usePositions(filters?: {
       if (filters?.size_max) params.append('size_max', filters.size_max.toString())
       if (filters?.position_id) params.append('position_id', filters.position_id)
 
+      // Use API parameters for filtering by closed status
+      if (filters?.closed === true) {
+        params.append('closed_only', 'true')
+      } else if (filters?.closed === false) {
+        // Default behavior: only active positions (no parameter needed)
+        // But we can explicitly set include_closed=false for clarity
+      } else {
+        // undefined: get all positions
+        params.append('include_closed', 'true')
+      }
+
       const response = await api.get(`/v1/positions?${params.toString()}`)
+      
       return response.data
     },
     refetchInterval: 10000, // Refetch every 10 seconds
@@ -61,52 +73,18 @@ export function usePosition(asset: string, mode: string = 'one-way') {
   })
 }
 
-export interface ClosedPosition {
-  id: string
-  original_position_id: string
-  asset: string
-  mode: string
-  final_size: string
-  average_entry_price: string | null
-  exit_price: string | null
-  current_price: string | null
-  realized_pnl: string | null
-  unrealized_pnl_at_close: string | null
-  total_pnl: string
-  long_size: string | null
-  short_size: string | null
-  long_avg_price: string | null
-  short_avg_price: string | null
-  total_fees: string | null
-  opened_at: string
-  closed_at: string
-  version: number
-}
-
-export interface ClosedPositionsResponse {
-  closed_positions: ClosedPosition[]
-  count: number
-}
-
-export function useClosedPositions(filters?: {
-  asset?: string
-  limit?: number
-  offset?: number
-}) {
-  return useQuery<ClosedPositionsResponse>({
-    queryKey: ['closed-positions', filters],
+export function usePositionById(positionId: string) {
+  return useQuery<Position>({
+    queryKey: ['position', positionId],
     queryFn: async () => {
-      const params = new URLSearchParams()
-      if (filters?.asset) params.append('asset', filters.asset)
-      if (filters?.limit) params.append('limit', filters.limit.toString())
-      if (filters?.offset) params.append('offset', filters.offset.toString())
-
-      const response = await api.get(`/v1/positions/closed?${params.toString()}`)
+      const response = await api.get(`/v1/positions/${positionId}`)
       return response.data
     },
-    refetchInterval: 30000, // Refetch every 30 seconds (closed positions change less frequently)
+    enabled: !!positionId,
+    refetchInterval: 10000,
   })
 }
+
 
 export interface PositionOrder {
   id: string
@@ -153,6 +131,24 @@ export function usePositionOrders(
       return response.data
     },
     enabled: !!asset,
+    refetchInterval: 10000, // Refetch every 10 seconds
+  })
+}
+
+export function usePositionOrdersById(
+  positionId: string,
+  relationshipType?: 'opened' | 'increased' | 'decreased' | 'closed' | 'reversed'
+) {
+  return useQuery<PositionOrdersResponse>({
+    queryKey: ['position-orders', positionId, relationshipType],
+    queryFn: async () => {
+      const params = new URLSearchParams()
+      if (relationshipType) params.append('relationship_type', relationshipType)
+
+      const response = await api.get(`/v1/positions/${positionId}/orders?${params.toString()}`)
+      return response.data
+    },
+    enabled: !!positionId,
     refetchInterval: 10000, // Refetch every 10 seconds
   })
 }

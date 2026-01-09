@@ -42,7 +42,7 @@ function App() {
           <Routes>
             <Route path="/" element={<Overview />} />
             <Route path="/positions" element={<Positions />} />
-            <Route path="/positions/:asset" element={<PositionDetail />} />
+            <Route path="/positions/:positionId" element={<PositionDetail />} />
             <Route path="/orders" element={<Orders />} />
             <Route path="/signals" element={<Signals />} />
             <Route path="/models" element={<Models />} />

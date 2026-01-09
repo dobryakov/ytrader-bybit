@@ -15,10 +15,13 @@ logger = get_logger(__name__)
 
 
 class PositionSnapshotTask:
-    """Background task that periodically snapshots all positions.
+    """Background task that periodically snapshots all active positions.
 
     This is the analogue of the Order Manager's `PositionSnapshotTask`, adapted
     to the Position Manager architecture and configuration.
+    
+    CRITICAL: Only creates snapshots for active positions (closed_at IS NULL).
+    When a position is closed, a final snapshot is created before closing.
     """
 
     def __init__(self) -> None:
@@ -60,7 +63,8 @@ class PositionSnapshotTask:
                 if not self._should_run:
                     break
 
-                positions = await self._position_manager.get_all_positions()
+                # Get all active positions (snapshots are only created for active positions)
+                positions = await self._position_manager.get_all_active_positions()
                 snapshot_count = 0
 
                 for position in positions:

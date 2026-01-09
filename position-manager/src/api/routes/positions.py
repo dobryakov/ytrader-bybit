@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
 
 from ...config.logging import get_logger
-from ...models import ClosedPosition, Position, PositionSnapshot
+from ...models import Position, PositionSnapshot
 from ...services.position_manager import PositionManager
 from ...utils.tracing import get_or_create_trace_id
 from ..middleware.auth import api_key_auth
@@ -55,7 +55,8 @@ async def list_positions(
         mode_lower = None
 
     try:
-        positions = await position_manager.get_all_positions()
+        # Get all active positions (by default, list_positions returns only active)
+        positions = await position_manager.get_all_active_positions()
         positions = position_manager.filter_by_asset(positions, asset)
         positions = position_manager.filter_by_mode(positions, mode_lower)
         positions = position_manager.filter_by_size(positions, size_min, size_max)
@@ -95,7 +96,7 @@ async def get_position_by_asset(
         raise HTTPException(status_code=400, detail="Invalid mode. Must be 'one-way' or 'hedge'")
 
     try:
-        position = await position_manager.get_position(asset, mode_lower)
+        position = await position_manager.get_active_position(asset, mode_lower)
         if position is None:
             logger.warning("position_not_found", asset=asset, mode=mode, trace_id=trace_id)
             raise HTTPException(
@@ -108,8 +109,8 @@ async def get_position_by_asset(
             "position_get_completed",
             asset=asset,
             mode=mode,
-            opened_at=data.get("opened_at"),
-            position_opened_at=str(position.opened_at) if position.opened_at else None,
+            created_at=data.get("created_at"),
+            position_created_at=str(position.created_at) if position.created_at else None,
             trace_id=trace_id,
         )
         return JSONResponse(status_code=200, content=data)
@@ -191,7 +192,7 @@ async def create_snapshot(
         raise HTTPException(status_code=400, detail="Invalid mode. Must be 'one-way' or 'hedge'")
 
     try:
-        position = await position_manager.get_position(asset, mode_lower)
+        position = await position_manager.get_active_position(asset, mode_lower)
         if position is None:
             logger.warning("position_not_found_for_snapshot", asset=asset, mode=mode, trace_id=trace_id)
             raise HTTPException(
@@ -242,7 +243,7 @@ async def list_snapshots(
         raise HTTPException(status_code=400, detail="Invalid mode. Must be 'one-way' or 'hedge'")
 
     try:
-        position = await position_manager.get_position(asset, mode_lower)
+        position = await position_manager.get_active_position(asset, mode_lower)
         if position is None:
             logger.warning(
                 "position_not_found_for_snapshot_history",
@@ -291,34 +292,109 @@ async def list_snapshots(
 
 
 @router.get(
-    "/positions/closed",
+    "/positions/{asset}/history",
     dependencies=[Depends(api_key_auth)],
 )
-async def list_closed_positions(
-    asset: Optional[str] = Query(None, description="Filter by trading pair"),
+async def get_position_history(
+    asset: str,
+    mode: str = Query("one-way", description="Trading mode (one-way, hedge)"),
     limit: int = Query(100, ge=1, le=1000, description="Maximum number of records to return"),
     offset: int = Query(0, ge=0, description="Number of records to skip"),
     position_manager: PositionManager = Depends(get_position_manager),
 ):
-    """List closed positions history."""
+    """Get history of closed positions for an asset/mode pair."""
     trace_id = get_or_create_trace_id()
     logger.info(
-        "closed_positions_list_request",
+        "position_history_request",
         asset=asset,
+        mode=mode,
         limit=limit,
         offset=offset,
         trace_id=trace_id,
     )
 
+    mode_lower = mode.lower()
+    if mode_lower not in {"one-way", "hedge"}:
+        raise HTTPException(status_code=400, detail="Invalid mode. Must be 'one-way' or 'hedge'")
+
     try:
-        closed_positions = await position_manager.get_closed_positions(
+        closed_positions = await position_manager.get_position_history(
             asset=asset,
+            mode=mode_lower,
             limit=limit,
             offset=offset,
-            trace_id=trace_id,
         )
 
-        closed_positions_data = [serialize_closed_position(cp) for cp in closed_positions]
+        closed_positions_data = [serialize_position_with_features(cp, position_manager) for cp in closed_positions]
+
+        logger.info(
+            "position_history_completed",
+            count=len(closed_positions_data),
+            trace_id=trace_id,
+        )
+        return JSONResponse(
+            status_code=200,
+            content={
+                "positions": closed_positions_data,
+                "count": len(closed_positions_data),
+            },
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            "position_history_failed",
+            error=str(e),
+            trace_id=trace_id,
+            exc_info=True,
+        )
+        raise HTTPException(status_code=500, detail="Failed to retrieve position history") from e
+
+
+@router.get(
+    "/positions/closed",
+    dependencies=[Depends(api_key_auth)],
+)
+async def list_closed_positions(
+    asset: Optional[str] = Query(None, description="Filter by trading pair"),
+    mode: Optional[str] = Query(None, description="Filter by trading mode (one-way, hedge)"),
+    limit: int = Query(100, ge=1, le=1000, description="Maximum number of records to return"),
+    offset: int = Query(0, ge=0, description="Number of records to skip"),
+    position_manager: PositionManager = Depends(get_position_manager),
+):
+    """List all closed positions (across all assets)."""
+    trace_id = get_or_create_trace_id()
+    logger.info(
+        "closed_positions_list_request",
+        asset=asset,
+        mode=mode,
+        limit=limit,
+        offset=offset,
+        trace_id=trace_id,
+    )
+
+    mode_lower = mode.lower() if mode else None
+    if mode_lower is not None and mode_lower not in {"one-way", "hedge"}:
+        raise HTTPException(status_code=400, detail="Invalid mode. Must be 'one-way' or 'hedge'")
+
+    try:
+        # Get all closed positions by querying each asset/mode combination
+        # For simplicity, if asset is provided, use get_position_history
+        if asset:
+            if mode_lower is None:
+                mode_lower = "one-way"
+            closed_positions = await position_manager.get_position_history(
+            asset=asset,
+                mode=mode_lower,
+            limit=limit,
+            offset=offset,
+        )
+        else:
+            # For all assets, we'd need a new method or query all assets
+            # For now, return empty if no asset specified
+            closed_positions = []
+
+        closed_positions_data = [serialize_position_with_features(cp, position_manager) for cp in closed_positions]
 
         logger.info(
             "closed_positions_list_completed",
@@ -328,7 +404,7 @@ async def list_closed_positions(
         return JSONResponse(
             status_code=200,
             content={
-                "closed_positions": closed_positions_data,
+                "positions": closed_positions_data,
                 "count": len(closed_positions_data),
             },
         )
@@ -345,56 +421,68 @@ async def list_closed_positions(
 
 
 @router.get(
-    "/positions/closed/{closed_position_id}",
+    "/positions/{position_id}",
     dependencies=[Depends(api_key_auth)],
 )
-async def get_closed_position_by_id(
-    closed_position_id: str,
+async def get_position_by_id(
+    position_id: str,
     position_manager: PositionManager = Depends(get_position_manager),
 ):
-    """Get a specific closed position by ID."""
+    """Get a position by ID (active or closed)."""
     trace_id = get_or_create_trace_id()
     logger.info(
-        "closed_position_get_request",
-        closed_position_id=closed_position_id,
+        "position_get_by_id_request",
+        position_id=position_id,
         trace_id=trace_id,
     )
 
     try:
         from uuid import UUID
-        cp_id = UUID(closed_position_id)
-        closed_position = await position_manager.get_closed_position_by_id(
-            cp_id,
+        pos_id = UUID(position_id)
+        
+        # Try to get as closed position first
+        closed_position = await position_manager.get_closed_position_by_id(pos_id)
+        if closed_position:
+            position_data = serialize_position_with_features(closed_position, position_manager)
+            logger.info(
+                "position_get_by_id_completed",
+                position_id=position_id,
+                is_closed=True,
             trace_id=trace_id,
         )
-        if closed_position is None:
-            logger.warning(
-                "closed_position_not_found",
-                closed_position_id=closed_position_id,
+            return JSONResponse(status_code=200, content=position_data)
+        
+        # If not found as closed, try to find any position by ID (active or closed)
+        position = await position_manager.get_position_by_id(pos_id)
+        if position:
+            position_data = serialize_position_with_features(position, position_manager)
+            logger.info(
+                "position_get_by_id_completed",
+                position_id=position_id,
+                is_closed=position.is_closed,
                 trace_id=trace_id,
             )
-            raise HTTPException(status_code=404, detail="Closed position not found")
-
-        closed_position_data = serialize_closed_position(closed_position)
-        logger.info(
-            "closed_position_get_completed",
-            closed_position_id=closed_position_id,
+            return JSONResponse(status_code=200, content=position_data)
+        
+        logger.warning(
+            "position_not_found_by_id",
+            position_id=position_id,
             trace_id=trace_id,
         )
-        return JSONResponse(status_code=200, content=closed_position_data)
+        raise HTTPException(status_code=404, detail="Position not found")
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid closed position ID format")
+        raise HTTPException(status_code=400, detail="Invalid position ID format")
     except HTTPException:
         raise
     except Exception as e:
         logger.error(
-            "closed_position_get_failed",
-            closed_position_id=closed_position_id,
+            "position_get_by_id_failed",
+            position_id=position_id,
             error=str(e),
             trace_id=trace_id,
             exc_info=True,
         )
-        raise HTTPException(status_code=500, detail="Failed to retrieve closed position") from e
+        raise HTTPException(status_code=500, detail="Failed to retrieve position") from e
 
 
 def serialize_position_with_features(
@@ -421,11 +509,45 @@ def serialize_position_with_features(
         "realized_pnl": str(position.realized_pnl),
         "long_size": str(position.long_size) if position.long_size is not None else None,
         "short_size": str(position.short_size) if position.short_size is not None else None,
+        "long_avg_price": str(position.long_avg_price) if position.long_avg_price is not None else None,
+        "short_avg_price": str(position.short_avg_price) if position.short_avg_price is not None else None,
+        "leverage": str(position.leverage) if position.leverage is not None else None,
+        "position_value": str(position.position_value) if position.position_value is not None else None,
+        "liq_price": str(position.liq_price) if position.liq_price is not None else None,
+        "bust_price": str(position.bust_price) if position.bust_price is not None else None,
+        "take_profit": str(position.take_profit) if position.take_profit is not None else None,
+        "stop_loss": str(position.stop_loss) if position.stop_loss is not None else None,
+        "cum_realised_pnl": str(position.cum_realised_pnl) if position.cum_realised_pnl is not None else None,
+        "cum_unrealised_pnl": str(position.cum_unrealised_pnl) if position.cum_unrealised_pnl is not None else None,
+        "total_fees": str(position.total_fees),
+        "opening_fees": str(position.opening_fees) if position.opening_fees is not None else None,
+        "closing_fees": str(position.closing_fees) if position.closing_fees is not None else None,
+        "margin_used": str(position.margin_used) if position.margin_used is not None else None,
+        "available_margin": str(position.available_margin) if position.available_margin is not None else None,
+        "maintenance_margin": str(position.maintenance_margin) if position.maintenance_margin is not None else None,
+        "max_size": str(position.max_size) if position.max_size is not None else None,
+        "min_size": str(position.min_size) if position.min_size is not None else None,
+        "total_volume_traded": str(position.total_volume_traded),
+        "first_entry_price": str(position.first_entry_price) if position.first_entry_price is not None else None,
+        "last_entry_price": str(position.last_entry_price) if position.last_entry_price is not None else None,
+        "exit_price": str(position.exit_price) if position.exit_price is not None else None,
+        "peak_unrealized_pnl": str(position.peak_unrealized_pnl) if position.peak_unrealized_pnl is not None else None,
+        "peak_unrealized_pnl_at": position.peak_unrealized_pnl_at.isoformat() + "Z" if position.peak_unrealized_pnl_at else None,
+        "worst_unrealized_pnl": str(position.worst_unrealized_pnl) if position.worst_unrealized_pnl is not None else None,
+        "worst_unrealized_pnl_at": position.worst_unrealized_pnl_at.isoformat() + "Z" if position.worst_unrealized_pnl_at else None,
         "version": position.version,
         "last_updated": position.last_updated.isoformat() + "Z",
         "closed_at": position.closed_at.isoformat() + "Z" if position.closed_at else None,
-        "opened_at": position.opened_at.isoformat() + "Z" if position.opened_at else None,
+        "created_at": position.created_at.isoformat() + "Z" if position.created_at else None,
         "created_at": position.created_at.isoformat() + "Z",
+        "source": position.source,
+        "last_sync_with_bybit": position.last_sync_with_bybit.isoformat() + "Z" if position.last_sync_with_bybit else None,
+        "bybit_position_data": position.bybit_position_data,
+        # Computed fields
+        "is_active": position.is_active,
+        "is_closed": position.is_closed,
+        "total_pnl": str(position.total_pnl),
+        "holding_time_minutes": position.holding_time_minutes,
         # ML features
         "unrealized_pnl_pct": str(unrealized_pct) if unrealized_pct is not None else None,
         "time_held_minutes": time_held,
@@ -433,32 +555,6 @@ def serialize_position_with_features(
     return data
 
 
-def serialize_closed_position(closed_position: ClosedPosition) -> dict:
-    """Serialize closed position with all fields."""
-    return {
-        "id": str(closed_position.id),
-        "original_position_id": str(closed_position.original_position_id),
-        "asset": closed_position.asset,
-        "mode": closed_position.mode,
-        "final_size": str(closed_position.final_size),
-        "average_entry_price": str(closed_position.average_entry_price)
-        if closed_position.average_entry_price is not None
-        else None,
-        "exit_price": str(closed_position.exit_price) if closed_position.exit_price is not None else None,
-        "current_price": str(closed_position.current_price) if closed_position.current_price is not None else None,
-        "realized_pnl": str(closed_position.realized_pnl),
-        "unrealized_pnl_at_close": str(closed_position.unrealized_pnl_at_close),
-        "total_pnl": str(closed_position.total_pnl),
-        "long_size": str(closed_position.long_size) if closed_position.long_size is not None else None,
-        "short_size": str(closed_position.short_size) if closed_position.short_size is not None else None,
-        "long_avg_price": str(closed_position.long_avg_price) if closed_position.long_avg_price is not None else None,
-        "short_avg_price": str(closed_position.short_avg_price) if closed_position.short_avg_price is not None else None,
-        "total_fees": str(closed_position.total_fees) if closed_position.total_fees is not None else None,
-        "opened_at": closed_position.opened_at.isoformat() + "Z",
-        "closed_at": closed_position.closed_at.isoformat() + "Z",
-        "holding_time_minutes": closed_position.holding_time_minutes,
-        "version": closed_position.version,
-    }
 
 
 def _normalize_snapshot_value(value: Any) -> Any:

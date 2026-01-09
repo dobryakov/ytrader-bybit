@@ -16,13 +16,17 @@ logger = get_logger(__name__)
 
 
 class PositionBybitSyncTask:
-    """Background task that periodically synchronizes positions with Bybit API.
+    """Background task that periodically synchronizes active positions with Bybit API.
 
     This task:
     - Fetches positions from Bybit API
-    - Compares them with local positions
+    - Compares them with local active positions
     - If discrepancies are found, performs forced sync
     - Logs all discrepancies and sync actions
+    
+    CRITICAL: Only synchronizes active positions (closed_at IS NULL).
+    By default, relies on WebSocket events (data is correct and timely).
+    Synchronization through API is performed ONLY in case of problems or manual request.
     """
 
     def __init__(self) -> None:

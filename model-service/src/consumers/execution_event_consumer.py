@@ -498,11 +498,23 @@ class ExecutionEventConsumer:
             
             # If not in event, try database
             if not signal_info:
+                logger.info(
+                    "Signal not found in event, searching in database",
+                    signal_id=signal_id,
+                    signal_id_type=type(signal_id).__name__,
+                    has_signal_data=bool(signal_data),
+                )
                 signal_info = await self._get_signal_info(signal_id)
             
             # If still not found, use fallback from order data
             if not signal_info:
-                logger.warning("Signal not found in database or event, using fallback", signal_id=signal_id)
+                logger.warning(
+                    "Signal not found in database or event, using fallback",
+                    signal_id=signal_id,
+                    order_id=order_id,
+                    event_type=event_type,
+                    has_signal_in_event=bool(signal_data),
+                )
                 # Try to extract price from order price field (for limit orders) or use execution price as fallback
                 order_price = float(order_data.get("price", "0")) if order_data.get("price") else None
                 # For market orders, use execution price as signal price (best approximation)
@@ -627,6 +639,14 @@ class ExecutionEventConsumer:
             Signal information dictionary or None if not found
         """
         try:
+            # Log input signal_id details
+            logger.info(
+                "Querying signal info from database",
+                signal_id=signal_id,
+                signal_id_type=type(signal_id).__name__,
+                signal_id_repr=repr(signal_id),
+            )
+            
             pool = await db_pool.get_pool()
             query = """
                 SELECT signal_id, strategy_id, price, timestamp
@@ -635,20 +655,62 @@ class ExecutionEventConsumer:
                 LIMIT 1
             """
             from uuid import UUID
-            signal_uuid = UUID(signal_id) if isinstance(signal_id, str) else signal_id
+            
+            # Convert to UUID with detailed logging
+            try:
+                signal_uuid = UUID(signal_id) if isinstance(signal_id, str) else signal_id
+                logger.info(
+                    "Converted signal_id to UUID",
+                    original_signal_id=signal_id,
+                    signal_uuid=str(signal_uuid),
+                    uuid_type=type(signal_uuid).__name__,
+                )
+            except (ValueError, TypeError) as uuid_error:
+                logger.error(
+                    "Failed to convert signal_id to UUID",
+                    signal_id=signal_id,
+                    signal_id_type=type(signal_id).__name__,
+                    signal_id_repr=repr(signal_id),
+                    error=str(uuid_error),
+                    error_type=type(uuid_error).__name__,
+                )
+                return None
+            
+            # Execute query
             row = await pool.fetchrow(query, signal_uuid)
 
             if row:
-                return {
+                result = {
                     "signal_id": str(row["signal_id"]),
                     "strategy_id": row["strategy_id"],
                     "price": str(row["price"]),
                     "timestamp": row["timestamp"].isoformat() + "Z" if row["timestamp"] else None,
                 }
+                logger.info(
+                    "Signal found in database",
+                    signal_id=signal_id,
+                    strategy_id=result["strategy_id"],
+                    price=result["price"],
+                )
+                return result
+            
+            logger.warning(
+                "Signal not found in database",
+                signal_id=signal_id,
+                signal_uuid=str(signal_uuid),
+            )
             return None
 
         except Exception as e:
-            logger.error("Error querying signal info", signal_id=signal_id, error=str(e), exc_info=True)
+            logger.error(
+                "Error querying signal info",
+                signal_id=signal_id,
+                signal_id_type=type(signal_id).__name__ if signal_id else None,
+                signal_id_repr=repr(signal_id) if signal_id else None,
+                error=str(e),
+                error_type=type(e).__name__,
+                exc_info=True,
+            )
             return None
 
     async def _persist_execution_event(self, execution_event: OrderExecutionEvent) -> None:

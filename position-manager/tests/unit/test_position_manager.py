@@ -12,7 +12,6 @@ def make_position(
     mode: str = "one-way",
     size: str = "1.0",
     current_price: str | None = "110.0",
-    opened_at: datetime | None = None,
     closed_at: datetime | None = None,
 ) -> Position:
     now = datetime.utcnow()
@@ -26,7 +25,6 @@ def make_position(
         realized_pnl=Decimal("0.0"),
         created_at=now - timedelta(minutes=10),
         last_updated=now,
-        opened_at=opened_at or (now - timedelta(minutes=5) if Decimal(size) != 0 else None),
         closed_at=closed_at,
     )
 
@@ -62,7 +60,7 @@ def test_calculate_time_held_minutes() -> None:
         realized_pnl=Decimal("0.0"),
         created_at=now - timedelta(minutes=42),
         last_updated=now,
-        opened_at=None,  # No opened_at, should use created_at
+        # created_at is used for time tracking
     )
 
     minutes = manager.calculate_time_held_minutes(position)

@@ -334,6 +334,82 @@ class EventSubscriber:
             )
             raise DatabaseError(f"Failed to query order: {e}") from e
 
+    async def _get_signal_info_from_db(
+        self, signal_id: UUID, trace_id: Optional[str] = None
+    ) -> Optional[dict]:
+        """
+        Get signal information from trading_signals database table.
+
+        Args:
+            signal_id: Signal UUID
+            trace_id: Optional trace ID
+
+        Returns:
+            Signal info dictionary with strategy_id, price, timestamp, etc., or None if not found
+        """
+        try:
+            pool = await DatabaseConnection.get_pool()
+            query = """
+                SELECT signal_id, strategy_id, price, timestamp, side, confidence,
+                       market_data_snapshot
+                FROM trading_signals
+                WHERE signal_id = $1
+                LIMIT 1
+            """
+            row = await pool.fetchrow(query, signal_id)
+
+            if row is None:
+                logger.warning(
+                    "signal_not_found_in_db",
+                    signal_id=str(signal_id),
+                    trace_id=trace_id,
+                )
+                return None
+
+            # Extract price from row or from market_data_snapshot
+            price = float(row["price"]) if row["price"] else None
+            market_snapshot = row.get("market_data_snapshot")
+            if (not price or price <= 0) and market_snapshot:
+                if isinstance(market_snapshot, dict):
+                    price = market_snapshot.get("price")
+                    if price:
+                        try:
+                            price = float(price)
+                        except (ValueError, TypeError):
+                            price = None
+
+            signal_info = {
+                "signal_id": str(row["signal_id"]),
+                "strategy_id": row["strategy_id"],
+                "signal_type": row.get("side", "").lower(),
+                "price": str(price) if price else None,
+                "timestamp": row["timestamp"].isoformat() + "Z" if row["timestamp"] else None,
+                "confidence": float(row["confidence"]) if row["confidence"] else None,
+            }
+
+            # Add market_data_snapshot if available
+            if market_snapshot:
+                signal_info["market_data_snapshot"] = market_snapshot
+
+            logger.info(
+                "signal_info_retrieved_from_db",
+                signal_id=str(signal_id),
+                strategy_id=signal_info["strategy_id"],
+                trace_id=trace_id,
+            )
+            return signal_info
+
+        except Exception as e:
+            logger.warning(
+                "failed_to_get_signal_info_from_db",
+                signal_id=str(signal_id),
+                error=str(e),
+                trace_id=trace_id,
+                exc_info=True,
+            )
+            # Don't raise - signal_info is optional, event can be published without it
+            return None
+
     async def _update_order_state_from_event(
         self,
         order: Order,
@@ -479,12 +555,54 @@ class EventSubscriber:
                             "timestamp": event_data.get("timestamp"),
                         }
 
+                # Try to get signal_info from database to enrich event
+                signal_info = None
+                if updated_order.signal_id:
+                    logger.info(
+                        "attempting_to_get_signal_info_for_event",
+                        signal_id=str(updated_order.signal_id),
+                        order_id=updated_order.order_id,
+                        event_type=event_type,
+                        trace_id=trace_id,
+                    )
+                    try:
+                        signal_info = await self._get_signal_info_from_db(
+                            updated_order.signal_id, trace_id=trace_id
+                        )
+                        if signal_info:
+                            logger.info(
+                                "signal_info_retrieved_for_event",
+                                signal_id=str(updated_order.signal_id),
+                                order_id=updated_order.order_id,
+                                strategy_id=signal_info.get("strategy_id"),
+                                trace_id=trace_id,
+                            )
+                        else:
+                            logger.warning(
+                                "signal_info_not_found_for_event",
+                                signal_id=str(updated_order.signal_id),
+                                order_id=updated_order.order_id,
+                                event_type=event_type,
+                                trace_id=trace_id,
+                            )
+                    except Exception as e:
+                        logger.warning(
+                            "failed_to_get_signal_info_for_event",
+                            signal_id=str(updated_order.signal_id),
+                            order_id=updated_order.order_id,
+                            error=str(e),
+                            trace_id=trace_id,
+                            exc_info=True,
+                        )
+                        # Continue without signal_info - it's optional
+
                 # Publish enriched order event
                 await self.event_publisher.publish_order_event(
                     order=updated_order,
                     event_type=event_type,
                     trace_id=trace_id,
                     market_conditions=market_conditions,
+                    signal_info=signal_info,
                 )
 
             # Update position_orders.order_id if order was created/updated (for linking with position-manager)

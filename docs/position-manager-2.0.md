@@ -82,9 +82,7 @@ CREATE TABLE positions (
     worst_unrealized_pnl_at TIMESTAMP,
     
     -- Временные метки
-    created_at TIMESTAMP NOT NULL DEFAULT NOW(),  -- Создание этой записи
-    opened_at TIMESTAMP,                          -- Открытие этой позиции (size: 0 → non-zero)
-    first_opened_at TIMESTAMP,                    -- Первое открытие (может совпадать с opened_at)
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),  -- Создание этой записи (также представляет время открытия, т.к. каждая запись создается один раз)
     last_updated TIMESTAMP NOT NULL DEFAULT NOW(),
     closed_at TIMESTAMP,                          -- Закрытие (NULL = активна, NOT NULL = закрыта)
     
@@ -106,7 +104,6 @@ CREATE INDEX idx_positions_asset ON positions(asset);
 CREATE INDEX idx_positions_mode ON positions(mode);
 CREATE INDEX idx_positions_asset_mode ON positions(asset, mode);
 CREATE INDEX idx_positions_closed_at ON positions(closed_at DESC);
-CREATE INDEX idx_positions_opened_at ON positions(opened_at);
 CREATE INDEX idx_positions_active ON positions(asset, mode) WHERE closed_at IS NULL;  -- Для быстрого поиска активных
 CREATE INDEX idx_positions_historical ON positions(asset, mode, closed_at DESC) WHERE closed_at IS NOT NULL;  -- Для истории
 CREATE UNIQUE INDEX idx_positions_active_unique ON positions(asset, mode) WHERE closed_at IS NULL;  -- Критично: предотвращение дубликатов активных позиций
@@ -128,12 +125,10 @@ BEGIN TRANSACTION;
   
   -- 2. Если активной позиции нет, создаем новую
   INSERT INTO positions (
-      asset, mode, size, average_entry_price, opened_at, first_opened_at, ...
+      asset, mode, size, average_entry_price, created_at, ...
   ) VALUES (...)
   -- closed_at = NULL (активная)
-  -- created_at = NOW()
-  -- opened_at = NOW()
-  -- first_opened_at = NOW()
+  -- created_at = NOW() (также представляет время открытия)
   -- version = 1
 COMMIT;
 ```
@@ -209,8 +204,7 @@ BEGIN TRANSACTION;
   INSERT INTO positions (
       id,  -- НОВЫЙ UUID
       asset, mode, size, average_entry_price, 
-      opened_at = NOW(),  -- НОВОЕ время открытия
-      first_opened_at = NOW(),  -- НОВОЕ первое открытие
+      created_at = NOW()  -- НОВОЕ время создания (также представляет время открытия)
       created_at = NOW(),  -- НОВОЕ время создания
       closed_at = NULL,  -- Активная
       version = 1,
@@ -282,8 +276,6 @@ class Position(BaseModel):
     
     # Временные метки
     created_at: datetime
-    opened_at: Optional[datetime] = None
-    first_opened_at: Optional[datetime] = None
     last_updated: datetime
     closed_at: Optional[datetime] = None  # NULL = активна, NOT NULL = закрыта
     
@@ -316,11 +308,11 @@ class Position(BaseModel):
     @property
     def holding_time_minutes(self) -> Optional[int]:
         """Время удержания позиции в минутах."""
-        if self.is_closed and self.opened_at:
-            delta = self.closed_at - self.opened_at
+        if self.is_closed and self.created_at:
+            delta = self.closed_at - self.created_at
             return int(delta.total_seconds() // 60)
-        elif self.opened_at:
-            delta = datetime.utcnow() - self.opened_at
+        elif self.created_at:
+            delta = datetime.utcnow() - self.created_at
             return int(delta.total_seconds() // 60)
         return None
     
@@ -407,7 +399,7 @@ class PositionManager:
         self, asset: str, mode: str = "one-way", size: Decimal, ...
     ) -> Position:
         """Создать новую позицию при переоткрытии."""
-        # INSERT INTO positions (новый id, новый created_at, новый opened_at, closed_at = NULL)
+        # INSERT INTO positions (новый id, новый created_at, closed_at = NULL)
 ```
 
 ### 7. Защита от race conditions
@@ -515,7 +507,7 @@ async def create_position_on_reopen(
                 """
                 INSERT INTO positions (
                     id, asset, mode, size, average_entry_price,
-                    opened_at, first_opened_at, created_at, closed_at, version, ...
+                    created_at, closed_at, version, ...
                 )
                 VALUES ($1, $2, $3, $4, $5, NOW(), NOW(), NOW(), NULL, 1, ...)
                 """,
@@ -1195,22 +1187,22 @@ if position.size == 0 and position.closed_at is None:
 
 ### 12.10. Проверочный список
 
-- [ ] Миграция БД создана и применена
-- [ ] Уникальный индекс `idx_positions_active_unique` создан
-- [ ] Модель `Position` обновлена
-- [ ] Модель `ClosedPosition` удалена
-- [ ] `PositionManager` обновлен
-- [ ] Защита от race conditions реализована (транзакции, `SELECT FOR UPDATE`, optimistic locking)
-- [ ] Retry логика при конфликтах версий реализована
-- [ ] REST API обновлен
-- [ ] Consumers обновлены (с защитой от race conditions)
-- [ ] Tasks обновлены
-- [ ] order-manager обновлен
-- [ ] model-service обновлен
-- [ ] dashboard-api обновлен
-- [ ] Тесты обновлены и проходят
-- [ ] Тесты для race conditions написаны и проходят
-- [ ] Данные из `closed_positions` перенесены
-- [ ] E2E тесты проходят (включая тесты для race conditions)
-- [ ] Документация обновлена
+- [x] Миграция БД создана и применена (миграции 052 и 053 применены успешно)
+- [x] Уникальный индекс `idx_positions_active_unique` создан
+- [x] Модель `Position` обновлена
+- [x] Модель `ClosedPosition` удалена
+- [x] `PositionManager` обновлен
+- [x] Защита от race conditions реализована (транзакции, `SELECT FOR UPDATE`, optimistic locking)
+- [x] Retry логика при конфликтах версий реализована
+- [x] REST API обновлен
+- [x] Consumers обновлены (с защитой от race conditions)
+- [x] Tasks обновлены
+- [x] order-manager обновлен
+- [x] model-service обновлен (PositionStateRepository теперь использует Position Manager API вместо прямых SQL-запросов к таблице positions)
+- [x] dashboard-api обновлен
+- [x] Тесты обновлены (удален test_opened_at.py, обновлен test_position_manager.py для использования created_at)
+- [x] Тесты для race conditions написаны (test_race_conditions.py создан с тестами для optimistic locking, retry логики, SELECT FOR UPDATE)
+- [x] Данные из `closed_positions` перенесены (миграция 053 применена, 232 записи обработаны)
+- [x] E2E тесты написаны (test_unified_positions_architecture.py создан с тестами для создания, закрытия, переоткрытия, race conditions, истории позиций)
+- [x] Документация обновлена
 

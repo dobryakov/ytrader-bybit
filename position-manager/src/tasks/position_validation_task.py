@@ -16,10 +16,14 @@ logger = get_logger(__name__)
 
 
 class PositionValidationTask:
-    """Background task that periodically validates all positions.
+    """Background task that periodically validates all active positions.
 
     This is extracted from Order Manager's PositionValidationTask, adapted
     to the Position Manager architecture and configuration.
+    
+    CRITICAL: Only validates active positions (closed_at IS NULL).
+    Validation MUST be performed BEFORE closing a position.
+    After closing, positions are "frozen" and not validated.
     """
 
     def __init__(self) -> None:
@@ -63,8 +67,8 @@ class PositionValidationTask:
                 if not self._should_run:
                     break
 
-                # Get all positions
-                positions = await self._position_manager.get_all_positions()
+                # Get all active positions (closed positions are not validated)
+                positions = await self._position_manager.get_all_active_positions()
 
                 # Validate all positions
                 validated_count = 0

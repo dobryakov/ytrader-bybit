@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
-import { usePositions, useClosedPositions } from '@/hooks/usePositions'
+import { usePositions } from '@/hooks/usePositions'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Badge } from '@/components/ui/badge'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -14,7 +14,7 @@ export default function Positions() {
   const assetFromUrl = searchParams.get('asset') || undefined
   const positionIdFromUrl = searchParams.get('position_id') || undefined
   
-  const [filters, setFilters] = useState<{ asset?: string; mode?: string; position_id?: string }>({})
+  const [filters, setFilters] = useState<{ asset?: string; mode?: string; position_id?: string; status?: 'all' | 'active' | 'closed' }>({ status: 'all' })
   
   // Sync filters from URL
   useEffect(() => {
@@ -26,8 +26,15 @@ export default function Positions() {
     }
   }, [assetFromUrl, positionIdFromUrl])
   
-  const { data, isLoading } = usePositions({ ...filters, asset: assetFromUrl, position_id: positionIdFromUrl })
-  const { data: closedPositionsData, isLoading: isLoadingClosed } = useClosedPositions({ asset: assetFromUrl, limit: 100 })
+  // Determine closed filter based on status
+  const closedFilter = filters.status === 'closed' ? true : filters.status === 'active' ? false : undefined
+  
+  const { data, isLoading } = usePositions({ 
+    ...filters, 
+    asset: assetFromUrl, 
+    position_id: positionIdFromUrl,
+    closed: closedFilter
+  })
   
   const handleViewOrders = (positionId: string) => {
     navigate(`/orders?position_id=${positionId}`)
@@ -52,6 +59,15 @@ export default function Positions() {
 
       {/* Filters */}
       <div className="flex gap-4 items-center">
+        <select
+          className="px-3 py-2 border rounded-md"
+          value={filters.status || 'all'}
+          onChange={(e) => setFilters({ ...filters, status: e.target.value as 'all' | 'active' | 'closed' })}
+        >
+          <option value="all">Все позиции</option>
+          <option value="active">Активные</option>
+          <option value="closed">Закрытые</option>
+        </select>
         {positionIdFromUrl && (
           <div className="px-3 py-2 bg-muted rounded-md text-sm">
             Фильтр по Position ID: <span className="font-mono">{positionIdFromUrl.slice(0, 8)}...</span>
@@ -140,6 +156,8 @@ export default function Positions() {
               <TableHead>Unrealized PnL</TableHead>
               <TableHead>Realized PnL</TableHead>
               <TableHead>Mode</TableHead>
+              <TableHead>Created At</TableHead>
+              <TableHead>Closed At</TableHead>
               <TableHead>Last Updated</TableHead>
               <TableHead>Orders</TableHead>
             </TableRow>
@@ -147,7 +165,7 @@ export default function Positions() {
           <TableBody>
             {data?.positions.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={11} className="text-center text-muted-foreground">
+                <TableCell colSpan={13} className="text-center text-muted-foreground">
                   Нет позиций
                 </TableCell>
               </TableRow>
@@ -176,13 +194,15 @@ export default function Positions() {
                     <TableCell>
                       <Badge variant="outline">{position.mode}</Badge>
                     </TableCell>
+                    <TableCell>{position.created_at ? format(parseISO(position.created_at), 'dd.MM.yyyy HH:mm:ss') : 'N/A'}</TableCell>
+                    <TableCell>{position.closed_at ? format(parseISO(position.closed_at), 'dd.MM.yyyy HH:mm:ss') : '-'}</TableCell>
                     <TableCell>{position.last_updated ? format(parseISO(position.last_updated), 'dd.MM.yyyy HH:mm:ss') : 'N/A'}</TableCell>
                     <TableCell>
                       <div className="flex gap-2">
                         <Button
                           variant="outline"
                           size="sm"
-                          onClick={() => navigate(`/positions/${position.asset}?mode=${position.mode}`)}
+                          onClick={() => navigate(`/positions/${position.id}`)}
                         >
                           Детали
                         </Button>
@@ -202,80 +222,6 @@ export default function Positions() {
           </TableBody>
         </Table>
       )}
-
-      {/* Closed Positions Section */}
-      <div className="mt-12">
-        <div className="mb-4">
-          <h3 className="text-2xl font-semibold tracking-tight">Закрытые позиции</h3>
-          <p className="text-muted-foreground">История закрытых торговых позиций</p>
-        </div>
-
-        {isLoadingClosed ? (
-          <Skeleton className="h-64 w-full" />
-        ) : (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>ID</TableHead>
-                <TableHead>Original Position ID</TableHead>
-                <TableHead>Asset</TableHead>
-                <TableHead>Mode</TableHead>
-                <TableHead>Entry Price</TableHead>
-                <TableHead>Exit Price</TableHead>
-                <TableHead>Realized PnL</TableHead>
-                <TableHead>Unrealized PnL (at close)</TableHead>
-                <TableHead>Total PnL</TableHead>
-                <TableHead>Total Fees</TableHead>
-                <TableHead>Opened At</TableHead>
-                <TableHead>Closed At</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {closedPositionsData?.closed_positions.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={12} className="text-center text-muted-foreground">
-                    Нет закрытых позиций
-                  </TableCell>
-                </TableRow>
-              ) : (
-                closedPositionsData?.closed_positions.map((closedPosition) => {
-                  const totalPnl = parseFloat(closedPosition.total_pnl || '0')
-                  return (
-                    <TableRow key={closedPosition.id}>
-                      <TableCell className="font-mono text-xs">{closedPosition.id.slice(0, 8)}...</TableCell>
-                      <TableCell className="font-mono text-xs">{closedPosition.original_position_id.slice(0, 8)}...</TableCell>
-                      <TableCell className="font-medium">{closedPosition.asset}</TableCell>
-                      <TableCell>
-                        <Badge variant="outline">{closedPosition.mode}</Badge>
-                      </TableCell>
-                      <TableCell>{formatCurrency(closedPosition.average_entry_price)}</TableCell>
-                      <TableCell>{formatCurrency(closedPosition.exit_price)}</TableCell>
-                      <TableCell>
-                        <span className={parseFloat(closedPosition.realized_pnl || '0') >= 0 ? 'text-green-600' : 'text-red-600'}>
-                          {formatCurrency(closedPosition.realized_pnl)}
-                        </span>
-                      </TableCell>
-                      <TableCell>
-                        <span className={parseFloat(closedPosition.unrealized_pnl_at_close || '0') >= 0 ? 'text-green-600' : 'text-red-600'}>
-                          {formatCurrency(closedPosition.unrealized_pnl_at_close)}
-                        </span>
-                      </TableCell>
-                      <TableCell>
-                        <span className={totalPnl >= 0 ? 'text-green-600 font-semibold' : 'text-red-600 font-semibold'}>
-                          {formatCurrency(closedPosition.total_pnl)}
-                        </span>
-                      </TableCell>
-                      <TableCell>{formatCurrency(closedPosition.total_fees)}</TableCell>
-                      <TableCell>{closedPosition.opened_at ? format(parseISO(closedPosition.opened_at), 'dd.MM.yyyy HH:mm:ss') : 'N/A'}</TableCell>
-                      <TableCell>{closedPosition.closed_at ? format(parseISO(closedPosition.closed_at), 'dd.MM.yyyy HH:mm:ss') : 'N/A'}</TableCell>
-                    </TableRow>
-                  )
-                })
-              )}
-            </TableBody>
-          </Table>
-        )}
-      </div>
     </div>
   )
 }

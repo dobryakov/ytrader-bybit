@@ -1,6 +1,6 @@
 """Data models for Position Manager."""
 
-from .position import ClosedPosition, Position, PositionSnapshot
+from .position import Position, PositionSnapshot
 from .portfolio import (
     PortfolioByAsset,
     PortfolioExposure,
@@ -9,7 +9,6 @@ from .portfolio import (
 )
 
 __all__ = [
-    "ClosedPosition",
     "Position",
     "PositionSnapshot",
     "PortfolioByAsset",

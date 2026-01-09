@@ -18,7 +18,7 @@ from ..config.database import DatabaseConnection
 from ..config.logging import get_logger
 from ..config.settings import settings
 from ..exceptions import DatabaseError
-from ..models import ClosedPosition, Position, PositionSnapshot
+from ..models import Position, PositionSnapshot
 from ..publishers import PositionEventPublisher
 
 logger = get_logger(__name__)
@@ -145,81 +145,63 @@ class PositionManager:
             )
             return None
 
-    async def get_position(self, asset: str, mode: str = "one-way") -> Optional[Position]:
-        """Get current position for an asset/mode pair."""
+    async def get_active_position(self, asset: str, mode: str = "one-way") -> Optional[Position]:
+        """Get current active position for an asset/mode pair.
+        
+        Returns only active positions (closed_at IS NULL).
+        This is an internal method - use get_position() for public API.
+        """
         try:
             pool = await DatabaseConnection.get_pool()
             query = """
                 SELECT id, asset, mode, size, average_entry_price, current_price,
                        unrealized_pnl, realized_pnl,
-                       long_size, short_size, version,
-                       last_updated, closed_at, opened_at, created_at
+                       long_size, short_size, long_avg_price, short_avg_price,
+                       leverage, position_value, liq_price, bust_price, take_profit, stop_loss,
+                       cum_realised_pnl, cum_unrealised_pnl,
+                       total_fees, opening_fees, closing_fees,
+                       margin_used, available_margin, maintenance_margin,
+                       max_size, min_size, total_volume_traded,
+                       first_entry_price, last_entry_price, exit_price,
+                       peak_unrealized_pnl, peak_unrealized_pnl_at,
+                       worst_unrealized_pnl, worst_unrealized_pnl_at,
+                       created_at, last_updated, closed_at,
+                       version, source, last_sync_with_bybit, bybit_position_data
                 FROM positions
-                WHERE asset = $1 AND mode = $2
+                WHERE asset = $1 AND mode = $2 AND closed_at IS NULL
             """
             row = await pool.fetchrow(query, asset.upper(), mode.lower())
             if row is None:
-                logger.debug("position_not_found", asset=asset, mode=mode)
+                logger.debug("active_position_not_found", asset=asset, mode=mode)
                 return None
 
             position_dict = dict(row)
-            # Debug: log opened_at value from database
-            opened_at_raw = position_dict.get("opened_at")
-            logger.debug(
-                "position_opened_at_from_db",
-                asset=asset,
-                mode=mode,
-                opened_at_raw=opened_at_raw,
-                opened_at_type=type(opened_at_raw).__name__ if opened_at_raw else None,
-                opened_at_is_none=opened_at_raw is None,
-            )
             position_size = Decimal(str(position_dict["size"]))
-            closed_at = position_dict.get("closed_at")
             
-            # Fix position desynchronization: if position is marked as closed (closed_at is set)
-            # but size is not zero, this might be a new position opened after the previous one was closed.
-            # Instead of force-closing, we should clear closed_at to indicate the position is active again.
-            # Only force-close if size is actually zero (true desynchronization).
-            if closed_at is not None and position_size != 0:
+            # Fix position desynchronization: if size is zero but position is active (closed_at IS NULL),
+            # this is incorrect state - should be closed
+            if position_size == 0:
                 logger.warning(
-                    "position_reopened_after_close",
+                    "active_position_with_zero_size",
                     asset=asset,
                     mode=mode,
-                    size=str(position_size),
-                    closed_at=closed_at.isoformat() if hasattr(closed_at, 'isoformat') else str(closed_at),
-                    action="clearing_closed_at",
+                    action="closing_position",
                 )
-                # Clear closed_at, set opened_at to current time, and reset total_fees to 0 for new position cycle
-                # This ensures total_fees only accumulates for the current open position
-                # opened_at tracks when position was last opened (size changed from 0 to non-zero)
+                # Close the position
                 await pool.execute(
                     """
                     UPDATE positions
-                    SET closed_at = NULL,
-                        opened_at = NOW(),
-                        total_fees = 0,
+                    SET closed_at = NOW(),
+                        exit_price = current_price,
                         version = version + 1,
                         last_updated = NOW()
-                    WHERE asset = $1 AND mode = $2
+                    WHERE asset = $1 AND mode = $2 AND closed_at IS NULL
                     """,
                     asset.upper(),
                     mode.lower(),
                 )
-                position_dict["closed_at"] = None
-                position_dict["opened_at"] = datetime.utcnow()
-                position_dict["total_fees"] = Decimal("0")
-                logger.info(
-                    "position_closed_at_cleared_after_reopen",
-                    asset=asset,
-                    mode=mode,
-                    size=str(position_size),
-                    opened_at_set=True,
-                    total_fees_reset=True,
-                )
-            elif closed_at is not None and position_size == 0:
-                # Position is marked as closed and size is zero - this is correct state
-                # No action needed
-                pass
+                # Return None as position is now closed
+                return None
             
             # Fix missing average_entry_price for non-zero positions
             if position_dict["average_entry_price"] is None and position_size != 0:
@@ -259,16 +241,37 @@ class PositionManager:
             logger.error("position_query_failed", asset=asset, mode=mode, error=str(e))
             raise DatabaseError(f"Failed to query position: {e}") from e
 
-    async def get_all_positions(self) -> List[Position]:
-        """Get all positions from the database."""
+    async def get_position(self, asset: str, mode: str = "one-way") -> Optional[Position]:
+        """Get current active position for an asset/mode pair (public API).
+        
+        Returns only active positions (closed_at IS NULL).
+        For historical positions, use get_position_history() or get_closed_position_by_id().
+        """
+        return await self.get_active_position(asset, mode)
+
+    async def get_all_active_positions(self) -> List[Position]:
+        """Get all active positions (closed_at IS NULL).
+        
+        This is an internal method - use get_all_positions() for public API.
+        """
         try:
             pool = await DatabaseConnection.get_pool()
             query = """
                 SELECT id, asset, mode, size, average_entry_price, current_price,
                        unrealized_pnl, realized_pnl,
-                       long_size, short_size, version,
-                       last_updated, closed_at, created_at
+                       long_size, short_size, long_avg_price, short_avg_price,
+                       leverage, position_value, liq_price, bust_price, take_profit, stop_loss,
+                       cum_realised_pnl, cum_unrealised_pnl,
+                       total_fees, opening_fees, closing_fees,
+                       margin_used, available_margin, maintenance_margin,
+                       max_size, min_size, total_volume_traded,
+                       first_entry_price, last_entry_price, exit_price,
+                       peak_unrealized_pnl, peak_unrealized_pnl_at,
+                       worst_unrealized_pnl, worst_unrealized_pnl_at,
+                       created_at, last_updated, closed_at,
+                       version, source, last_sync_with_bybit, bybit_position_data
                 FROM positions
+                WHERE closed_at IS NULL AND size != 0
                 ORDER BY asset, mode
             """
             rows = await pool.fetch(query)
@@ -278,8 +281,7 @@ class PositionManager:
                     position = Position.from_db_dict(dict(row))
                     positions.append(position)
                 except Exception as e:
-                    # Skip positions with validation errors (e.g., non-zero size without average_entry_price)
-                    # Log warning but don't fail the entire operation
+                    # Skip positions with validation errors
                     row_dict = dict(row)
                     logger.warning(
                         "position_validation_error_skipped",
@@ -289,11 +291,167 @@ class PositionManager:
                         average_entry_price=str(row_dict.get("average_entry_price")) if row_dict.get("average_entry_price") else None,
                         error=str(e),
                     )
-            logger.debug("all_positions_retrieved", count=len(positions), skipped=len(rows) - len(positions))
+            logger.debug("all_active_positions_retrieved", count=len(positions), skipped=len(rows) - len(positions))
             return positions
         except Exception as e:  # pragma: no cover
-            logger.error("get_all_positions_failed", error=str(e))
-            raise DatabaseError(f"Failed to retrieve all positions: {e}") from e
+            logger.error("get_all_active_positions_failed", error=str(e))
+            raise DatabaseError(f"Failed to retrieve all active positions: {e}") from e
+
+    async def get_all_positions(self) -> List[Position]:
+        """Get all active positions from the database (public API).
+        
+        Returns only active positions (closed_at IS NULL) by default.
+        For historical positions, use get_position_history().
+        """
+        return await self.get_all_active_positions()
+
+    async def get_position_history(
+        self,
+        asset: str,
+        mode: str = "one-way",
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[Position]:
+        """Get history of closed positions for an asset/mode pair.
+        
+        Args:
+            asset: Trading pair symbol
+            mode: Trading mode
+            limit: Maximum number of records to return
+            offset: Number of records to skip
+            
+        Returns:
+            List of closed Position objects ordered by closed_at DESC
+        """
+        try:
+            pool = await DatabaseConnection.get_pool()
+            query = """
+                SELECT id, asset, mode, size, average_entry_price, current_price,
+                       unrealized_pnl, realized_pnl,
+                       long_size, short_size, long_avg_price, short_avg_price,
+                       leverage, position_value, liq_price, bust_price, take_profit, stop_loss,
+                       cum_realised_pnl, cum_unrealised_pnl,
+                       total_fees, opening_fees, closing_fees,
+                       margin_used, available_margin, maintenance_margin,
+                       max_size, min_size, total_volume_traded,
+                       first_entry_price, last_entry_price, exit_price,
+                       peak_unrealized_pnl, peak_unrealized_pnl_at,
+                       worst_unrealized_pnl, worst_unrealized_pnl_at,
+                       created_at, last_updated, closed_at,
+                       version, source, last_sync_with_bybit, bybit_position_data
+                FROM positions
+                WHERE asset = $1 AND mode = $2 AND closed_at IS NOT NULL
+                ORDER BY closed_at DESC
+                LIMIT $3 OFFSET $4
+            """
+            rows = await pool.fetch(query, asset.upper(), mode.lower(), limit, offset)
+            positions = [Position.from_db_dict(dict(row)) for row in rows]
+            logger.debug(
+                "position_history_retrieved",
+                asset=asset,
+                mode=mode,
+                count=len(positions),
+            )
+            return positions
+        except Exception as e:
+            logger.error(
+                "position_history_query_failed",
+                asset=asset,
+                mode=mode,
+                error=str(e),
+            )
+            raise DatabaseError(f"Failed to query position history: {e}") from e
+
+    async def get_closed_position_by_id(self, position_id: UUID) -> Optional[Position]:
+        """Get a closed position by ID.
+        
+        Args:
+            position_id: Position ID
+            
+        Returns:
+            Closed Position object or None if not found
+        """
+        try:
+            pool = await DatabaseConnection.get_pool()
+            query = """
+                SELECT id, asset, mode, size, average_entry_price, current_price,
+                       unrealized_pnl, realized_pnl,
+                       long_size, short_size, long_avg_price, short_avg_price,
+                       leverage, position_value, liq_price, bust_price, take_profit, stop_loss,
+                       cum_realised_pnl, cum_unrealised_pnl,
+                       total_fees, opening_fees, closing_fees,
+                       margin_used, available_margin, maintenance_margin,
+                       max_size, min_size, total_volume_traded,
+                       first_entry_price, last_entry_price, exit_price,
+                       peak_unrealized_pnl, peak_unrealized_pnl_at,
+                       worst_unrealized_pnl, worst_unrealized_pnl_at,
+                       created_at, last_updated, closed_at,
+                       version, source, last_sync_with_bybit, bybit_position_data
+                FROM positions
+                WHERE id = $1 AND closed_at IS NOT NULL
+            """
+            row = await pool.fetchrow(query, str(position_id))
+            if row is None:
+                logger.debug("closed_position_not_found", position_id=str(position_id))
+                return None
+            
+            position = Position.from_db_dict(dict(row))
+            logger.debug("closed_position_retrieved", position_id=str(position_id))
+            return position
+        except Exception as e:
+            logger.error(
+                "closed_position_query_failed",
+                position_id=str(position_id),
+                error=str(e),
+            )
+            raise DatabaseError(f"Failed to query closed position: {e}") from e
+
+    async def get_position_by_id(
+        self,
+        position_id: UUID,
+    ) -> Optional[Position]:
+        """Get a position by its ID (active or closed).
+        
+        Args:
+            position_id: UUID of the position
+            
+        Returns:
+            Position object (active or closed) or None if not found
+        """
+        try:
+            pool = await DatabaseConnection.get_pool()
+            query = """
+                SELECT id, asset, mode, size, average_entry_price, current_price,
+                       unrealized_pnl, realized_pnl,
+                       long_size, short_size, long_avg_price, short_avg_price,
+                       leverage, position_value, liq_price, bust_price, take_profit, stop_loss,
+                       cum_realised_pnl, cum_unrealised_pnl,
+                       total_fees, opening_fees, closing_fees,
+                       margin_used, available_margin, maintenance_margin,
+                       max_size, min_size, total_volume_traded,
+                       first_entry_price, last_entry_price, exit_price,
+                       peak_unrealized_pnl, peak_unrealized_pnl_at,
+                       worst_unrealized_pnl, worst_unrealized_pnl_at,
+                       created_at, last_updated, closed_at,
+                       version, source, last_sync_with_bybit, bybit_position_data
+                FROM positions
+                WHERE id = $1
+            """
+            row = await pool.fetchrow(query, str(position_id))
+            if row is None:
+                logger.debug("position_not_found_by_id", position_id=str(position_id))
+                return None
+            
+            position = Position.from_db_dict(dict(row))
+            logger.debug("position_retrieved_by_id", position_id=str(position_id), is_closed=position.is_closed)
+            return position
+        except Exception as e:
+            logger.error(
+                "position_query_by_id_failed",
+                position_id=str(position_id),
+                error=str(e),
+            )
+            raise DatabaseError(f"Failed to query position by ID: {e}") from e
 
     # === WebSocket-based update (Phase 4 enhanced) ==========================
 
@@ -327,140 +485,240 @@ class PositionManager:
             pool = await DatabaseConnection.get_pool()
 
             for attempt in range(max_retries):
-                position = await self.get_position(asset, mode)
-
-                if position is None:
-                    # Position creation on first WebSocket update
-                    if mark_price is None:
-                        # Try external API if mark_price missing
-                        mark_price = await self._get_current_price_from_api(asset, trace_id=trace_id)
-
-                    if mark_price is None:
-                        logger.warning(
-                            "ws_position_update_missing_price_cannot_create",
-                            asset=asset,
-                            mode=mode,
-                            trace_id=trace_id,
+                # Use transaction with SELECT FOR UPDATE for race condition protection
+                async with pool.acquire() as conn:
+                    async with conn.transaction():
+                        # Check for existing active position with lock
+                        existing_row = await conn.fetchrow(
+                            """
+                            SELECT id, size, version, closed_at
+                            FROM positions
+                            WHERE asset = $1 AND mode = $2 AND closed_at IS NULL
+                            FOR UPDATE
+                            """,
+                            asset.upper(),
+                            mode.lower(),
                         )
-                        return None
 
-                    # When created from WS, we rely on WebSocket unrealisedPnl & avgPrice
-                    new_size = size_from_ws or Decimal("0")
-                    new_avg_price = avg_price
-                    
-                    # If position size is zero, average_entry_price must be NULL
-                    if new_size == 0:
-                        new_avg_price = None
-                    # If avg_price is missing but position size is non-zero, calculate from order history
-                    elif new_avg_price is None and new_size != 0:
-                        calculated_avg_price = await self._calculate_average_entry_price_from_orders(
-                            asset, new_size
-                        )
-                        if calculated_avg_price:
-                            new_avg_price = calculated_avg_price
-                            logger.info(
-                                "average_entry_price_calculated_for_new_position",
-                                asset=asset,
-                                mode=mode,
-                                size=str(new_size),
-                                calculated_avg_price=str(new_avg_price),
-                                trace_id=trace_id,
+                        if existing_row is None:
+                            # No active position - create new one or handle reopen
+                            # Check if there's a closed position (reopen scenario)
+                            closed_row = await conn.fetchrow(
+                                """
+                                SELECT id, closed_at
+                                FROM positions
+                                WHERE asset = $1 AND mode = $2 AND closed_at IS NOT NULL
+                                ORDER BY closed_at DESC
+                                LIMIT 1
+                                """,
+                                asset.upper(),
+                                mode.lower(),
                             )
-                        elif mark_price:
-                            # Fallback: use mark_price if order history unavailable
-                            new_avg_price = mark_price
-                            logger.warning(
-                                "average_entry_price_using_mark_price_fallback",
-                                asset=asset,
-                                mode=mode,
-                                size=str(new_size),
-                                mark_price=str(mark_price),
-                                trace_id=trace_id,
+                            
+                            # Position creation on first WebSocket update or reopen
+                            if mark_price is None:
+                                # Try external API if mark_price missing
+                                mark_price = await self._get_current_price_from_api(asset, trace_id=trace_id)
+
+                            if mark_price is None:
+                                logger.warning(
+                                    "ws_position_update_missing_price_cannot_create",
+                                    asset=asset,
+                                    mode=mode,
+                                    trace_id=trace_id,
+                                )
+                                return None
+
+                            # When created from WS, we rely on WebSocket unrealisedPnl & avgPrice
+                            new_size = size_from_ws or Decimal("0")
+                            new_avg_price = avg_price
+                            
+                            # If position size is zero, don't create position
+                            if new_size == 0:
+                                return None
+                            
+                            # If avg_price is missing but position size is non-zero, calculate from order history
+                            if new_avg_price is None and new_size != 0:
+                                calculated_avg_price = await self._calculate_average_entry_price_from_orders(
+                                    asset, new_size
+                                )
+                                if calculated_avg_price:
+                                    new_avg_price = calculated_avg_price
+                                    logger.info(
+                                        "average_entry_price_calculated_for_new_position",
+                                        asset=asset,
+                                        mode=mode,
+                                        size=str(new_size),
+                                        calculated_avg_price=str(new_avg_price),
+                                        trace_id=trace_id,
+                                    )
+                                elif mark_price:
+                                    # Fallback: use mark_price if order history unavailable
+                                    new_avg_price = mark_price
+                                    logger.warning(
+                                        "average_entry_price_using_mark_price_fallback",
+                                        asset=asset,
+                                        mode=mode,
+                                        size=str(new_size),
+                                        mark_price=str(mark_price),
+                                        trace_id=trace_id,
+                                    )
+                            
+                            # Validate that new_avg_price is positive if not None
+                            if new_avg_price is not None and new_avg_price <= 0:
+                                logger.warning(
+                                    "avg_price_invalid_negative_or_zero_insert",
+                                    asset=asset,
+                                    mode=mode,
+                                    invalid_avg=str(new_avg_price),
+                                    new_size=str(new_size),
+                                    trace_id=trace_id,
+                                )
+                                new_avg_price = None
+                            
+                            unreal = unrealized_pnl or Decimal("0")
+                            realized = realized_pnl or Decimal("0")
+
+                            # Create new position (reopen scenario)
+                            insert_query = """
+                                INSERT INTO positions (
+                                    asset, mode, size, average_entry_price,
+                                    unrealized_pnl, realized_pnl, total_fees,
+                                    current_price, version, last_updated, 
+                                    created_at, closed_at
+                                )
+                                VALUES ($1, $2, $3, $4, $5, $6, 0, $7, 1, NOW(), NOW(), NULL)
+                                RETURNING id, asset, mode, size, average_entry_price, current_price,
+                                          unrealized_pnl, realized_pnl,
+                                          long_size, short_size, long_avg_price, short_avg_price,
+                                          leverage, position_value, liq_price, bust_price, take_profit, stop_loss,
+                                          cum_realised_pnl, cum_unrealised_pnl,
+                                          total_fees, opening_fees, closing_fees,
+                                          margin_used, available_margin, maintenance_margin,
+                                          max_size, min_size, total_volume_traded,
+                                          first_entry_price, last_entry_price, exit_price,
+                                          peak_unrealized_pnl, peak_unrealized_pnl_at,
+                                          worst_unrealized_pnl, worst_unrealized_pnl_at,
+                                          created_at, last_updated, closed_at,
+                                          version, source, last_sync_with_bybit, bybit_position_data
+                            """
+                            try:
+                                row = await conn.fetchrow(
+                                    insert_query,
+                                    asset.upper(),
+                                    mode.lower(),
+                                    str(new_size),
+                                    str(new_avg_price) if new_avg_price is not None else None,
+                                    str(unreal),
+                                    str(realized),
+                                    str(mark_price) if mark_price is not None else None,
+                                )
+                                if row:
+                                    created = Position.from_db_dict(dict(row))
+                                    # Record last WebSocket timestamp for conflict resolution
+                                    ws_effective_ts = event_timestamp or created.last_updated
+                                    if ws_effective_ts is not None:
+                                        key = (created.asset, created.mode)
+                                        self._last_ws_timestamp[key] = ws_effective_ts
+                                    logger.info(
+                                        "position_created_from_websocket",
+                                        asset=asset,
+                                        mode=mode,
+                                        size=str(created.size),
+                                        current_price=str(created.current_price)
+                                        if created.current_price is not None
+                                        else None,
+                                        trace_id=trace_id,
+                                    )
+                                    try:
+                                        from .portfolio_manager import default_portfolio_manager
+
+                                        default_portfolio_manager.invalidate_cache()
+                                    except Exception:  # pragma: no cover
+                                        logger.warning("portfolio_cache_invalidation_failed_from_ws")
+                                    # Best-effort publish position event
+                                    try:
+                                        await PositionEventPublisher.publish_position_updated(
+                                            position=created,
+                                            update_source="websocket",
+                                            trace_id=trace_id,
+                                        )
+                                    except Exception:  # pragma: no cover
+                                        logger.warning("position_event_publish_failed_from_ws_create")
+                                    return created
+                            except Exception as e:
+                                # Handle UniqueViolationError (race condition - active position created by another process)
+                                if "unique" in str(e).lower() or "duplicate" in str(e).lower():
+                                    logger.warning(
+                                        "active_position_exists_on_reopen",
+                                        asset=asset,
+                                        mode=mode,
+                                        reason="Race condition: active position found during reopen",
+                                        trace_id=trace_id,
+                                    )
+                                    # Position was created by another process - retry to get it
+                                    # Break out of INSERT block and continue to UPDATE path
+                                    pass
+                                else:
+                                    raise
+                        
+                        # Active position exists (either found initially or created by another process)
+                        # Read it with lock for update
+                        position_row = await conn.fetchrow(
+                            """
+                            SELECT id, asset, mode, size, average_entry_price, current_price,
+                                   unrealized_pnl, realized_pnl,
+                                   long_size, short_size, long_avg_price, short_avg_price,
+                                   leverage, position_value, liq_price, bust_price, take_profit, stop_loss,
+                                   cum_realised_pnl, cum_unrealised_pnl,
+                                   total_fees, opening_fees, closing_fees,
+                                   margin_used, available_margin, maintenance_margin,
+                                   max_size, min_size, total_volume_traded,
+                                   first_entry_price, last_entry_price, exit_price,
+                                   peak_unrealized_pnl, peak_unrealized_pnl_at,
+                                   worst_unrealized_pnl, worst_unrealized_pnl_at,
+                                   created_at, last_updated, closed_at,
+                                   version, source, last_sync_with_bybit, bybit_position_data
+                            FROM positions
+                            WHERE asset = $1 AND mode = $2 AND closed_at IS NULL
+                            FOR UPDATE
+                            """,
+                            asset.upper(),
+                            mode.lower(),
+                        )
+                        
+                        if position_row is None:
+                            # Position was closed between check and read, or still doesn't exist
+                            # If we just tried to create it and got UniqueViolationError, retry
+                            if attempt < max_retries - 1:
+                                await asyncio.sleep(backoff_base_ms / 1000.0 * (2 ** attempt))
+                                continue
+                            # If position size is zero, don't create position
+                            if size_from_ws is None or size_from_ws == 0:
+                                return None
+                            # Last attempt: try one more time to get position
+                            # If still not found, return None (position might have been closed)
+                            return None
+                        
+                        position = Position.from_db_dict(dict(position_row))
+                        
+                        # Check if position is closed (size = 0) - should not happen for active position
+                        if position.size == 0:
+                            # Auto-fix: close the position
+                            await conn.execute(
+                                """
+                                UPDATE positions
+                                SET closed_at = NOW(),
+                                    exit_price = current_price,
+                                    version = version + 1,
+                                    last_updated = NOW()
+                                WHERE asset = $1 AND mode = $2 AND closed_at IS NULL
+                                """,
+                                asset.upper(),
+                                mode.lower(),
                             )
-                    
-                    # Validate that new_avg_price is positive if not None
-                    if new_avg_price is not None and new_avg_price <= 0:
-                        logger.warning(
-                            "avg_price_invalid_negative_or_zero_insert",
-                            asset=asset,
-                            mode=mode,
-                            invalid_avg=str(new_avg_price),
-                            new_size=str(new_size),
-                            trace_id=trace_id,
-                        )
-                        new_avg_price = None
-                    
-                    unreal = unrealized_pnl or Decimal("0")
-                    realized = realized_pnl or Decimal("0")
-
-                    # Set opened_at if position size is non-zero (position is being opened)
-                    opened_at_value = "NOW()" if new_size != 0 else "NULL"
-                    
-                    insert_query = f"""
-                        INSERT INTO positions (
-                            asset, mode, size, average_entry_price,
-                            unrealized_pnl, realized_pnl, total_fees,
-                            current_price, version, last_updated, opened_at, created_at
-                        )
-                        VALUES ($1, $2, $3, $4, $5, $6, 0, $7, 1, NOW(), {opened_at_value}, NOW())
-                        ON CONFLICT (asset, mode) DO NOTHING
-                        RETURNING id, asset, mode, size, average_entry_price, current_price,
-                                  unrealized_pnl, realized_pnl,
-                                  long_size, short_size, version,
-                                  last_updated, closed_at, opened_at, created_at
-                    """
-                    row = await pool.fetchrow(
-                        insert_query,
-                        asset.upper(),
-                        mode.lower(),
-                        str(new_size),
-                        str(new_avg_price) if new_avg_price is not None else None,
-                        str(unreal),
-                        str(realized),
-                        str(mark_price) if mark_price is not None else None,
-                    )
-                    if row:
-                        created = Position.from_db_dict(dict(row))
-                        # Record last WebSocket timestamp for conflict resolution (Phase 9)
-                        ws_effective_ts = event_timestamp or created.last_updated
-                        if ws_effective_ts is not None:
-                            key = (created.asset, created.mode)
-                            self._last_ws_timestamp[key] = ws_effective_ts
-                        logger.info(
-                            "position_created_from_websocket",
-                            asset=asset,
-                            mode=mode,
-                            size=str(created.size),
-                            current_price=str(created.current_price)
-                            if created.current_price is not None
-                            else None,
-                            trace_id=trace_id,
-                        )
-                        try:
-                            from .portfolio_manager import default_portfolio_manager
-
-                            default_portfolio_manager.invalidate_cache()
-                        except Exception:  # pragma: no cover
-                            logger.warning("portfolio_cache_invalidation_failed_from_ws")
-                        # Best-effort publish position event
-                        try:
-                            await PositionEventPublisher.publish_position_updated(
-                                position=created,
-                                update_source="websocket",
-                                trace_id=trace_id,
-                            )
-                        except Exception:  # pragma: no cover
-                            logger.warning("position_event_publish_failed_from_ws_create")
-                        return created
-
-                    logger.warning(
-                        "ws_position_create_conflict_retry",
-                        asset=asset,
-                        mode=mode,
-                        attempt=attempt + 1,
-                        trace_id=trace_id,
-                    )
-                else:
+                            return None
+                        
                     # Effective WebSocket timestamp for this update
                     ws_effective_ts = event_timestamp or position.last_updated
 
@@ -488,87 +746,87 @@ class PositionManager:
                                         trace_id=trace_id,
                                     )
                                     new_avg_price = recalculated
-                    
-                    # Validate that new_avg_price is positive if not None
-                    if new_avg_price is not None and new_avg_price <= 0:
-                        logger.warning(
-                            "avg_price_invalid_negative_or_zero",
-                            asset=asset,
-                            mode=mode,
-                            invalid_avg=str(new_avg_price),
-                            trace_id=trace_id,
-                        )
-                        new_avg_price = None
-                    
-                    if (
-                        position.average_entry_price is not None
-                        and avg_price is not None
-                        and new_avg_price == avg_price
-                    ):
-                        logger.info(
-                            "avg_price_conflict_resolved",
-                            asset=asset,
-                            mode=mode,
-                            old_avg=str(position.average_entry_price),
-                            new_avg=str(avg_price),
-                            trace_id=trace_id,
-                        )
-
-                    # Size validation + optional timestamp-based conflict resolution (Phase 9)
-                    size_update_from_ws = False
-                    resolved_size = position.size
-
-                    if self._has_size_discrepancy(position.size, size_from_ws):
-                        size_diff = abs(size_from_ws - position.size)  # type: ignore[arg-type]
-                        threshold = Decimal(
-                            str(settings.position_manager_size_validation_threshold)
-                        )
-                        logger.warning(
-                            "position_size_discrepancy_detected",
-                            asset=asset,
-                            mode=mode,
-                            db_size=str(position.size),
-                            ws_size=str(size_from_ws),
-                            diff=str(size_diff),
-                            threshold=str(threshold),
-                            trace_id=trace_id,
-                        )
-
-                        # NOTE: Positions are now updated only from WebSocket events.
-                        # Size discrepancy resolution is based on WebSocket data as source of truth.
-                        # Always use WebSocket size if there's a significant discrepancy.
-                        # (Previous order_timestamp-based conflict resolution removed)
-                        if self._should_update_size_from_ws(
-                            db_size=position.size,
-                            ws_size=size_from_ws,
-                            ws_timestamp=ws_effective_ts,
-                            order_timestamp=None,  # DEPRECATED: no longer used
+                        
+                        # Validate that new_avg_price is positive if not None
+                        if new_avg_price is not None and new_avg_price <= 0:
+                            logger.warning(
+                                "avg_price_invalid_negative_or_zero",
+                                asset=asset,
+                                mode=mode,
+                                invalid_avg=str(new_avg_price),
+                                trace_id=trace_id,
+                            )
+                            new_avg_price = None
+                        
+                        if (
+                            position.average_entry_price is not None
+                            and avg_price is not None
+                            and new_avg_price == avg_price
                         ):
-                            size_update_from_ws = True
-                            resolved_size = size_from_ws  # type: ignore[assignment]
                             logger.info(
-                                "position_size_resolved_from_websocket",
+                                "avg_price_conflict_resolved",
+                                asset=asset,
+                                mode=mode,
+                                old_avg=str(position.average_entry_price),
+                                new_avg=str(avg_price),
+                                trace_id=trace_id,
+                            )
+
+                        # Size validation + optional timestamp-based conflict resolution (Phase 9)
+                        size_update_from_ws = False
+                        resolved_size = position.size
+
+                        if self._has_size_discrepancy(position.size, size_from_ws):
+                            size_diff = abs(size_from_ws - position.size)  # type: ignore[arg-type]
+                            threshold = Decimal(
+                                str(settings.position_manager_size_validation_threshold)
+                            )
+                            logger.warning(
+                                "position_size_discrepancy_detected",
                                 asset=asset,
                                 mode=mode,
                                 db_size=str(position.size),
                                 ws_size=str(size_from_ws),
-                                ws_timestamp=ws_effective_ts.isoformat()
-                                if ws_effective_ts is not None
-                                else None,
+                                diff=str(size_diff),
+                                threshold=str(threshold),
                                 trace_id=trace_id,
                             )
-                        else:
-                            logger.info(
-                                "position_size_ws_not_applied_due_to_threshold",
-                                asset=asset,
-                                mode=mode,
-                                db_size=str(position.size),
-                                ws_size=str(size_from_ws),
-                                ws_timestamp=ws_effective_ts.isoformat()
-                                if ws_effective_ts is not None
-                                else None,
-                                trace_id=trace_id,
-                            )
+
+                            # NOTE: Positions are now updated only from WebSocket events.
+                            # Size discrepancy resolution is based on WebSocket data as source of truth.
+                            # Always use WebSocket size if there's a significant discrepancy.
+                            # (Previous order_timestamp-based conflict resolution removed)
+                            if self._should_update_size_from_ws(
+                                db_size=position.size,
+                                ws_size=size_from_ws,
+                                ws_timestamp=ws_effective_ts,
+                                order_timestamp=None,  # DEPRECATED: no longer used
+                            ):
+                                size_update_from_ws = True
+                                resolved_size = size_from_ws  # type: ignore[assignment]
+                                logger.info(
+                                    "position_size_resolved_from_websocket",
+                                    asset=asset,
+                                    mode=mode,
+                                    db_size=str(position.size),
+                                    ws_size=str(size_from_ws),
+                                    ws_timestamp=ws_effective_ts.isoformat()
+                                    if ws_effective_ts is not None
+                                    else None,
+                                    trace_id=trace_id,
+                                )
+                            else:
+                                logger.info(
+                                    "position_size_ws_not_applied_due_to_threshold",
+                                    asset=asset,
+                                    mode=mode,
+                                    db_size=str(position.size),
+                                    ws_size=str(size_from_ws),
+                                    ws_timestamp=ws_effective_ts.isoformat()
+                                    if ws_effective_ts is not None
+                                    else None,
+                                    trace_id=trace_id,
+                                )
                     
                     # If position is closed (size = 0), set average_entry_price to NULL
                     if resolved_size == 0:
@@ -643,8 +901,8 @@ class PositionManager:
                         else:
                             # Position is closed (size == 0)
                             # Note: This new_realized is used for updating positions table.
-                            # For closed_positions table, we use unrealized_pnl_at_close instead
-                            # (see logic below when saving to closed_positions)
+                                # For closed positions, we use unrealized_pnl_at_close instead
+                                # (see logic below when closing position)
                             new_realized = realized_pnl
                     else:
                         # No realized_pnl from WebSocket, keep existing value
@@ -654,7 +912,7 @@ class PositionManager:
                     if resolved_size == 0 or (new_avg_price is not None and new_avg_price <= 0):
                         new_avg_price = None
 
-                    # If position is being closed (size becomes 0, but wasn't 0 before), save to closed_positions
+                        # If position is being closed (size becomes 0, but wasn't 0 before), close it
                     if resolved_size == 0 and position.size != 0:
                         # Get exit_price: use mark_price if available, otherwise current_price from position
                         exit_price = mark_price if mark_price is not None else position.current_price
@@ -670,39 +928,86 @@ class PositionManager:
                         position_realized_pnl = unrealized_at_close
                         
                         # Get total_fees if available
-                        total_fees_row = await pool.fetchrow(
-                            "SELECT total_fees FROM positions WHERE asset = $1 AND mode = $2",
+                        total_fees = position.total_fees
+
+                        # Close position with optimistic locking
+                        close_result = await conn.execute(
+                                """
+                                UPDATE positions
+                                SET size = 0,
+                                    closed_at = NOW(),
+                                    exit_price = CASE 
+                                        WHEN $1::text = '' THEN NULL
+                                        ELSE CAST($1::text AS numeric)
+                                    END,
+                                    average_entry_price = NULL,
+                                    current_price = NULL,
+                                    unrealized_pnl = 0,
+                                    realized_pnl = CAST($2 AS numeric),
+                                    total_fees = CASE 
+                                        WHEN $3::text = '' THEN 0
+                                        ELSE CAST($3::text AS numeric)
+                                    END,
+                                    version = version + 1,
+                                    last_updated = NOW()
+                                WHERE asset = $4 
+                                  AND mode = $5 
+                                  AND closed_at IS NULL
+                                  AND version = $6
+                                """,
+                                str(exit_price) if exit_price is not None else '',
+                                str(position_realized_pnl),
+                                str(total_fees) if total_fees is not None else '',
                             asset.upper(),
                             mode.lower(),
-                        )
-                        total_fees = Decimal(str(total_fees_row["total_fees"])) if total_fees_row and total_fees_row.get("total_fees") is not None else None
+                                position.version,
+                            )
+                            
+                        if close_result == "UPDATE 0":
+                            # Version conflict - retry
+                            if attempt < max_retries - 1:
+                                await asyncio.sleep(backoff_base_ms / 1000.0 * (2 ** attempt))
+                                continue
+                            logger.error(
+                                "position_close_version_conflict",
+                                asset=asset,
+                                mode=mode,
+                                trace_id=trace_id,
+                            )
+                            return None
                         
-                        # Save closed position before updating
-                        await self._save_closed_position(
-                            position=position,
-                            exit_price=exit_price,
-                            entry_price=entry_price,
-                            realized_pnl=position_realized_pnl,
-                            unrealized_pnl_at_close=unrealized_at_close,
-                            total_fees=total_fees,
-                            trace_id=trace_id,
-                        )
+                        # Position closed successfully
+                        closed_position = await self.get_closed_position_by_id(position.id)
+                        if closed_position:
+                            logger.info(
+                                "position_closed_from_websocket",
+                                asset=asset,
+                                mode=mode,
+                                exit_price=str(exit_price) if exit_price else None,
+                                realized_pnl=str(position_realized_pnl),
+                                trace_id=trace_id,
+                            )
+                            try:
+                                from .portfolio_manager import default_portfolio_manager
+                                default_portfolio_manager.invalidate_cache()
+                            except Exception:  # pragma: no cover
+                                logger.warning("portfolio_cache_invalidation_failed_from_ws")
+                            # Best-effort publish position event
+                            try:
+                                await PositionEventPublisher.publish_position_updated(
+                                    position=closed_position,
+                                    update_source="websocket",
+                                    trace_id=trace_id,
+                                )
+                            except Exception:  # pragma: no cover
+                                logger.warning("position_event_publish_failed_from_ws_close")
+                            return closed_position
+                        return None
 
-                    # Track position opening: if size changes from 0 to non-zero, set opened_at
-                    # This happens when position.size == 0 and resolved_size != 0
-                    opened_at_update = ""
-                    if position.size == 0 and resolved_size != 0:
-                        opened_at_update = ", opened_at = NOW()"
-                        logger.info(
-                            "position_opening_tracked",
-                            asset=asset,
-                            mode=mode,
-                            old_size=str(position.size),
-                            new_size=str(resolved_size),
-                            trace_id=trace_id,
-                        )
-                    
-                    update_query = f"""
+                        # Position opening is tracked via created_at (each record is created once)
+                        
+                        # Update position with optimistic locking
+                        update_query = f"""
                         UPDATE positions
                         SET size = CAST($1 AS numeric),
                             current_price = CASE 
@@ -726,30 +1031,372 @@ class PositionManager:
                             closed_at = CASE 
                                 WHEN CAST($1 AS numeric) = 0 THEN NOW() 
                                 ELSE NULL 
-                            END{opened_at_update}
+                                END
+                            WHERE asset = $6
+                              AND mode = $7
+                              AND closed_at IS NULL
+                              AND version = $8
+                            RETURNING id, asset, mode, size, average_entry_price, current_price,
+                                      unrealized_pnl, realized_pnl,
+                                      long_size, short_size, long_avg_price, short_avg_price,
+                                      leverage, position_value, liq_price, bust_price, take_profit, stop_loss,
+                                      cum_realised_pnl, cum_unrealised_pnl,
+                                      total_fees, opening_fees, closing_fees,
+                                      margin_used, available_margin, maintenance_margin,
+                                      max_size, min_size, total_volume_traded,
+                                      first_entry_price, last_entry_price, exit_price,
+                                      peak_unrealized_pnl, peak_unrealized_pnl_at,
+                                      worst_unrealized_pnl, worst_unrealized_pnl_at,
+                                      created_at, last_updated, closed_at,
+                                      version, source, last_sync_with_bybit, bybit_position_data
+                        """
+                        # Always pass string for $2 and $5 to help asyncpg determine parameter type
+                        # Pass empty string instead of None to avoid type inference issues
+                        # This workaround is similar to the datetime issue fix ($4::timestamptz)
+                        current_price_param = str(current_price) if current_price is not None else ''
+                        avg_price_param = str(new_avg_price) if new_avg_price is not None else ''
+                        row = await conn.fetchrow(
+                            update_query,
+                            str(resolved_size),
+                            current_price_param,
+                            str(new_unrealized),
+                            str(new_realized),
+                            avg_price_param,
+                            asset.upper(),
+                            mode.lower(),
+                            position.version,
+                        )
+                        if row:
+                            updated = Position.from_db_dict(dict(row))
+                            # Record last WebSocket timestamp for conflict resolution (Phase 9)
+                            ws_final_ts = ws_effective_ts or updated.last_updated
+                            if ws_final_ts is not None:
+                                key = (updated.asset, updated.mode)
+                                self._last_ws_timestamp[key] = ws_final_ts
+                            logger.info(
+                                "position_updated_from_websocket",
+                                asset=asset,
+                                mode=mode,
+                                size=str(updated.size),
+                                resolved_size=str(resolved_size),
+                                ws_size=str(size_from_ws) if size_from_ws is not None else None,
+                                size_update_from_ws=size_update_from_ws,
+                                current_price=str(updated.current_price)
+                                if updated.current_price is not None
+                                else None,
+                                unrealized_pnl=str(updated.unrealized_pnl),
+                                realized_pnl=str(updated.realized_pnl),
+                                trace_id=trace_id,
+                            )
+                            try:
+                                from .portfolio_manager import default_portfolio_manager
+
+                                default_portfolio_manager.invalidate_cache()
+                            except Exception:  # pragma: no cover
+                                logger.warning("portfolio_cache_invalidation_failed_from_ws")
+                            # Best-effort publish position event
+                            try:
+                                await PositionEventPublisher.publish_position_updated(
+                                    position=updated,
+                                    update_source="websocket",
+                                    trace_id=trace_id,
+                                )
+                            except Exception:  # pragma: no cover
+                                logger.warning("position_event_publish_failed_from_ws_update")
+                            return updated
+
+                        delay_ms = backoff_base_ms * (2**attempt)
+                        logger.warning(
+                            "position_ws_optimistic_lock_conflict",
+                            asset=asset,
+                            mode=mode,
+                            attempt=attempt + 1,
+                            delay_ms=delay_ms,
+                            trace_id=trace_id,
+                        )
+                        if attempt < max_retries - 1:
+                            await asyncio.sleep(delay_ms / 1000.0)
+                            continue
+                        else:
+                            logger.error(
+                                "position_ws_update_max_retries_exceeded",
+                                asset=asset,
+                                mode=mode,
+                                max_retries=max_retries,
+                                trace_id=trace_id,
+                            )
+                            return None
+                    else:
+                        # Effective WebSocket timestamp for this update
+                        ws_effective_ts = event_timestamp or position.last_updated
+
+                        # Conflict resolution for average_entry_price
+                        new_avg_price = self._resolve_avg_price(position.average_entry_price, avg_price)
+                        
+                        # Validate and fix average_entry_price if it seems invalid
+                        # (e.g., if it's more than 10x or less than 0.1x of current_price)
+                        if new_avg_price is not None and position.current_price is not None:
+                            current_price = position.current_price
+                            if new_avg_price > current_price * 10 or new_avg_price < current_price / 10:
+                                # Recalculate from unrealized_pnl if available
+                                if position.unrealized_pnl is not None and position.size != 0:
+                                    recalculated = current_price - (position.unrealized_pnl / abs(position.size))
+                                    if recalculated > 0:
+                                        logger.warning(
+                                            "avg_price_invalid_recalculated",
+                                            asset=asset,
+                                            mode=mode,
+                                            old_avg=str(new_avg_price),
+                                            recalculated_avg=str(recalculated),
+                                            current_price=str(current_price),
+                                            unrealized_pnl=str(position.unrealized_pnl),
+                                            size=str(position.size),
+                                            trace_id=trace_id,
+                                        )
+                                        new_avg_price = recalculated
+                        
+                        # Validate that new_avg_price is positive if not None
+                        if new_avg_price is not None and new_avg_price <= 0:
+                            logger.warning(
+                                "avg_price_invalid_negative_or_zero",
+                                asset=asset,
+                                mode=mode,
+                                invalid_avg=str(new_avg_price),
+                                trace_id=trace_id,
+                            )
+                            new_avg_price = None
+                        
+                        if (
+                            position.average_entry_price is not None
+                            and avg_price is not None
+                            and new_avg_price == avg_price
+                        ):
+                            logger.info(
+                                "avg_price_conflict_resolved",
+                                asset=asset,
+                                mode=mode,
+                                old_avg=str(position.average_entry_price),
+                                new_avg=str(avg_price),
+                                trace_id=trace_id,
+                            )
+
+                        # Size validation + optional timestamp-based conflict resolution (Phase 9)
+                        size_update_from_ws = False
+                        resolved_size = position.size
+
+                        if self._has_size_discrepancy(position.size, size_from_ws):
+                            size_diff = abs(size_from_ws - position.size)  # type: ignore[arg-type]
+                            threshold = Decimal(
+                                str(settings.position_manager_size_validation_threshold)
+                            )
+                            logger.warning(
+                                "position_size_discrepancy_detected",
+                                asset=asset,
+                                mode=mode,
+                                db_size=str(position.size),
+                                ws_size=str(size_from_ws),
+                                diff=str(size_diff),
+                                threshold=str(threshold),
+                                trace_id=trace_id,
+                            )
+
+                            # NOTE: Positions are now updated only from WebSocket events.
+                            # Size discrepancy resolution is based on WebSocket data as source of truth.
+                            # Always use WebSocket size if there's a significant discrepancy.
+                            # (Previous order_timestamp-based conflict resolution removed)
+                            if self._should_update_size_from_ws(
+                                db_size=position.size,
+                                ws_size=size_from_ws,
+                                ws_timestamp=ws_effective_ts,
+                                order_timestamp=None,  # DEPRECATED: no longer used
+                            ):
+                                size_update_from_ws = True
+                                resolved_size = size_from_ws  # type: ignore[assignment]
+                                logger.info(
+                                    "position_size_resolved_from_websocket",
+                                    asset=asset,
+                                    mode=mode,
+                                    db_size=str(position.size),
+                                    ws_size=str(size_from_ws),
+                                    ws_timestamp=ws_effective_ts.isoformat()
+                                    if ws_effective_ts is not None
+                                    else None,
+                                    trace_id=trace_id,
+                                )
+                            else:
+                                logger.info(
+                                    "position_size_ws_not_applied_due_to_threshold",
+                                    asset=asset,
+                                    mode=mode,
+                                    db_size=str(position.size),
+                                    ws_size=str(size_from_ws),
+                                    ws_timestamp=ws_effective_ts.isoformat()
+                                    if ws_effective_ts is not None
+                                    else None,
+                                    trace_id=trace_id,
+                                )
+                    
+                    # If position is closed (size = 0), set average_entry_price to NULL
+                        if resolved_size == 0:
+                            new_avg_price = None
+                            # Also set current_price to NULL for closed positions
+                            current_price = None
+                        else:
+                            # Price and PnL updates
+                            current_price = mark_price or position.current_price
+
+                            # If current_price is NULL, try to fetch it from API
+                            if current_price is None:
+                                refreshed = await self._get_current_price_from_api(
+                                    asset, trace_id=trace_id
+                                )
+                                if refreshed is not None:
+                                    current_price = refreshed
+                            # Otherwise, refresh price if stale
+                            elif self._is_price_stale(position.last_updated):
+                                refreshed = await self._get_current_price_from_api(
+                                    asset, trace_id=trace_id
+                                )
+                                if refreshed is not None:
+                                    current_price = refreshed
+
+                        # Use unrealized_pnl from WebSocket if provided, otherwise calculate from current_price
+                        new_unrealized = unrealized_pnl
+                        if new_unrealized is None:
+                            # Calculate unrealized_pnl from current_price and average_entry_price
+                            if current_price is not None and new_avg_price is not None and resolved_size != 0:
+                                # Formula: (current_price - average_entry_price) * size
+                                # Works for both long (size > 0) and short (size < 0) positions
+                                new_unrealized = (current_price - new_avg_price) * resolved_size
+                            else:
+                                # Fallback to existing unrealized_pnl if cannot calculate
+                                new_unrealized = position.unrealized_pnl
+                        
+                        # Handle realized_pnl: validate value from WebSocket for open positions
+                        # cumRealisedPnl from Bybit can be cumulative across all positions for the asset,
+                        # so for open positions (size != 0) we need to validate it's reasonable
+                        if realized_pnl is not None:
+                            # For open positions, validate that realized_pnl is reasonable
+                            # It should not be orders of magnitude larger than unrealized_pnl
+                            if resolved_size != 0:
+                                # Calculate expected maximum reasonable realized_pnl
+                                # For an open position, realized_pnl should be small compared to position value
+                                position_value = abs(resolved_size * (new_avg_price or current_price or Decimal("1")))
+                                # Allow realized_pnl up to 10x position value (for partial closes)
+                                max_reasonable_realized = abs(position_value * Decimal("10"))
+                                
+                                if abs(realized_pnl) > max_reasonable_realized:
+                                    # Value is unreasonably large, likely cumulative from previous positions
+                                    # For open positions, reset to 0 (existing value might also be incorrect)
+                                    logger.warning(
+                                        "realized_pnl_unreasonable_for_open_position",
+                                        asset=asset,
+                                        mode=mode,
+                                        size=str(resolved_size),
+                                        realized_pnl_from_ws=str(realized_pnl),
+                                        existing_realized_pnl=str(position.realized_pnl),
+                                        max_reasonable=str(max_reasonable_realized),
+                                        position_value=str(position_value),
+                                        action="resetting_to_zero",
+                                        trace_id=trace_id,
+                                    )
+                                    # Reset to 0 for open positions when value is unreasonable
+                                    # This handles cases where existing value is also incorrect (cumulative from previous positions)
+                                    new_realized = Decimal("0")
+                                else:
+                                    # Value is reasonable, use it
+                                    new_realized = realized_pnl
+                            else:
+                                # Position is closed (size == 0)
+                                # Note: This new_realized is used for updating positions table.
+                                # Closed positions are stored in the same positions table with closed_at IS NOT NULL
+                                new_realized = realized_pnl
+                        else:
+                            # No realized_pnl from WebSocket, keep existing value
+                            new_realized = position.realized_pnl or Decimal("0")
+
+                        # Final validation: ensure new_avg_price is None if size is 0 or if it's <= 0
+                        if resolved_size == 0 or (new_avg_price is not None and new_avg_price <= 0):
+                            new_avg_price = None
+
+                        # If position is being closed (size becomes 0, but wasn't 0 before), set closed_at
+                        exit_price = None
+                        entry_price = None
+                        position_realized_pnl = new_realized
+                        if resolved_size == 0 and position.size != 0:
+                            # Get exit_price: use mark_price if available, otherwise current_price from position
+                            exit_price = mark_price if mark_price is not None else position.current_price
+                            # Get average_entry_price before it's cleared (use existing position value)
+                            entry_price = position.average_entry_price
+                            # Use unrealized_pnl from current position (before closing), not the new one (which will be 0)
+                            unrealized_at_close = position.unrealized_pnl or Decimal("0")
+                            
+                            # For a fully closed position, realized_pnl should be the unrealized_pnl_at_close
+                            # because all unrealized PnL becomes realized when position is closed.
+                            # We don't use cumulative realized_pnl from Bybit (new_realized) as it's cumulative
+                            # across all positions for the asset, not specific to this position.
+                            position_realized_pnl = unrealized_at_close
+
+                        # Track position opening: if size changes from 0 to non-zero, set opened_at
+                        # This happens when position.size == 0 and resolved_size != 0
+                        # Position opening is tracked via created_at (each record is created once)
+                        
+                        update_query = f"""
+                        UPDATE positions
+                        SET size = CAST($1 AS numeric),
+                            current_price = CASE 
+                                WHEN $2::text = '' THEN NULL
+                                ELSE CAST($2::text AS numeric)
+                            END,
+                            unrealized_pnl = CAST($3 AS numeric),
+                            realized_pnl = CAST($4 AS numeric),
+                            average_entry_price = CASE 
+                                WHEN CAST($1 AS numeric) = 0 THEN NULL
+                                WHEN $5::text = '' THEN average_entry_price
+                                WHEN CAST($5::text AS numeric) <= 0 THEN NULL
+                                ELSE CAST($5::text AS numeric)
+                            END,
+                            exit_price = CASE 
+                                WHEN CAST($1 AS numeric) = 0 AND $9::text != '' THEN CAST($9::text AS numeric)
+                                WHEN CAST($1 AS numeric) = 0 THEN exit_price
+                                ELSE NULL
+                            END,
+                            total_fees = CASE 
+                                WHEN CAST($1 AS numeric) = 0 THEN 0
+                                ELSE total_fees
+                            END,
+                            version = version + 1,
+                            last_updated = NOW(),
+                            closed_at = CASE 
+                                WHEN CAST($1 AS numeric) = 0 THEN NOW() 
+                                ELSE NULL 
+                            END
                         WHERE asset = $6
                           AND mode = $7
+                          AND closed_at IS NULL
                           AND version = $8
                         RETURNING id, asset, mode, size, average_entry_price, current_price,
                                   unrealized_pnl, realized_pnl,
                                   long_size, short_size, version,
-                                  last_updated, closed_at, opened_at, created_at
+                                  last_updated, closed_at, created_at, exit_price
                     """
-                    # Always pass string for $2 and $5 to help asyncpg determine parameter type
+                    # Always pass string for $2, $5, and $9 to help asyncpg determine parameter type
                     # Pass empty string instead of None to avoid type inference issues
                     # This workaround is similar to the datetime issue fix ($4::timestamptz)
                     current_price_param = str(current_price) if current_price is not None else ''
                     avg_price_param = str(new_avg_price) if new_avg_price is not None else ''
-                    row = await pool.fetchrow(
+                    exit_price_param = str(exit_price) if exit_price is not None else ''
+                    row = await conn.fetchrow(
                         update_query,
                         str(resolved_size),
                         current_price_param,
                         str(new_unrealized),
-                        str(new_realized),
+                        str(position_realized_pnl),  # Use position_realized_pnl for closed positions
                         avg_price_param,
                         asset.upper(),
                         mode.lower(),
                         position.version,
+                        exit_price_param,
                     )
                     if row:
                         updated = Position.from_db_dict(dict(row))
@@ -832,7 +1479,11 @@ class PositionManager:
         fix_discrepancies: bool = True,
         trace_id: Optional[str] = None,
     ) -> Tuple[bool, Optional[str], Optional[Position]]:
-        """Validate position by computing from order history and comparing with stored state.
+        """Validate active position by computing from order history and comparing with stored state.
+        
+        CRITICAL: Only validates active positions (closed_at IS NULL).
+        Validation MUST be performed BEFORE closing a position.
+        After closing, positions are "frozen" and not validated.
 
         Args:
             asset: Trading pair symbol
@@ -880,7 +1531,7 @@ class PositionManager:
                     )
 
             # Get stored position
-            stored_position = await self.get_position(asset, mode)
+            stored_position = await self.get_active_position(asset, mode)
 
             if stored_position is None:
                 if computed_size == 0:
@@ -1057,7 +1708,7 @@ class PositionManager:
                     "unrealized_pnl_pct": str(position.unrealized_pnl_pct)
                     if position.unrealized_pnl_pct is not None
                     else None,
-                    "time_held_minutes": position.time_held_minutes,
+                    "time_held_minutes": position.holding_time_minutes,
                     # position_size_norm depends on portfolio exposure; include key
                     # for schema completeness even if not populated here.
                     "position_size_norm": None,
@@ -1206,233 +1857,6 @@ class PositionManager:
             )
             raise DatabaseError(f"Failed to cleanup old position snapshots: {e}") from e
 
-    # === Closed positions history ==========================================
-
-    async def _save_closed_position(
-        self,
-        position: Position,
-        exit_price: Optional[Decimal],
-        entry_price: Optional[Decimal],
-        realized_pnl: Decimal,
-        unrealized_pnl_at_close: Decimal,
-        total_fees: Optional[Decimal],
-        trace_id: Optional[str] = None,
-    ) -> Optional[ClosedPosition]:
-        """Save closed position to closed_positions table before clearing it in positions table.
-        
-        Args:
-            position: Position being closed
-            exit_price: Price at closure (current_price before clearing)
-            entry_price: Average entry price (before clearing)
-            realized_pnl: Realized PnL at closure
-            unrealized_pnl_at_close: Unrealized PnL at closure
-            total_fees: Total fees if available
-            trace_id: Optional trace ID for logging
-            
-        Returns:
-            ClosedPosition object
-        """
-        try:
-            pool = await DatabaseConnection.get_pool()
-            closed_at = datetime.utcnow()
-            
-            closed_position = ClosedPosition(
-                original_position_id=position.id,
-                asset=position.asset,
-                mode=position.mode,
-                final_size=Decimal("0"),
-                average_entry_price=entry_price,
-                exit_price=exit_price,
-                current_price=exit_price,  # Same as exit_price
-                realized_pnl=realized_pnl,
-                unrealized_pnl_at_close=unrealized_pnl_at_close,
-                long_size=position.long_size,
-                short_size=position.short_size,
-                long_avg_price=None,  # Not stored in positions table currently
-                short_avg_price=None,  # Not stored in positions table currently
-                total_fees=total_fees,
-                opened_at=position.created_at,
-                closed_at=closed_at,
-                version=position.version,
-            )
-            
-            insert_query = """
-                INSERT INTO closed_positions (
-                    id, original_position_id, asset, mode,
-                    final_size, average_entry_price, exit_price, current_price,
-                    realized_pnl, unrealized_pnl_at_close,
-                    long_size, short_size, long_avg_price, short_avg_price,
-                    total_fees, opened_at, closed_at, version
-                )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
-                RETURNING id, original_position_id, asset, mode,
-                          final_size, average_entry_price, exit_price, current_price,
-                          realized_pnl, unrealized_pnl_at_close,
-                          long_size, short_size, long_avg_price, short_avg_price,
-                          total_fees, opened_at, closed_at, version
-            """
-            row = await pool.fetchrow(
-                insert_query,
-                str(closed_position.id),
-                str(closed_position.original_position_id),
-                closed_position.asset,
-                closed_position.mode,
-                str(closed_position.final_size),
-                str(closed_position.average_entry_price) if closed_position.average_entry_price is not None else None,
-                str(closed_position.exit_price) if closed_position.exit_price is not None else None,
-                str(closed_position.current_price) if closed_position.current_price is not None else None,
-                str(closed_position.realized_pnl),
-                str(closed_position.unrealized_pnl_at_close),
-                str(closed_position.long_size) if closed_position.long_size is not None else None,
-                str(closed_position.short_size) if closed_position.short_size is not None else None,
-                str(closed_position.long_avg_price) if closed_position.long_avg_price is not None else None,
-                str(closed_position.short_avg_price) if closed_position.short_avg_price is not None else None,
-                str(closed_position.total_fees) if closed_position.total_fees is not None else None,
-                closed_position.opened_at,
-                closed_position.closed_at,
-                closed_position.version,
-            )
-            
-            saved = ClosedPosition.from_db_dict(dict(row))
-            logger.info(
-                "closed_position_saved",
-                closed_position_id=str(saved.id),
-                original_position_id=str(saved.original_position_id),
-                asset=saved.asset,
-                mode=saved.mode,
-                realized_pnl=str(saved.realized_pnl),
-                exit_price=str(saved.exit_price) if saved.exit_price else None,
-                trace_id=trace_id,
-            )
-            return saved
-        except Exception as e:
-            logger.error(
-                "closed_position_save_failed",
-                original_position_id=str(position.id),
-                asset=position.asset,
-                mode=position.mode,
-                error=str(e),
-                trace_id=trace_id,
-                exc_info=True,
-            )
-            # Don't raise - we don't want to fail position closure if history save fails
-            # Log error but continue with position update
-            # Return None to indicate save failed, but don't block position closure
-            return None
-
-    async def get_closed_positions(
-        self,
-        asset: Optional[str] = None,
-        limit: int = 100,
-        offset: int = 0,
-        trace_id: Optional[str] = None,
-    ) -> List[ClosedPosition]:
-        """Get closed positions history.
-        
-        Args:
-            asset: Optional asset filter
-            limit: Maximum number of records to return
-            offset: Number of records to skip
-            trace_id: Optional trace ID for logging
-            
-        Returns:
-            List of ClosedPosition objects ordered by closed_at DESC
-        """
-        try:
-            pool = await DatabaseConnection.get_pool()
-            
-            if asset:
-                query = """
-                    SELECT id, original_position_id, asset, mode,
-                           final_size, average_entry_price, exit_price, current_price,
-                           realized_pnl, unrealized_pnl_at_close,
-                           long_size, short_size, long_avg_price, short_avg_price,
-                           total_fees, opened_at, closed_at, version
-                    FROM closed_positions
-                    WHERE asset = $1
-                    ORDER BY closed_at DESC
-                    LIMIT $2 OFFSET $3
-                """
-                rows = await pool.fetch(query, asset.upper(), limit, offset)
-            else:
-                query = """
-                    SELECT id, original_position_id, asset, mode,
-                           final_size, average_entry_price, exit_price, current_price,
-                           realized_pnl, unrealized_pnl_at_close,
-                           long_size, short_size, long_avg_price, short_avg_price,
-                           total_fees, opened_at, closed_at, version
-                    FROM closed_positions
-                    ORDER BY closed_at DESC
-                    LIMIT $1 OFFSET $2
-                """
-                rows = await pool.fetch(query, limit, offset)
-            
-            closed_positions = [ClosedPosition.from_db_dict(dict(row)) for row in rows]
-            logger.debug(
-                "closed_positions_retrieved",
-                asset=asset,
-                count=len(closed_positions),
-                trace_id=trace_id,
-            )
-            return closed_positions
-        except Exception as e:
-            logger.error(
-                "closed_positions_query_failed",
-                asset=asset,
-                error=str(e),
-                trace_id=trace_id,
-            )
-            raise DatabaseError(f"Failed to query closed positions: {e}") from e
-
-    async def get_closed_position_by_id(
-        self,
-        closed_position_id: UUID,
-        trace_id: Optional[str] = None,
-    ) -> Optional[ClosedPosition]:
-        """Get a specific closed position by ID.
-        
-        Args:
-            closed_position_id: ID of closed position
-            trace_id: Optional trace ID for logging
-            
-        Returns:
-            ClosedPosition object or None if not found
-        """
-        try:
-            pool = await DatabaseConnection.get_pool()
-            query = """
-                SELECT id, original_position_id, asset, mode,
-                       final_size, average_entry_price, exit_price, current_price,
-                       realized_pnl, unrealized_pnl_at_close,
-                       long_size, short_size, long_avg_price, short_avg_price,
-                       total_fees, opened_at, closed_at, version
-                FROM closed_positions
-                WHERE id = $1
-            """
-            row = await pool.fetchrow(query, str(closed_position_id))
-            if row is None:
-                logger.debug(
-                    "closed_position_not_found",
-                    closed_position_id=str(closed_position_id),
-                    trace_id=trace_id,
-                )
-                return None
-            
-            closed_position = ClosedPosition.from_db_dict(dict(row))
-            logger.debug(
-                "closed_position_retrieved",
-                closed_position_id=str(closed_position_id),
-                trace_id=trace_id,
-            )
-            return closed_position
-        except Exception as e:
-            logger.error(
-                "closed_position_query_failed",
-                closed_position_id=str(closed_position_id),
-                error=str(e),
-                trace_id=trace_id,
-            )
-            raise DatabaseError(f"Failed to query closed position: {e}") from e
 
     # === Validation helpers (Phase 7) ======================================
 
@@ -1460,7 +1884,7 @@ class PositionManager:
             pool = await DatabaseConnection.get_pool()
 
             # Get existing position to preserve current_price and other fields
-            existing = await self.get_position(asset, mode)
+            existing = await self.get_active_position(asset, mode)
 
             # Validate: if size is non-zero, average_entry_price must be set
             if computed_size != 0 and computed_avg_price is None:
@@ -1488,9 +1912,7 @@ class PositionManager:
                 # Track position opening: if size changes from 0 to non-zero, set opened_at
                 # Check if position was closed (size == 0) and is now being opened
                 existing_size = existing.size if existing else Decimal("0")
-                opened_at_update = ""
-                if existing_size == 0 and computed_size != 0:
-                    opened_at_update = ", opened_at = NOW()"
+                # Position opening is tracked via created_at (each record is created once)
                 
                 upsert_query = f"""
                     UPDATE positions
@@ -1502,12 +1924,12 @@ class PositionManager:
                         END,
                         closed_at = CASE WHEN CAST($1 AS numeric) = 0 THEN closed_at ELSE NULL END,
                         last_updated = NOW(),
-                        version = version + 1{opened_at_update}
+                        version = version + 1
                     WHERE asset = $3 AND mode = $4
                     RETURNING id, asset, mode, size, average_entry_price, current_price,
                               unrealized_pnl, realized_pnl,
                               long_size, short_size, version,
-                              last_updated, closed_at, opened_at, created_at
+                              last_updated, closed_at, created_at
                 """
                 # Always pass string for $2 to help asyncpg determine parameter type
                 # Pass empty string instead of None to avoid type inference issues
@@ -1527,18 +1949,16 @@ class PositionManager:
                         f"Cannot create position: size={computed_size} is non-zero but average_entry_price is None"
                     )
                 
-                # Set opened_at if position size is non-zero (position is being opened)
-                opened_at_value = "NOW()" if computed_size != 0 else "NULL"
-                
-                upsert_query = f"""
+                # Position opening is tracked via created_at (each record is created once)
+                upsert_query = """
                     INSERT INTO positions (
-                        asset, mode, size, average_entry_price, version, last_updated, opened_at, created_at
+                        asset, mode, size, average_entry_price, version, last_updated, created_at
                     )
-                    VALUES ($1, $2, $3, $4, 1, NOW(), {opened_at_value}, NOW())
+                    VALUES ($1, $2, $3, $4, 1, NOW(), NOW())
                     RETURNING id, asset, mode, size, average_entry_price, current_price,
                               unrealized_pnl, realized_pnl,
                               long_size, short_size, version,
-                              last_updated, closed_at, opened_at, created_at
+                              last_updated, closed_at, created_at
                 """
                 row = await pool.fetchrow(
                     upsert_query,
@@ -1627,7 +2047,7 @@ class PositionManager:
 
     def calculate_time_held_minutes(self, position: Position) -> Optional[int]:
         """Delegate to Position.computed field (helper for tests / services)."""
-        return position.time_held_minutes
+        return position.holding_time_minutes
 
     def calculate_position_size_norm(
         self,
@@ -1932,7 +2352,14 @@ class PositionManager:
         asset: Optional[str] = None,
         trace_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Synchronize local positions with Bybit API positions.
+        """Synchronize local active positions with Bybit API positions.
+        
+        CRITICAL: Only synchronizes active positions (closed_at IS NULL).
+        By default, relies on WebSocket events (data is correct and timely).
+        Synchronization through API is performed ONLY in case of:
+        - Detected problems (discrepancies between WebSocket and computed positions)
+        - Manual request through API endpoint
+        - Periodic check (optional, with large interval)
         
         NOTE: This method updates positions directly via SQL, bypassing the normal
         WebSocket-based update mechanism. This is intentional and acceptable because:
@@ -1974,8 +2401,8 @@ class PositionManager:
                     trace_id=trace_id,
                 )
 
-            # Get local positions
-            local_positions = await self.get_all_positions()
+            # Get local active positions (only sync active positions)
+            local_positions = await self.get_all_active_positions()
             
             # Filter local positions by asset if specified
             if asset:
@@ -2198,6 +2625,10 @@ class PositionManager:
                                 UPDATE positions
                                 SET size = 0,
                                     average_entry_price = NULL,
+                                    exit_price = CASE 
+                                        WHEN $3::text = '' THEN NULL
+                                        ELSE CAST($3::text AS numeric)
+                                    END,
                                     unrealized_pnl = 0,
                                     version = version + 1,
                                     last_updated = NOW(),
@@ -2206,6 +2637,7 @@ class PositionManager:
                                 """,
                                 asset_symbol.upper(),
                                 "one-way",
+                                str(exit_price) if exit_price is not None else '',
                             )
                             
                             # Update prediction_trading_results for this position (same actions as normal close)

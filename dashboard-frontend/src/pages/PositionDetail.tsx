@@ -1,5 +1,6 @@
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
-import { usePosition, usePositionOrders, PositionOrder } from '@/hooks/usePositions'
+import { useMemo, useState, useEffect } from 'react'
+import { usePositionById, usePositionOrdersById, PositionOrder } from '@/hooks/usePositions'
 import { useCandles } from '@/hooks/useCandles'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -13,13 +14,15 @@ import { parseISO, subMinutes } from 'date-fns'
 import { ArrowLeft } from 'lucide-react'
 
 export default function PositionDetail() {
-  const { asset } = useParams<{ asset: string }>()
-  const [searchParams] = useSearchParams()
-  const mode = searchParams.get('mode') || 'one-way'
+  const { positionId } = useParams<{ positionId: string }>()
   const navigate = useNavigate()
   
-  const { data: position, isLoading, error } = usePosition(asset || '', mode)
-  const { data: positionOrders, isLoading: ordersLoading } = usePositionOrders(asset || '', mode)
+  const { data: position, isLoading, error } = usePositionById(positionId || '')
+  
+  // Get position orders using position ID
+  const { data: positionOrders, isLoading: ordersLoading } = usePositionOrdersById(
+    positionId || ''
+  )
   
   // Calculate time range for candlestick chart
   // Show 5 minutes before position opening to current time or closing time
@@ -29,85 +32,100 @@ export default function PositionDetail() {
   
   // Determine position opening time for chart:
   // 
-  // Используем opened_at если доступно (точное время последнего открытия позиции).
-  // Если opened_at отсутствует, используем fallback логику для обратной совместимости.
-  //
+  // Используем created_at как время открытия позиции (каждая запись создается один раз).
   // График показывает данные с 5 минут ДО времени открытия позиции.
   let positionOpenTime: string | null = null
   let positionOpenTimeSource: string = 'unknown'
   
   if (position) {
-    // Приоритет: opened_at (точное время) > last_updated (приблизительное) > created_at (fallback)
-    if (position.opened_at) {
-      // Используем точное время открытия из opened_at
-      positionOpenTime = position.opened_at
-      positionOpenTimeSource = 'opened_at (точное время открытия)'
+    // Используем created_at как время открытия позиции
+    if (position.created_at) {
+      positionOpenTime = position.created_at
+      positionOpenTimeSource = 'created_at (время создания позиции)'
     } else if (position.closed_at === null) {
-      // Открытая позиция без opened_at: используем last_updated как приближение
-      positionOpenTime = position.last_updated || position.created_at || null
-      positionOpenTimeSource = position.last_updated ? 'last_updated (приблизительно, opened_at отсутствует)' : 'created_at (fallback)'
+      // Открытая позиция без created_at: используем last_updated как fallback
+      positionOpenTime = position.last_updated || null
+      positionOpenTimeSource = position.last_updated ? 'last_updated (fallback, created_at отсутствует)' : 'unknown'
     } else {
-      // Закрытая позиция без opened_at: ищем наиболее близкий timestamp до closed_at
+      // Закрытая позиция без created_at: оцениваем 1 час до закрытия
       const closedAt = parseISO(position.closed_at)
-      const lastUpdated = position.last_updated ? parseISO(position.last_updated) : null
-      const createdAt = position.created_at ? parseISO(position.created_at) : null
-      
-      // Предпочитаем last_updated если оно раньше closed_at
-      if (lastUpdated && lastUpdated < closedAt) {
-        positionOpenTime = position.last_updated
-        positionOpenTimeSource = 'last_updated (до закрытия, opened_at отсутствует)'
-      } else if (createdAt && createdAt < closedAt) {
-        positionOpenTime = position.created_at
-        positionOpenTimeSource = 'created_at (может быть неточно, opened_at отсутствует)'
-      } else {
-        // Последний вариант: оцениваем 1 час до закрытия
-        positionOpenTime = new Date(closedAt.getTime() - 60 * 60 * 1000).toISOString()
-        positionOpenTimeSource = 'оценка (1 час до закрытия, opened_at отсутствует)'
-      }
+      positionOpenTime = new Date(closedAt.getTime() - 60 * 60 * 1000).toISOString()
+      positionOpenTimeSource = 'оценка (1 час до закрытия, created_at отсутствует)'
     }
   }
   
   // График начинается за 5 минут до времени открытия позиции
-  const chartStartTime = positionOpenTime 
-    ? subMinutes(parseISO(positionOpenTime), 5)
-    : null
+  const chartStartTime = useMemo(() => {
+    return positionOpenTime 
+      ? subMinutes(parseISO(positionOpenTime), 5)
+      : null
+  }, [positionOpenTime])
   
-  let chartEndTime = position?.closed_at 
-    ? parseISO(position.closed_at)
-    : position?.last_updated
-    ? parseISO(position.last_updated)
-    : new Date()
+  // Конец графика: closed_at или текущее время (в зависимости от того, что меньше)
+  // Для открытой позиции обновляем endTime каждую минуту, для закрытой - фиксируем
+  const [chartEndTime, setChartEndTime] = useState<Date>(() => {
+    const now = new Date()
+    if (position?.closed_at) {
+      const closedAt = parseISO(position.closed_at)
+      return closedAt < now ? closedAt : now
+    }
+    return now
+  })
   
-  // Limit time range if too large
-  if (chartStartTime) {
+  // Обновляем chartEndTime для открытых позиций каждую минуту
+  useEffect(() => {
+    if (!position?.closed_at && chartStartTime) {
+      const updateInterval = setInterval(() => {
+        const now = new Date()
+        // Ограничиваем максимальный диапазон
+        const maxEndTime = new Date(chartStartTime.getTime() + MAX_CHART_DAYS * 24 * 60 * 60 * 1000)
+        setChartEndTime(now < maxEndTime ? now : maxEndTime)
+      }, 60000) // Обновляем каждую минуту
+      
+      return () => clearInterval(updateInterval)
+    } else if (position?.closed_at) {
+      // Для закрытой позиции фиксируем endTime
+      const closedAt = parseISO(position.closed_at)
+      setChartEndTime(closedAt)
+    }
+  }, [position?.closed_at, chartStartTime])
+  
+  // Мемоизируем финальный endTime с учетом ограничений
+  const finalChartEndTime = useMemo(() => {
+    if (!chartStartTime) return new Date()
+    
+    // Limit time range if too large
     const daysDiff = (chartEndTime.getTime() - chartStartTime.getTime()) / (1000 * 60 * 60 * 24)
     if (daysDiff > MAX_CHART_DAYS) {
-      chartEndTime = new Date(chartStartTime.getTime() + MAX_CHART_DAYS * 24 * 60 * 60 * 1000)
+      return new Date(chartStartTime.getTime() + MAX_CHART_DAYS * 24 * 60 * 60 * 1000)
     }
-  }
+    
+    return chartEndTime
+  }, [chartStartTime, chartEndTime])
   
   // Calculate appropriate interval based on time range
-  const timeRangeMinutes = chartStartTime && chartEndTime 
-    ? (chartEndTime.getTime() - chartStartTime.getTime()) / (1000 * 60)
+  const timeRangeMinutes = chartStartTime && finalChartEndTime 
+    ? (finalChartEndTime.getTime() - chartStartTime.getTime()) / (1000 * 60)
     : 0
   
   // Use larger interval for longer periods to limit data size
-  let interval = 1 // 1 minute
-  if (timeRangeMinutes > MAX_CANDLES) {
+  const interval = useMemo(() => {
+    if (timeRangeMinutes <= MAX_CANDLES) return 1
+    
     // Calculate interval to get approximately MAX_CANDLES candles
-    interval = Math.ceil(timeRangeMinutes / MAX_CANDLES)
+    const calculatedInterval = Math.ceil(timeRangeMinutes / MAX_CANDLES)
     // Round to common intervals: 1, 3, 5, 15, 30, 60
-    if (interval <= 3) interval = 3
-    else if (interval <= 5) interval = 5
-    else if (interval <= 15) interval = 15
-    else if (interval <= 30) interval = 30
-    else interval = 60
-  }
+    if (calculatedInterval <= 3) return 3
+    else if (calculatedInterval <= 5) return 5
+    else if (calculatedInterval <= 15) return 15
+    else if (calculatedInterval <= 30) return 30
+    else return 60
+  }, [timeRangeMinutes])
   
   const { data: candles, isLoading: candlesLoading } = useCandles(
     position?.asset || '',
     chartStartTime || new Date(),
-    chartEndTime,
+    finalChartEndTime,
     interval
   )
 
@@ -131,7 +149,7 @@ export default function PositionDetail() {
           </Button>
           <div className="text-center text-muted-foreground py-8">
             {error ? 'Ошибка загрузки данных позиции' : 'Позиция не найдена'}
-            {asset && <div className="mt-2">Asset: {asset}</div>}
+            {positionId && <div className="mt-2">Position ID: {positionId}</div>}
           </div>
         </div>
       </div>
@@ -182,6 +200,77 @@ export default function PositionDetail() {
   }
 
   const isOpen = position.closed_at === null && parseFloat(position.size || '0') !== 0
+  
+  // Determine position sign based on relationship_type and side of orders
+  // For "opened" orders, use the sign of size_delta to determine initial position direction
+  // For other orders, use relationship_type to determine if it's an increase or decrease
+  const getPositionSignAtOrderTime = (order: PositionOrder): 'long' | 'short' => {
+    // If this is the opening order, use the sign of size_delta
+    if (order.relationship_type === 'opened') {
+      return parseFloat(order.size_delta) >= 0 ? 'long' : 'short'
+    }
+    
+    // For other orders, determine based on relationship_type and side
+    // If relationship_type is "increased", the position is growing in its current direction
+    // If relationship_type is "decreased", the position is shrinking
+    // We need to track the cumulative position size, but for simplicity,
+    // we'll use the relationship_type as a hint
+    
+    // If we have orders, find the opening order to determine initial direction
+    if (positionOrders?.orders) {
+      const openingOrder = positionOrders.orders.find(o => o.relationship_type === 'opened')
+      if (openingOrder) {
+        const initialSign = parseFloat(openingOrder.size_delta) >= 0 ? 'long' : 'short'
+        // If relationship_type is "increased", position is growing in same direction
+        // If "decreased", position is shrinking
+        // If "reversed", position changed direction
+        if (order.relationship_type === 'reversed') {
+          // After reversal, position direction is opposite of initial
+          return initialSign === 'long' ? 'short' : 'long'
+        }
+        return initialSign
+      }
+    }
+    
+    // Fallback: use current position size
+    return parseFloat(position.size || '0') >= 0 ? 'long' : 'short'
+  }
+  
+  // Helper function to format size_delta with correct sign and color
+  // Use relationship_type as the primary indicator:
+  // - "opened" and "increased" = increase in position size (always green with +)
+  // - "decreased" and "closed" = decrease in position size (always red with -)
+  // - "reversed" = position reversed direction (purple)
+  const formatSizeDelta = (order: PositionOrder): { display: string; color: string } => {
+    const delta = parseFloat(order.size_delta)
+    
+    // Use relationship_type as the primary indicator
+    if (order.relationship_type === 'opened' || order.relationship_type === 'increased') {
+      // This is an increase in position size - always show as positive (green)
+      return {
+        display: '+' + Math.abs(delta).toFixed(8),
+        color: 'text-green-600'
+      }
+    } else if (order.relationship_type === 'decreased' || order.relationship_type === 'closed') {
+      // This is a decrease in position size - always show as negative (red)
+      return {
+        display: '-' + Math.abs(delta).toFixed(8),
+        color: 'text-red-600'
+      }
+    } else if (order.relationship_type === 'reversed') {
+      // Position reversed direction - show actual delta with purple color
+      return {
+        display: (delta >= 0 ? '+' : '') + delta.toFixed(8),
+        color: 'text-purple-600'
+      }
+    }
+    
+    // Fallback: use raw delta value
+    return {
+      display: (delta >= 0 ? '+' : '') + delta.toFixed(8),
+      color: delta >= 0 ? 'text-green-600' : 'text-red-600'
+    }
+  }
   
   // Entry price: use average_entry_price from position, or calculate from orders
   let entryPrice: number | undefined = undefined
@@ -347,7 +436,7 @@ export default function PositionDetail() {
                  <CardDescription>
                    График движения ассета от момента за 5 минут до открытия позиции 
                    {isOpen ? ' до текущего времени' : ' до момента закрытия позиции'}
-                   {chartStartTime && (
+                      {chartStartTime && (
                      <div className="mt-2 text-xs text-muted-foreground">
                       <div>Период графика: {chartStartTime ? format(chartStartTime, 'dd.MM.yyyy HH:mm') : 'N/A'} - {chartEndTime ? format(chartEndTime, 'dd.MM.yyyy HH:mm') : 'N/A'}</div>
                       <div className="mt-1">
@@ -358,17 +447,10 @@ export default function PositionDetail() {
                             return positionOpenTime;
                           }
                         })() : 'N/A'}
-                        <span className="text-yellow-600"> ({positionOpenTimeSource})</span>
+                        <span className="text-muted-foreground"> ({positionOpenTimeSource})</span>
                       </div>
                       {position && (
                         <div className="mt-1 text-xs opacity-75">
-                          {position.opened_at && (() => {
-                            try {
-                              return `opened_at: ${format(parseISO(position.opened_at), 'dd.MM.yyyy HH:mm:ss')} | `;
-                            } catch {
-                              return `opened_at: ${position.opened_at} | `;
-                            }
-                          })()}
                           {(() => {
                             try {
                               return `created_at: ${format(parseISO(position.created_at), 'dd.MM.yyyy HH:mm:ss')} | `;
@@ -392,11 +474,6 @@ export default function PositionDetail() {
                           })()}
                         </div>
                       )}
-                       {!position?.opened_at && (
-                         <div className="mt-1 text-xs text-yellow-600">
-                           ⚠️ Время открытия приблизительное: opened_at отсутствует (возможно, позиция была создана до добавления этого поля)
-                         </div>
-                       )}
                        {(entryPrice || exitPrice) && (
                          <div className="mt-2 text-xs space-y-1">
                            {entryPrice && (
@@ -493,9 +570,14 @@ export default function PositionDetail() {
                             <TableCell>{parseFloat(order.filled_quantity || order.quantity).toFixed(8)}</TableCell>
                             <TableCell>{formatCurrency(order.execution_price || order.average_price || order.price)}</TableCell>
                             <TableCell>
-                              <span className={parseFloat(order.size_delta) >= 0 ? 'text-green-600' : 'text-red-600'}>
-                                {parseFloat(order.size_delta) >= 0 ? '+' : ''}{parseFloat(order.size_delta).toFixed(8)}
-                              </span>
+                              {(() => {
+                                const formatted = formatSizeDelta(order)
+                                return (
+                                  <span className={formatted.color}>
+                                    {formatted.display}
+                                  </span>
+                                )
+                              })()}
                             </TableCell>
                             <TableCell>
                               <Badge variant={order.status === 'filled' ? 'default' : 'secondary'}>

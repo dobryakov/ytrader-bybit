@@ -351,58 +351,135 @@ class PositionOrderLinkerConsumer:
         initial_avg_price: Decimal,
         trace_id: Optional[str],
     ) -> Any:  # Position
-        """Find existing position or create new one with minimal data."""
-        # Try to get existing position
-        position = await self._position_manager.get_position(asset, mode)
-        if position:
-            return position
-
-        # Position doesn't exist - create with minimal data
-        # Will be updated properly when position event arrives from WebSocket
+        """Find existing active position or create new one with minimal data.
+        
+        Uses transaction with SELECT FOR UPDATE to prevent race conditions.
+        Will be updated properly when position event arrives from WebSocket.
+        """
         try:
             pool = await DatabaseConnection.get_pool()
-            query = """
+            
+            async with pool.acquire() as conn:
+                async with conn.transaction():
+                    # Check for existing active position with lock
+                    existing_row = await conn.fetchrow(
+                        """
+                        SELECT id, asset, mode, size, average_entry_price, current_price,
+                               unrealized_pnl, realized_pnl,
+                               long_size, short_size, long_avg_price, short_avg_price,
+                               leverage, position_value, liq_price, bust_price, take_profit, stop_loss,
+                               cum_realised_pnl, cum_unrealised_pnl,
+                               total_fees, opening_fees, closing_fees,
+                               margin_used, available_margin, maintenance_margin,
+                               max_size, min_size, total_volume_traded,
+                               first_entry_price, last_entry_price, exit_price,
+                               peak_unrealized_pnl, peak_unrealized_pnl_at,
+                               worst_unrealized_pnl, worst_unrealized_pnl_at,
+                               created_at, last_updated, closed_at,
+                               version, source, last_sync_with_bybit, bybit_position_data
+                        FROM positions
+                        WHERE asset = $1 AND mode = $2 AND closed_at IS NULL
+                        FOR UPDATE
+                        """,
+                        asset.upper(),
+                        mode.lower(),
+                    )
+                    
+                    if existing_row:
+                        from ..models import Position
+                        position = Position.from_db_dict(dict(existing_row))
+                        logger.debug(
+                            "position_found_from_order_event",
+                            asset=asset,
+                            mode=mode,
+                            position_id=str(position.id),
+                            trace_id=trace_id,
+                        )
+                        return position
+                    
+                    # Position doesn't exist - create with minimal data
+                    # Position opening is tracked via created_at (each record is created once)
+                    insert_query = """
                 INSERT INTO positions (
                     asset, mode, size, average_entry_price,
                     unrealized_pnl, realized_pnl, total_fees,
-                    current_price, version, last_updated, created_at
+                            current_price, version, last_updated,
+                            created_at, closed_at
                 )
-                VALUES ($1, $2, $3, $4, 0, 0, 0, NULL, 1, NOW(), NOW())
-                ON CONFLICT (asset, mode) DO UPDATE SET
-                    asset = EXCLUDED.asset,
-                    mode = EXCLUDED.mode
+                        VALUES ($1, $2, $3, $4, 0, 0, 0, NULL, 1, NOW(), NOW(), NULL)
                 RETURNING id, asset, mode, size, average_entry_price, current_price,
                           unrealized_pnl, realized_pnl,
-                          long_size, short_size, version,
-                          last_updated, closed_at, created_at
-            """
-            row = await pool.fetchrow(
-                query,
-                asset.upper(),
-                mode.lower(),
-                str(initial_size),
-                str(initial_avg_price),
-            )
-            if row:
-                from ..models import Position
-                position_dict = dict(row)
-                position = Position.from_db_dict(position_dict)
-                logger.info(
-                    "position_created_from_order_event",
-                    asset=asset,
-                    mode=mode,
-                    initial_size=str(initial_size),
-                    trace_id=trace_id,
-                )
-                return position
-
-            # Conflict: position was created concurrently, fetch it
-            position = await self._position_manager.get_position(asset, mode)
-            if position:
+                                  long_size, short_size, long_avg_price, short_avg_price,
+                                  leverage, position_value, liq_price, bust_price, take_profit, stop_loss,
+                                  cum_realised_pnl, cum_unrealised_pnl,
+                                  total_fees, opening_fees, closing_fees,
+                                  margin_used, available_margin, maintenance_margin,
+                                  max_size, min_size, total_volume_traded,
+                                  first_entry_price, last_entry_price, exit_price,
+                                  peak_unrealized_pnl, peak_unrealized_pnl_at,
+                                  worst_unrealized_pnl, worst_unrealized_pnl_at,
+                                  created_at, last_updated, closed_at,
+                                  version, source, last_sync_with_bybit, bybit_position_data
+                    """
+                    try:
+                        row = await conn.fetchrow(
+                            insert_query,
+                            asset.upper(),
+                            mode.lower(),
+                            str(initial_size),
+                            str(initial_avg_price) if initial_avg_price is not None else None,
+                        )
+                        if row:
+                            from ..models import Position
+                            position = Position.from_db_dict(dict(row))
+                            logger.info(
+                                "position_created_from_order_event",
+                                asset=asset,
+                                mode=mode,
+                                initial_size=str(initial_size),
+                                trace_id=trace_id,
+                            )
+                            return position
+                    except asyncpg.UniqueViolationError:
+                        # Race condition: active position was created by another process
+                        # Fetch it
+                        existing_row = await conn.fetchrow(
+                            """
+                            SELECT id, asset, mode, size, average_entry_price, current_price,
+                                   unrealized_pnl, realized_pnl,
+                                   long_size, short_size, long_avg_price, short_avg_price,
+                                   leverage, position_value, liq_price, bust_price, take_profit, stop_loss,
+                                   cum_realised_pnl, cum_unrealised_pnl,
+                                   total_fees, opening_fees, closing_fees,
+                                   margin_used, available_margin, maintenance_margin,
+                                   max_size, min_size, total_volume_traded,
+                                   first_entry_price, last_entry_price, exit_price,
+                                   peak_unrealized_pnl, peak_unrealized_pnl_at,
+                                   worst_unrealized_pnl, worst_unrealized_pnl_at,
+                                   created_at, last_updated, closed_at,
+                                   version, source, last_sync_with_bybit, bybit_position_data
+                            FROM positions
+                            WHERE asset = $1 AND mode = $2 AND closed_at IS NULL
+                            """,
+                            asset.upper(),
+                            mode.lower(),
+                        )
+                        if existing_row:
+                            from ..models import Position
+                            position = Position.from_db_dict(dict(existing_row))
+                            logger.warning(
+                                "position_created_concurrently_from_order_event",
+                                asset=asset,
+                                mode=mode,
+                                position_id=str(position.id),
+                                trace_id=trace_id,
+                            )
                 return position
 
             raise DatabaseError(f"Failed to create or fetch position for {asset}/{mode}")
 
+        except DatabaseError:
+            raise
         except Exception as e:
             logger.error(
                 "position_creation_from_order_event_failed",

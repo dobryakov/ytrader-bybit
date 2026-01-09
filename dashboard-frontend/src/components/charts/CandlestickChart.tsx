@@ -102,6 +102,46 @@ export function CandlestickChart({ data, entryPrice, exitPrice, height = 400 }: 
     )
   }
 
+  // Calculate Y-axis domain including all data points and reference lines
+  // Include high/low from all candles, plus entry/exit prices
+  const allValues: number[] = []
+  
+  // Add all price values from candles
+  data.forEach(item => {
+    if (typeof item.high === 'number' && !isNaN(item.high)) allValues.push(item.high)
+    if (typeof item.low === 'number' && !isNaN(item.low)) allValues.push(item.low)
+    if (typeof item.open === 'number' && !isNaN(item.open)) allValues.push(item.open)
+    if (typeof item.close === 'number' && !isNaN(item.close)) allValues.push(item.close)
+  })
+  
+  // Add entry and exit prices if provided
+  if (entryPrice !== undefined && typeof entryPrice === 'number' && !isNaN(entryPrice)) {
+    allValues.push(entryPrice)
+  }
+  if (exitPrice !== undefined && typeof exitPrice === 'number' && !isNaN(exitPrice)) {
+    allValues.push(exitPrice)
+  }
+  
+  // Calculate min and max with padding (5% on each side)
+  let yMin = Math.min(...allValues)
+  let yMax = Math.max(...allValues)
+  const range = yMax - yMin
+  const padding = range * 0.05 // 5% padding
+  
+  // Ensure minimum range for better visualization
+  if (range < yMin * 0.01) {
+    // If range is too small (less than 1% of min value), add symmetric padding
+    const minPadding = yMin * 0.01
+    yMin = yMin - minPadding
+    yMax = yMax + minPadding
+  } else {
+    yMin = yMin - padding
+    yMax = yMax + padding
+  }
+  
+  // Ensure values are positive (prices should be > 0)
+  if (yMin < 0) yMin = 0
+
   return (
     <ResponsiveContainer width="100%" height={height}>
       <LineChart data={data} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
@@ -115,7 +155,7 @@ export function CandlestickChart({ data, entryPrice, exitPrice, height = 400 }: 
           height={60}
         />
         <YAxis
-          domain={['auto', 'auto']}
+          domain={[yMin, yMax]}
           tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 12 }}
           tickFormatter={(value) => `$${value.toFixed(0)}`}
         />

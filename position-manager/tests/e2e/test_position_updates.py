@@ -15,7 +15,7 @@ from src.services.position_manager import PositionManager
 # Positions are now updated only from WebSocket events, and position_orders
 # are created by position_order_linker_consumer based on order events.
 # 
-# TODO: Add new E2E tests for position updates from WebSocket events and
-# position_orders creation from order events.
+# New E2E tests for unified positions architecture are in:
+# - test_unified_positions_architecture.py
 
 

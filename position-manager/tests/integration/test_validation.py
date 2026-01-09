@@ -56,7 +56,7 @@ async def test_position_validation_task_runs_and_records_stats(monkeypatch: pyte
     async def fake_loop(self_self):
         await asyncio.sleep(0)  # simulate one tick
         # Manually perform one validation cycle similar to the real loop
-        for p in await dummy_pm.get_all_positions():
+        for p in await dummy_pm.get_all_active_positions():
             await dummy_pm.validate_position(p.asset, p.mode, fix_discrepancies=True, trace_id="test-trace")
 
     monkeypatch.setattr(PositionValidationTask, "_validation_loop", fake_loop)

@@ -4,9 +4,10 @@ Position Manager REST API client.
 Provides access to position data from Position Manager service for risk management.
 """
 
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import httpx
 from decimal import Decimal
+from datetime import datetime, timedelta
 
 from ..config.settings import settings
 from ..config.logging import get_logger
@@ -23,6 +24,11 @@ class PositionManagerClient:
         self.base_url = settings.position_manager_url
         self.api_key = settings.position_manager_api_key
         self.timeout = 5.0  # 5 second timeout for position queries
+        # Circuit breaker state for critical failures
+        self._consecutive_critical_errors = 0
+        self._max_consecutive_errors = 5  # Stop after 5 consecutive critical errors
+        self._circuit_breaker_until: Optional[datetime] = None
+        self._circuit_breaker_duration = timedelta(minutes=5)  # Stop attempts for 5 minutes
 
     async def get_position(self, asset: str) -> Optional[Dict[str, Any]]:
         """
@@ -51,6 +57,15 @@ class PositionManagerClient:
             logger.debug("Cache hit for position", asset=asset)
             return cached_data
 
+        # Check circuit breaker first
+        if self._check_circuit_breaker():
+            logger.warning(
+                "Position Manager API circuit breaker active - skipping request",
+                asset=asset,
+                blocked_until=self._circuit_breaker_until.isoformat() if self._circuit_breaker_until else None,
+            )
+            return None
+        
         # Cache miss or expired - fetch from REST API
         logger.debug("Cache miss for position, fetching from API", asset=asset)
         url = f"{self.base_url}/api/v1/positions/{asset}"
@@ -65,28 +80,79 @@ class PositionManagerClient:
                 response.raise_for_status()
                 data = response.json()
 
+                # Record success - reset circuit breaker
+                self._record_success()
+
                 # Update cache after successful API response
                 await position_cache.set(asset, data)
                 logger.debug("Retrieved position from Position Manager and cached", asset=asset, data=data)
                 return data
 
         except httpx.HTTPStatusError as e:
-            if e.response.status_code == 404:
+            status_code = e.response.status_code
+            if status_code == 404:
                 # Position not found - this is normal if no position exists
                 logger.debug("Position not found for asset", asset=asset)
+                # Reset consecutive errors on 404 (expected case)
+                self._consecutive_critical_errors = 0
                 return None
-            logger.error(
-                "Position Manager API error",
-                asset=asset,
-                status_code=e.response.status_code,
-                error=str(e),
-            )
+            
+            # 5xx errors are critical
+            if status_code >= 500:
+                self._record_critical_error(
+                    "http_5xx",
+                    {
+                        "asset": asset,
+                        "status_code": status_code,
+                        "error": str(e),
+                        "url": url,
+                    },
+                )
+            else:
+                logger.error(
+                    "Position Manager API client error",
+                    asset=asset,
+                    status_code=status_code,
+                    error=str(e),
+                )
+                # Reset consecutive errors on 4xx (client error, not server failure)
+                self._consecutive_critical_errors = 0
             return None
         except httpx.TimeoutException:
-            logger.warning("Position Manager API timeout", asset=asset, timeout=self.timeout)
+            # Timeout is a critical error
+            self._record_critical_error(
+                "timeout",
+                {
+                    "asset": asset,
+                    "timeout_seconds": self.timeout,
+                    "url": url,
+                },
+            )
+            return None
+        except (httpx.ConnectError, httpx.NetworkError) as e:
+            # Connection errors are critical
+            self._record_critical_error(
+                "connection_error",
+                {
+                    "asset": asset,
+                    "url": url,
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                },
+            )
             return None
         except Exception as e:
-            logger.error("Failed to query Position Manager", asset=asset, error=str(e), exc_info=True)
+            # Other unexpected errors - treat as critical
+            self._record_critical_error(
+                "unexpected_error",
+                {
+                    "asset": asset,
+                    "url": url,
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                },
+            )
+            logger.exception("Failed to query Position Manager", extra={"asset": asset})
             return None
 
     async def get_unrealized_pnl_pct(self, asset: str) -> Optional[float]:
@@ -164,6 +230,194 @@ class PositionManagerClient:
             return None
 
         return abs(float(size))  # Return absolute value
+
+    def _check_circuit_breaker(self) -> bool:
+        """
+        Check if circuit breaker is active (too many consecutive critical errors).
+        
+        Returns:
+            True if circuit breaker is active and requests should be blocked, False otherwise
+        """
+        if self._circuit_breaker_until is not None:
+            if datetime.utcnow() < self._circuit_breaker_until:
+                return True
+            else:
+                # Circuit breaker period expired, reset
+                logger.info(
+                    "Position Manager API circuit breaker expired, resuming attempts",
+                    was_blocked_until=self._circuit_breaker_until.isoformat(),
+                )
+                self._circuit_breaker_until = None
+                self._consecutive_critical_errors = 0
+                return False
+        return False
+
+    def _record_critical_error(self, error_type: str, error_details: Dict[str, Any]) -> None:
+        """
+        Record a critical error and activate circuit breaker if threshold reached.
+        
+        Args:
+            error_type: Type of error (e.g., 'timeout', 'http_5xx', 'connection_error')
+            error_details: Dictionary with error details for logging
+        """
+        self._consecutive_critical_errors += 1
+        
+        logger.error(
+            "Position Manager API critical error",
+            error_type=error_type,
+            consecutive_errors=self._consecutive_critical_errors,
+            max_allowed=self._max_consecutive_errors,
+            **error_details,
+        )
+        
+        if self._consecutive_critical_errors >= self._max_consecutive_errors:
+            self._circuit_breaker_until = datetime.utcnow() + self._circuit_breaker_duration
+            logger.critical(
+                "Position Manager API circuit breaker activated - stopping all attempts",
+                consecutive_errors=self._consecutive_critical_errors,
+                blocked_until=self._circuit_breaker_until.isoformat(),
+                duration_minutes=self._circuit_breaker_duration.total_seconds() / 60,
+                message="Position Manager API is unavailable. All position queries will be blocked until circuit breaker expires.",
+            )
+
+    def _record_success(self) -> None:
+        """Reset circuit breaker state after successful request."""
+        if self._consecutive_critical_errors > 0:
+            logger.info(
+                "Position Manager API recovered from errors",
+                previous_consecutive_errors=self._consecutive_critical_errors,
+            )
+            self._consecutive_critical_errors = 0
+            self._circuit_breaker_until = None
+
+    async def get_all_positions(
+        self,
+        asset: Optional[str] = None,
+        mode: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Get all active positions from Position Manager API.
+
+        Args:
+            asset: Optional asset filter (e.g., 'BTCUSDT')
+            mode: Optional mode filter ('one-way' or 'hedge')
+
+        Returns:
+            List of position dictionaries or empty list on error/circuit breaker
+        """
+        # Check circuit breaker first
+        if self._check_circuit_breaker():
+            logger.warning(
+                "Position Manager API circuit breaker active - skipping request",
+                asset=asset,
+                mode=mode,
+                blocked_until=self._circuit_breaker_until.isoformat() if self._circuit_breaker_until else None,
+            )
+            return []
+        
+        url = f"{self.base_url}/api/v1/positions"
+        headers = {
+            "X-API-Key": self.api_key,
+            "Content-Type": "application/json",
+        }
+        params = {}
+        if asset:
+            params["asset"] = asset
+        if mode:
+            params["mode"] = mode
+
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.get(url, headers=headers, params=params)
+                response.raise_for_status()
+                data = response.json()
+                
+                positions = data.get("positions", [])
+                
+                # Record success - reset circuit breaker
+                self._record_success()
+                
+                logger.debug(
+                    "Retrieved positions from Position Manager",
+                    count=len(positions),
+                    asset=asset,
+                    mode=mode,
+                )
+                return positions
+
+        except httpx.TimeoutException as e:
+            # Timeout is a critical error
+            self._record_critical_error(
+                "timeout",
+                {
+                    "asset": asset,
+                    "mode": mode,
+                    "timeout_seconds": self.timeout,
+                    "url": url,
+                },
+            )
+            return []
+        except httpx.HTTPStatusError as e:
+            status_code = e.response.status_code
+            # 5xx errors are critical, 4xx are client errors (less critical but still logged)
+            if status_code >= 500:
+                # Server errors are critical
+                self._record_critical_error(
+                    "http_5xx",
+                    {
+                        "asset": asset,
+                        "mode": mode,
+                        "status_code": status_code,
+                        "url": url,
+                        "error": str(e),
+                    },
+                )
+            else:
+                # 4xx errors are client errors - log but don't count as critical
+                logger.error(
+                    "Position Manager API client error",
+                    status_code=status_code,
+                    error=str(e),
+                    asset=asset,
+                    mode=mode,
+                    url=url,
+                )
+                # Reset consecutive errors on 4xx (client error, not server failure)
+                self._consecutive_critical_errors = 0
+            return []
+        except (httpx.ConnectError, httpx.NetworkError) as e:
+            # Connection errors are critical
+            self._record_critical_error(
+                "connection_error",
+                {
+                    "asset": asset,
+                    "mode": mode,
+                    "url": url,
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                },
+            )
+            return []
+        except Exception as e:
+            # Other unexpected errors - treat as critical
+            self._record_critical_error(
+                "unexpected_error",
+                {
+                    "asset": asset,
+                    "mode": mode,
+                    "url": url,
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                },
+            )
+            logger.exception(
+                "Unexpected error querying Position Manager for positions list",
+                extra={
+                    "asset": asset,
+                    "mode": mode,
+                },
+            )
+            return []
 
 
 # Global Position Manager client instance
